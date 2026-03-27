@@ -20,6 +20,7 @@ targets:
     sources:
       - Stride/Sources
       - Stride/Assets.xcassets
+      - Shared
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.stride.habittracker
@@ -33,9 +34,7 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: YES
         SUPPORTS_MACCATALYST: NO
-        CODE_SIGN_IDENTITY: "-"
-        CODE_SIGNING_REQUIRED: NO
-        CODE_SIGN_ENTITLEMENTS: ""
+        CODE_SIGN_ENTITLEMENTS: Stride/Stride.entitlements
       configs:
         debug:
           SWIFT_OPTIMIZATION_LEVEL: "-Onone"
@@ -48,9 +47,10 @@ targets:
     sources:
       - Stride/Sources
       - Stride/Assets.xcassets
+      - Shared
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.stride.habittracker
+        PRODUCT_BUNDLE_IDENTIFIER: com.stride.habittracker.mac
         PRODUCT_NAME: Stride
         GENERATE_INFOPLIST_FILE: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -63,3 +63,33 @@ targets:
           SWIFT_OPTIMIZATION_LEVEL: "-Onone"
         release:
           SWIFT_OPTIMIZATION_LEVEL: "-O"
+
+  StrideWidgetExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - StrideWidget/Sources
+      - StrideWidget/Assets.xcassets
+      - Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.stride.habittracker.widget
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Stride Widget
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        CODE_SIGN_ENTITLEMENTS: StrideWidget/StrideWidget.entitlements
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME: WidgetBackground
+      configs:
+        debug:
+          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+        release:
+          SWIFT_OPTIMIZATION_LEVEL: "-O"
+    dependencies:
+      - target: Stride
+        embed: false
+    info:
+      path: StrideWidget/Info.plist
+      properties:
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension

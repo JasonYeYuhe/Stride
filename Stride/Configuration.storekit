@@ -1,0 +1,74 @@
+{
+  "identifier" : "com.stride.habittracker.storekit",
+  "type" : "Default",
+  "version" : 2,
+  "subscriptionGroups" : [
+    {
+      "id" : "stride_pro",
+      "localizations" : [
+        {
+          "description" : "Unlock all Stride features",
+          "displayName" : "Stride Pro",
+          "locale" : "en_US"
+        }
+      ],
+      "name" : "Stride Pro",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [],
+          "codeOffers" : [],
+          "displayPrice" : "2.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "monthly_pro",
+          "introductoryOffer" : {
+            "displayPrice" : "0.99",
+            "internalID" : "monthly_intro",
+            "numberOfPeriods" : 1,
+            "paymentMode" : "payAsYouGo",
+            "subscriptionPeriod" : "P1M"
+          },
+          "localizations" : [
+            {
+              "description" : "Full access billed monthly",
+              "displayName" : "Stride Pro Monthly",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "com.stride.habittracker.pro.monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Monthly Pro",
+          "subscriptionGroupID" : "stride_pro",
+          "type" : "RecurringSubscription"
+        },
+        {
+          "adHocOffers" : [],
+          "codeOffers" : [],
+          "displayPrice" : "19.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "yearly_pro",
+          "introductoryOffer" : {
+            "displayPrice" : "9.99",
+            "internalID" : "yearly_intro",
+            "numberOfPeriods" : 1,
+            "paymentMode" : "payAsYouGo",
+            "subscriptionPeriod" : "P1Y"
+          },
+          "localizations" : [
+            {
+              "description" : "Full access billed yearly - save 44%",
+              "displayName" : "Stride Pro Yearly",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "com.stride.habittracker.pro.yearly",
+          "recurringSubscriptionPeriod" : "P1Y",
+          "referenceName" : "Yearly Pro",
+          "subscriptionGroupID" : "stride_pro",
+          "type" : "RecurringSubscription"
+        }
+      ]
+    }
+  ]
+}

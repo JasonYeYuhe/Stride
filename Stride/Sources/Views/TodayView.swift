@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import WidgetKit
 
 struct TodayView: View {
     @Environment(\.modelContext) private var modelContext
@@ -243,6 +244,8 @@ struct HabitRowView: View {
             #endif
         }
         try? modelContext.save()
+        WidgetCenter.shared.reloadAllTimelines()
+        NotificationService.shared.updateBadge(modelContainer: modelContext.container)
     }
 }
 
