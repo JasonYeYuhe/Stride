@@ -231,8 +231,8 @@ struct ProPaywallView: View {
                             .multilineTextAlignment(.center)
 
                         HStack(spacing: 16) {
-                            Link("Terms", destination: URL(string: "https://stridehabit.github.io/support")!)
-                            Link("Privacy", destination: URL(string: "https://stridehabit.github.io/privacy")!)
+                            Link("Terms", destination: URL(string: "https://jasonyeyuhe.github.io/Stride/support")!)
+                            Link("Privacy", destination: URL(string: "https://jasonyeyuhe.github.io/Stride/privacy")!)
                         }
                         .font(.caption2)
                     }
