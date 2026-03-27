@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#F2F2F7"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="0.3" y2="1">
+      <stop offset="0%" stop-color="#4CD964"/>
+      <stop offset="100%" stop-color="#34C759"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1024" height="1024" rx="224" fill="url(#bg)"/>
+
+  <!-- Three stride marks / forward-leaning bars — bold, geometric, dynamic -->
+  <!-- Bar 1 (left, shortest) -->
+  <rect x="220" y="340" width="88" height="380" rx="44" fill="url(#accent)" transform="rotate(-12, 264, 530)" opacity="0.45"/>
+
+  <!-- Bar 2 (middle) -->
+  <rect x="410" y="260" width="100" height="500" rx="50" fill="url(#accent)" transform="rotate(-12, 460, 510)" opacity="0.7"/>
+
+  <!-- Bar 3 (right, tallest) -->
+  <rect x="610" y="180" width="112" height="620" rx="56" fill="url(#accent)" transform="rotate(-12, 666, 490)"/>
+
+  <!-- Forward arrow / chevron at top-right to convey momentum -->
+  <polyline points="720,280 800,230 720,180" fill="none" stroke="#34C759" stroke-width="40" stroke-linecap="round" stroke-linejoin="round" transform="rotate(-12, 760, 230)"/>
+</svg>

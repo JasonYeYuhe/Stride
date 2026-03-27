@@ -42,6 +42,15 @@ final class StoreService {
 
     func loadProducts() async {
         guard products.isEmpty else { return }
+        await fetchProducts()
+    }
+
+    func retryLoadProducts() async {
+        products = []
+        await fetchProducts()
+    }
+
+    private func fetchProducts() async {
         isLoading = true
         defer { isLoading = false }
 
@@ -50,7 +59,9 @@ final class StoreService {
             let storeProducts = try await Product.products(for: ids)
             products = storeProducts.sorted { $0.price < $1.price }
         } catch {
+            #if DEBUG
             print("Failed to load products: \(error)")
+            #endif
         }
     }
 
@@ -168,26 +179,27 @@ struct ProPaywallView: View {
                         ProgressView()
                             .padding()
                     } else if store.products.isEmpty {
-                        // Fallback when products can't be loaded (e.g. Simulator)
                         VStack(spacing: 12) {
-                            PricingCard(
-                                title: "Monthly",
-                                price: "$2.99/mo",
-                                isPopular: false,
-                                action: {}
-                            )
-                            PricingCard(
-                                title: "Yearly",
-                                price: "$19.99/yr",
-                                isPopular: true,
-                                action: {}
-                            )
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.title2)
+                                .foregroundStyle(.secondary)
+                            Text("Unable to load subscription options.")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                            Text("Please check your internet connection and try again.")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                                .multilineTextAlignment(.center)
+                            Button("Try Again") {
+                                Task { await store.retryLoadProducts() }
+                            }
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 10)
+                            .background(Capsule().fill(.green))
                         }
                         .padding(.horizontal, 24)
-
-                        Text("Subscription not available in this environment.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
                     } else {
                         VStack(spacing: 12) {
                             ForEach(store.products) { product in
@@ -219,8 +231,8 @@ struct ProPaywallView: View {
                             .multilineTextAlignment(.center)
 
                         HStack(spacing: 16) {
-                            Link("Terms", destination: URL(string: "https://stride.app/terms")!)
-                            Link("Privacy", destination: URL(string: "https://stride.app/privacy")!)
+                            Link("Terms", destination: URL(string: "https://stridehabit.github.io/support")!)
+                            Link("Privacy", destination: URL(string: "https://stridehabit.github.io/privacy")!)
                         }
                         .font(.caption2)
                     }

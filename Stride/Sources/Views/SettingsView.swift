@@ -233,7 +233,7 @@ struct SettingsView: View {
                 }
 
                 Section("About") {
-                    LabeledContent("Version", value: "1.0.0")
+                    LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0")
                     LabeledContent("Platform") {
                         #if os(macOS)
                         Text("macOS")
