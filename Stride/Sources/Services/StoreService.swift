@@ -3,8 +3,8 @@ import SwiftUI
 
 /// Product identifiers for Stride Pro subscription.
 enum StrideProduct: String, CaseIterable {
-    case monthlyPro = "com.stride.habittracker.pro.monthly"
-    case yearlyPro = "com.stride.habittracker.pro.yearly"
+    case monthlyPro = "yyh.stride.habittracker.pro.monthly"
+    case yearlyPro = "yyh.stride.habittracker.pro.yearly"
 
     var displayName: String {
         switch self {

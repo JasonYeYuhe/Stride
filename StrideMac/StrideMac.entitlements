@@ -6,7 +6,7 @@
 	<true/>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.com.stride.habittracker</string>
+		<string>group.yyh.stride.habittracker</string>
 	</array>
 </dict>
 </plist>

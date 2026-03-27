@@ -3,7 +3,7 @@ import Foundation
 
 /// Shared model container configuration for App Group data sharing between main app and widgets.
 enum SharedModelContainer {
-    static let appGroupIdentifier = "group.com.stride.habittracker"
+    static let appGroupIdentifier = "group.yyh.stride.habittracker"
 
     static var storeURL: URL {
         let containerURL = FileManager.default.containerURL(

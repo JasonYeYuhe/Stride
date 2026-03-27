@@ -22,7 +22,7 @@ API_ISSUER = "c5671c11-49ec-47d9-bd38-5e3c1a249416"
 API_KEY_PATH = os.path.expanduser(
     "~/Library/Mobile Documents/com~apple~CloudDocs/Downloads/AuthKey_DMMFP6XTXX.p8"
 )
-BUNDLE_ID = "com.stride.habittracker"
+BUNDLE_ID = "yyh.stride.habittracker"
 BASE_URL = "https://api.appstoreconnect.apple.com/v1"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -110,15 +110,14 @@ def find_or_create_app():
         print(f"  Found existing app: {apps[0]['attributes']['name']} (ID: {APP_ID})")
         return APP_ID
 
-    # Need to create — first find the bundle ID resource
-    print(f"  App not found. Creating app with bundle ID {BUNDLE_ID}...")
+    # App not found via API. Ensure bundle ID is registered, then guide user.
+    print(f"  App not found. Ensuring bundle ID is registered...")
 
-    # Look up registered bundle IDs
+    # Register bundle ID if needed
     r = api_get(f"/bundleIds?filter[identifier]={BUNDLE_ID}")
     bundle_ids = r.get("data", [])
 
     if not bundle_ids:
-        # Register the bundle ID
         print(f"  Registering bundle ID: {BUNDLE_ID}")
         r = api_post("/bundleIds", {
             "data": {
@@ -126,41 +125,40 @@ def find_or_create_app():
                 "attributes": {
                     "identifier": BUNDLE_ID,
                     "name": "Stride",
-                    "platform": "UNIVERSAL",
+                    "platform": "IOS",
                 },
             }
-        })
-        bundle_id_resource = r["data"]["id"]
+        }, raise_on_error=False)
+        if r:
+            print(f"  ✓ Bundle ID registered: {r['data']['id']}")
     else:
-        bundle_id_resource = bundle_ids[0]["id"]
+        print(f"  ✓ Bundle ID already registered: {bundle_ids[0]['id']}")
 
-    print(f"  Bundle ID resource: {bundle_id_resource}")
+    # App Store Connect API does not support POST /apps (Apple limitation).
+    # Open the creation page for the user and wait.
+    create_url = "https://appstoreconnect.apple.com/apps/new"
+    print(f"\n  ⚠️  Apple's API does not support creating apps.")
+    print(f"  Opening App Store Connect for you...")
+    print(f"  Fill in:")
+    print(f"    Name: Stride - Habit Tracker")
+    print(f"    Primary Language: English (U.S.)")
+    print(f"    Bundle ID: {BUNDLE_ID}")
+    print(f"    SKU: stride-habit-tracker")
+    print(f"")
+    os.system(f'open "{create_url}"')
 
-    # Create the app
-    r = api_post("/apps", {
-        "data": {
-            "type": "apps",
-            "attributes": {
-                "bundleId": BUNDLE_ID,
-                "name": "Stride - Habit Tracker",
-                "primaryLocale": "en-US",
-                "sku": "stride-habit-tracker",
-            },
-            "relationships": {
-                "bundleId": {
-                    "data": {"type": "bundleIds", "id": bundle_id_resource}
-                },
-            },
-        }
-    })
+    input("  Press ENTER after you've created the app in App Store Connect...")
 
-    if r is None:
-        print("  ERROR: Failed to create app. Check App Store Connect manually.")
+    # Re-lookup
+    r = api_get(f"/apps?filter[bundleId]={BUNDLE_ID}")
+    apps = r.get("data", [])
+    if apps:
+        APP_ID = apps[0]["id"]
+        print(f"  ✓ Found app: {apps[0]['attributes']['name']} (ID: {APP_ID})")
+        return APP_ID
+    else:
+        print("  ERROR: App still not found. Please create it manually and re-run.")
         sys.exit(1)
-
-    APP_ID = r["data"]["id"]
-    print(f"  ✓ Created app: Stride - Habit Tracker (ID: {APP_ID})")
-    return APP_ID
 
 
 # ============================================================
@@ -171,9 +169,18 @@ def get_or_create_version(platform, version="1.0.0"):
     print(f"  Setting up {platform} v{version}")
     print(f"{'='*50}")
 
+    # Check all version states
+    for state in ["PREPARE_FOR_SUBMISSION", "DEVELOPER_REJECTED", "REJECTED", "WAITING_FOR_REVIEW", "IN_REVIEW", "READY_FOR_SALE"]:
+        r = api_get(f"/apps/{APP_ID}/appStoreVersions?filter[platform]={platform}&filter[appStoreState]={state}")
+        versions = r.get("data", [])
+        for v in versions:
+            if v["attributes"]["versionString"] == version:
+                print(f"  Found existing version: {v['id']} ({state})")
+                return v["id"]
+
+    # Also try without state filter
     r = api_get(f"/apps/{APP_ID}/appStoreVersions?filter[platform]={platform}")
     versions = r.get("data", [])
-
     for v in versions:
         if v["attributes"]["versionString"] == version:
             print(f"  Found existing version: {v['id']}")
@@ -194,7 +201,17 @@ def get_or_create_version(platform, version="1.0.0"):
             },
         }
     }
-    r = api_post("/appStoreVersions", data)
+    r = api_post("/appStoreVersions", data, raise_on_error=False)
+    if r is None:
+        # Version likely already exists, try one more lookup without filters
+        r = api_get(f"/apps/{APP_ID}/appStoreVersions?filter[platform]={platform}")
+        versions = r.get("data", [])
+        if versions:
+            version_id = versions[0]["id"]
+            print(f"  Using existing version: {version_id}")
+            return version_id
+        print("  ERROR: Cannot find or create version.")
+        sys.exit(1)
     version_id = r["data"]["id"]
     print(f"  Created version: {version_id}")
     return version_id
@@ -483,8 +500,8 @@ def setup_subscriptions():
     existing = {s["attributes"]["productId"]: s["id"] for s in r.get("data", [])}
 
     products = [
-        ("com.stride.habittracker.pro.monthly", "Stride Pro Monthly", 1),
-        ("com.stride.habittracker.pro.yearly", "Stride Pro Yearly", 2),
+        ("yyh.stride.habittracker.pro.monthly", "Stride Pro Monthly", 1),
+        ("yyh.stride.habittracker.pro.yearly", "Stride Pro Yearly", 2),
     ]
 
     for product_id, name, order in products:

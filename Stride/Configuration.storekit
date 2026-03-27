@@ -1,5 +1,5 @@
 {
-  "identifier" : "com.stride.habittracker.storekit",
+  "identifier" : "yyh.stride.habittracker.storekit",
   "type" : "Default",
   "version" : 2,
   "subscriptionGroups" : [
@@ -35,7 +35,7 @@
               "locale" : "en_US"
             }
           ],
-          "productID" : "com.stride.habittracker.pro.monthly",
+          "productID" : "yyh.stride.habittracker.pro.monthly",
           "recurringSubscriptionPeriod" : "P1M",
           "referenceName" : "Monthly Pro",
           "subscriptionGroupID" : "stride_pro",
@@ -62,7 +62,7 @@
               "locale" : "en_US"
             }
           ],
-          "productID" : "com.stride.habittracker.pro.yearly",
+          "productID" : "yyh.stride.habittracker.pro.yearly",
           "recurringSubscriptionPeriod" : "P1Y",
           "referenceName" : "Yearly Pro",
           "subscriptionGroupID" : "stride_pro",

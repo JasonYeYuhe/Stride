@@ -17,7 +17,7 @@ final class NotificationService {
 
     // MARK: - UserDefaults Keys (synced via App Group)
 
-    private let defaults = UserDefaults(suiteName: "group.com.stride.habittracker") ?? .standard
+    private let defaults = UserDefaults(suiteName: "group.yyh.stride.habittracker") ?? .standard
 
     var isReminderEnabled: Bool {
         get { defaults.bool(forKey: "reminderEnabled") }
