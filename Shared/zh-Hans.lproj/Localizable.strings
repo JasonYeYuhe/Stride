@@ -1,0 +1,154 @@
+/* ============================================================
+   Stride — Simplified Chinese (zh-Hans)
+   ============================================================ */
+
+/* Tab Bar & Navigation */
+"Today" = "今天";
+"Stats" = "统计";
+"Statistics" = "统计";
+"Settings" = "设置";
+"Stride" = "Stride";
+
+/* Today View */
+"Yesterday" = "昨天";
+"%lld/%lld completed" = "%lld/%lld 已完成";
+"All done! Perfect day!" = "全部完成！完美的一天！";
+"Almost there! Keep going!" = "快完成了！继续加油！";
+"Halfway done! Nice!" = "完成一半！不错！";
+"Good start! Keep it up!" = "好的开始！继续保持！";
+"Let's get started!" = "开始吧！";
+"%lld day streak" = "连续 %lld 天";
+"Start Your Journey" = "开始你的旅程";
+"Add your first habit and begin\nbuilding better routines." = "添加你的第一个习惯，\n开始建立更好的日常。";
+"Add First Habit" = "添加第一个习惯";
+
+/* Add Habit */
+"Habit Name" = "习惯名称";
+"e.g., Read 30 minutes" = "例如：阅读 30 分钟";
+"Icon" = "图标";
+"Color" = "颜色";
+"Preview" = "预览";
+"Your Habit" = "你的习惯";
+"New Habit" = "新习惯";
+"Cancel" = "取消";
+"Save" = "保存";
+
+/* Stats View */
+"No habits yet" = "还没有习惯";
+"Add a habit to start seeing statistics." = "添加习惯后即可查看统计数据。";
+"Best Streak" = "最佳连续";
+"30d Avg" = "30日均值";
+"Current Streak" = "当前连续";
+"days" = "天";
+"30-Day Rate" = "30日完成率";
+"Total" = "总计";
+"By Weekday" = "按星期";
+"Activity" = "活动";
+"Less" = "少";
+"More" = "多";
+
+/* Settings */
+"Habit Tracker" = "习惯追踪";
+"Upgrade to Pro" = "升级到 Pro";
+"Unlimited habits, widgets, smart reminders & more" = "无限习惯、小组件、智能提醒等";
+"Stride Pro" = "Stride Pro";
+"All features unlocked" = "所有功能已解锁";
+"Signed in" = "已登录";
+"Sync Now" = "立即同步";
+"Log Out" = "退出登录";
+"Sign In" = "登录";
+"Sync habits across your devices" = "跨设备同步你的习惯";
+"Account" = "账户";
+"Daily Reminder" = "每日提醒";
+"Reminder Time" = "提醒时间";
+"Morning Motivation" = "早间激励";
+"Daily at 8:00 AM" = "每天早上 8:00";
+"Reminders" = "提醒";
+"Notifications are disabled. Go to Settings → Stride to enable." = "通知已关闭。请前往设置 → Stride 开启。";
+"You'll receive a reminder to check your habits at the time above." = "你将在上面设定的时间收到习惯提醒。";
+"Active Habits (%lld)" = "活跃习惯 (%lld)";
+"%lld check-ins" = "%lld 次打卡";
+"Delete" = "删除";
+"Archive" = "归档";
+"Archived (%lld)" = "已归档 (%lld)";
+"Restore" = "恢复";
+"About" = "关于";
+"Version" = "版本";
+"Platform" = "平台";
+"Data Storage" = "数据存储";
+"Synced" = "已同步";
+"On Device" = "本地存储";
+"Delete Habit" = "删除习惯";
+"This will permanently delete this habit and all its records. This cannot be undone." = "这将永久删除此习惯及其所有记录，此操作无法撤销。";
+
+/* Login */
+"Log In" = "登录";
+"Sign in to sync your habits across devices" = "登录以跨设备同步习惯";
+"Email address" = "电子邮箱";
+"Send Login Link" = "发送登录链接";
+"I have a login token" = "我有登录令牌";
+"Check your email" = "查看你的邮箱";
+"We sent a login link to **%@**.\n\nClick the link in the email, or paste the token below." = "我们已向 **%@** 发送了登录链接。\n\n请点击邮件中的链接，或在下方粘贴令牌。";
+"Paste token here" = "在此粘贴令牌";
+"Verify" = "验证";
+"Use a different email" = "使用其他邮箱";
+"Enter Login Token" = "输入登录令牌";
+"Paste the token from your login email." = "粘贴登录邮件中的令牌。";
+"Token" = "令牌";
+"Send me a login link instead" = "改为发送登录链接";
+
+/* Pro Paywall */
+"Unlock the full experience" = "解锁完整体验";
+"Unlimited Habits" = "无限习惯";
+"Track as many habits as you want" = "追踪任意数量的习惯";
+"Advanced Statistics" = "高级统计";
+"Deep insights into your progress" = "深入了解你的进展";
+"Home Screen Widgets" = "主屏幕小组件";
+"Quick access from your home screen" = "从主屏幕快速访问";
+"Smart Reminders" = "智能提醒";
+"Never miss a habit again" = "再也不会错过习惯";
+"iCloud Sync" = "iCloud 同步";
+"Seamless across all your devices" = "所有设备无缝同步";
+"Unable to load subscription options." = "无法加载订阅选项。";
+"Please check your internet connection and try again." = "请检查网络连接后重试。";
+"Try Again" = "重试";
+"Yearly" = "年付";
+"Monthly" = "月付";
+"BEST VALUE" = "最超值";
+"Save 44%" = "节省 44%";
+"Restore Purchases" = "恢复购买";
+"Payment will be charged to your Apple ID account. Subscription automatically renews unless cancelled at least 24 hours before the end of the current period." = "付款将从你的 Apple ID 账户扣除。订阅将自动续订，除非在当前周期结束前至少 24 小时取消。";
+"Terms" = "条款";
+"Privacy" = "隐私";
+"Purchase Error" = "购买错误";
+"OK" = "好";
+"Processing..." = "处理中...";
+
+/* Notifications */
+"Stride Reminder 🏃" = "Stride 提醒 🏃";
+"Don't break the chain! Check in on your habits before bed." = "别断了连续记录！睡前看看你的习惯吧。";
+"A few minutes now, a better you tomorrow. Open Stride!" = "现在花几分钟，明天更好的你。打开 Stride！";
+"Have you completed all your habits today?" = "你今天完成所有习惯了吗？";
+"Your streak is counting on you! Time to check in." = "你的连续记录在等着你！是时候打卡了。";
+"Small steps, big changes. Don't forget your habits!" = "小步骤，大改变。别忘了你的习惯！";
+"End the day strong — mark your progress in Stride." = "以强势结束今天——在 Stride 中记录你的进度。";
+"Consistency is key. How did you do today?" = "坚持是关键。你今天做得怎么样？";
+"Your future self will thank you. Check your habits!" = "未来的你会感谢现在的你。检查你的习惯吧！";
+"Good Morning! ☀️" = "早上好！☀️";
+"New day, new opportunities! Your habits are waiting." = "新的一天，新的机会！你的习惯在等着你。";
+"Rise and shine! Let's make today count." = "起来吧！让今天有意义。";
+"A fresh start — what will you accomplish today?" = "全新的开始——你今天要完成什么？";
+"Good morning! Time to build those healthy habits." = "早上好！是时候培养健康习惯了。";
+"Today is full of potential. Start with your habits!" = "今天充满可能。从你的习惯开始！";
+
+/* Widget */
+"of %lld" = "/ %lld";
+"All done! 🎉" = "全部完成！🎉";
+"%lld remaining" = "还剩 %lld 个";
+"+%lld more" = "还有 %lld 个";
+"Tap to add habits" = "点击添加习惯";
+"Stride: No habits yet" = "Stride：还没有习惯";
+"🔥 All %lld habits done!" = "🔥 %lld 个习惯全部完成！";
+"🏃 %lld/%lld habits done" = "🏃 已完成 %lld/%lld 个习惯";
+"Stride Habits" = "Stride 习惯";
+"Track your daily habit progress at a glance." = "一目了然地追踪每日习惯进度。";

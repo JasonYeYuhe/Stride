@@ -68,7 +68,7 @@ struct HabitTimelineProvider: TimelineProvider {
 
         // Refresh at the start of the next day so the widget resets
         let calendar = Calendar.current
-        let tomorrow = calendar.startOfDay(for: calendar.date(byAdding: .day, value: 1, to: .now)!)
+        let tomorrow = calendar.startOfDay(for: calendar.date(byAdding: .day, value: 1, to: .now) ?? .now)
         let timeline = Timeline(entries: [entry], policy: .after(tomorrow))
 
         completion(timeline)
@@ -144,7 +144,7 @@ struct SmallWidgetView: View {
         .containerBackground(.fill.tertiary, for: .widget)
     }
 
-    private var smallStatusText: String {
+    private var smallStatusText: LocalizedStringKey {
         if entry.totalCount == 0 { return "No habits yet" }
         if entry.completedCount == entry.totalCount { return "All done! 🎉" }
         return "\(entry.totalCount - entry.completedCount) remaining"

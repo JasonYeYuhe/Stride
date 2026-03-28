@@ -1,0 +1,154 @@
+/* ============================================================
+   Stride — Korean (ko)
+   ============================================================ */
+
+/* Tab Bar & Navigation */
+"Today" = "오늘";
+"Stats" = "통계";
+"Statistics" = "통계";
+"Settings" = "설정";
+"Stride" = "Stride";
+
+/* Today View */
+"Yesterday" = "어제";
+"%lld/%lld completed" = "%lld/%lld 완료";
+"All done! Perfect day!" = "모두 완료! 완벽한 하루!";
+"Almost there! Keep going!" = "거의 다 왔어요! 계속 힘내세요!";
+"Halfway done! Nice!" = "반쯤 했어요! 좋아요!";
+"Good start! Keep it up!" = "좋은 시작! 계속 해봐요!";
+"Let's get started!" = "시작해볼까요!";
+"%lld day streak" = "%lld일 연속";
+"Start Your Journey" = "여정을 시작하세요";
+"Add your first habit and begin\nbuilding better routines." = "첫 번째 습관을 추가하고\n더 나은 루틴을 만들어보세요.";
+"Add First Habit" = "첫 습관 추가";
+
+/* Add Habit */
+"Habit Name" = "습관 이름";
+"e.g., Read 30 minutes" = "예: 30분 독서";
+"Icon" = "아이콘";
+"Color" = "색상";
+"Preview" = "미리보기";
+"Your Habit" = "나의 습관";
+"New Habit" = "새로운 습관";
+"Cancel" = "취소";
+"Save" = "저장";
+
+/* Stats View */
+"No habits yet" = "아직 습관이 없습니다";
+"Add a habit to start seeing statistics." = "습관을 추가하면 통계를 볼 수 있습니다.";
+"Best Streak" = "최고 연속";
+"30d Avg" = "30일 평균";
+"Current Streak" = "현재 연속";
+"days" = "일";
+"30-Day Rate" = "30일 달성률";
+"Total" = "합계";
+"By Weekday" = "요일별";
+"Activity" = "활동";
+"Less" = "적음";
+"More" = "많음";
+
+/* Settings */
+"Habit Tracker" = "습관 트래커";
+"Upgrade to Pro" = "Pro로 업그레이드";
+"Unlimited habits, widgets, smart reminders & more" = "무제한 습관, 위젯, 스마트 알림 등";
+"Stride Pro" = "Stride Pro";
+"All features unlocked" = "모든 기능 잠금 해제됨";
+"Signed in" = "로그인됨";
+"Sync Now" = "지금 동기화";
+"Log Out" = "로그아웃";
+"Sign In" = "로그인";
+"Sync habits across your devices" = "기기 간 습관 동기화";
+"Account" = "계정";
+"Daily Reminder" = "매일 알림";
+"Reminder Time" = "알림 시간";
+"Morning Motivation" = "아침 동기부여";
+"Daily at 8:00 AM" = "매일 오전 8:00";
+"Reminders" = "알림";
+"Notifications are disabled. Go to Settings → Stride to enable." = "알림이 비활성화되어 있습니다. 설정 → Stride에서 활성화하세요.";
+"You'll receive a reminder to check your habits at the time above." = "위의 시간에 습관 확인 알림을 받게 됩니다.";
+"Active Habits (%lld)" = "활성 습관 (%lld)";
+"%lld check-ins" = "%lld회 체크인";
+"Delete" = "삭제";
+"Archive" = "보관";
+"Archived (%lld)" = "보관됨 (%lld)";
+"Restore" = "복원";
+"About" = "정보";
+"Version" = "버전";
+"Platform" = "플랫폼";
+"Data Storage" = "데이터 저장";
+"Synced" = "동기화됨";
+"On Device" = "기기에 저장";
+"Delete Habit" = "습관 삭제";
+"This will permanently delete this habit and all its records. This cannot be undone." = "이 습관과 모든 기록이 영구적으로 삭제됩니다. 되돌릴 수 없습니다.";
+
+/* Login */
+"Log In" = "로그인";
+"Sign in to sync your habits across devices" = "로그인하여 기기 간 습관 동기화";
+"Email address" = "이메일 주소";
+"Send Login Link" = "로그인 링크 보내기";
+"I have a login token" = "로그인 토큰이 있어요";
+"Check your email" = "이메일을 확인하세요";
+"We sent a login link to **%@**.\n\nClick the link in the email, or paste the token below." = "**%@** 로 로그인 링크를 보냈습니다.\n\n이메일의 링크를 클릭하거나, 아래에 토큰을 붙여넣으세요.";
+"Paste token here" = "여기에 토큰 붙여넣기";
+"Verify" = "인증";
+"Use a different email" = "다른 이메일 사용";
+"Enter Login Token" = "로그인 토큰 입력";
+"Paste the token from your login email." = "로그인 이메일의 토큰을 붙여넣으세요.";
+"Token" = "토큰";
+"Send me a login link instead" = "대신 로그인 링크 보내기";
+
+/* Pro Paywall */
+"Unlock the full experience" = "전체 경험 잠금 해제";
+"Unlimited Habits" = "무제한 습관";
+"Track as many habits as you want" = "원하는 만큼 습관 추적";
+"Advanced Statistics" = "고급 통계";
+"Deep insights into your progress" = "진행 상황에 대한 심층 분석";
+"Home Screen Widgets" = "홈 화면 위젯";
+"Quick access from your home screen" = "홈 화면에서 빠른 접근";
+"Smart Reminders" = "스마트 알림";
+"Never miss a habit again" = "습관을 놓치지 마세요";
+"iCloud Sync" = "iCloud 동기화";
+"Seamless across all your devices" = "모든 기기에서 원활하게";
+"Unable to load subscription options." = "구독 옵션을 불러올 수 없습니다.";
+"Please check your internet connection and try again." = "인터넷 연결을 확인하고 다시 시도하세요.";
+"Try Again" = "다시 시도";
+"Yearly" = "연간";
+"Monthly" = "월간";
+"BEST VALUE" = "최고 가치";
+"Save 44%" = "44% 절약";
+"Restore Purchases" = "구매 복원";
+"Payment will be charged to your Apple ID account. Subscription automatically renews unless cancelled at least 24 hours before the end of the current period." = "결제는 Apple ID 계정으로 청구됩니다. 현재 기간 종료 최소 24시간 전에 취소하지 않으면 구독이 자동 갱신됩니다.";
+"Terms" = "약관";
+"Privacy" = "개인정보";
+"Purchase Error" = "구매 오류";
+"OK" = "확인";
+"Processing..." = "처리 중...";
+
+/* Notifications */
+"Stride Reminder 🏃" = "Stride 알림 🏃";
+"Don't break the chain! Check in on your habits before bed." = "연속 기록을 끊지 마세요! 자기 전에 습관을 확인하세요.";
+"A few minutes now, a better you tomorrow. Open Stride!" = "지금 몇 분, 내일 더 나은 나. Stride를 열어보세요!";
+"Have you completed all your habits today?" = "오늘 모든 습관을 완료했나요?";
+"Your streak is counting on you! Time to check in." = "연속 기록이 당신을 기다리고 있어요! 체크인할 시간입니다.";
+"Small steps, big changes. Don't forget your habits!" = "작은 걸음, 큰 변화. 습관을 잊지 마세요!";
+"End the day strong — mark your progress in Stride." = "하루를 강하게 마무리하세요 — Stride에서 진행 상황을 기록하세요.";
+"Consistency is key. How did you do today?" = "꾸준함이 핵심입니다. 오늘 어떠셨나요?";
+"Your future self will thank you. Check your habits!" = "미래의 당신이 감사할 거예요. 습관을 확인하세요!";
+"Good Morning! ☀️" = "좋은 아침! ☀️";
+"New day, new opportunities! Your habits are waiting." = "새로운 하루, 새로운 기회! 습관이 기다리고 있어요.";
+"Rise and shine! Let's make today count." = "일어나세요! 오늘을 의미 있게 만들어요.";
+"A fresh start — what will you accomplish today?" = "새로운 시작 — 오늘 무엇을 이룰 건가요?";
+"Good morning! Time to build those healthy habits." = "좋은 아침! 건강한 습관을 만들 시간이에요.";
+"Today is full of potential. Start with your habits!" = "오늘은 가능성으로 가득해요. 습관부터 시작하세요!";
+
+/* Widget */
+"of %lld" = "/ %lld";
+"All done! 🎉" = "모두 완료! 🎉";
+"%lld remaining" = "%lld개 남음";
+"+%lld more" = "+%lld개 더";
+"Tap to add habits" = "탭하여 습관 추가";
+"Stride: No habits yet" = "Stride: 아직 습관 없음";
+"🔥 All %lld habits done!" = "🔥 %lld개 습관 모두 완료!";
+"🏃 %lld/%lld habits done" = "🏃 %lld/%lld개 습관 완료";
+"Stride Habits" = "Stride 습관";
+"Track your daily habit progress at a glance." = "매일의 습관 진행 상황을 한눈에.";

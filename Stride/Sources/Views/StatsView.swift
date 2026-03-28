@@ -104,7 +104,7 @@ struct OverallStatsCard: View {
 
 struct StatItem: View {
     let value: String
-    let label: String
+    let label: LocalizedStringKey
     let icon: String
 
     var body: some View {
@@ -112,7 +112,7 @@ struct StatItem: View {
             Image(systemName: icon)
                 .font(.caption)
                 .foregroundStyle(.green)
-            Text(value)
+            Text(verbatim: value)
                 .font(.title3.bold())
             Text(label)
                 .font(.caption2)

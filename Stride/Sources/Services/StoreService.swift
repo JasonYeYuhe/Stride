@@ -34,7 +34,7 @@ final class StoreService {
         updateListenerTask = listenForTransactions()
     }
 
-    func stopListening() {
+    deinit {
         updateListenerTask?.cancel()
     }
 
@@ -299,8 +299,8 @@ struct ProPaywallView: View {
 struct ProFeatureRow: View {
     let icon: String
     let color: Color
-    let title: String
-    let subtitle: String
+    let title: LocalizedStringKey
+    let subtitle: LocalizedStringKey
 
     var body: some View {
         HStack(spacing: 14) {
@@ -322,7 +322,7 @@ struct ProFeatureRow: View {
 }
 
 struct PricingCard: View {
-    let title: String
+    let title: LocalizedStringKey
     let price: String
     let isPopular: Bool
     let action: () -> Void

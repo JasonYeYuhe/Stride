@@ -13,9 +13,9 @@ struct TodayView: View {
 
     private var dateTitle: String {
         if Calendar.current.isDateInToday(selectedDate) {
-            return "Today"
+            return String(localized: "Today")
         } else if Calendar.current.isDateInYesterday(selectedDate) {
-            return "Yesterday"
+            return String(localized: "Yesterday")
         } else {
             let formatter = DateFormatter()
             formatter.dateStyle = .medium
@@ -128,7 +128,7 @@ struct ProgressSummaryCard: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("\(completed)/\(total) completed")
                     .font(.headline)
-                Text(motivationText)
+                Text(motivationMessage)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -156,7 +156,7 @@ struct ProgressSummaryCard: View {
         )
     }
 
-    private var motivationText: String {
+    private var motivationMessage: LocalizedStringKey {
         switch progress {
         case 1.0: return "All done! Perfect day!"
         case 0.75..<1.0: return "Almost there! Keep going!"
@@ -224,6 +224,7 @@ struct HabitRowView: View {
     private func toggleCompletion() {
         let calendar = Calendar.current
         if let existingRecord = habit.records.first(where: { calendar.isDate($0.date, inSameDayAs: date) }) {
+            SyncService.shared.trackDeletedEntry(existingRecord.id.uuidString)
             modelContext.delete(existingRecord)
             justCompleted = false
         } else {
@@ -231,7 +232,6 @@ struct HabitRowView: View {
             habit.records.append(record)
             justCompleted = true
 
-            // Bounce animation reset
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 withAnimation(.easeOut(duration: 0.2)) {
                     justCompleted = false
@@ -243,7 +243,13 @@ struct HabitRowView: View {
             generator.impactOccurred()
             #endif
         }
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            #if DEBUG
+            print("Failed to save habit completion: \(error)")
+            #endif
+        }
         WidgetCenter.shared.reloadAllTimelines()
         NotificationService.shared.updateBadge(modelContainer: modelContext.container)
     }

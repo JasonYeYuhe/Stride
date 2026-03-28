@@ -6,12 +6,16 @@ options:
     macOS: "14.0"
   xcodeVersion: "15.0"
   generateEmptyDirectories: true
+  developmentLanguage: en
+  knownRegions: [en, zh-Hans, zh-Hant, ja, ko, es]
 
 settings:
   base:
     SWIFT_VERSION: "5.9"
     MARKETING_VERSION: "1.0.0"
     CURRENT_PROJECT_VERSION: 1
+    DEVELOPMENT_TEAM: KHMK6Q3L3K
+    CODE_SIGN_STYLE: Automatic
 
 targets:
   Stride:
@@ -50,14 +54,13 @@ targets:
       - Shared
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: yyh.stride.habittracker.mac
+        PRODUCT_BUNDLE_IDENTIFIER: yyh.stride.habittracker
         PRODUCT_NAME: Stride
         GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.healthcare-fitness"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
-        CODE_SIGN_IDENTITY: "-"
-        CODE_SIGNING_REQUIRED: NO
-        CODE_SIGN_ENTITLEMENTS: ""
+        CODE_SIGN_ENTITLEMENTS: StrideMac/StrideMac.entitlements
       configs:
         debug:
           SWIFT_OPTIMIZATION_LEVEL: "-Onone"

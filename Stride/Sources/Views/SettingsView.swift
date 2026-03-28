@@ -17,7 +17,10 @@ struct SettingsView: View {
 
     // Store
     @State private var showingPaywall = false
+    @State private var showingLogin = false
     private var store = StoreService.shared
+    private var auth = AuthService.shared
+    private var sync = SyncService.shared
 
     private var activeHabits: [Habit] {
         allHabits.filter { !$0.isArchived }
@@ -94,6 +97,82 @@ struct SettingsView: View {
                             }
                         }
                         .padding(.vertical, 4)
+                    }
+                }
+
+                // Account & Sync
+                Section {
+                    if auth.isLoggedIn {
+                        HStack(spacing: 12) {
+                            Image(systemName: "person.crop.circle.fill")
+                                .font(.title2)
+                                .foregroundStyle(.green)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(auth.userEmail ?? "")
+                                    .font(.subheadline)
+                                Text("Signed in")
+                                    .font(.caption)
+                                    .foregroundStyle(.green)
+                            }
+                        }
+
+                        Button {
+                            Task {
+                                await sync.sync(context: modelContext)
+                            }
+                        } label: {
+                            HStack {
+                                Label("Sync Now", systemImage: "arrow.triangle.2.circlepath")
+                                Spacer()
+                                if sync.isSyncing {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                } else if let lastSync = sync.lastSyncTime {
+                                    Text(formatSyncTime(lastSync))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        .disabled(sync.isSyncing)
+
+                        Button(role: .destructive) {
+                            Task { await auth.logout() }
+                        } label: {
+                            Label("Log Out", systemImage: "rectangle.portrait.and.arrow.right")
+                        }
+                    } else {
+                        Button {
+                            showingLogin = true
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "person.crop.circle.badge.plus")
+                                    .font(.title2)
+                                    .foregroundStyle(.green)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Sign In")
+                                        .font(.headline)
+                                        .foregroundStyle(.primary)
+                                    Text("Sync habits across your devices")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.vertical, 4)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                } header: {
+                    Text("Account")
+                } footer: {
+                    if let error = sync.syncError {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.red)
                     }
                 }
 
@@ -190,7 +269,7 @@ struct SettingsView: View {
                                 Button {
                                     withAnimation {
                                         habit.isArchived = true
-                                        try? modelContext.save()
+                                        try? modelContext.save() // Non-critical UI action
                                     }
                                 } label: {
                                     Label("Archive", systemImage: "archivebox")
@@ -213,7 +292,7 @@ struct SettingsView: View {
                                 Button("Restore") {
                                     withAnimation {
                                         habit.isArchived = false
-                                        try? modelContext.save()
+                                        try? modelContext.save() // Non-critical UI action
                                     }
                                 }
                                 .font(.caption)
@@ -241,7 +320,7 @@ struct SettingsView: View {
                         Text("iOS")
                         #endif
                     }
-                    LabeledContent("Data Storage", value: "On Device")
+                    LabeledContent("Data Storage", value: auth.isLoggedIn ? String(localized: "Synced") : String(localized: "On Device"))
                 }
             }
             .navigationTitle("Settings")
@@ -251,8 +330,18 @@ struct SettingsView: View {
                 }
                 Button("Delete", role: .destructive) {
                     if let habit = habitToDelete {
+                        SyncService.shared.trackDeletedHabit(habit.id.uuidString)
+                        for record in habit.records {
+                            SyncService.shared.trackDeletedEntry(record.id.uuidString)
+                        }
                         modelContext.delete(habit)
-                        try? modelContext.save()
+                        do {
+                            try modelContext.save()
+                        } catch {
+                            #if DEBUG
+                            print("Failed to save after delete: \(error)")
+                            #endif
+                        }
                         habitToDelete = nil
                     }
                 }
@@ -261,6 +350,14 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showingPaywall) {
                 ProPaywallView()
+            }
+            .sheet(isPresented: $showingLogin) {
+                LoginView()
+            }
+            .onChange(of: auth.isLoggedIn) { _, loggedIn in
+                if loggedIn {
+                    Task { await sync.sync(context: modelContext) }
+                }
             }
             .task {
                 await checkNotificationStatus()
@@ -289,6 +386,14 @@ struct SettingsView: View {
         } else {
             NotificationService.shared.isReminderEnabled = false
         }
+    }
+
+    private func formatSyncTime(_ iso: String) -> String {
+        let formatter = ISO8601DateFormatter()
+        guard let date = formatter.date(from: iso) else { return iso }
+        let relative = RelativeDateTimeFormatter()
+        relative.unitsStyle = .abbreviated
+        return relative.localizedString(for: date, relativeTo: Date())
     }
 
     private func checkNotificationStatus() async {

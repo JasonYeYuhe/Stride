@@ -38,7 +38,7 @@ final class Habit {
         guard !sortedDates.isEmpty else { return 0 }
 
         let today = calendar.startOfDay(for: referenceDate)
-        let yesterday = calendar.date(byAdding: .day, value: -1, to: today)!
+        guard let yesterday = calendar.date(byAdding: .day, value: -1, to: today) else { return 0 }
 
         guard sortedDates.contains(today) || sortedDates.contains(yesterday) else { return 0 }
 
@@ -65,7 +65,7 @@ final class Habit {
         var current = 1
 
         for i in 1..<sortedDates.count {
-            let expected = calendar.date(byAdding: .day, value: 1, to: sortedDates[i - 1])!
+            guard let expected = calendar.date(byAdding: .day, value: 1, to: sortedDates[i - 1]) else { continue }
             if calendar.isDate(sortedDates[i], inSameDayAs: expected) {
                 current += 1
                 best = max(best, current)
@@ -80,12 +80,12 @@ final class Habit {
     func completionRate(days: Int = 30) -> Double {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
-        let startDate = calendar.date(byAdding: .day, value: -(days - 1), to: today)!
+        guard let startDate = calendar.date(byAdding: .day, value: -(days - 1), to: today) else { return 0 }
         let creationDate = calendar.startOfDay(for: createdAt)
         let effectiveStart = max(startDate, creationDate)
 
-        let totalDays = calendar.dateComponents([.day], from: effectiveStart, to: today).day! + 1
-        guard totalDays > 0 else { return 0 }
+        guard let totalDays = calendar.dateComponents([.day], from: effectiveStart, to: today).day.map({ $0 + 1 }),
+              totalDays > 0 else { return 0 }
 
         let completedDays = records.filter { record in
             let recordDate = calendar.startOfDay(for: record.date)

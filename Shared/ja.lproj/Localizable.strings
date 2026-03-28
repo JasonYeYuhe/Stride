@@ -1,0 +1,154 @@
+/* ============================================================
+   Stride — Japanese (ja)
+   ============================================================ */
+
+/* Tab Bar & Navigation */
+"Today" = "今日";
+"Stats" = "統計";
+"Statistics" = "統計";
+"Settings" = "設定";
+"Stride" = "Stride";
+
+/* Today View */
+"Yesterday" = "昨日";
+"%lld/%lld completed" = "%lld/%lld 完了";
+"All done! Perfect day!" = "全部完了！完璧な一日！";
+"Almost there! Keep going!" = "もう少し！頑張って！";
+"Halfway done! Nice!" = "半分完了！いいね！";
+"Good start! Keep it up!" = "良いスタート！続けよう！";
+"Let's get started!" = "始めましょう！";
+"%lld day streak" = "%lld日連続";
+"Start Your Journey" = "旅を始めよう";
+"Add your first habit and begin\nbuilding better routines." = "最初の習慣を追加して、\nより良いルーティンを作りましょう。";
+"Add First Habit" = "最初の習慣を追加";
+
+/* Add Habit */
+"Habit Name" = "習慣名";
+"e.g., Read 30 minutes" = "例：30分読書";
+"Icon" = "アイコン";
+"Color" = "色";
+"Preview" = "プレビュー";
+"Your Habit" = "あなたの習慣";
+"New Habit" = "新しい習慣";
+"Cancel" = "キャンセル";
+"Save" = "保存";
+
+/* Stats View */
+"No habits yet" = "まだ習慣がありません";
+"Add a habit to start seeing statistics." = "習慣を追加して統計を確認しましょう。";
+"Best Streak" = "最長記録";
+"30d Avg" = "30日平均";
+"Current Streak" = "現在の記録";
+"days" = "日";
+"30-Day Rate" = "30日達成率";
+"Total" = "合計";
+"By Weekday" = "曜日別";
+"Activity" = "アクティビティ";
+"Less" = "少";
+"More" = "多";
+
+/* Settings */
+"Habit Tracker" = "習慣トラッカー";
+"Upgrade to Pro" = "Proにアップグレード";
+"Unlimited habits, widgets, smart reminders & more" = "無制限の習慣、ウィジェット、スマートリマインダーなど";
+"Stride Pro" = "Stride Pro";
+"All features unlocked" = "すべての機能がアンロック済み";
+"Signed in" = "ログイン済み";
+"Sync Now" = "今すぐ同期";
+"Log Out" = "ログアウト";
+"Sign In" = "ログイン";
+"Sync habits across your devices" = "デバイス間で習慣を同期";
+"Account" = "アカウント";
+"Daily Reminder" = "毎日のリマインダー";
+"Reminder Time" = "リマインダー時間";
+"Morning Motivation" = "朝のモチベーション";
+"Daily at 8:00 AM" = "毎日午前8:00";
+"Reminders" = "リマインダー";
+"Notifications are disabled. Go to Settings → Stride to enable." = "通知が無効です。設定 → Stride で有効にしてください。";
+"You'll receive a reminder to check your habits at the time above." = "上記の時間に習慣確認のリマインダーが届きます。";
+"Active Habits (%lld)" = "アクティブな習慣 (%lld)";
+"%lld check-ins" = "%lld回チェックイン";
+"Delete" = "削除";
+"Archive" = "アーカイブ";
+"Archived (%lld)" = "アーカイブ済み (%lld)";
+"Restore" = "復元";
+"About" = "について";
+"Version" = "バージョン";
+"Platform" = "プラットフォーム";
+"Data Storage" = "データ保存";
+"Synced" = "同期済み";
+"On Device" = "デバイス上";
+"Delete Habit" = "習慣を削除";
+"This will permanently delete this habit and all its records. This cannot be undone." = "この習慣とすべての記録が完全に削除されます。元に戻すことはできません。";
+
+/* Login */
+"Log In" = "ログイン";
+"Sign in to sync your habits across devices" = "ログインしてデバイス間で習慣を同期";
+"Email address" = "メールアドレス";
+"Send Login Link" = "ログインリンクを送信";
+"I have a login token" = "ログイントークンを持っています";
+"Check your email" = "メールを確認";
+"We sent a login link to **%@**.\n\nClick the link in the email, or paste the token below." = "**%@** にログインリンクを送信しました。\n\nメール内のリンクをクリックするか、下にトークンを貼り付けてください。";
+"Paste token here" = "ここにトークンを貼り付け";
+"Verify" = "確認";
+"Use a different email" = "別のメールを使用";
+"Enter Login Token" = "ログイントークンを入力";
+"Paste the token from your login email." = "ログインメールのトークンを貼り付けてください。";
+"Token" = "トークン";
+"Send me a login link instead" = "代わりにログインリンクを送信";
+
+/* Pro Paywall */
+"Unlock the full experience" = "フル体験をアンロック";
+"Unlimited Habits" = "無制限の習慣";
+"Track as many habits as you want" = "好きなだけ習慣を追跡";
+"Advanced Statistics" = "高度な統計";
+"Deep insights into your progress" = "進捗の詳細な分析";
+"Home Screen Widgets" = "ホーム画面ウィジェット";
+"Quick access from your home screen" = "ホーム画面からすばやくアクセス";
+"Smart Reminders" = "スマートリマインダー";
+"Never miss a habit again" = "もう習慣を見逃さない";
+"iCloud Sync" = "iCloud同期";
+"Seamless across all your devices" = "すべてのデバイスでシームレスに";
+"Unable to load subscription options." = "サブスクリプションを読み込めません。";
+"Please check your internet connection and try again." = "インターネット接続を確認して再試行してください。";
+"Try Again" = "再試行";
+"Yearly" = "年額";
+"Monthly" = "月額";
+"BEST VALUE" = "おすすめ";
+"Save 44%" = "44%お得";
+"Restore Purchases" = "購入を復元";
+"Payment will be charged to your Apple ID account. Subscription automatically renews unless cancelled at least 24 hours before the end of the current period." = "お支払いはApple IDアカウントに請求されます。現在の期間終了の24時間前までにキャンセルしない限り、自動的に更新されます。";
+"Terms" = "利用規約";
+"Privacy" = "プライバシー";
+"Purchase Error" = "購入エラー";
+"OK" = "OK";
+"Processing..." = "処理中...";
+
+/* Notifications */
+"Stride Reminder 🏃" = "Stride リマインダー 🏃";
+"Don't break the chain! Check in on your habits before bed." = "記録を途切れさせないで！寝る前に習慣をチェックしましょう。";
+"A few minutes now, a better you tomorrow. Open Stride!" = "今数分で、明日もっと良い自分に。Strideを開こう！";
+"Have you completed all your habits today?" = "今日のすべての習慣を完了しましたか？";
+"Your streak is counting on you! Time to check in." = "連続記録があなたを待っています！チェックインの時間です。";
+"Small steps, big changes. Don't forget your habits!" = "小さな一歩、大きな変化。習慣を忘れずに！";
+"End the day strong — mark your progress in Stride." = "力強く一日を終えよう——Strideで進捗を記録。";
+"Consistency is key. How did you do today?" = "継続は力なり。今日はどうでしたか？";
+"Your future self will thank you. Check your habits!" = "未来の自分が感謝します。習慣をチェックしよう！";
+"Good Morning! ☀️" = "おはようございます！☀️";
+"New day, new opportunities! Your habits are waiting." = "新しい一日、新しいチャンス！習慣が待っています。";
+"Rise and shine! Let's make today count." = "さあ起きよう！今日を実りある一日に。";
+"A fresh start — what will you accomplish today?" = "新しいスタート——今日は何を達成しますか？";
+"Good morning! Time to build those healthy habits." = "おはよう！健康的な習慣を作る時間です。";
+"Today is full of potential. Start with your habits!" = "今日は可能性に満ちています。習慣から始めよう！";
+
+/* Widget */
+"of %lld" = "/ %lld";
+"All done! 🎉" = "全部完了！🎉";
+"%lld remaining" = "あと%lld個";
+"+%lld more" = "他%lld個";
+"Tap to add habits" = "タップして習慣を追加";
+"Stride: No habits yet" = "Stride：まだ習慣がありません";
+"🔥 All %lld habits done!" = "🔥 %lld個の習慣すべて完了！";
+"🏃 %lld/%lld habits done" = "🏃 %lld/%lld個の習慣完了";
+"Stride Habits" = "Stride 習慣";
+"Track your daily habit progress at a glance." = "毎日の習慣の進捗を一目で確認。";

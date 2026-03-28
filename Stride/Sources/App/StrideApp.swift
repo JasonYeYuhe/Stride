@@ -15,8 +15,12 @@ struct StrideApp: App {
             ContentView()
                 .task {
                     await setupNotifications()
+                    await syncIfLoggedIn()
                 }
-                .onReceive(NotificationCenter.default.publisher(for: .habitDataChanged)) { _ in
+                .onReceive(
+                    NotificationCenter.default.publisher(for: .habitDataChanged)
+                        .throttle(for: .seconds(2), scheduler: DispatchQueue.main, latest: true)
+                ) { _ in
                     WidgetCenter.shared.reloadAllTimelines()
                 }
                 #if os(iOS)
@@ -25,6 +29,7 @@ struct StrideApp: App {
                 )) { _ in
                     Task { @MainActor in
                         NotificationService.shared.updateBadge(modelContainer: modelContainer)
+                        await syncIfLoggedIn()
                     }
                 }
                 #endif
@@ -34,6 +39,13 @@ struct StrideApp: App {
         .windowStyle(.titleBar)
         .defaultSize(width: 900, height: 650)
         #endif
+    }
+
+    @MainActor
+    private func syncIfLoggedIn() async {
+        guard AuthService.shared.isLoggedIn else { return }
+        let context = modelContainer.mainContext
+        await SyncService.shared.sync(context: context)
     }
 
     @MainActor

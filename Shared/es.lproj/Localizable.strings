@@ -1,0 +1,154 @@
+/* ============================================================
+   Stride — Spanish (es)
+   ============================================================ */
+
+/* Tab Bar & Navigation */
+"Today" = "Hoy";
+"Stats" = "Estadísticas";
+"Statistics" = "Estadísticas";
+"Settings" = "Ajustes";
+"Stride" = "Stride";
+
+/* Today View */
+"Yesterday" = "Ayer";
+"%lld/%lld completed" = "%lld/%lld completados";
+"All done! Perfect day!" = "¡Todo hecho! ¡Día perfecto!";
+"Almost there! Keep going!" = "¡Casi! ¡Sigue así!";
+"Halfway done! Nice!" = "¡A medio camino! ¡Bien!";
+"Good start! Keep it up!" = "¡Buen comienzo! ¡Sigue así!";
+"Let's get started!" = "¡Empecemos!";
+"%lld day streak" = "Racha de %lld días";
+"Start Your Journey" = "Comienza tu viaje";
+"Add your first habit and begin\nbuilding better routines." = "Añade tu primer hábito y comienza\na construir mejores rutinas.";
+"Add First Habit" = "Añadir primer hábito";
+
+/* Add Habit */
+"Habit Name" = "Nombre del hábito";
+"e.g., Read 30 minutes" = "ej., Leer 30 minutos";
+"Icon" = "Icono";
+"Color" = "Color";
+"Preview" = "Vista previa";
+"Your Habit" = "Tu hábito";
+"New Habit" = "Nuevo hábito";
+"Cancel" = "Cancelar";
+"Save" = "Guardar";
+
+/* Stats View */
+"No habits yet" = "Aún no hay hábitos";
+"Add a habit to start seeing statistics." = "Añade un hábito para ver estadísticas.";
+"Best Streak" = "Mejor racha";
+"30d Avg" = "Prom. 30d";
+"Current Streak" = "Racha actual";
+"days" = "días";
+"30-Day Rate" = "Tasa 30 días";
+"Total" = "Total";
+"By Weekday" = "Por día";
+"Activity" = "Actividad";
+"Less" = "Menos";
+"More" = "Más";
+
+/* Settings */
+"Habit Tracker" = "Rastreador de hábitos";
+"Upgrade to Pro" = "Mejorar a Pro";
+"Unlimited habits, widgets, smart reminders & more" = "Hábitos ilimitados, widgets, recordatorios y más";
+"Stride Pro" = "Stride Pro";
+"All features unlocked" = "Todas las funciones desbloqueadas";
+"Signed in" = "Conectado";
+"Sync Now" = "Sincronizar ahora";
+"Log Out" = "Cerrar sesión";
+"Sign In" = "Iniciar sesión";
+"Sync habits across your devices" = "Sincroniza hábitos entre dispositivos";
+"Account" = "Cuenta";
+"Daily Reminder" = "Recordatorio diario";
+"Reminder Time" = "Hora del recordatorio";
+"Morning Motivation" = "Motivación matutina";
+"Daily at 8:00 AM" = "Diario a las 8:00 AM";
+"Reminders" = "Recordatorios";
+"Notifications are disabled. Go to Settings → Stride to enable." = "Las notificaciones están desactivadas. Ve a Ajustes → Stride para activarlas.";
+"You'll receive a reminder to check your habits at the time above." = "Recibirás un recordatorio para revisar tus hábitos a la hora indicada.";
+"Active Habits (%lld)" = "Hábitos activos (%lld)";
+"%lld check-ins" = "%lld registros";
+"Delete" = "Eliminar";
+"Archive" = "Archivar";
+"Archived (%lld)" = "Archivados (%lld)";
+"Restore" = "Restaurar";
+"About" = "Acerca de";
+"Version" = "Versión";
+"Platform" = "Plataforma";
+"Data Storage" = "Almacenamiento";
+"Synced" = "Sincronizado";
+"On Device" = "En dispositivo";
+"Delete Habit" = "Eliminar hábito";
+"This will permanently delete this habit and all its records. This cannot be undone." = "Esto eliminará permanentemente este hábito y todos sus registros. No se puede deshacer.";
+
+/* Login */
+"Log In" = "Iniciar sesión";
+"Sign in to sync your habits across devices" = "Inicia sesión para sincronizar entre dispositivos";
+"Email address" = "Correo electrónico";
+"Send Login Link" = "Enviar enlace de acceso";
+"I have a login token" = "Tengo un token de acceso";
+"Check your email" = "Revisa tu correo";
+"We sent a login link to **%@**.\n\nClick the link in the email, or paste the token below." = "Enviamos un enlace de acceso a **%@**.\n\nHaz clic en el enlace del correo, o pega el token abajo.";
+"Paste token here" = "Pega el token aquí";
+"Verify" = "Verificar";
+"Use a different email" = "Usar otro correo";
+"Enter Login Token" = "Ingresa el token de acceso";
+"Paste the token from your login email." = "Pega el token de tu correo de acceso.";
+"Token" = "Token";
+"Send me a login link instead" = "Envíame un enlace de acceso";
+
+/* Pro Paywall */
+"Unlock the full experience" = "Desbloquea la experiencia completa";
+"Unlimited Habits" = "Hábitos ilimitados";
+"Track as many habits as you want" = "Rastrea todos los hábitos que quieras";
+"Advanced Statistics" = "Estadísticas avanzadas";
+"Deep insights into your progress" = "Información detallada sobre tu progreso";
+"Home Screen Widgets" = "Widgets de pantalla";
+"Quick access from your home screen" = "Acceso rápido desde tu pantalla";
+"Smart Reminders" = "Recordatorios inteligentes";
+"Never miss a habit again" = "No vuelvas a olvidar un hábito";
+"iCloud Sync" = "Sincronización iCloud";
+"Seamless across all your devices" = "Sin problemas en todos tus dispositivos";
+"Unable to load subscription options." = "No se pudieron cargar las opciones de suscripción.";
+"Please check your internet connection and try again." = "Comprueba tu conexión a internet e inténtalo de nuevo.";
+"Try Again" = "Reintentar";
+"Yearly" = "Anual";
+"Monthly" = "Mensual";
+"BEST VALUE" = "MEJOR VALOR";
+"Save 44%" = "Ahorra 44%";
+"Restore Purchases" = "Restaurar compras";
+"Payment will be charged to your Apple ID account. Subscription automatically renews unless cancelled at least 24 hours before the end of the current period." = "El pago se cargará a tu cuenta de Apple ID. La suscripción se renueva automáticamente a menos que se cancele al menos 24 horas antes del final del período actual.";
+"Terms" = "Términos";
+"Privacy" = "Privacidad";
+"Purchase Error" = "Error de compra";
+"OK" = "OK";
+"Processing..." = "Procesando...";
+
+/* Notifications */
+"Stride Reminder 🏃" = "Recordatorio Stride 🏃";
+"Don't break the chain! Check in on your habits before bed." = "¡No rompas la cadena! Revisa tus hábitos antes de dormir.";
+"A few minutes now, a better you tomorrow. Open Stride!" = "Unos minutos ahora, un mejor tú mañana. ¡Abre Stride!";
+"Have you completed all your habits today?" = "¿Completaste todos tus hábitos hoy?";
+"Your streak is counting on you! Time to check in." = "¡Tu racha cuenta contigo! Es hora de registrar.";
+"Small steps, big changes. Don't forget your habits!" = "Pequeños pasos, grandes cambios. ¡No olvides tus hábitos!";
+"End the day strong — mark your progress in Stride." = "Termina el día fuerte — marca tu progreso en Stride.";
+"Consistency is key. How did you do today?" = "La constancia es clave. ¿Cómo te fue hoy?";
+"Your future self will thank you. Check your habits!" = "Tu yo futuro te lo agradecerá. ¡Revisa tus hábitos!";
+"Good Morning! ☀️" = "¡Buenos días! ☀️";
+"New day, new opportunities! Your habits are waiting." = "¡Nuevo día, nuevas oportunidades! Tus hábitos te esperan.";
+"Rise and shine! Let's make today count." = "¡Arriba! Hagamos que hoy cuente.";
+"A fresh start — what will you accomplish today?" = "Un nuevo comienzo — ¿qué lograrás hoy?";
+"Good morning! Time to build those healthy habits." = "¡Buenos días! Es hora de construir hábitos saludables.";
+"Today is full of potential. Start with your habits!" = "Hoy está lleno de potencial. ¡Empieza con tus hábitos!";
+
+/* Widget */
+"of %lld" = "de %lld";
+"All done! 🎉" = "¡Todo hecho! 🎉";
+"%lld remaining" = "%lld restantes";
+"+%lld more" = "+%lld más";
+"Tap to add habits" = "Toca para añadir hábitos";
+"Stride: No habits yet" = "Stride: Sin hábitos aún";
+"🔥 All %lld habits done!" = "🔥 ¡%lld hábitos completados!";
+"🏃 %lld/%lld habits done" = "🏃 %lld/%lld hábitos hechos";
+"Stride Habits" = "Hábitos Stride";
+"Track your daily habit progress at a glance." = "Sigue tu progreso diario de un vistazo.";
