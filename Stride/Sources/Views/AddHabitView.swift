@@ -8,10 +8,20 @@ struct AddHabitView: View {
     @State private var name = ""
     @State private var selectedEmoji = "⭐"
     @State private var selectedColor = HabitColor.all[0]
+    @State private var showingTemplates = false
 
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    Button {
+                        showingTemplates = true
+                    } label: {
+                        Label("Browse Templates", systemImage: "square.grid.2x2")
+                            .foregroundStyle(.green)
+                    }
+                }
+
                 Section("Habit Name") {
                     TextField("e.g., Read 30 minutes", text: $name)
                         #if os(macOS)
@@ -97,6 +107,9 @@ struct AddHabitView: View {
                 }
             }
         }
+        .sheet(isPresented: $showingTemplates) {
+            HabitTemplatesView()
+        }
     }
 
     private func saveHabit() {
@@ -107,6 +120,7 @@ struct AddHabitView: View {
         )
         modelContext.insert(habit)
         try? modelContext.save()
+        AnalyticsService.shared.send("habitCreated")
 
         #if os(iOS)
         let generator = UINotificationFeedbackGenerator()

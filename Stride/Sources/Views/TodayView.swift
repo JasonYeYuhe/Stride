@@ -239,6 +239,7 @@ struct HabitRowView: View {
             let record = HabitRecord(date: date)
             habit.records.append(record)
             justCompleted = true
+            AnalyticsService.shared.send("habitCompleted")
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 withAnimation(.easeOut(duration: 0.2)) {
@@ -266,6 +267,7 @@ struct HabitRowView: View {
 // MARK: - Empty State
 struct EmptyStateView: View {
     @Binding var showingAddHabit: Bool
+    @State private var showingTemplates = false
 
     var body: some View {
         VStack(spacing: 16) {
@@ -293,6 +295,18 @@ struct EmptyStateView: View {
             }
             .buttonStyle(.plain)
             .padding(.top, 8)
+
+            Button {
+                showingTemplates = true
+            } label: {
+                Label("Browse Templates", systemImage: "square.grid.2x2")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.green)
+            }
+            .buttonStyle(.plain)
+        }
+        .sheet(isPresented: $showingTemplates) {
+            HabitTemplatesView()
         }
     }
 }

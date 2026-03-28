@@ -73,6 +73,7 @@ final class SyncService {
             let now = Self.iso8601.string(from: Date())
             lastSyncTime = now
             UserDefaults.standard.set(now, forKey: lastSyncKey)
+            AnalyticsService.shared.send("syncPerformed")
         } catch {
             syncError = error.localizedDescription
         }

@@ -13,6 +13,7 @@ struct DataExportService {
     // MARK: - CSV Export
 
     static func exportCSV(habits: [Habit]) -> String {
+        AnalyticsService.shared.send("exportPerformed", metadata: ["format": "csv"])
         var lines = ["habit_name,emoji,date,created_at"]
 
         let rows: [(name: String, emoji: String, date: Date, createdAt: Date)] = habits.flatMap { habit in
@@ -40,6 +41,7 @@ struct DataExportService {
     // MARK: - JSON Export
 
     static func exportJSON(habits: [Habit]) -> String {
+        AnalyticsService.shared.send("exportPerformed", metadata: ["format": "json"])
         let sortedHabits = habits.sorted { $0.name < $1.name }
 
         let habitDicts: [[String: Any]] = sortedHabits.map { habit in

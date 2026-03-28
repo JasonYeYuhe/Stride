@@ -36,6 +36,7 @@ final class LanguageManager {
     var selectedLanguage: AppLanguage {
         didSet {
             UserDefaults.standard.set(selectedLanguage.rawValue, forKey: key)
+            AnalyticsService.shared.send("languageChanged", metadata: ["language": selectedLanguage.rawValue])
         }
     }
 

@@ -152,6 +152,7 @@ struct HabitChip: View {
 // MARK: - Habit Detail Stats
 struct HabitDetailStatsCard: View {
     let habit: Habit
+    @State private var showShareSheet = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -160,6 +161,16 @@ struct HabitDetailStatsCard: View {
                     .font(.title2)
                 Text(habit.name)
                     .font(.title3.bold())
+                Spacer()
+                Button {
+                    showShareSheet = true
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.body)
+                        .foregroundStyle(habit.color)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Share streak")
             }
 
             HStack(spacing: 20) {
@@ -213,6 +224,9 @@ struct HabitDetailStatsCard: View {
             RoundedRectangle(cornerRadius: 16)
                 .fill(Color.appSecondaryBackground)
         )
+        .sheet(isPresented: $showShareSheet) {
+            ShareStreakView(habit: habit)
+        }
     }
 }
 

@@ -28,6 +28,7 @@ struct StrideApp: App {
             ContentView()
                 .environment(\.locale, languageManager.locale ?? .current)
                 .task {
+                    AnalyticsService.shared.send("appLaunched")
                     await setupNotifications()
                     await syncIfLoggedIn()
                 }

@@ -370,6 +370,13 @@ struct SettingsView: View {
                         #endif
                     }
                     LabeledContent("Data Storage", value: auth.isLoggedIn ? String(localized: "Synced") : String(localized: "On Device"))
+                    Toggle(isOn: Binding(
+                        get: { AnalyticsService.shared.isEnabled },
+                        set: { AnalyticsService.shared.isEnabled = $0 }
+                    )) {
+                        Label("Share Anonymous Analytics", systemImage: "chart.bar.xaxis")
+                    }
+                    .tint(.green)
                 }
             }
             .navigationTitle("Settings")
@@ -383,6 +390,7 @@ struct SettingsView: View {
                         for record in habit.records {
                             SyncService.shared.trackDeletedEntry(record.id.uuidString)
                         }
+                        AnalyticsService.shared.send("habitDeleted")
                         modelContext.delete(habit)
                         do {
                             try modelContext.save()
