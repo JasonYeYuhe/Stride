@@ -21,6 +21,7 @@ struct SettingsView: View {
     private var store = StoreService.shared
     private var auth = AuthService.shared
     private var sync = SyncService.shared
+    private var languageManager = LanguageManager.shared
 
     private var activeHabits: [Habit] {
         allHabits.filter { !$0.isArchived }
@@ -308,6 +309,28 @@ struct SettingsView: View {
                                 }
                             }
                         }
+                    }
+                }
+
+                // Language
+                Section {
+                    Picker(selection: Binding(
+                        get: { languageManager.selectedLanguage },
+                        set: { languageManager.selectedLanguage = $0 }
+                    )) {
+                        ForEach(AppLanguage.allCases) { lang in
+                            Text(lang.displayName).tag(lang)
+                        }
+                    } label: {
+                        Label("Language", systemImage: "globe")
+                    }
+                } header: {
+                    Text("Language")
+                } footer: {
+                    if languageManager.selectedLanguage != .system {
+                        Text("Restart the app for the change to fully take effect.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
 

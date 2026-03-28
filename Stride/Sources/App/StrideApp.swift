@@ -5,6 +5,7 @@ import WidgetKit
 @main
 struct StrideApp: App {
     let modelContainer: ModelContainer
+    private var languageManager = LanguageManager.shared
 
     init() {
         self.modelContainer = SharedModelContainer.modelContainer
@@ -13,6 +14,7 @@ struct StrideApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environment(\.locale, languageManager.locale ?? .current)
                 .task {
                     await setupNotifications()
                     await syncIfLoggedIn()

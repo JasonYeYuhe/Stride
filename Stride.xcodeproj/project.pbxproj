@@ -44,8 +44,10 @@
 		8C2BC8E0234FD97251CB131D /* TodayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE8B83FBCDEE947B0A5A87D6 /* TodayView.swift */; };
 		93D68D7CBE49AB5C5353CF38 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 846D324A474DC86FFFE7DCA4 /* LoginView.swift */; };
 		9995D7D5CEC5A4557861E51F /* DateHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4D33C9D974E05236A60E17E /* DateHelpers.swift */; };
+		9C2FB522F0E45486E8EE568E /* LanguageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = F79BAF64C83FFB1147F14CE5 /* LanguageManager.swift */; };
 		A2F2C5CFAF2614FC34797FEF /* ColorExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCBB84E54BC0EC63FD063F7B /* ColorExtension.swift */; };
 		A92356E0D7DDAEC33623769F /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = F8C043D145E16EA12884687F /* Localizable.strings */; };
+		A947D36A4BFD9421CF26A007 /* LanguageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = F79BAF64C83FFB1147F14CE5 /* LanguageManager.swift */; };
 		B293372E0A9CEAE724495138 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 846D324A474DC86FFFE7DCA4 /* LoginView.swift */; };
 		C0085D040686264A4F70D3A3 /* AuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 008553DEE398C78EDD4151D3 /* AuthService.swift */; };
 		C2DD4FB74CD7A13DDAD9B3A6 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2AC83A4314C26492BF0BAEC8 /* SettingsView.swift */; };
@@ -103,6 +105,7 @@
 		E29D464DF830B44A56221444 /* StrideWidgetExtension.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = StrideWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		ECCD9EE875CF123954D288D2 /* SyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncService.swift; sourceTree = "<group>"; };
 		EE8B83FBCDEE947B0A5A87D6 /* TodayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodayView.swift; sourceTree = "<group>"; };
+		F79BAF64C83FFB1147F14CE5 /* LanguageManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LanguageManager.swift; sourceTree = "<group>"; };
 		F8C043D145E16EA12884687F /* Localizable.strings */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = Localizable.strings; path = ja.lproj/Localizable.strings; sourceTree = "<group>"; };
 		FB281642FC1DF1EAB3330F7B /* Localizable.strings */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = Localizable.strings; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -164,6 +167,7 @@
 				42BDA8DAD54978C63D7BF2E8 /* APIClient.swift */,
 				008553DEE398C78EDD4151D3 /* AuthService.swift */,
 				A2E15BB82DDC222DE65A084E /* KeychainHelper.swift */,
+				F79BAF64C83FFB1147F14CE5 /* LanguageManager.swift */,
 				C5E1940DEB8CA019D623342D /* NotificationService.swift */,
 				5915E3575E09B02B6B55488D /* StoreService.swift */,
 				ECCD9EE875CF123954D288D2 /* SyncService.swift */,
@@ -386,6 +390,7 @@
 				9995D7D5CEC5A4557861E51F /* DateHelpers.swift in Sources */,
 				02B02C365D766A86738F7090 /* Habit.swift in Sources */,
 				47AF12A69E10A517210658DA /* KeychainHelper.swift in Sources */,
+				A947D36A4BFD9421CF26A007 /* LanguageManager.swift in Sources */,
 				B293372E0A9CEAE724495138 /* LoginView.swift in Sources */,
 				47B9B48865AD8666665DDA25 /* NotificationService.swift in Sources */,
 				C2DD4FB74CD7A13DDAD9B3A6 /* SettingsView.swift in Sources */,
@@ -422,6 +427,7 @@
 				89F8FBB3F8C3D34C195C5457 /* DateHelpers.swift in Sources */,
 				C6A2CDBD665C9C2D0C2AD813 /* Habit.swift in Sources */,
 				7E06AB3A36842FDB5C5943DB /* KeychainHelper.swift in Sources */,
+				9C2FB522F0E45486E8EE568E /* LanguageManager.swift in Sources */,
 				93D68D7CBE49AB5C5353CF38 /* LoginView.swift in Sources */,
 				3D038F4D40A1494A7D907F53 /* NotificationService.swift in Sources */,
 				7EF6B91EEDC0C234A3F19BDD /* SettingsView.swift in Sources */,
