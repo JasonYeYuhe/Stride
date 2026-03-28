@@ -1,0 +1,19 @@
+{
+  "name": "stride-server",
+  "version": "1.0.0",
+  "description": "Stride habit tracker backend API",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.8.0",
+    "cors": "^2.8.6",
+    "dotenv": "^16.6.1",
+    "express": "^4.22.1",
+    "express-rate-limit": "^8.3.1",
+    "helmet": "^8.1.0",
+    "resend": "^3.5.0"
+  }
+}

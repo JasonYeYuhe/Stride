@@ -12,3 +12,11 @@ DerivedData/
 
 # Dependencies
 Pods/
+
+# Duplicate project files
+Stride 2.xcodeproj/
+
+# Server runtime
+server/node_modules/
+server/.env
+server/stride.db

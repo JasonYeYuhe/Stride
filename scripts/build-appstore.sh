@@ -128,8 +128,7 @@ build_macos() {
         -authenticationKeyID "$API_KEY_ID" \
         -authenticationKeyIssuerID "$API_ISSUER" \
         DEVELOPMENT_TEAM="$TEAM_ID" \
-        CODE_SIGN_STYLE=Automatic \
-        CODE_SIGN_IDENTITY="Apple Distribution"
+        CODE_SIGN_STYLE=Automatic
 
     echo "  ✓ Archive: $ARCHIVE"
 

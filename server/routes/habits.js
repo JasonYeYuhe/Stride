@@ -1,0 +1,201 @@
+const express = require("express");
+const router = express.Router();
+const crypto = require("crypto");
+const db = require("../db");
+const { requireUser } = require("../auth");
+
+// All routes require authentication
+router.use(requireUser);
+
+// GET /habits — list all habits for the user
+router.get("/", (req, res) => {
+  const habits = db.prepare(`
+    SELECT id, name, emoji, color_hex, is_archived, sort_order, created_at, updated_at
+    FROM habits
+    WHERE user_id = ?
+    ORDER BY sort_order ASC, created_at ASC
+  `).all(req.user.id);
+
+  return res.json({ habits });
+});
+
+// POST /habits — create a new habit
+router.post("/", (req, res) => {
+  const { id, name, emoji, colorHex } = req.body;
+
+  if (!name || typeof name !== "string" || name.trim().length === 0) {
+    return res.status(400).json({ error: "Name is required" });
+  }
+  if (name.trim().length > 100) {
+    return res.status(400).json({ error: "Name must be 100 characters or less" });
+  }
+
+  const habitId = id || crypto.randomUUID();
+  const maxOrder = db.prepare(
+    "SELECT COALESCE(MAX(sort_order), -1) + 1 as next FROM habits WHERE user_id = ?",
+  ).get(req.user.id);
+
+  db.prepare(`
+    INSERT INTO habits (id, user_id, name, emoji, color_hex, sort_order)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(habitId, req.user.id, name.trim(), emoji || "⭐", colorHex || "#34C759", maxOrder.next);
+
+  const habit = db.prepare("SELECT * FROM habits WHERE id = ?").get(habitId);
+  return res.status(201).json({ habit });
+});
+
+// PUT /habits/:id — update a habit
+router.put("/:id", (req, res) => {
+  const { name, emoji, colorHex, isArchived, sortOrder } = req.body;
+
+  const existing = db.prepare("SELECT * FROM habits WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
+  if (!existing) return res.status(404).json({ error: "Habit not found" });
+
+  db.prepare(`
+    UPDATE habits SET
+      name = COALESCE(?, name),
+      emoji = COALESCE(?, emoji),
+      color_hex = COALESCE(?, color_hex),
+      is_archived = COALESCE(?, is_archived),
+      sort_order = COALESCE(?, sort_order),
+      updated_at = datetime('now')
+    WHERE id = ? AND user_id = ?
+  `).run(
+    name ?? null,
+    emoji ?? null,
+    colorHex ?? null,
+    isArchived != null ? (isArchived ? 1 : 0) : null,
+    sortOrder ?? null,
+    req.params.id,
+    req.user.id,
+  );
+
+  const habit = db.prepare("SELECT * FROM habits WHERE id = ?").get(req.params.id);
+  return res.json({ habit });
+});
+
+// DELETE /habits/:id — permanently delete a habit and its entries
+router.delete("/:id", (req, res) => {
+  const existing = db.prepare("SELECT * FROM habits WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
+  if (!existing) return res.status(404).json({ error: "Habit not found" });
+
+  db.prepare("DELETE FROM habits WHERE id = ? AND user_id = ?").run(req.params.id, req.user.id);
+  return res.json({ ok: true });
+});
+
+// POST /habits/:id/entries — check in (complete a habit for a date)
+router.post("/:id/entries", (req, res) => {
+  const { date, id } = req.body;
+
+  const habit = db.prepare("SELECT * FROM habits WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
+  if (!habit) return res.status(404).json({ error: "Habit not found" });
+
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).json({ error: "Date must be YYYY-MM-DD" });
+  }
+  const parsed = new Date(date + "T00:00:00Z");
+  if (isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) {
+    return res.status(400).json({ error: "Invalid date" });
+  }
+
+  const entryId = id || crypto.randomUUID();
+
+  try {
+    db.prepare("INSERT INTO habit_entries (id, habit_id, date) VALUES (?, ?, ?)").run(entryId, req.params.id, date);
+    return res.status(201).json({ entry: { id: entryId, habit_id: req.params.id, date } });
+  } catch (err) {
+    if (err.message.includes("UNIQUE constraint")) {
+      return res.status(409).json({ error: "Already checked in for this date" });
+    }
+    throw err;
+  }
+});
+
+// DELETE /habits/:id/entries/:date — uncheck (remove completion for a date)
+router.delete("/:id/entries/:date", (req, res) => {
+  const habit = db.prepare("SELECT * FROM habits WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
+  if (!habit) return res.status(404).json({ error: "Habit not found" });
+
+  db.prepare("DELETE FROM habit_entries WHERE habit_id = ? AND date = ?").run(req.params.id, req.params.date);
+  return res.json({ ok: true });
+});
+
+// GET /habits/:id/entries — get all entries for a habit (with optional date range)
+router.get("/:id/entries", (req, res) => {
+  const habit = db.prepare("SELECT * FROM habits WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
+  if (!habit) return res.status(404).json({ error: "Habit not found" });
+
+  const { from, to } = req.query;
+  let entries;
+
+  if (from && to) {
+    entries = db.prepare(
+      "SELECT id, habit_id, date, created_at FROM habit_entries WHERE habit_id = ? AND date >= ? AND date <= ? ORDER BY date",
+    ).all(req.params.id, from, to);
+  } else {
+    entries = db.prepare(
+      "SELECT id, habit_id, date, created_at FROM habit_entries WHERE habit_id = ? ORDER BY date",
+    ).all(req.params.id);
+  }
+
+  return res.json({ entries });
+});
+
+// GET /habits/:id/stats — get streak and completion stats
+router.get("/:id/stats", (req, res) => {
+  const habit = db.prepare("SELECT * FROM habits WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
+  if (!habit) return res.status(404).json({ error: "Habit not found" });
+
+  const entries = db.prepare(
+    "SELECT date FROM habit_entries WHERE habit_id = ? ORDER BY date",
+  ).all(req.params.id).map((e) => e.date);
+
+  const today = new Date().toISOString().slice(0, 10);
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+
+  // Current streak
+  let currentStreak = 0;
+  const dateSet = new Set(entries);
+  let checkDate = dateSet.has(today) ? today : (dateSet.has(yesterday) ? yesterday : null);
+
+  if (checkDate) {
+    while (dateSet.has(checkDate)) {
+      currentStreak++;
+      const d = new Date(checkDate);
+      d.setDate(d.getDate() - 1);
+      checkDate = d.toISOString().slice(0, 10);
+    }
+  }
+
+  // Best streak
+  let bestStreak = 0;
+  let streak = 0;
+  for (let i = 0; i < entries.length; i++) {
+    if (i === 0) {
+      streak = 1;
+    } else {
+      const prev = new Date(entries[i - 1]);
+      const curr = new Date(entries[i]);
+      const diffDays = (curr - prev) / 86400000;
+      streak = diffDays === 1 ? streak + 1 : (diffDays === 0 ? streak : 1);
+    }
+    bestStreak = Math.max(bestStreak, streak);
+  }
+
+  // 30-day completion rate
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  const createdDate = habit.created_at.slice(0, 10);
+  const effectiveStart = thirtyDaysAgo > createdDate ? thirtyDaysAgo : createdDate;
+  const totalDays = Math.max(1, Math.ceil((new Date(today) - new Date(effectiveStart)) / 86400000) + 1);
+  const completedInRange = entries.filter((d) => d >= effectiveStart && d <= today).length;
+  const completionRate = completedInRange / totalDays;
+
+  return res.json({
+    currentStreak,
+    bestStreak,
+    completionRate: Math.round(completionRate * 1000) / 1000,
+    totalEntries: entries.length,
+  });
+});
+
+module.exports = router;

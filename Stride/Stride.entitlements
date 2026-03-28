@@ -6,7 +6,5 @@
 	<array>
 		<string>group.yyh.stride.habittracker</string>
 	</array>
-	<key>com.apple.developer.usernotifications.time-sensitive-alerts</key>
-	<true/>
 </dict>
 </plist>
