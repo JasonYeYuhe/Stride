@@ -3,12 +3,16 @@ const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
+const { requestLogger } = require("./logger");
 
 const app = express();
 const PORT = process.env.PORT || 3002;
 
 // Security headers
 app.use(helmet());
+
+// Request logging
+app.use(requestLogger);
 
 // Global rate limit: 100 requests per 15 minutes per IP
 const globalLimiter = rateLimit({
@@ -43,14 +47,23 @@ app.use(
 
 app.use(express.json({ limit: "10kb" }));
 
-// Routes
-app.use("/auth", require("./routes/auth"));
-app.use("/habits", require("./routes/habits"));
-app.use("/sync", require("./routes/sync"));
+// API v1 routes
+const authRouter = require("./routes/auth");
+const habitsRouter = require("./routes/habits");
+const syncRouter = require("./routes/sync");
+
+app.use("/v1/auth", authRouter);
+app.use("/v1/habits", habitsRouter);
+app.use("/v1/sync", syncRouter);
+
+// Legacy routes (backwards compatible, same handlers)
+app.use("/auth", authRouter);
+app.use("/habits", habitsRouter);
+app.use("/sync", syncRouter);
 
 // Health check
 app.get("/health", (req, res) => {
-  res.json({ ok: true, uptime: process.uptime() });
+  res.json({ ok: true, version: "1.0.0", apiVersions: ["v1"], uptime: process.uptime() });
 });
 
 app.listen(PORT, () => {

@@ -8,15 +8,25 @@ const { requireUser } = require("../auth");
 router.use(requireUser);
 
 // GET /habits — list all habits for the user
+// Query params: limit (default 50, max 200), offset (default 0)
 router.get("/", (req, res) => {
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+
   const habits = db.prepare(`
     SELECT id, name, emoji, color_hex, is_archived, sort_order, created_at, updated_at
     FROM habits
     WHERE user_id = ?
     ORDER BY sort_order ASC, created_at ASC
-  `).all(req.user.id);
+    LIMIT ? OFFSET ?
+  `).all(req.user.id, limit, offset);
 
-  return res.json({ habits });
+  const total = db.prepare("SELECT COUNT(*) as count FROM habits WHERE user_id = ?").get(req.user.id).count;
+
+  return res.json({
+    habits,
+    pagination: { total, limit, offset, hasMore: offset + habits.length < total },
+  });
 });
 
 // POST /habits — create a new habit
@@ -120,25 +130,39 @@ router.delete("/:id/entries/:date", (req, res) => {
   return res.json({ ok: true });
 });
 
-// GET /habits/:id/entries — get all entries for a habit (with optional date range)
+// GET /habits/:id/entries — get entries for a habit (with optional date range & pagination)
+// Query params: from, to (date range), limit (default 100, max 500), offset (default 0)
 router.get("/:id/entries", (req, res) => {
   const habit = db.prepare("SELECT * FROM habits WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
   if (!habit) return res.status(404).json({ error: "Habit not found" });
 
   const { from, to } = req.query;
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 500);
+  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+
   let entries;
+  let total;
 
   if (from && to) {
     entries = db.prepare(
-      "SELECT id, habit_id, date, created_at FROM habit_entries WHERE habit_id = ? AND date >= ? AND date <= ? ORDER BY date",
-    ).all(req.params.id, from, to);
+      "SELECT id, habit_id, date, created_at FROM habit_entries WHERE habit_id = ? AND date >= ? AND date <= ? ORDER BY date LIMIT ? OFFSET ?",
+    ).all(req.params.id, from, to, limit, offset);
+    total = db.prepare(
+      "SELECT COUNT(*) as count FROM habit_entries WHERE habit_id = ? AND date >= ? AND date <= ?",
+    ).get(req.params.id, from, to).count;
   } else {
     entries = db.prepare(
-      "SELECT id, habit_id, date, created_at FROM habit_entries WHERE habit_id = ? ORDER BY date",
-    ).all(req.params.id);
+      "SELECT id, habit_id, date, created_at FROM habit_entries WHERE habit_id = ? ORDER BY date LIMIT ? OFFSET ?",
+    ).all(req.params.id, limit, offset);
+    total = db.prepare(
+      "SELECT COUNT(*) as count FROM habit_entries WHERE habit_id = ?",
+    ).get(req.params.id).count;
   }
 
-  return res.json({ entries });
+  return res.json({
+    entries,
+    pagination: { total, limit, offset, hasMore: offset + entries.length < total },
+  });
 });
 
 // GET /habits/:id/stats — get streak and completion stats

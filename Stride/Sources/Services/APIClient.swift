@@ -38,32 +38,32 @@ actor APIClient {
     // MARK: - Auth
 
     func requestMagicLink(email: String) async throws {
-        let _: OKResponse = try await post("/auth/request-link", body: ["email": email])
+        let _: OKResponse = try await post("/v1/auth/request-link", body: ["email": email])
     }
 
     func verifyToken(_ token: String) async throws -> AuthResponse {
-        let response: AuthResponse = try await post("/auth/verify", body: ["token": token])
+        let response: AuthResponse = try await post("/v1/auth/verify", body: ["token": token])
         sessionToken = response.sessionToken
         return response
     }
 
     func getSession() async throws -> SessionResponse {
-        try await get("/auth/session")
+        try await get("/v1/auth/session")
     }
 
     func logout() async throws {
-        let _: OKResponse = try await post("/auth/logout", body: EmptyBody())
+        let _: OKResponse = try await post("/v1/auth/logout", body: EmptyBody())
         sessionToken = nil
     }
 
     // MARK: - Sync
 
     func pushChanges(_ payload: SyncPushPayload) async throws {
-        let _: OKResponse = try await post("/sync/push", body: payload)
+        let _: OKResponse = try await post("/v1/sync/push", body: payload)
     }
 
     func pullChanges(since: String? = nil) async throws -> SyncPullResponse {
-        var path = "/sync/pull"
+        var path = "/v1/sync/pull"
         if let since { path += "?since=\(since)" }
         return try await get(path)
     }
