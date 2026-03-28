@@ -28,14 +28,11 @@ final class StoreService {
         !purchasedProductIDs.isEmpty
     }
 
+    @ObservationIgnored
     private var updateListenerTask: Task<Void, Error>?
 
     private init() {
         updateListenerTask = listenForTransactions()
-    }
-
-    deinit {
-        updateListenerTask?.cancel()
     }
 
     // MARK: - Load Products

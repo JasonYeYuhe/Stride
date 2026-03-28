@@ -46,7 +46,9 @@ struct LoginView: View {
             }
             .padding(24)
             .navigationTitle("Log In")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
