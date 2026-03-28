@@ -334,6 +334,32 @@ struct SettingsView: View {
                     }
                 }
 
+                // Export Data
+                Section {
+                    let csvString = DataExportService.exportCSV(habits: allHabits)
+                    let jsonString = DataExportService.exportJSON(habits: allHabits)
+
+                    ShareLink(
+                        item: csvString,
+                        subject: Text("Stride Habits Export"),
+                        message: Text("CSV export of all habits"),
+                        preview: SharePreview("stride_export.csv")
+                    ) {
+                        Label("Export as CSV", systemImage: "tablecells")
+                    }
+
+                    ShareLink(
+                        item: jsonString,
+                        subject: Text("Stride Habits Export"),
+                        message: Text("JSON export of all habits"),
+                        preview: SharePreview("stride_export.json")
+                    ) {
+                        Label("Export as JSON", systemImage: "curlybraces")
+                    }
+                } header: {
+                    Text("Export Data")
+                }
+
                 Section("About") {
                     LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0")
                     LabeledContent("Platform") {

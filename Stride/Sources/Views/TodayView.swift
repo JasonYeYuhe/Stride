@@ -108,6 +108,8 @@ struct WeekStripView: View {
                         selectedDate = day
                     }
                 }
+                .accessibilityLabel("\(day.shortWeekday) \(day.dayNumber)\(isSelected ? ", selected" : "")")
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
         }
     }
@@ -154,6 +156,8 @@ struct ProgressSummaryCard: View {
             RoundedRectangle(cornerRadius: 16)
                 .fill(Color.appSecondaryBackground)
         )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(completed) of \(total) habits completed, \(Int(progress * 100)) percent")
     }
 
     private var motivationMessage: LocalizedStringKey {
@@ -213,12 +217,16 @@ struct HabitRowView: View {
                     .scaleEffect(justCompleted ? 1.3 : (isCompleted ? 1.1 : 1.0))
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(isCompleted ? "Mark \(habit.name) incomplete" : "Mark \(habit.name) complete")
         }
         .padding()
         .background(
             RoundedRectangle(cornerRadius: 16)
                 .fill(Color.appSecondaryBackground)
         )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(habit.emoji) \(habit.name), \(isCompleted ? "completed" : "not completed")")
+        .accessibilityHint("Double tap to toggle completion")
     }
 
     private func toggleCompletion() {

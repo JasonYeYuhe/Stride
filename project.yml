@@ -67,6 +67,19 @@ targets:
         release:
           SWIFT_OPTIMIZATION_LEVEL: "-O"
 
+  StrideTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - StrideTests
+      - Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: yyh.stride.habittracker.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: ""
+        BUNDLE_LOADER: ""
+
   StrideWidgetExtension:
     type: app-extension
     platform: iOS

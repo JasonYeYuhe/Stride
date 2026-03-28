@@ -6,12 +6,24 @@ import WidgetKit
 struct StrideApp: App {
     let modelContainer: ModelContainer
     private var languageManager = LanguageManager.shared
+    @State private var showOnboarding = !UserDefaults.standard.bool(forKey: "stride_onboarding_completed")
 
     init() {
         self.modelContainer = SharedModelContainer.modelContainer
     }
 
     var body: some Scene {
+        windowGroup
+        #if os(macOS)
+        Settings {
+            SettingsView()
+                .modelContainer(modelContainer)
+                .environment(\.locale, languageManager.locale ?? .current)
+        }
+        #endif
+    }
+
+    private var windowGroup: some Scene {
         WindowGroup {
             ContentView()
                 .environment(\.locale, languageManager.locale ?? .current)
@@ -26,6 +38,9 @@ struct StrideApp: App {
                     WidgetCenter.shared.reloadAllTimelines()
                 }
                 #if os(iOS)
+                .fullScreenCover(isPresented: $showOnboarding) {
+                    OnboardingView(isPresented: $showOnboarding)
+                }
                 .onReceive(NotificationCenter.default.publisher(
                     for: UIApplication.willEnterForegroundNotification
                 )) { _ in
@@ -33,6 +48,10 @@ struct StrideApp: App {
                         NotificationService.shared.updateBadge(modelContainer: modelContainer)
                         await syncIfLoggedIn()
                     }
+                }
+                #else
+                .sheet(isPresented: $showOnboarding) {
+                    OnboardingView(isPresented: $showOnboarding)
                 }
                 #endif
         }

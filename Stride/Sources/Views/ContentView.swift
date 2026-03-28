@@ -3,6 +3,7 @@ import SwiftData
 
 struct ContentView: View {
     @State private var selectedTab = 0
+    @State private var showingAddHabit = false
 
     var body: some View {
         #if os(macOS)
@@ -10,6 +11,15 @@ struct ContentView: View {
             SidebarView(selectedTab: $selectedTab)
         } detail: {
             detailView
+        }
+        .sheet(isPresented: $showingAddHabit) {
+            AddHabitView()
+        }
+        .toolbar {
+            ToolbarItem(placement: .automatic) {
+                Button("New Habit") { showingAddHabit = true }
+                    .keyboardShortcut("n", modifiers: .command)
+            }
         }
         #else
         TabView(selection: $selectedTab) {

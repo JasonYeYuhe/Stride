@@ -119,6 +119,7 @@ struct StatItem: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -143,6 +144,8 @@ struct HabitChip: View {
             Capsule()
                 .stroke(isSelected ? habit.color : .clear, lineWidth: 1.5)
         )
+        .accessibilityLabel("\(habit.name)\(isSelected ? ", selected" : "")")
+        .accessibilityAddTraits(isSelected ? .isSelected : .isButton)
     }
 }
 
@@ -324,6 +327,7 @@ struct HeatmapView: View {
                                     RoundedRectangle(cornerRadius: 2)
                                         .fill(completed ? habit.color : Color.gray.opacity(0.15))
                                         .frame(width: 14, height: 14)
+                                        .accessibilityLabel("\(day.monthYear) \(day.dayNumber), \(completed ? "completed" : "not completed")")
                                 }
                                 if weekColumns[weekIndex].count < 7 {
                                     ForEach(0..<(7 - weekColumns[weekIndex].count), id: \.self) { _ in
