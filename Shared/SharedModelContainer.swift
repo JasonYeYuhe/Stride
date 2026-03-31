@@ -1,5 +1,6 @@
 import SwiftData
 import Foundation
+import os.log
 
 /// Shared model container configuration for App Group data sharing between main app and widgets.
 enum SharedModelContainer {
@@ -25,7 +26,13 @@ enum SharedModelContainer {
         do {
             return try ModelContainer(for: schema, configurations: [config])
         } catch {
-            fatalError("Failed to create shared ModelContainer: \(error)")
+            let logger = Logger(subsystem: "yyh.stride.habittracker", category: "ModelContainer")
+            logger.error("Failed to create ModelContainer at \(storeURL.path): \(error.localizedDescription). Falling back to default location — user data from App Group will not be visible.")
+            do {
+                return try ModelContainer(for: schema)
+            } catch {
+                fatalError("Failed to create ModelContainer: \(error)")
+            }
         }
     }
 }

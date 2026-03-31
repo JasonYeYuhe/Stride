@@ -8,8 +8,20 @@ const { requestLogger } = require("./logger");
 const app = express();
 const PORT = process.env.PORT || 3002;
 
-// Security headers
-app.use(helmet());
+// Security headers — relax only inline styles for /login page
+app.use((req, res, next) => {
+  if (req.path === "/login") {
+    return helmet({
+      contentSecurityPolicy: {
+        directives: {
+          ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+          "style-src": ["'self'", "'unsafe-inline'"],
+        },
+      },
+    })(req, res, next);
+  }
+  return helmet()(req, res, next);
+});
 
 // Request logging
 app.use(requestLogger);
@@ -60,6 +72,43 @@ app.use("/v1/sync", syncRouter);
 app.use("/auth", authRouter);
 app.use("/habits", habitsRouter);
 app.use("/sync", syncRouter);
+
+// Magic link login page — handles email link taps from mobile
+app.get("/login", (req, res) => {
+  const token = req.query.token || "";
+  const escapeHtml = (s) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  const safeToken = escapeHtml(token);
+  res.send(`<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Stride - Complete Login</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+display:flex;justify-content:center;align-items:center;min-height:100vh;background:#f5f5f7;color:#1d1d1f}
+.card{background:#fff;border-radius:16px;padding:48px 32px;text-align:center;max-width:420px;width:90%;
+box-shadow:0 2px 12px rgba(0,0,0,0.08)}
+.icon{font-size:56px;margin-bottom:16px}
+h1{font-size:22px;font-weight:600;margin-bottom:8px}
+p{font-size:15px;color:#86868b;margin-bottom:16px;line-height:1.5}
+.token-box{background:#f5f5f7;border-radius:8px;padding:12px;margin:16px 0;word-break:break-all;
+font-family:monospace;font-size:11px;color:#424245;user-select:all;-webkit-user-select:all}
+.steps{text-align:left;margin:16px 0;font-size:14px;color:#424245}
+.steps li{margin-bottom:8px}
+</style></head><body>
+<div class="card">
+<div class="icon">✉️</div>
+<h1>Complete Login in Stride</h1>
+<p>Your login link has been verified. To complete sign-in, go back to the <strong>Stride</strong> app and paste the code below.</p>
+<ol class="steps">
+<li>Copy the code below</li>
+<li>Switch back to <strong>Stride</strong></li>
+<li>Paste it in the login screen</li>
+</ol>
+${safeToken ? `<div class="token-box">${safeToken}</div>` : '<p style="color:#ff3b30">No login token found. Please request a new login link from Stride.</p>'}
+</div></body></html>`);
+});
 
 // Health check
 app.get("/health", (req, res) => {

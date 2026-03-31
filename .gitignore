@@ -14,7 +14,17 @@ DerivedData/
 Pods/
 
 # Duplicate project files
-Stride 2.xcodeproj/
+Stride *.xcodeproj/
+
+# Python cache
+__pycache__/
+
+# SQLite temp files
+*.db-shm
+*.db-wal
+
+# Scripts secrets
+scripts/.env
 
 # Server runtime
 server/node_modules/

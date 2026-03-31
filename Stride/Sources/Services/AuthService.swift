@@ -62,6 +62,25 @@ final class AuthService {
         }
     }
 
+    /// Called from deep link handler when web login page redirects back with session token
+    func loginWithSessionToken(_ token: String) {
+        // Basic format validation: must be non-empty alphanumeric/hex token
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              trimmed.count <= 512,
+              trimmed.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") })
+        else { return }
+
+        KeychainHelper.save(key: "stride_session_token", value: trimmed)
+        Task {
+            await checkSession()
+            // Clear invalid token if session check failed
+            if currentUser == nil {
+                KeychainHelper.delete(key: "stride_session_token")
+            }
+        }
+    }
+
     func logout() async {
         do {
             try await APIClient.shared.logout()

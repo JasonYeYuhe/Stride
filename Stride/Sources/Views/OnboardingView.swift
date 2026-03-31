@@ -29,23 +29,24 @@ struct OnboardingView: View {
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            #if os(iOS)
-            TabView(selection: $currentPage) {
-                ForEach(pages.indices, id: \.self) { index in
-                    pageView(pages[index], isLast: index == pages.count - 1)
-                        .tag(index)
-                }
-            }
-            .tabViewStyle(.page(indexDisplayMode: .always))
-            .indexViewStyle(.page(backgroundDisplayMode: .always))
-            #else
             VStack(spacing: 0) {
                 pageView(pages[currentPage], isLast: currentPage == pages.count - 1)
 
+                #if os(iOS)
+                // Page dots
+                HStack(spacing: 8) {
+                    ForEach(pages.indices, id: \.self) { index in
+                        Circle()
+                            .fill(index == currentPage ? Color.green : Color.secondary.opacity(0.3))
+                            .frame(width: 8, height: 8)
+                    }
+                }
+                .padding(.bottom, 16)
+                #else
                 macOSControls
                     .padding(.bottom, 24)
+                #endif
             }
-            #endif
 
             // Skip button
             if currentPage < pages.count - 1 {
@@ -57,7 +58,23 @@ struct OnboardingView: View {
             }
         }
         #if os(iOS)
-        .ignoresSafeArea()
+        .gesture(
+            DragGesture(minimumDistance: 30)
+                .onEnded { value in
+                    if value.translation.width < -30, currentPage < pages.count - 1 {
+                        withAnimation { currentPage += 1 }
+                    } else if value.translation.width > 30, currentPage > 0 {
+                        withAnimation { currentPage -= 1 }
+                    }
+                }
+        )
+        .accessibilityAction(.escape) { completeOnboarding() }
+        .accessibilityAction(named: "Next Page") {
+            if currentPage < pages.count - 1 { withAnimation { currentPage += 1 } }
+        }
+        .accessibilityAction(named: "Previous Page") {
+            if currentPage > 0 { withAnimation { currentPage -= 1 } }
+        }
         #else
         .frame(minWidth: 500, minHeight: 450)
         #endif
@@ -150,7 +167,9 @@ struct OnboardingView: View {
     private func completeOnboarding() {
         UserDefaults.standard.set(true, forKey: "stride_onboarding_completed")
         AnalyticsService.shared.send("onboardingCompleted")
-        isPresented = false
+        withAnimation {
+            isPresented = false
+        }
     }
 }
 

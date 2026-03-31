@@ -378,6 +378,15 @@ struct SettingsView: View {
                     }
                     .tint(.green)
                 }
+
+                Section("Legal") {
+                    Link(destination: URL(string: "https://jasonyeyuhe.github.io/Stride/terms")!) {
+                        Label("Terms of Use", systemImage: "doc.text")
+                    }
+                    Link(destination: URL(string: "https://jasonyeyuhe.github.io/Stride/privacy")!) {
+                        Label("Privacy Policy", systemImage: "hand.raised")
+                    }
+                }
             }
             .navigationTitle("Settings")
             .alert("Delete Habit", isPresented: $showingDeleteAlert) {

@@ -35,15 +35,22 @@ final class StoreService {
         updateListenerTask = listenForTransactions()
     }
 
+    private(set) var loadError: String?
+    private var loadAttempts = 0
+    private static let maxRetries = 3
+
     // MARK: - Load Products
 
     func loadProducts() async {
         guard products.isEmpty else { return }
+        loadAttempts = 0
         await fetchProducts()
     }
 
     func retryLoadProducts() async {
         products = []
+        loadError = nil
+        loadAttempts = 0
         await fetchProducts()
     }
 
@@ -51,14 +58,35 @@ final class StoreService {
         isLoading = true
         defer { isLoading = false }
 
-        do {
-            let ids = StrideProduct.allCases.map(\.rawValue)
-            let storeProducts = try await Product.products(for: ids)
-            products = storeProducts.sorted { $0.price < $1.price }
-        } catch {
-            #if DEBUG
-            print("Failed to load products: \(error)")
-            #endif
+        let ids = StrideProduct.allCases.map(\.rawValue)
+
+        while loadAttempts < Self.maxRetries {
+            guard !Task.isCancelled else { return }
+            loadAttempts += 1
+            do {
+                let storeProducts = try await Product.products(for: ids)
+                if storeProducts.isEmpty {
+                    loadError = "No products returned by the App Store (attempt \(loadAttempts)/\(Self.maxRetries))"
+                    if loadAttempts < Self.maxRetries {
+                        let delay = pow(2.0, Double(loadAttempts)) // 2s, 4s
+                        try await Task.sleep(for: .seconds(delay))
+                        continue
+                    }
+                } else {
+                    products = storeProducts.sorted { $0.price < $1.price }
+                    loadError = nil
+                    return
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                loadError = error.localizedDescription
+                if loadAttempts < Self.maxRetries {
+                    let delay = pow(2.0, Double(loadAttempts))
+                    try? await Task.sleep(for: .seconds(delay))
+                    continue
+                }
+            }
         }
     }
 
@@ -183,10 +211,17 @@ struct ProPaywallView: View {
                             Text("Unable to load subscription options.")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
-                            Text("Please check your internet connection and try again.")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                                .multilineTextAlignment(.center)
+                            if let error = store.loadError {
+                                Text(error)
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                                    .multilineTextAlignment(.center)
+                            } else {
+                                Text("Please check your internet connection and try again.")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                                    .multilineTextAlignment(.center)
+                            }
                             Button("Try Again") {
                                 Task { await store.retryLoadProducts() }
                             }
@@ -228,8 +263,8 @@ struct ProPaywallView: View {
                             .multilineTextAlignment(.center)
 
                         HStack(spacing: 16) {
-                            Link("Terms", destination: URL(string: "https://jasonyeyuhe.github.io/Stride/support")!)
-                            Link("Privacy", destination: URL(string: "https://jasonyeyuhe.github.io/Stride/privacy")!)
+                            Link("Terms of Use", destination: URL(string: "https://jasonyeyuhe.github.io/Stride/terms")!)
+                            Link("Privacy Policy", destination: URL(string: "https://jasonyeyuhe.github.io/Stride/privacy")!)
                         }
                         .font(.caption2)
                     }
