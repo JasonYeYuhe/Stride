@@ -21,6 +21,8 @@ extension Color {
     static var appBackground: Color {
         #if os(macOS)
         Color(NSColor.windowBackgroundColor)
+        #elseif os(watchOS)
+        Color.black
         #else
         Color(.systemBackground)
         #endif
@@ -29,6 +31,8 @@ extension Color {
     static var appSecondaryBackground: Color {
         #if os(macOS)
         Color(NSColor.controlBackgroundColor)
+        #elseif os(watchOS)
+        Color(.darkGray)
         #else
         Color(.secondarySystemBackground)
         #endif
@@ -37,6 +41,8 @@ extension Color {
     static var appTertiaryBackground: Color {
         #if os(macOS)
         Color(NSColor.underPageBackgroundColor)
+        #elseif os(watchOS)
+        Color.gray.opacity(0.3)
         #else
         Color(.tertiarySystemBackground)
         #endif

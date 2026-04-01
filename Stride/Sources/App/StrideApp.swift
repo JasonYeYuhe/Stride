@@ -10,6 +10,9 @@ struct StrideApp: App {
 
     init() {
         self.modelContainer = SharedModelContainer.modelContainer
+        if CommandLine.arguments.contains("-demo") {
+            DemoData.populate(container: modelContainer)
+        }
     }
 
     var body: some Scene {
@@ -31,6 +34,7 @@ struct StrideApp: App {
                     AnalyticsService.shared.send("appLaunched")
                     await setupNotifications()
                     await syncIfLoggedIn()
+                    await StoreService.shared.loadProducts()
                 }
                 .onReceive(
                     NotificationCenter.default.publisher(for: .habitDataChanged)

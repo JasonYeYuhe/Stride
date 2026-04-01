@@ -2,7 +2,14 @@ import SwiftUI
 import SwiftData
 
 struct ContentView: View {
-    @State private var selectedTab = 0
+    @State private var selectedTab: Int = {
+        if let idx = CommandLine.arguments.firstIndex(of: "-tab"),
+           idx + 1 < CommandLine.arguments.count,
+           let tab = Int(CommandLine.arguments[idx + 1]) {
+            return tab
+        }
+        return 0
+    }()
     @State private var showingAddHabit = false
 
     var body: some View {
