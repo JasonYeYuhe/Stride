@@ -28,52 +28,54 @@ struct TodayView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 20) {
-                    WeekStripView(selectedDate: $selectedDate)
-                        .padding(.horizontal)
+        todayContent
+    }
 
-                    if !habits.isEmpty {
-                        ProgressSummaryCard(
-                            completed: completedCount,
-                            total: habits.count
-                        )
-                        .padding(.horizontal)
-                    }
+    private var todayContent: some View {
+        ScrollView {
+            VStack(spacing: 20) {
+                WeekStripView(selectedDate: $selectedDate)
+                    .padding(.horizontal)
 
-                    if habits.isEmpty {
-                        EmptyStateView(showingAddHabit: $showingAddHabit)
-                            .padding(.top, 40)
-                    } else {
-                        LazyVStack(spacing: 12) {
-                            ForEach(habits) { habit in
-                                HabitRowView(
-                                    habit: habit,
-                                    date: selectedDate
-                                )
-                            }
+                if !habits.isEmpty {
+                    ProgressSummaryCard(
+                        completed: completedCount,
+                        total: habits.count
+                    )
+                    .padding(.horizontal)
+                }
+
+                if habits.isEmpty {
+                    EmptyStateView(showingAddHabit: $showingAddHabit)
+                        .padding(.top, 40)
+                } else {
+                    LazyVStack(spacing: 12) {
+                        ForEach(habits) { habit in
+                            HabitRowView(
+                                habit: habit,
+                                date: selectedDate
+                            )
                         }
-                        .padding(.horizontal)
                     }
-                }
-                .padding(.vertical)
-            }
-            .background(Color.appBackground)
-            .navigationTitle(dateTitle)
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        showingAddHabit = true
-                    } label: {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.title2)
-                    }
+                    .padding(.horizontal)
                 }
             }
-            .sheet(isPresented: $showingAddHabit) {
-                AddHabitView()
+            .padding(.vertical)
+        }
+        .background(Color.appBackground)
+        .navigationTitle(dateTitle)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showingAddHabit = true
+                } label: {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.title2)
+                }
             }
+        }
+        .sheet(isPresented: $showingAddHabit) {
+            AddHabitView()
         }
     }
 }

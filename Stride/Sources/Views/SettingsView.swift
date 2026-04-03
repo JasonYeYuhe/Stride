@@ -38,8 +38,11 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            List {
+        settingsContent
+    }
+
+    private var settingsContent: some View {
+        List {
                 // App header
                 Section {
                     HStack(spacing: 12) {
@@ -502,7 +505,6 @@ struct SettingsView: View {
                 await checkNotificationStatus()
                 await store.refreshPurchasedProducts()
             }
-        }
     }
 
     // MARK: - Notification Logic

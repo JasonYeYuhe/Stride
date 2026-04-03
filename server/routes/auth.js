@@ -8,8 +8,10 @@ const {
   consumeMagicLinkToken,
   createMagicLinkToken,
   createSession,
+  deleteUserAccount,
   getSessionUser,
   getSessionUserFromHeader,
+  requireUser,
   setSessionCookie,
 } = require("../auth");
 const { sendMagicLinkEmail } = require("../email");
@@ -93,6 +95,18 @@ router.post("/logout", (req, res) => {
   clearSession(req);
   clearSessionCookie(res);
   return res.json({ ok: true });
+});
+
+// Delete account and all associated data
+router.post("/delete-account", requireUser, (req, res) => {
+  try {
+    deleteUserAccount(req.user.id);
+    clearSessionCookie(res);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("delete-account error:", err);
+    return res.status(500).json({ error: "Failed to delete account" });
+  }
 });
 
 module.exports = router;

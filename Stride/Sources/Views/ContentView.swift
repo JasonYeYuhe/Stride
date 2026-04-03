@@ -21,8 +21,11 @@ struct ContentView: View {
         NavigationSplitView {
             SidebarView(selectedTab: $selectedTab)
         } detail: {
-            detailView
+            NavigationStack {
+                detailView
+            }
         }
+        .navigationSplitViewStyle(.balanced)
         .sheet(isPresented: $showingAddHabit) {
             AddHabitView()
         }
@@ -58,29 +61,37 @@ struct ContentView: View {
                 }
                 .navigationTitle("Stride")
             } detail: {
-                detailView
+                NavigationStack {
+                    detailView
+                }
             }
             .tint(.green)
         } else {
             // iPhone: Tab layout
             TabView(selection: $selectedTab) {
-                TodayView()
-                    .tabItem {
-                        Label("Today", systemImage: "checkmark.circle.fill")
-                    }
-                    .tag(0)
+                NavigationStack {
+                    TodayView()
+                }
+                .tabItem {
+                    Label("Today", systemImage: "checkmark.circle.fill")
+                }
+                .tag(0)
 
-                StatsView()
-                    .tabItem {
-                        Label("Stats", systemImage: "chart.bar.fill")
-                    }
-                    .tag(1)
+                NavigationStack {
+                    StatsView()
+                }
+                .tabItem {
+                    Label("Stats", systemImage: "chart.bar.fill")
+                }
+                .tag(1)
 
-                SettingsView()
-                    .tabItem {
-                        Label("Settings", systemImage: "gear")
-                    }
-                    .tag(2)
+                NavigationStack {
+                    SettingsView()
+                }
+                .tabItem {
+                    Label("Settings", systemImage: "gear")
+                }
+                .tag(2)
             }
             .tint(.green)
         }

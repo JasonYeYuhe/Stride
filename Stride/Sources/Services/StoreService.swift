@@ -37,7 +37,7 @@ final class StoreService {
 
     private(set) var loadError: String?
     private var loadAttempts = 0
-    private static let maxRetries = 3
+    private static let maxRetries = 5
 
     // MARK: - Load Products
 
@@ -58,7 +58,7 @@ final class StoreService {
         isLoading = true
         defer { isLoading = false }
 
-        let ids = StrideProduct.allCases.map(\.rawValue)
+        let ids = Set(StrideProduct.allCases.map(\.rawValue))
 
         while loadAttempts < Self.maxRetries {
             guard !Task.isCancelled else { return }
@@ -68,7 +68,7 @@ final class StoreService {
                 if storeProducts.isEmpty {
                     loadError = "No products returned by the App Store (attempt \(loadAttempts)/\(Self.maxRetries))"
                     if loadAttempts < Self.maxRetries {
-                        let delay = pow(2.0, Double(loadAttempts)) // 2s, 4s
+                        let delay = pow(2.0, Double(loadAttempts)) // 2s, 4s, 8s, 16s
                         try await Task.sleep(for: .seconds(delay))
                         continue
                     }

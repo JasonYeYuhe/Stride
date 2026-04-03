@@ -10,73 +10,75 @@ struct StatsView: View {
     @State private var showingWeeklyReview = false
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                if habits.isEmpty {
-                    VStack(spacing: 12) {
-                        Image(systemName: "chart.bar")
-                            .font(.system(size: 50))
-                            .foregroundStyle(.secondary)
-                        Text("No habits yet")
-                            .font(.title3)
-                            .foregroundStyle(.secondary)
-                        Text("Add a habit to start seeing statistics.")
-                            .font(.body)
-                            .foregroundStyle(.tertiary)
-                    }
-                    .padding(.top, 100)
-                } else {
-                    VStack(spacing: 20) {
-                        OverallStatsCard(habits: habits)
-                            .padding(.horizontal)
+        statsContent
+    }
 
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 10) {
-                                ForEach(habits) { habit in
-                                    HabitChip(
-                                        habit: habit,
-                                        isSelected: selectedHabit?.id == habit.id
-                                    )
-                                    .onTapGesture {
-                                        withAnimation {
-                                            selectedHabit = habit
-                                        }
+    private var statsContent: some View {
+        ScrollView {
+            if habits.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "chart.bar")
+                        .font(.system(size: 50))
+                        .foregroundStyle(.secondary)
+                    Text("No habits yet")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                    Text("Add a habit to start seeing statistics.")
+                        .font(.body)
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.top, 100)
+            } else {
+                VStack(spacing: 20) {
+                    OverallStatsCard(habits: habits)
+                        .padding(.horizontal)
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            ForEach(habits) { habit in
+                                HabitChip(
+                                    habit: habit,
+                                    isSelected: selectedHabit?.id == habit.id
+                                )
+                                .onTapGesture {
+                                    withAnimation {
+                                        selectedHabit = habit
                                     }
                                 }
                             }
-                            .padding(.horizontal)
                         }
+                        .padding(.horizontal)
+                    }
 
-                        if let habit = selectedHabit ?? habits.first {
-                            VStack(spacing: 16) {
-                                HabitDetailStatsCard(habit: habit)
-                                WeeklyBarChart(habit: habit)
-                                HeatmapView(habit: habit)
-                            }
-                            .padding(.horizontal)
+                    if let habit = selectedHabit ?? habits.first {
+                        VStack(spacing: 16) {
+                            HabitDetailStatsCard(habit: habit)
+                            WeeklyBarChart(habit: habit)
+                            HeatmapView(habit: habit)
                         }
-                    }
-                    .padding(.vertical)
-                }
-            }
-            .background(Color.appBackground)
-            .navigationTitle("Statistics")
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        showingWeeklyReview = true
-                    } label: {
-                        Image(systemName: "calendar.badge.clock")
+                        .padding(.horizontal)
                     }
                 }
+                .padding(.vertical)
             }
-            .sheet(isPresented: $showingWeeklyReview) {
-                WeeklyReviewView()
-            }
-            .onAppear {
-                if selectedHabit == nil {
-                    selectedHabit = habits.first
+        }
+        .background(Color.appBackground)
+        .navigationTitle("Statistics")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showingWeeklyReview = true
+                } label: {
+                    Image(systemName: "calendar.badge.clock")
                 }
+            }
+        }
+        .sheet(isPresented: $showingWeeklyReview) {
+            WeeklyReviewView()
+        }
+        .onAppear {
+            if selectedHabit == nil {
+                selectedHabit = habits.first
             }
         }
     }
