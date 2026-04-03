@@ -56,6 +56,11 @@ actor APIClient {
         sessionToken = nil
     }
 
+    func deleteAccount() async throws {
+        let _: OKResponse = try await post("/v1/auth/delete-account", body: EmptyBody())
+        sessionToken = nil
+    }
+
     // MARK: - Sync
 
     func pushChanges(_ payload: SyncPushPayload) async throws {
@@ -168,6 +173,9 @@ struct SyncHabit: Codable {
     let colorHex: String
     let isArchived: Bool
     let sortOrder: Int
+    let reminderEnabled: Bool?
+    let reminderHour: Int?
+    let reminderMinute: Int?
     let createdAt: String
     let updatedAt: String
 }
@@ -176,6 +184,7 @@ struct SyncEntry: Codable {
     let id: String
     let habitId: String
     let date: String
+    let note: String?
     let createdAt: String
 }
 

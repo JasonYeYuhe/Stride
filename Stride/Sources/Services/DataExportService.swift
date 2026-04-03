@@ -14,11 +14,11 @@ struct DataExportService {
 
     static func exportCSV(habits: [Habit]) -> String {
         AnalyticsService.shared.send("exportPerformed", metadata: ["format": "csv"])
-        var lines = ["habit_name,emoji,date,created_at"]
+        var lines = ["habit_name,emoji,date,note,created_at"]
 
-        let rows: [(name: String, emoji: String, date: Date, createdAt: Date)] = habits.flatMap { habit in
+        let rows: [(name: String, emoji: String, date: Date, note: String?, createdAt: Date)] = habits.flatMap { habit in
             habit.records.map { record in
-                (name: habit.name, emoji: habit.emoji, date: record.date, createdAt: habit.createdAt)
+                (name: habit.name, emoji: habit.emoji, date: record.date, note: record.note, createdAt: habit.createdAt)
             }
         }
 
@@ -31,8 +31,9 @@ struct DataExportService {
             let name = csvEscape(row.name)
             let emoji = csvEscape(row.emoji)
             let date = dateFormatter.string(from: row.date)
+            let note = csvEscape(row.note ?? "")
             let createdAt = dateFormatter.string(from: row.createdAt)
-            lines.append("\(name),\(emoji),\(date),\(createdAt)")
+            lines.append("\(name),\(emoji),\(date),\(note),\(createdAt)")
         }
 
         return lines.joined(separator: "\n")
@@ -45,9 +46,15 @@ struct DataExportService {
         let sortedHabits = habits.sorted { $0.name < $1.name }
 
         let habitDicts: [[String: Any]] = sortedHabits.map { habit in
-            let completions = habit.records
+            let completions: [[String: Any]] = habit.records
                 .sorted { $0.date < $1.date }
-                .map { dateFormatter.string(from: $0.date) }
+                .map { record in
+                    var entry: [String: Any] = ["date": dateFormatter.string(from: record.date)]
+                    if let note = record.note, !note.isEmpty {
+                        entry["note"] = note
+                    }
+                    return entry
+                }
 
             return [
                 "name": habit.name,

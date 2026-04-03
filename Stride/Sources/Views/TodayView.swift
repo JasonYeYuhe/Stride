@@ -5,7 +5,7 @@ import WidgetKit
 struct TodayView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(filter: #Predicate<Habit> { !$0.isArchived },
-           sort: \Habit.createdAt)
+           sort: \Habit.sortOrder)
     private var habits: [Habit]
 
     @State private var showingAddHabit = false
@@ -178,52 +178,98 @@ struct HabitRowView: View {
     let date: Date
 
     @State private var justCompleted = false
+    @State private var showingEdit = false
+    @State private var showingNote = false
+    @State private var noteText = ""
 
     private var isCompleted: Bool {
         habit.isCompletedOn(date)
     }
 
-    var body: some View {
-        HStack(spacing: 14) {
-            Text(habit.emoji)
-                .font(.title2)
+    private var todayRecord: HabitRecord? {
+        let calendar = Calendar.current
+        return habit.records.first { calendar.isDate($0.date, inSameDayAs: date) }
+    }
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(habit.name)
-                    .font(.body.weight(.medium))
-                let streak = habit.currentStreak(from: date)
-                if streak > 0 {
-                    HStack(spacing: 2) {
-                        Image(systemName: "flame.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.orange)
-                        Text("\(streak) day streak")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 14) {
+                Text(habit.emoji)
+                    .font(.title2)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(habit.name)
+                        .font(.body.weight(.medium))
+                    let streak = habit.currentStreak(from: date)
+                    if streak > 0 {
+                        HStack(spacing: 2) {
+                            Image(systemName: "flame.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                            Text("\(streak) day streak")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
                     }
                 }
-            }
 
-            Spacer()
+                Spacer()
 
-            Button {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                    toggleCompletion()
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+                        toggleCompletion()
+                    }
+                } label: {
+                    Image(systemName: isCompleted ? "checkmark.circle.fill" : "circle")
+                        .font(.title)
+                        .foregroundStyle(isCompleted ? habit.color : .gray.opacity(0.4))
+                        .scaleEffect(justCompleted ? 1.3 : (isCompleted ? 1.1 : 1.0))
                 }
-            } label: {
-                Image(systemName: isCompleted ? "checkmark.circle.fill" : "circle")
-                    .font(.title)
-                    .foregroundStyle(isCompleted ? habit.color : .gray.opacity(0.4))
-                    .scaleEffect(justCompleted ? 1.3 : (isCompleted ? 1.1 : 1.0))
+                .buttonStyle(.plain)
+                .accessibilityLabel(isCompleted ? "Mark \(habit.name) incomplete" : "Mark \(habit.name) complete")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(isCompleted ? "Mark \(habit.name) incomplete" : "Mark \(habit.name) complete")
+            .padding()
+
+            if let record = todayRecord, let note = record.note, !note.isEmpty {
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal)
+                    .padding(.bottom, 10)
+            }
         }
-        .padding()
         .background(
             RoundedRectangle(cornerRadius: 16)
                 .fill(Color.appSecondaryBackground)
         )
+        .contextMenu {
+            Button {
+                showingEdit = true
+            } label: {
+                Label("Edit Habit", systemImage: "pencil")
+            }
+            if isCompleted {
+                Button {
+                    noteText = todayRecord?.note ?? ""
+                    showingNote = true
+                } label: {
+                    Label(todayRecord?.note != nil ? "Edit Note" : "Add Note", systemImage: "note.text")
+                }
+            }
+        }
+        .sheet(isPresented: $showingEdit) {
+            AddHabitView(editingHabit: habit)
+        }
+        .alert("Note", isPresented: $showingNote) {
+            TextField("How did it go?", text: $noteText)
+            Button("Save") {
+                todayRecord?.note = noteText.isEmpty ? nil : noteText
+                try? modelContext.save()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Add a note for today's check-in.")
+        }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(habit.emoji) \(habit.name), \(isCompleted ? "completed" : "not completed")")
         .accessibilityHint("Double tap to toggle completion")

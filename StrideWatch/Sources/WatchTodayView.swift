@@ -3,7 +3,7 @@ import SwiftData
 
 struct WatchTodayView: View {
     @Query(filter: #Predicate<Habit> { !$0.isArchived },
-           sort: \Habit.createdAt)
+           sort: \Habit.sortOrder)
     private var habits: [Habit]
 
     @Environment(\.modelContext) private var modelContext

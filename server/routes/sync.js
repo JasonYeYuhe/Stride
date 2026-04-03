@@ -1,10 +1,21 @@
 const express = require("express");
 const router = express.Router();
 const crypto = require("crypto");
+const rateLimit = require("express-rate-limit");
 const db = require("../db");
 const { requireUser } = require("../auth");
 
+// Sync-specific rate limit: 30 requests per minute per IP
+const syncLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many sync requests, please try again later" },
+});
+
 router.use(requireUser);
+router.use(syncLimiter);
 
 // POST /sync/push — mobile app pushes local changes to server
 // Accepts { habits: [...], entries: [...], deletedHabitIds: [...], deletedEntryIds: [...] }
@@ -79,7 +90,7 @@ router.get("/pull", (req, res) => {
 
   if (since) {
     habits = db.prepare(
-      "SELECT * FROM habits WHERE user_id = ? AND updated_at > ?",
+      "SELECT id, name, emoji, color_hex, is_archived, sort_order, created_at, updated_at FROM habits WHERE user_id = ? AND updated_at > ?",
     ).all(userId, since);
 
     const habitIds = db.prepare(
@@ -89,19 +100,19 @@ router.get("/pull", (req, res) => {
     if (habitIds.length > 0) {
       const placeholders = habitIds.map(() => "?").join(",");
       entries = db.prepare(
-        `SELECT * FROM habit_entries WHERE habit_id IN (${placeholders}) AND created_at > ?`,
+        `SELECT id, habit_id, date, created_at FROM habit_entries WHERE habit_id IN (${placeholders}) AND created_at > ?`,
       ).all(...habitIds, since);
     } else {
       entries = [];
     }
   } else {
-    habits = db.prepare("SELECT * FROM habits WHERE user_id = ?").all(userId);
+    habits = db.prepare("SELECT id, name, emoji, color_hex, is_archived, sort_order, created_at, updated_at FROM habits WHERE user_id = ?").all(userId);
     const habitIds = habits.map((h) => h.id);
 
     if (habitIds.length > 0) {
       const placeholders = habitIds.map(() => "?").join(",");
       entries = db.prepare(
-        `SELECT * FROM habit_entries WHERE habit_id IN (${placeholders})`,
+        `SELECT id, habit_id, date, created_at FROM habit_entries WHERE habit_id IN (${placeholders})`,
       ).all(...habitIds);
     } else {
       entries = [];

@@ -1,11 +1,22 @@
 const express = require("express");
 const router = express.Router();
 const crypto = require("crypto");
+const rateLimit = require("express-rate-limit");
 const db = require("../db");
 const { requireUser } = require("../auth");
 
+// Habits-specific rate limit: 60 requests per minute per IP
+const habitsLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests, please try again later" },
+});
+
 // All routes require authentication
 router.use(requireUser);
+router.use(habitsLimiter);
 
 // GET /habits — list all habits for the user
 // Query params: limit (default 50, max 200), offset (default 0)
@@ -50,7 +61,7 @@ router.post("/", (req, res) => {
     VALUES (?, ?, ?, ?, ?, ?)
   `).run(habitId, req.user.id, name.trim(), emoji || "⭐", colorHex || "#34C759", maxOrder.next);
 
-  const habit = db.prepare("SELECT * FROM habits WHERE id = ?").get(habitId);
+  const habit = db.prepare("SELECT id, name, emoji, color_hex, is_archived, sort_order, created_at, updated_at FROM habits WHERE id = ?").get(habitId);
   return res.status(201).json({ habit });
 });
 
@@ -58,7 +69,7 @@ router.post("/", (req, res) => {
 router.put("/:id", (req, res) => {
   const { name, emoji, colorHex, isArchived, sortOrder } = req.body;
 
-  const existing = db.prepare("SELECT * FROM habits WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
+  const existing = db.prepare("SELECT id FROM habits WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
   if (!existing) return res.status(404).json({ error: "Habit not found" });
 
   db.prepare(`
@@ -80,13 +91,13 @@ router.put("/:id", (req, res) => {
     req.user.id,
   );
 
-  const habit = db.prepare("SELECT * FROM habits WHERE id = ?").get(req.params.id);
+  const habit = db.prepare("SELECT id, name, emoji, color_hex, is_archived, sort_order, created_at, updated_at FROM habits WHERE id = ?").get(req.params.id);
   return res.json({ habit });
 });
 
 // DELETE /habits/:id — permanently delete a habit and its entries
 router.delete("/:id", (req, res) => {
-  const existing = db.prepare("SELECT * FROM habits WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
+  const existing = db.prepare("SELECT id FROM habits WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
   if (!existing) return res.status(404).json({ error: "Habit not found" });
 
   db.prepare("DELETE FROM habits WHERE id = ? AND user_id = ?").run(req.params.id, req.user.id);
@@ -97,7 +108,7 @@ router.delete("/:id", (req, res) => {
 router.post("/:id/entries", (req, res) => {
   const { date, id } = req.body;
 
-  const habit = db.prepare("SELECT * FROM habits WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
+  const habit = db.prepare("SELECT id FROM habits WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
   if (!habit) return res.status(404).json({ error: "Habit not found" });
 
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -117,13 +128,18 @@ router.post("/:id/entries", (req, res) => {
     if (err.message.includes("UNIQUE constraint")) {
       return res.status(409).json({ error: "Already checked in for this date" });
     }
-    throw err;
+    console.error("Entry creation failed:", err.message);
+    return res.status(500).json({ error: "Failed to create entry" });
   }
 });
 
 // DELETE /habits/:id/entries/:date — uncheck (remove completion for a date)
 router.delete("/:id/entries/:date", (req, res) => {
-  const habit = db.prepare("SELECT * FROM habits WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(req.params.date)) {
+    return res.status(400).json({ error: "Date must be YYYY-MM-DD" });
+  }
+
+  const habit = db.prepare("SELECT id FROM habits WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
   if (!habit) return res.status(404).json({ error: "Habit not found" });
 
   db.prepare("DELETE FROM habit_entries WHERE habit_id = ? AND date = ?").run(req.params.id, req.params.date);
@@ -133,7 +149,7 @@ router.delete("/:id/entries/:date", (req, res) => {
 // GET /habits/:id/entries — get entries for a habit (with optional date range & pagination)
 // Query params: from, to (date range), limit (default 100, max 500), offset (default 0)
 router.get("/:id/entries", (req, res) => {
-  const habit = db.prepare("SELECT * FROM habits WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
+  const habit = db.prepare("SELECT id FROM habits WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
   if (!habit) return res.status(404).json({ error: "Habit not found" });
 
   const { from, to } = req.query;
@@ -167,7 +183,7 @@ router.get("/:id/entries", (req, res) => {
 
 // GET /habits/:id/stats — get streak and completion stats
 router.get("/:id/stats", (req, res) => {
-  const habit = db.prepare("SELECT * FROM habits WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
+  const habit = db.prepare("SELECT id, created_at FROM habits WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
   if (!habit) return res.status(404).json({ error: "Habit not found" });
 
   const entries = db.prepare(

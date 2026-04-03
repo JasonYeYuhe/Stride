@@ -86,6 +86,9 @@ struct StrideApp: App {
                 NotificationService.shared.scheduleReminders()
             }
         }
+
+        // Re-schedule per-habit reminders
+        NotificationService.shared.rescheduleAllHabitReminders(modelContainer: modelContainer)
     }
 }
 

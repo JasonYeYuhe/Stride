@@ -1,6 +1,7 @@
 import WidgetKit
 import SwiftUI
 import SwiftData
+import AppIntents
 
 // MARK: - Timeline Entry
 
@@ -19,9 +20,9 @@ struct HabitEntry: TimelineEntry {
         HabitEntry(
             date: .now,
             habits: [
-                HabitSnapshot(name: "Exercise", emoji: "💪", colorHex: "#34C759", isCompleted: true, streak: 5),
-                HabitSnapshot(name: "Read", emoji: "📚", colorHex: "#007AFF", isCompleted: true, streak: 3),
-                HabitSnapshot(name: "Meditate", emoji: "🧘", colorHex: "#AF52DE", isCompleted: false, streak: 0),
+                HabitSnapshot(habitId: "1", name: "Exercise", emoji: "💪", colorHex: "#34C759", isCompleted: true, streak: 5),
+                HabitSnapshot(habitId: "2", name: "Read", emoji: "📚", colorHex: "#007AFF", isCompleted: true, streak: 3),
+                HabitSnapshot(habitId: "3", name: "Meditate", emoji: "🧘", colorHex: "#AF52DE", isCompleted: false, streak: 0),
             ],
             completedCount: 2,
             totalCount: 3
@@ -35,6 +36,7 @@ struct HabitEntry: TimelineEntry {
 
 struct HabitSnapshot: Identifiable {
     let id = UUID()
+    let habitId: String
     let name: String
     let emoji: String
     let colorHex: String
@@ -43,6 +45,48 @@ struct HabitSnapshot: Identifiable {
 
     var color: Color {
         Color(hex: colorHex) ?? .green
+    }
+}
+
+// MARK: - Widget Toggle Intent
+
+struct ToggleHabitIntent: AppIntent {
+    static var title: LocalizedStringResource = "Toggle Habit"
+    static var description: IntentDescription = "Toggle a habit's completion for today."
+
+    @Parameter(title: "Habit ID")
+    var habitId: String
+
+    init() {}
+
+    init(habitId: String) {
+        self.habitId = habitId
+    }
+
+    @MainActor
+    func perform() async throws -> some IntentResult {
+        let context = ModelContext(SharedModelContainer.modelContainer)
+        let descriptor = FetchDescriptor<Habit>(
+            predicate: #Predicate<Habit> { !$0.isArchived }
+        )
+        let habits = try context.fetch(descriptor)
+        guard let habit = habits.first(where: { $0.id.uuidString == habitId }) else {
+            return .result()
+        }
+
+        let today = Calendar.current.startOfDay(for: Date())
+        let calendar = Calendar.current
+
+        if let existingRecord = habit.records.first(where: { calendar.isDate($0.date, inSameDayAs: today) }) {
+            context.delete(existingRecord)
+        } else {
+            let record = HabitRecord(date: today)
+            habit.records.append(record)
+        }
+
+        try context.save()
+        WidgetCenter.shared.reloadAllTimelines()
+        return .result()
     }
 }
 
@@ -66,7 +110,6 @@ struct HabitTimelineProvider: TimelineProvider {
     func getTimeline(in context: Context, completion: @escaping (Timeline<HabitEntry>) -> Void) {
         let entry = fetchEntry()
 
-        // Refresh at the start of the next day so the widget resets
         let calendar = Calendar.current
         let tomorrow = calendar.startOfDay(for: calendar.date(byAdding: .day, value: 1, to: .now) ?? .now)
         let timeline = Timeline(entries: [entry], policy: .after(tomorrow))
@@ -81,12 +124,13 @@ struct HabitTimelineProvider: TimelineProvider {
         do {
             let descriptor = FetchDescriptor<Habit>(
                 predicate: #Predicate<Habit> { !$0.isArchived },
-                sortBy: [SortDescriptor(\Habit.createdAt)]
+                sortBy: [SortDescriptor(\Habit.sortOrder)]
             )
             let habits = try context.fetch(descriptor)
 
             let snapshots = habits.map { habit in
                 HabitSnapshot(
+                    habitId: habit.id.uuidString,
                     name: habit.name,
                     emoji: habit.emoji,
                     colorHex: habit.colorHex,
@@ -111,7 +155,7 @@ struct HabitTimelineProvider: TimelineProvider {
 
 // MARK: - Widget Views
 
-/// Small widget: Progress ring + count
+/// Small widget: Progress ring + count (tap opens app)
 struct SmallWidgetView: View {
     let entry: HabitEntry
 
@@ -151,7 +195,7 @@ struct SmallWidgetView: View {
     }
 }
 
-/// Medium widget: Progress + habit list
+/// Medium widget: Progress + interactive habit list
 struct MediumWidgetView: View {
     let entry: HabitEntry
 
@@ -178,25 +222,28 @@ struct MediumWidgetView: View {
             }
             .frame(width: 72)
 
-            // Right: Habit list
+            // Right: Interactive habit list
             VStack(alignment: .leading, spacing: 4) {
                 let displayHabits = Array(entry.habits.prefix(4))
 
                 ForEach(displayHabits) { habit in
-                    HStack(spacing: 6) {
-                        Text(habit.emoji)
-                            .font(.caption)
+                    Button(intent: ToggleHabitIntent(habitId: habit.habitId)) {
+                        HStack(spacing: 6) {
+                            Text(habit.emoji)
+                                .font(.caption)
 
-                        Text(habit.name)
-                            .font(.caption.weight(.medium))
-                            .lineLimit(1)
+                            Text(habit.name)
+                                .font(.caption.weight(.medium))
+                                .lineLimit(1)
 
-                        Spacer()
+                            Spacer()
 
-                        Image(systemName: habit.isCompleted ? "checkmark.circle.fill" : "circle")
-                            .font(.caption)
-                            .foregroundStyle(habit.isCompleted ? habit.color : .gray.opacity(0.4))
+                            Image(systemName: habit.isCompleted ? "checkmark.circle.fill" : "circle")
+                                .font(.caption)
+                                .foregroundStyle(habit.isCompleted ? habit.color : .gray.opacity(0.4))
+                        }
                     }
+                    .buttonStyle(.plain)
                 }
 
                 if entry.habits.count > 4 {

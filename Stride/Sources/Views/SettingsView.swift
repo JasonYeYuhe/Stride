@@ -4,10 +4,16 @@ import UserNotifications
 
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \Habit.createdAt) private var allHabits: [Habit]
+    @Query(sort: \Habit.sortOrder) private var allHabits: [Habit]
 
     @State private var showingDeleteAlert = false
     @State private var habitToDelete: Habit?
+    @State private var showingDeleteAccountAlert = false
+    @State private var showingDeleteAccountConfirm = false
+    @State private var isDeletingAccount = false
+    @State private var deleteAccountError: String?
+    @State private var showSaveError = false
+    @State private var habitToEdit: Habit?
 
     // Notification states
     @State private var reminderEnabled = NotificationService.shared.isReminderEnabled
@@ -142,6 +148,20 @@ struct SettingsView: View {
                         } label: {
                             Label("Log Out", systemImage: "rectangle.portrait.and.arrow.right")
                         }
+
+                        Button(role: .destructive) {
+                            showingDeleteAccountAlert = true
+                        } label: {
+                            HStack {
+                                Label("Delete Account", systemImage: "person.crop.circle.badge.minus")
+                                if isDeletingAccount {
+                                    Spacer()
+                                    ProgressView()
+                                        .controlSize(.small)
+                                }
+                            }
+                        }
+                        .disabled(isDeletingAccount)
                     } else {
                         Button {
                             showingLogin = true
@@ -270,13 +290,29 @@ struct SettingsView: View {
                                 Button {
                                     withAnimation {
                                         habit.isArchived = true
-                                        try? modelContext.save() // Non-critical UI action
+                                        do {
+                                            try modelContext.save()
+                                        } catch {
+                                            habit.isArchived = false
+                                            showSaveError = true
+                                        }
                                     }
                                 } label: {
                                     Label("Archive", systemImage: "archivebox")
                                 }
                                 .tint(.orange)
                             }
+                            .swipeActions(edge: .leading) {
+                                Button {
+                                    habitToEdit = habit
+                                } label: {
+                                    Label("Edit", systemImage: "pencil")
+                                }
+                                .tint(.blue)
+                            }
+                        }
+                        .onMove { indices, destination in
+                            reorderHabits(from: indices, to: destination)
                         }
                     }
                 }
@@ -293,7 +329,12 @@ struct SettingsView: View {
                                 Button("Restore") {
                                     withAnimation {
                                         habit.isArchived = false
-                                        try? modelContext.save() // Non-critical UI action
+                                        do {
+                                            try modelContext.save()
+                                        } catch {
+                                            habit.isArchived = true
+                                            showSaveError = true
+                                        }
                                     }
                                 }
                                 .font(.caption)
@@ -414,11 +455,43 @@ struct SettingsView: View {
             } message: {
                 Text("This will permanently delete this habit and all its records. This cannot be undone.")
             }
+            .sheet(item: $habitToEdit) { habit in
+                AddHabitView(editingHabit: habit)
+            }
             .sheet(isPresented: $showingPaywall) {
                 ProPaywallView()
             }
             .sheet(isPresented: $showingLogin) {
                 LoginView()
+            }
+            .alert("Delete Account?", isPresented: $showingDeleteAccountAlert) {
+                Button("Cancel", role: .cancel) {}
+                Button("Continue", role: .destructive) {
+                    showingDeleteAccountConfirm = true
+                }
+            } message: {
+                Text("This will permanently delete your account and all synced data. This action cannot be undone.")
+            }
+            .alert("Are you sure?", isPresented: $showingDeleteAccountConfirm) {
+                Button("Cancel", role: .cancel) {}
+                Button("Delete My Account", role: .destructive) {
+                    Task { await performAccountDeletion() }
+                }
+            } message: {
+                Text("All your habits, records, and account information will be permanently removed from our servers.")
+            }
+            .alert("Unable to Delete Account", isPresented: Binding(
+                get: { deleteAccountError != nil },
+                set: { if !$0 { deleteAccountError = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(deleteAccountError ?? "")
+            }
+            .alert("Save Failed", isPresented: $showSaveError) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Unable to save changes. Please try again.")
             }
             .onChange(of: auth.isLoggedIn) { _, loggedIn in
                 if loggedIn {
@@ -460,6 +533,29 @@ struct SettingsView: View {
         let relative = RelativeDateTimeFormatter()
         relative.unitsStyle = .abbreviated
         return relative.localizedString(for: date, relativeTo: Date())
+    }
+
+    private func performAccountDeletion() async {
+        isDeletingAccount = true
+        do {
+            try await auth.deleteAccount()
+        } catch {
+            deleteAccountError = error.localizedDescription
+        }
+        isDeletingAccount = false
+    }
+
+    private func reorderHabits(from source: IndexSet, to destination: Int) {
+        var ordered = activeHabits
+        ordered.move(fromOffsets: source, toOffset: destination)
+        for (index, habit) in ordered.enumerated() {
+            habit.sortOrder = Double(index) * 1000.0
+        }
+        do {
+            try modelContext.save()
+        } catch {
+            showSaveError = true
+        }
     }
 
     private func checkNotificationStatus() async {

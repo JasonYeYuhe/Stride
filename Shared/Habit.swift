@@ -10,6 +10,11 @@ final class Habit {
     var colorHex: String
     var createdAt: Date
     var isArchived: Bool
+    var sortOrder: Double
+    var reminderEnabled: Bool
+    var reminderHour: Int
+    var reminderMinute: Int
+    var note: String?
     @Relationship(deleteRule: .cascade) var records: [HabitRecord]
 
     init(name: String, emoji: String = "⭐", colorHex: String = "#34C759") {
@@ -19,11 +24,30 @@ final class Habit {
         self.colorHex = colorHex
         self.createdAt = Date()
         self.isArchived = false
+        self.sortOrder = Date().timeIntervalSince1970
+        self.reminderEnabled = false
+        self.reminderHour = 20
+        self.reminderMinute = 0
+        self.note = nil
         self.records = []
     }
 
     var color: Color {
         Color(hex: colorHex) ?? .green
+    }
+
+    var reminderTimeDate: Date {
+        get {
+            var components = DateComponents()
+            components.hour = reminderHour
+            components.minute = reminderMinute
+            return Calendar.current.date(from: components) ?? Date()
+        }
+        set {
+            let components = Calendar.current.dateComponents([.hour, .minute], from: newValue)
+            reminderHour = components.hour ?? 20
+            reminderMinute = components.minute ?? 0
+        }
     }
 
     func isCompletedOn(_ date: Date) -> Bool {
@@ -110,9 +134,11 @@ final class Habit {
 final class HabitRecord {
     var id: UUID
     var date: Date
+    var note: String?
 
-    init(date: Date = Date()) {
+    init(date: Date = Date(), note: String? = nil) {
         self.id = UUID()
         self.date = Calendar.current.startOfDay(for: date)
+        self.note = note
     }
 }

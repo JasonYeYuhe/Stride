@@ -142,6 +142,51 @@ final class NotificationService {
         center.removePendingNotificationRequests(withIdentifiers: [eveningIdentifier, morningIdentifier])
     }
 
+    // MARK: - Per-Habit Reminders
+
+    private let habitReminderPrefix = "stride.habit.reminder."
+
+    func scheduleHabitReminder(for habit: Habit) {
+        let identifier = habitReminderPrefix + habit.id.uuidString
+        center.removePendingNotificationRequests(withIdentifiers: [identifier])
+
+        guard habit.reminderEnabled && !habit.isArchived else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = "\(habit.emoji) \(habit.name)"
+        content.body = String(localized: "Time to work on your habit!")
+        content.sound = .default
+
+        var dateComponents = DateComponents()
+        dateComponents.hour = habit.reminderHour
+        dateComponents.minute = habit.reminderMinute
+
+        let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
+        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
+
+        center.add(request)
+    }
+
+    func removeHabitReminder(for habitId: UUID) {
+        let identifier = habitReminderPrefix + habitId.uuidString
+        center.removePendingNotificationRequests(withIdentifiers: [identifier])
+    }
+
+    func rescheduleAllHabitReminders(modelContainer: ModelContainer) {
+        let context = ModelContext(modelContainer)
+        do {
+            let descriptor = FetchDescriptor<Habit>(
+                predicate: #Predicate<Habit> { $0.reminderEnabled && !$0.isArchived }
+            )
+            let habits = try context.fetch(descriptor)
+            for habit in habits {
+                scheduleHabitReminder(for: habit)
+            }
+        } catch {
+            // silently fail
+        }
+    }
+
     // MARK: - Smart Badge Update
 
     /// Update app badge with the number of incomplete habits for today.

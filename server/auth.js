@@ -13,6 +13,14 @@ function hashToken(token) {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
 
+function safeCompareHashes(a, b) {
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  const bufA = Buffer.from(a, "utf8");
+  const bufB = Buffer.from(b, "utf8");
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
 function createOpaqueToken() {
   return crypto.randomBytes(32).toString("hex");
 }
@@ -172,6 +180,18 @@ function requireUser(req, res, next) {
   return next();
 }
 
+function deleteUserAccount(userId) {
+  // Foreign keys with ON DELETE CASCADE handle magic_link_tokens and sessions.
+  // Habits don't cascade, so delete entries first, then habits, then user.
+  const habitIds = db.prepare("SELECT id FROM habits WHERE user_id = ?").all(userId).map(r => r.id);
+  if (habitIds.length > 0) {
+    const placeholders = habitIds.map(() => "?").join(",");
+    db.prepare(`DELETE FROM habit_entries WHERE habit_id IN (${placeholders})`).run(...habitIds);
+  }
+  db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+  db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+}
+
 module.exports = {
   createMagicLinkToken,
   consumeMagicLinkToken,
@@ -181,6 +201,7 @@ module.exports = {
   setSessionCookie,
   clearSessionCookie,
   clearSession,
+  deleteUserAccount,
   requireUser,
   getOrCreateUser,
   MAGIC_LINK_TTL_MS,

@@ -5,20 +5,30 @@ struct AddHabitView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 
+    /// Pass an existing habit to enter edit mode; nil = create mode
+    var editingHabit: Habit?
+
     @State private var name = ""
     @State private var selectedEmoji = "⭐"
     @State private var selectedColor = HabitColor.all[0]
     @State private var showingTemplates = false
+    @State private var showSaveError = false
+    @State private var reminderEnabled = false
+    @State private var reminderTime = Calendar.current.date(from: DateComponents(hour: 20, minute: 0)) ?? Date()
+
+    private var isEditing: Bool { editingHabit != nil }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section {
-                    Button {
-                        showingTemplates = true
-                    } label: {
-                        Label("Browse Templates", systemImage: "square.grid.2x2")
-                            .foregroundStyle(.green)
+                if !isEditing {
+                    Section {
+                        Button {
+                            showingTemplates = true
+                        } label: {
+                            Label("Browse Templates", systemImage: "square.grid.2x2")
+                                .foregroundStyle(.green)
+                        }
                     }
                 }
 
@@ -89,8 +99,29 @@ struct AddHabitView: View {
                 } header: {
                     Text("Preview")
                 }
+
+                Section {
+                    Toggle(isOn: $reminderEnabled) {
+                        Label("Reminder", systemImage: "bell.fill")
+                    }
+                    .tint(.green)
+
+                    if reminderEnabled {
+                        DatePicker(
+                            "Time",
+                            selection: $reminderTime,
+                            displayedComponents: .hourAndMinute
+                        )
+                    }
+                } header: {
+                    Text("Reminder")
+                } footer: {
+                    if reminderEnabled {
+                        Text("You'll receive a daily reminder for this habit.")
+                    }
+                }
             }
-            .navigationTitle("New Habit")
+            .navigationTitle(isEditing ? "Edit Habit" : "New Habit")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -100,33 +131,86 @@ struct AddHabitView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
-                        saveHabit()
+                        isEditing ? updateHabit() : createHabit()
                     }
                     .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .bold()
+                }
+            }
+            .onAppear {
+                if let habit = editingHabit {
+                    name = habit.name
+                    selectedEmoji = habit.emoji
+                    reminderEnabled = habit.reminderEnabled
+                    reminderTime = habit.reminderTimeDate
+                    if let match = HabitColor.all.first(where: { $0.hex == habit.colorHex }) {
+                        selectedColor = match
+                    }
                 }
             }
         }
         .sheet(isPresented: $showingTemplates) {
             HabitTemplatesView()
         }
+        .alert("Save Failed", isPresented: $showSaveError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Unable to save your habit. Please try again.")
+        }
     }
 
-    private func saveHabit() {
+    private func createHabit() {
         let habit = Habit(
             name: name.trimmingCharacters(in: .whitespacesAndNewlines),
             emoji: selectedEmoji,
             colorHex: selectedColor.hex
         )
+        habit.reminderEnabled = reminderEnabled
+        habit.reminderTimeDate = reminderTime
         modelContext.insert(habit)
-        try? modelContext.save()
-        AnalyticsService.shared.send("habitCreated")
+        do {
+            try modelContext.save()
+            if reminderEnabled {
+                NotificationService.shared.scheduleHabitReminder(for: habit)
+            }
+            AnalyticsService.shared.send("habitCreated")
 
-        #if os(iOS)
-        let generator = UINotificationFeedbackGenerator()
-        generator.notificationOccurred(.success)
-        #endif
+            #if os(iOS)
+            let generator = UINotificationFeedbackGenerator()
+            generator.notificationOccurred(.success)
+            #endif
 
-        dismiss()
+            dismiss()
+        } catch {
+            modelContext.rollback()
+            showSaveError = true
+            #if DEBUG
+            print("Failed to save new habit: \(error)")
+            #endif
+        }
+    }
+
+    private func updateHabit() {
+        guard let habit = editingHabit else { return }
+        habit.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        habit.emoji = selectedEmoji
+        habit.colorHex = selectedColor.hex
+        habit.reminderEnabled = reminderEnabled
+        habit.reminderTimeDate = reminderTime
+        do {
+            try modelContext.save()
+            if reminderEnabled {
+                NotificationService.shared.scheduleHabitReminder(for: habit)
+            } else {
+                NotificationService.shared.removeHabitReminder(for: habit.id)
+            }
+            AnalyticsService.shared.send("habitEdited")
+            dismiss()
+        } catch {
+            showSaveError = true
+            #if DEBUG
+            print("Failed to update habit: \(error)")
+            #endif
+        }
     }
 }

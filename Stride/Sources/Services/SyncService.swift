@@ -92,7 +92,10 @@ final class SyncService {
                 emoji: habit.emoji,
                 colorHex: habit.colorHex,
                 isArchived: habit.isArchived,
-                sortOrder: 0,
+                sortOrder: Int(habit.sortOrder),
+                reminderEnabled: habit.reminderEnabled,
+                reminderHour: habit.reminderHour,
+                reminderMinute: habit.reminderMinute,
                 createdAt: Self.iso8601.string(from: habit.createdAt),
                 updatedAt: Self.iso8601.string(from: Date())
             )
@@ -104,6 +107,7 @@ final class SyncService {
                     id: record.id.uuidString,
                     habitId: habit.id.uuidString,
                     date: Self.dateOnly.string(from: record.date),
+                    note: record.note,
                     createdAt: Self.iso8601.string(from: record.date)
                 )
             }
@@ -132,10 +136,18 @@ final class SyncService {
                 local.emoji = remoteHabit.emoji
                 local.colorHex = remoteHabit.colorHex
                 local.isArchived = remoteHabit.isArchived
+                local.sortOrder = Double(remoteHabit.sortOrder)
+                if let re = remoteHabit.reminderEnabled { local.reminderEnabled = re }
+                if let rh = remoteHabit.reminderHour { local.reminderHour = rh }
+                if let rm = remoteHabit.reminderMinute { local.reminderMinute = rm }
             } else {
                 let habit = Habit(name: remoteHabit.name, emoji: remoteHabit.emoji, colorHex: remoteHabit.colorHex)
                 habit.id = uuid
                 habit.isArchived = remoteHabit.isArchived
+                habit.sortOrder = Double(remoteHabit.sortOrder)
+                habit.reminderEnabled = remoteHabit.reminderEnabled ?? false
+                habit.reminderHour = remoteHabit.reminderHour ?? 20
+                habit.reminderMinute = remoteHabit.reminderMinute ?? 0
                 if let created = Self.iso8601.date(from: remoteHabit.createdAt) {
                     habit.createdAt = created
                 }

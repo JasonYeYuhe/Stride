@@ -3,10 +3,11 @@ import SwiftData
 
 struct StatsView: View {
     @Query(filter: #Predicate<Habit> { !$0.isArchived },
-           sort: \Habit.createdAt)
+           sort: \Habit.sortOrder)
     private var habits: [Habit]
 
     @State private var selectedHabit: Habit?
+    @State private var showingWeeklyReview = false
 
     var body: some View {
         NavigationStack {
@@ -60,6 +61,18 @@ struct StatsView: View {
             }
             .background(Color.appBackground)
             .navigationTitle("Statistics")
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showingWeeklyReview = true
+                    } label: {
+                        Image(systemName: "calendar.badge.clock")
+                    }
+                }
+            }
+            .sheet(isPresented: $showingWeeklyReview) {
+                WeeklyReviewView()
+            }
             .onAppear {
                 if selectedHabit == nil {
                     selectedHabit = habits.first
