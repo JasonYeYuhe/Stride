@@ -50,5 +50,5 @@ iPhone、iPad、Mac に対応。
 
 Stride Proは月額および年額の自動更新サブスクリプションとしてご利用いただけます。購入確認時にお客様のApple IDアカウントに請求されます。現在の期間終了の24時間前までに自動更新をオフにしない限り、サブスクリプションは自動的に更新されます。現在の期間終了の24時間以内に更新料金がアカウントに請求されます。購入後、App Storeのアカウント設定からサブスクリプションの管理およびキャンセルが可能です。
 
-利用規約：https://jasonyeyuhe.github.io/Stride/terms
-プライバシーポリシー：https://jasonyeyuhe.github.io/Stride/privacy
+利用規約：https://stride-api.colorarchive.me/terms
+プライバシーポリシー：https://stride-api.colorarchive.me/privacy

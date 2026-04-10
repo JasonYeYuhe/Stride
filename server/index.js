@@ -1,5 +1,6 @@
 require("dotenv").config();
 const express = require("express");
+const path = require("path");
 const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
@@ -7,6 +8,10 @@ const { requestLogger } = require("./logger");
 
 const app = express();
 const PORT = process.env.PORT || 3002;
+
+// Serve static pages (terms, privacy, support) — before security middleware
+// since these are read-only HTML with inline styles and no user input
+app.use(express.static(path.join(__dirname, "docs"), { extensions: ["html"] }));
 
 // Security headers — relax only inline styles for /login page
 app.use((req, res, next) => {

@@ -256,7 +256,7 @@ Start your streak today."""
 
     promo = "Build better habits, one day at a time"
 
-    support_url = "https://jasonyeyuhe.github.io/Stride/support"
+    support_url = "https://stride-api.colorarchive.me/support"
     marketing_url = "https://github.com/JasonYeYuhe/Stride"
 
     r = api_get(f"/appStoreVersions/{version_id}/appStoreVersionLocalizations")
@@ -356,7 +356,7 @@ def set_app_info():
                     "id": loc["id"],
                     "attributes": {
                         "name": "Stride - Habit Tracker",
-                        "privacyPolicyUrl": "https://jasonyeyuhe.github.io/Stride/privacy",
+                        "privacyPolicyUrl": "https://stride-api.colorarchive.me/privacy",
                     }
                 }
             }, raise_on_error=False)

@@ -424,10 +424,10 @@ struct SettingsView: View {
                 }
 
                 Section("Legal") {
-                    Link(destination: URL(string: "https://jasonyeyuhe.github.io/Stride/terms")!) {
+                    Link(destination: URL(string: "https://stride-api.colorarchive.me/terms")!) {
                         Label("Terms of Use", systemImage: "doc.text")
                     }
-                    Link(destination: URL(string: "https://jasonyeyuhe.github.io/Stride/privacy")!) {
+                    Link(destination: URL(string: "https://stride-api.colorarchive.me/privacy")!) {
                         Label("Privacy Policy", systemImage: "hand.raised")
                     }
                 }

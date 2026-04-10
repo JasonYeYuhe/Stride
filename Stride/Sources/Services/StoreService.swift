@@ -195,7 +195,7 @@ struct ProPaywallView: View {
                         ProFeatureRow(icon: "chart.line.uptrend.xyaxis", color: .blue, title: "Advanced Statistics", subtitle: "Deep insights into your progress")
                         ProFeatureRow(icon: "widget.small", color: .purple, title: "Home Screen Widgets", subtitle: "Quick access from your home screen")
                         ProFeatureRow(icon: "bell.badge.fill", color: .orange, title: "Smart Reminders", subtitle: "Never miss a habit again")
-                        ProFeatureRow(icon: "icloud.fill", color: .cyan, title: "iCloud Sync", subtitle: "Seamless across all your devices")
+                        ProFeatureRow(icon: "cloud.fill", color: .cyan, title: "Cloud Sync", subtitle: "Seamless across all your devices")
                     }
                     .padding(.horizontal, 24)
 
@@ -263,8 +263,8 @@ struct ProPaywallView: View {
                             .multilineTextAlignment(.center)
 
                         HStack(spacing: 16) {
-                            Link("Terms of Use", destination: URL(string: "https://jasonyeyuhe.github.io/Stride/terms")!)
-                            Link("Privacy Policy", destination: URL(string: "https://jasonyeyuhe.github.io/Stride/privacy")!)
+                            Link("Terms of Use", destination: URL(string: "https://stride-api.colorarchive.me/terms")!)
+                            Link("Privacy Policy", destination: URL(string: "https://stride-api.colorarchive.me/privacy")!)
                         }
                         .font(.caption2)
                     }

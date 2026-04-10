@@ -50,5 +50,5 @@ Stride Pro 專業版
 
 Stride Pro 提供月費和年費自動續訂方案。確認購買後，費用將從您的 Apple ID 帳戶中扣除。除非您在當前訂閱期結束前至少 24 小時關閉自動續訂，否則訂閱將自動續費。您的帳戶將在當前訂閱期結束前 24 小時內被扣除續費費用。購買後，您可以前往 App Store 的帳戶設定管理和取消訂閱。
 
-使用條款：https://jasonyeyuhe.github.io/Stride/terms
-隱私權政策：https://jasonyeyuhe.github.io/Stride/privacy
+使用條款：https://stride-api.colorarchive.me/terms
+隱私權政策：https://stride-api.colorarchive.me/privacy
