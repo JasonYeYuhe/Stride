@@ -50,5 +50,5 @@ Stride Pro 专业版
 
 Stride Pro 提供月度和年度自动续费订阅。确认购买后，费用将从您的 Apple ID 账户中扣除。订阅将自动续费，除非您在当前订阅期结束前至少 24 小时关闭自动续费。您的账户将在当前订阅期结束前 24 小时内被扣除续费费用。购买后，您可以前往 App Store 的账户设置管理和取消订阅。
 
-使用条款：https://stride-api.colorarchive.me/terms
-隐私政策：https://stride-api.colorarchive.me/privacy
+使用条款：https://jasonyeyuhe.github.io/stride-site/terms
+隐私政策：https://jasonyeyuhe.github.io/stride-site/privacy

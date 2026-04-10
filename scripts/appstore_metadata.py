@@ -242,9 +242,9 @@ WORKS EVERYWHERE
 • Smart daily reminders that keep you on track
 
 PRIVACY FIRST
-• All data stays on your device
-• No account required
-• No tracking or analytics
+• Data stored locally by default
+• Optional account for cross-device sync
+• Anonymous analytics with opt-out in Settings
 
 Whether you're building a morning routine, staying hydrated, reading daily, or exercising regularly — Stride makes habit tracking effortless and rewarding.
 
@@ -256,7 +256,7 @@ Start your streak today."""
 
     promo = "Build better habits, one day at a time"
 
-    support_url = "https://stride-api.colorarchive.me/support"
+    support_url = "https://jasonyeyuhe.github.io/stride-site/support"
     marketing_url = "https://github.com/JasonYeYuhe/Stride"
 
     r = api_get(f"/appStoreVersions/{version_id}/appStoreVersionLocalizations")
@@ -356,7 +356,7 @@ def set_app_info():
                     "id": loc["id"],
                     "attributes": {
                         "name": "Stride - Habit Tracker",
-                        "privacyPolicyUrl": "https://stride-api.colorarchive.me/privacy",
+                        "privacyPolicyUrl": "https://jasonyeyuhe.github.io/stride-site/privacy",
                     }
                 }
             }, raise_on_error=False)

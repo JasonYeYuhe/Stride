@@ -263,8 +263,8 @@ struct ProPaywallView: View {
                             .multilineTextAlignment(.center)
 
                         HStack(spacing: 16) {
-                            Link("Terms of Use", destination: URL(string: "https://stride-api.colorarchive.me/terms")!)
-                            Link("Privacy Policy", destination: URL(string: "https://stride-api.colorarchive.me/privacy")!)
+                            Link("Terms of Use", destination: URL(string: "https://jasonyeyuhe.github.io/stride-site/terms")!)
+                            Link("Privacy Policy", destination: URL(string: "https://jasonyeyuhe.github.io/stride-site/privacy")!)
                         }
                         .font(.caption2)
                     }

@@ -50,5 +50,5 @@ INFORMACIÓN DE SUSCRIPCIÓN
 
 Stride Pro está disponible como suscripción mensual o anual con renovación automática. El pago se cargará a tu cuenta de Apple ID en el momento de la confirmación de la compra. La suscripción se renueva automáticamente a menos que la renovación automática se desactive al menos 24 horas antes del final del período actual. Se te cobrará la renovación dentro de las 24 horas previas al final del período actual. Puedes gestionar y cancelar tus suscripciones en los ajustes de tu cuenta en la App Store después de la compra.
 
-Términos de uso: https://stride-api.colorarchive.me/terms
-Política de privacidad: https://stride-api.colorarchive.me/privacy
+Términos de uso: https://jasonyeyuhe.github.io/stride-site/terms
+Política de privacidad: https://jasonyeyuhe.github.io/stride-site/privacy
