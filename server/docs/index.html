@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stride - Build Better Habits</title>
+    <meta name="description" content="Stride is a simple, private habit tracker for iPhone, iPad, and Mac. Track your habits, build streaks, and see your progress with beautiful widgets.">
+    <meta property="og:title" content="Stride - Build Better Habits">
+    <meta property="og:description" content="A simple, private habit tracker for iPhone, iPad, and Mac.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://jasonyeyuhe.github.io/stride-site/">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            color: #1d1d1f; background: #ffffff; line-height: 1.6; -webkit-font-smoothing: antialiased;
+        }
+        .hero {
+            text-align: center;
+            padding: 100px 24px 60px;
+            background: linear-gradient(180deg, #f0faf2 0%, #ffffff 100%);
+        }
+        .hero-icon {
+            width: 80px; height: 80px; border-radius: 18px;
+            background: linear-gradient(135deg, #34C759, #30B350);
+            display: inline-flex; align-items: center; justify-content: center;
+            margin-bottom: 24px; box-shadow: 0 4px 16px rgba(52, 199, 89, 0.3);
+        }
+        .hero-icon svg { width: 44px; height: 44px; fill: white; }
+        h1 { font-size: 48px; font-weight: 700; letter-spacing: -1px; margin-bottom: 12px; }
+        .tagline { font-size: 20px; color: #86868b; max-width: 480px; margin: 0 auto 40px; }
+        .badge { display: inline-block; }
+        .badge img { height: 54px; }
+        .features {
+            max-width: 880px; margin: 0 auto; padding: 80px 24px;
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 48px;
+        }
+        .feature { text-align: center; }
+        .feature-icon {
+            width: 56px; height: 56px; border-radius: 14px;
+            display: inline-flex; align-items: center; justify-content: center;
+            margin-bottom: 16px; font-size: 28px;
+        }
+        .feature h3 { font-size: 18px; font-weight: 600; margin-bottom: 6px; }
+        .feature p { font-size: 15px; color: #86868b; }
+        .pro-section {
+            text-align: center; padding: 60px 24px;
+            background: #f5f5f7; border-radius: 0;
+        }
+        .pro-section h2 { font-size: 32px; font-weight: 700; margin-bottom: 12px; }
+        .pro-section .desc { font-size: 17px; color: #424245; max-width: 560px; margin: 0 auto 32px; }
+        .pro-features {
+            display: flex; flex-wrap: wrap; justify-content: center; gap: 12px;
+            max-width: 600px; margin: 0 auto;
+        }
+        .pro-tag {
+            background: white; padding: 8px 18px; border-radius: 20px;
+            font-size: 14px; font-weight: 500; color: #1d1d1f;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        }
+        .privacy-banner {
+            text-align: center; padding: 48px 24px;
+        }
+        .privacy-banner h3 { font-size: 22px; font-weight: 600; margin-bottom: 8px; }
+        .privacy-banner p { font-size: 16px; color: #86868b; max-width: 480px; margin: 0 auto; }
+        footer {
+            text-align: center; padding: 32px 24px; border-top: 1px solid #e8e8ed;
+            font-size: 14px; color: #86868b;
+        }
+        footer a { color: #86868b; text-decoration: none; }
+        footer a:hover { color: #34C759; }
+        @media (max-width: 600px) {
+            h1 { font-size: 34px; }
+            .tagline { font-size: 17px; }
+            .hero { padding: 60px 24px 40px; }
+            .features { padding: 48px 24px; gap: 36px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="hero">
+        <div class="hero-icon">
+            <svg viewBox="0 0 24 24"><path d="M13 5.5C13 3.57 11.43 2 9.5 2 7.57 2 6 3.57 6 5.5c0 1.38.8 2.57 1.96 3.14L4.5 21h11l-3.46-12.36C13.2 8.07 14 6.88 14 5.5c0-.17-.01-.33-.04-.5H13zM9.5 7C8.67 7 8 6.33 8 5.5S8.67 4 9.5 4s1.5.67 1.5 1.5S10.33 7 9.5 7z" transform="translate(2,0)"/></svg>
+        </div>
+        <h1>Stride</h1>
+        <p class="tagline">Build better habits, one day at a time. A simple, private habit tracker for iPhone, iPad, and Mac.</p>
+        <a class="badge" href="https://apps.apple.com/app/stride-habit-tracker/id6761262334">
+            <img src="https://tools.applemediaservices.com/api/badges/download-on-the-app-store/black/en-us?size=250x83" alt="Download on the App Store">
+        </a>
+    </div>
+
+    <div class="features">
+        <div class="feature">
+            <div class="feature-icon" style="background: rgba(52,199,89,0.12);">✅</div>
+            <h3>One-Tap Tracking</h3>
+            <p>Create habits in seconds. Check them off with a single tap.</p>
+        </div>
+        <div class="feature">
+            <div class="feature-icon" style="background: rgba(255,149,0,0.12);">🔥</div>
+            <h3>Streaks</h3>
+            <p>Watch your consecutive days grow. Your best streak is always saved.</p>
+        </div>
+        <div class="feature">
+            <div class="feature-icon" style="background: rgba(0,122,255,0.12);">📊</div>
+            <h3>Statistics & Heatmaps</h3>
+            <p>Beautiful GitHub-style heatmaps and detailed completion rates.</p>
+        </div>
+        <div class="feature">
+            <div class="feature-icon" style="background: rgba(175,82,222,0.12);">📱</div>
+            <h3>Home Screen Widgets</h3>
+            <p>5 widget styles to keep your habits front and center.</p>
+        </div>
+        <div class="feature">
+            <div class="feature-icon" style="background: rgba(255,59,48,0.12);">🔔</div>
+            <h3>Smart Reminders</h3>
+            <p>Custom push notifications at exactly the right time.</p>
+        </div>
+        <div class="feature">
+            <div class="feature-icon" style="background: rgba(0,199,190,0.12);">🔄</div>
+            <h3>Cross-Device Sync</h3>
+            <p>Start on iPhone, continue on iPad, review on Mac.</p>
+        </div>
+    </div>
+
+    <div class="pro-section">
+        <h2>Stride Pro</h2>
+        <p class="desc">Take your habit-building journey to the next level.</p>
+        <div class="pro-features">
+            <span class="pro-tag">Unlimited Habits</span>
+            <span class="pro-tag">Advanced Statistics</span>
+            <span class="pro-tag">All Widget Styles</span>
+            <span class="pro-tag">Smart Reminders</span>
+            <span class="pro-tag">Cross-Device Sync</span>
+        </div>
+    </div>
+
+    <div class="privacy-banner">
+        <h3>Your Data Stays Yours</h3>
+        <p>Stride stores everything locally on your device by default. No tracking, no ads, no data collection.</p>
+    </div>
+
+    <footer>
+        <p>&copy; 2026 Stride &middot; <a href="privacy.html">Privacy Policy</a> &middot; <a href="terms.html">Terms of Use</a> &middot; <a href="support.html">Support</a></p>
+    </footer>
+</body>
+</html>

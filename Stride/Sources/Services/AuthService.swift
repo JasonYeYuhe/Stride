@@ -11,6 +11,9 @@ final class AuthService {
     private(set) var isLoading = false
     private(set) var error: String?
 
+    /// True once the initial session check from Keychain has completed (success or failure).
+    private(set) var isSessionRestored = false
+
     var isLoggedIn: Bool { currentUser != nil }
     var userEmail: String? { currentUser?.email }
 
@@ -18,6 +21,21 @@ final class AuthService {
         // Check session on init if we have a stored token
         if KeychainHelper.read(key: "stride_session_token") != nil {
             Task { await checkSession() }
+        } else {
+            isSessionRestored = true
+        }
+    }
+
+    /// Wait until the initial session restoration has completed (up to 10 seconds).
+    /// Call this before checking `isLoggedIn` on cold start to avoid races.
+    func waitForSessionRestore() async {
+        let deadline = ContinuousClock.now + .seconds(10)
+        while !isSessionRestored && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        // If we timed out, mark as restored so the app can proceed
+        if !isSessionRestored {
+            isSessionRestored = true
         }
     }
 
@@ -31,6 +49,7 @@ final class AuthService {
             currentUser = nil
         }
         isLoading = false
+        isSessionRestored = true
     }
 
     func requestMagicLink(email: String) async -> Bool {

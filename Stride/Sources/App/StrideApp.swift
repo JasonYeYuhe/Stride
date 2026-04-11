@@ -69,6 +69,7 @@ struct StrideApp: App {
 
     @MainActor
     private func syncIfLoggedIn() async {
+        await AuthService.shared.waitForSessionRestore()
         guard AuthService.shared.isLoggedIn else { return }
         let context = modelContainer.mainContext
         await SyncService.shared.sync(context: context)

@@ -176,6 +176,7 @@ struct SyncHabit: Codable {
     let reminderEnabled: Bool?
     let reminderHour: Int?
     let reminderMinute: Int?
+    let note: String?
     let createdAt: String
     let updatedAt: String
 }
@@ -191,5 +192,7 @@ struct SyncEntry: Codable {
 struct SyncPullResponse: Decodable {
     let habits: [SyncHabit]
     let entries: [SyncEntry]
+    let deletedHabitIds: [String]?
+    let deletedEntryIds: [String]?
     let serverTime: String
 }

@@ -123,6 +123,19 @@ describe("Health", () => {
 
 // ----------------------------------------------------------------
 
+describe("Static pages", () => {
+  for (const page of ["/privacy", "/terms", "/support"]) {
+    it(`GET ${page} returns 200`, async () => {
+      const res = await fetch(`${BASE}${page}`);
+      assert.equal(res.status, 200);
+      const text = await res.text();
+      assert.ok(text.includes("<!DOCTYPE html") || text.includes("<html"), `${page} should return HTML`);
+    });
+  }
+});
+
+// ----------------------------------------------------------------
+
 describe("Auth", () => {
   it("POST /v1/auth/request-link rejects invalid email", async () => {
     const { status, json } = await api("POST", "/v1/auth/request-link", { body: { email: "bad" } });
@@ -476,6 +489,7 @@ describe("Sync", () => {
   after(() => {
     db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(pushedHabitId);
     db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
     db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
     db.prepare("DELETE FROM users WHERE id = ?").run(userId);
   });
@@ -564,6 +578,322 @@ describe("Sync", () => {
     const pull = await api("GET", "/v1/sync/pull", { token });
     const found = pull.json.habits.find((h) => h.id === deleteHabitId);
     assert.equal(found, undefined);
+  });
+
+  it("reminder and note fields round-trip through push/pull", async () => {
+    const habitId = crypto.randomUUID();
+    const entryId = crypto.randomUUID();
+
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{
+          id: habitId,
+          name: "Reminder habit",
+          emoji: "⏰",
+          colorHex: "#FF0000",
+          isArchived: false,
+          sortOrder: 1,
+          reminderEnabled: true,
+          reminderHour: 9,
+          reminderMinute: 30,
+          note: "habit-level note",
+        }],
+        entries: [{
+          id: entryId,
+          habitId: habitId,
+          date: "2025-08-01",
+          note: "entry-level note",
+        }],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    const habit = pull.json.habits.find((h) => h.id === habitId);
+    assert.ok(habit, "habit should exist in pull");
+    assert.equal(habit.reminderEnabled, true);
+    assert.equal(habit.reminderHour, 9);
+    assert.equal(habit.reminderMinute, 30);
+    assert.equal(habit.note, "habit-level note");
+
+    const entry = pull.json.entries.find((e) => e.id === entryId);
+    assert.ok(entry, "entry should exist in pull");
+    assert.equal(entry.note, "entry-level note");
+
+    // Cleanup
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
+  });
+
+  it("deletion tombstones propagate via pull with ?since", async () => {
+    const habitId = crypto.randomUUID();
+    const entryId = crypto.randomUUID();
+
+    // Push a habit + entry
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Will be tombstoned", sortOrder: 0 }],
+        entries: [{ id: entryId, habitId: habitId, date: "2025-09-01" }],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    // Record a "since" timestamp before deletion
+    const beforeDelete = new Date(Date.now() - 1000).toISOString();
+
+    // Push deletes
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [],
+        entries: [],
+        deletedHabitIds: [habitId],
+        deletedEntryIds: [entryId],
+      },
+    });
+
+    // Pull with ?since should contain tombstones
+    const pull = await api("GET", "/v1/sync/pull", { token, query: { since: beforeDelete } });
+    assert.ok(Array.isArray(pull.json.deletedHabitIds), "deletedHabitIds should be an array");
+    assert.ok(Array.isArray(pull.json.deletedEntryIds), "deletedEntryIds should be an array");
+    assert.ok(pull.json.deletedHabitIds.includes(habitId), "deleted habit should appear in tombstones");
+    assert.ok(pull.json.deletedEntryIds.includes(entryId), "deleted entry should appear in tombstones");
+
+    // Cleanup tombstones
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+  });
+
+  it("full pull returns entry for a date even if pushed with different id than CRUD-created", async () => {
+    const habitId = crypto.randomUUID();
+    const crudEntryId = crypto.randomUUID();
+    const pushEntryId = crypto.randomUUID();
+
+    // Push habit via sync
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "ID conflict habit", sortOrder: 0 }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    // Create entry via CRUD route (gets its own ID)
+    await api("POST", `/v1/habits/${habitId}/entries`, {
+      token,
+      body: { id: crudEntryId, date: "2025-10-10" },
+    });
+
+    // Now push same date via sync with a different ID — ON CONFLICT(habit_id,date) keeps existing
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [],
+        entries: [{ id: pushEntryId, habitId, date: "2025-10-10", note: "from push" }],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    // Full pull: the date should still have exactly one entry
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    const dateEntries = pull.json.entries.filter(
+      (e) => e.habitId === habitId && e.date === "2025-10-10",
+    );
+    assert.equal(dateEntries.length, 1, "should have exactly one entry for that date");
+    // Note should have been updated by the ON CONFLICT DO UPDATE
+    assert.equal(dateEntries[0].note, "from push");
+
+    // Cleanup
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
+  });
+
+  it("deleted habit cannot be resurrected by concurrent push", async () => {
+    const habitId = crypto.randomUUID();
+
+    // Push with both the habit data AND a delete for it — delete should win
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Ghost", sortOrder: 0 }],
+        entries: [],
+        deletedHabitIds: [habitId],
+        deletedEntryIds: [],
+      },
+    });
+
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    const found = pull.json.habits.find((h) => h.id === habitId);
+    assert.equal(found, undefined, "deleted habit should not reappear");
+
+    // Cleanup tombstones
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync timestamp consistency", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    const habits = db.prepare("SELECT id FROM habits WHERE user_id = ?").all(userId);
+    for (const h of habits) {
+      db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(h.id);
+    }
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("habit created via CRUD route is visible in sync pull with ?since", async () => {
+    const beforeCreate = new Date(Date.now() - 1000).toISOString();
+
+    // Create habit via CRUD route (not sync/push)
+    const { json } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "CRUD habit", emoji: "🛠️" },
+    });
+    const habitId = json.habit.id;
+
+    // Pull with since=beforeCreate should include it
+    const pull = await api("GET", "/v1/sync/pull", { token, query: { since: beforeCreate } });
+    const found = pull.json.habits.find((h) => h.id === habitId);
+    assert.ok(found, "CRUD-created habit should appear in incremental sync pull");
+    assert.equal(found.name, "CRUD habit");
+  });
+
+  it("habit updated via CRUD route is visible in sync pull with ?since", async () => {
+    // Create a habit
+    const { json: created } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Before update" },
+    });
+    const habitId = created.habit.id;
+
+    // Wait a tick so the timestamps differ
+    await new Promise((r) => setTimeout(r, 50));
+    const beforeUpdate = new Date(Date.now() - 10).toISOString();
+
+    // Update via CRUD
+    await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: { name: "After update" },
+    });
+
+    const pull = await api("GET", "/v1/sync/pull", { token, query: { since: beforeUpdate } });
+    const found = pull.json.habits.find((h) => h.id === habitId);
+    assert.ok(found, "CRUD-updated habit should appear in incremental sync pull");
+    assert.equal(found.name, "After update");
+  });
+
+  it("entry created via CRUD route is visible in sync pull with ?since", async () => {
+    // Create habit
+    const { json: created } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Entry test habit" },
+    });
+    const habitId = created.habit.id;
+
+    const beforeEntry = new Date(Date.now() - 1000).toISOString();
+
+    // Create entry via CRUD route
+    await api("POST", `/v1/habits/${habitId}/entries`, {
+      token,
+      body: { date: "2025-11-15" },
+    });
+
+    const pull = await api("GET", "/v1/sync/pull", { token, query: { since: beforeEntry } });
+    const found = pull.json.entries.find((e) => e.date === "2025-11-15");
+    assert.ok(found, "CRUD-created entry should appear in incremental sync pull");
+    assert.equal(found.habitId, habitId);
+  });
+
+  it("legacy space-format timestamps are migrated and visible in pull with ?since", async () => {
+    const habitId = crypto.randomUUID();
+    const entryId = crypto.randomUUID();
+
+    // Directly insert rows with old datetime('now')-style format (space, no T, no Z)
+    const legacyTs = "2025-06-01 12:00:00";
+    db.prepare(`
+      INSERT INTO habits (id, user_id, name, emoji, color_hex, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, '⭐', '#34C759', 0, ?, ?)
+    `).run(habitId, userId, "Legacy habit", legacyTs, legacyTs);
+
+    db.prepare(`
+      INSERT INTO habit_entries (id, habit_id, date, created_at)
+      VALUES (?, ?, '2025-06-01', ?)
+    `).run(entryId, habitId, legacyTs);
+
+    // Run the migration manually (same SQL as db.js migrateIfNeeded)
+    db.exec(`
+      UPDATE habits SET
+        created_at = REPLACE(created_at, ' ', 'T') || 'Z',
+        updated_at = REPLACE(updated_at, ' ', 'T') || 'Z'
+      WHERE created_at LIKE '%-%-% %:%:%' AND created_at NOT LIKE '%T%';
+
+      UPDATE habit_entries SET
+        created_at = REPLACE(created_at, ' ', 'T') || 'Z'
+      WHERE created_at LIKE '%-%-% %:%:%' AND created_at NOT LIKE '%T%';
+    `);
+
+    // Verify the migrated timestamps are ISO8601
+    const row = db.prepare("SELECT created_at, updated_at FROM habits WHERE id = ?").get(habitId);
+    assert.ok(row.created_at.includes("T"), `migrated created_at should contain T, got: ${row.created_at}`);
+    assert.ok(row.updated_at.includes("T"), `migrated updated_at should contain T, got: ${row.updated_at}`);
+
+    // Pull with since= before the legacy timestamp should include it
+    const beforeLegacy = "2025-05-01T00:00:00.000Z";
+    const pull = await api("GET", "/v1/sync/pull", { token, query: { since: beforeLegacy } });
+    const habit = pull.json.habits.find((h) => h.id === habitId);
+    assert.ok(habit, "migrated legacy habit should appear in incremental pull");
+
+    const entry = pull.json.entries.find((e) => e.id === entryId);
+    assert.ok(entry, "migrated legacy entry should appear in incremental pull");
+
+    // Cleanup
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
+  });
+
+  it("all timestamps in pull response are ISO8601 format", async () => {
+    // Create via CRUD
+    const { json: created } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Timestamp format test" },
+    });
+    const habitId = created.habit.id;
+
+    await api("POST", `/v1/habits/${habitId}/entries`, {
+      token,
+      body: { date: "2025-12-01" },
+    });
+
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    const habit = pull.json.habits.find((h) => h.id === habitId);
+    assert.ok(habit);
+
+    // ISO8601 has 'T' separator and ends with 'Z'
+    assert.ok(habit.createdAt.includes("T"), `createdAt should be ISO8601, got: ${habit.createdAt}`);
+    assert.ok(habit.updatedAt.includes("T"), `updatedAt should be ISO8601, got: ${habit.updatedAt}`);
+
+    const entry = pull.json.entries.find((e) => e.habitId === habitId);
+    assert.ok(entry);
+    assert.ok(entry.createdAt.includes("T"), `entry createdAt should be ISO8601, got: ${entry.createdAt}`);
   });
 });
 

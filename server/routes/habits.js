@@ -56,10 +56,11 @@ router.post("/", (req, res) => {
     "SELECT COALESCE(MAX(sort_order), -1) + 1 as next FROM habits WHERE user_id = ?",
   ).get(req.user.id);
 
+  const now = new Date().toISOString();
   db.prepare(`
-    INSERT INTO habits (id, user_id, name, emoji, color_hex, sort_order)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(habitId, req.user.id, name.trim(), emoji || "⭐", colorHex || "#34C759", maxOrder.next);
+    INSERT INTO habits (id, user_id, name, emoji, color_hex, sort_order, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(habitId, req.user.id, name.trim(), emoji || "⭐", colorHex || "#34C759", maxOrder.next, now, now);
 
   const habit = db.prepare("SELECT id, name, emoji, color_hex, is_archived, sort_order, created_at, updated_at FROM habits WHERE id = ?").get(habitId);
   return res.status(201).json({ habit });
@@ -79,7 +80,7 @@ router.put("/:id", (req, res) => {
       color_hex = COALESCE(?, color_hex),
       is_archived = COALESCE(?, is_archived),
       sort_order = COALESCE(?, sort_order),
-      updated_at = datetime('now')
+      updated_at = ?
     WHERE id = ? AND user_id = ?
   `).run(
     name ?? null,
@@ -87,6 +88,7 @@ router.put("/:id", (req, res) => {
     colorHex ?? null,
     isArchived != null ? (isArchived ? 1 : 0) : null,
     sortOrder ?? null,
+    new Date().toISOString(),
     req.params.id,
     req.user.id,
   );
@@ -122,8 +124,9 @@ router.post("/:id/entries", (req, res) => {
   const entryId = id || crypto.randomUUID();
 
   try {
-    db.prepare("INSERT INTO habit_entries (id, habit_id, date) VALUES (?, ?, ?)").run(entryId, req.params.id, date);
-    return res.status(201).json({ entry: { id: entryId, habit_id: req.params.id, date } });
+    const entryNow = new Date().toISOString();
+    db.prepare("INSERT INTO habit_entries (id, habit_id, date, created_at) VALUES (?, ?, ?, ?)").run(entryId, req.params.id, date, entryNow);
+    return res.status(201).json({ entry: { id: entryId, habit_id: req.params.id, date, created_at: entryNow } });
   } catch (err) {
     if (err.message.includes("UNIQUE constraint")) {
       return res.status(409).json({ error: "Already checked in for this date" });

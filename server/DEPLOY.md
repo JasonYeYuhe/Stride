@@ -18,6 +18,19 @@ pm2 start index.js --name stride-server
 pm2 save
 ```
 
+## Static Pages
+
+Legal/support pages (privacy, terms, support) live in `server/docs/`.
+The source of truth is `docs/` at the repo root — copy them into
+`server/docs/` when they change:
+
+```bash
+cp docs/*.html server/docs/
+```
+
+The server serves these via `express.static` with `extensions: ["html"]`,
+so `/privacy` resolves to `docs/privacy.html`.
+
 ## Nginx Config
 
 Add to `/etc/nginx/sites-available/stride-api`:

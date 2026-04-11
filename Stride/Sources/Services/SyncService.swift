@@ -49,9 +49,19 @@ final class SyncService {
         UserDefaults.standard.set(ids, forKey: deletedEntriesKey)
     }
 
+    private static let widgetDeletedEntriesKey = "stride_deleted_entry_ids_widget"
+
     private func consumeDeletedIds() -> (habits: [String], entries: [String]) {
         let habits = UserDefaults.standard.stringArray(forKey: deletedHabitsKey) ?? []
-        let entries = UserDefaults.standard.stringArray(forKey: deletedEntriesKey) ?? []
+        var entries = UserDefaults.standard.stringArray(forKey: deletedEntriesKey) ?? []
+
+        // Also consume deletion IDs tracked by the widget extension via shared app group
+        if let groupDefaults = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier) {
+            let widgetEntries = groupDefaults.stringArray(forKey: Self.widgetDeletedEntriesKey) ?? []
+            entries.append(contentsOf: widgetEntries)
+            groupDefaults.removeObject(forKey: Self.widgetDeletedEntriesKey)
+        }
+
         UserDefaults.standard.removeObject(forKey: deletedHabitsKey)
         UserDefaults.standard.removeObject(forKey: deletedEntriesKey)
         return (habits, entries)
@@ -96,6 +106,7 @@ final class SyncService {
                 reminderEnabled: habit.reminderEnabled,
                 reminderHour: habit.reminderHour,
                 reminderMinute: habit.reminderMinute,
+                note: habit.note,
                 createdAt: Self.iso8601.string(from: habit.createdAt),
                 updatedAt: Self.iso8601.string(from: Date())
             )
@@ -128,7 +139,25 @@ final class SyncService {
         let existingHabits = try context.fetch(FetchDescriptor<Habit>())
         let habitMap = Dictionary(uniqueKeysWithValues: existingHabits.map { ($0.id.uuidString, $0) })
 
+        // Apply remote deletions first to prevent resurrection
+        let deletedHabitSet = Set(response.deletedHabitIds ?? [])
+        let deletedEntrySet = Set(response.deletedEntryIds ?? [])
+
+        for deletedId in deletedHabitSet {
+            if let local = habitMap[deletedId] {
+                context.delete(local)
+            }
+        }
+
+        for habit in existingHabits {
+            for record in habit.records where deletedEntrySet.contains(record.id.uuidString) {
+                context.delete(record)
+            }
+        }
+
+        // Upsert habits (skip any that were just deleted remotely)
         for remoteHabit in response.habits {
+            guard !deletedHabitSet.contains(remoteHabit.id) else { continue }
             guard let uuid = UUID(uuidString: remoteHabit.id) else { continue }
 
             if let local = habitMap[remoteHabit.id] {
@@ -140,6 +169,7 @@ final class SyncService {
                 if let re = remoteHabit.reminderEnabled { local.reminderEnabled = re }
                 if let rh = remoteHabit.reminderHour { local.reminderHour = rh }
                 if let rm = remoteHabit.reminderMinute { local.reminderMinute = rm }
+                local.note = remoteHabit.note
             } else {
                 let habit = Habit(name: remoteHabit.name, emoji: remoteHabit.emoji, colorHex: remoteHabit.colorHex)
                 habit.id = uuid
@@ -148,6 +178,7 @@ final class SyncService {
                 habit.reminderEnabled = remoteHabit.reminderEnabled ?? false
                 habit.reminderHour = remoteHabit.reminderHour ?? 20
                 habit.reminderMinute = remoteHabit.reminderMinute ?? 0
+                habit.note = remoteHabit.note
                 if let created = Self.iso8601.date(from: remoteHabit.createdAt) {
                     habit.createdAt = created
                 }
@@ -155,22 +186,48 @@ final class SyncService {
             }
         }
 
+        // On full pull (no lastSyncTime), remove local habits not present on server
+        if lastSyncTime == nil {
+            let remoteHabitIds = Set(response.habits.map { $0.id })
+            for local in existingHabits {
+                if !remoteHabitIds.contains(local.id.uuidString) && !deletedHabitSet.contains(local.id.uuidString) {
+                    context.delete(local)
+                }
+            }
+        }
+
         let updatedHabits = try context.fetch(FetchDescriptor<Habit>())
         let updatedMap = Dictionary(uniqueKeysWithValues: updatedHabits.map { ($0.id.uuidString, $0) })
 
+        // Build a set of remote entry IDs for full-pull reconciliation
+        let remoteEntryIds = Set(response.entries.map { $0.id })
+
         for remoteEntry in response.entries {
+            guard !deletedEntrySet.contains(remoteEntry.id) else { continue }
             guard let habit = updatedMap[remoteEntry.habitId] else { continue }
             guard let entryUUID = UUID(uuidString: remoteEntry.id) else { continue }
             guard let entryDate = Self.dateOnly.date(from: remoteEntry.date) else { continue }
 
-            let alreadyExists = habit.records.contains { record in
-                Calendar.current.isDate(record.date, inSameDayAs: entryDate)
-            }
-
-            if !alreadyExists {
-                let record = HabitRecord(date: entryDate)
+            if let existingRecord = habit.records.first(where: { Calendar.current.isDate($0.date, inSameDayAs: entryDate) }) {
+                // Align local ID to server ID so full-pull reconciliation won't delete it
+                existingRecord.id = entryUUID
+                existingRecord.note = remoteEntry.note
+            } else {
+                let record = HabitRecord(date: entryDate, note: remoteEntry.note)
                 record.id = entryUUID
                 habit.records.append(record)
+            }
+        }
+
+        // On full pull (no lastSyncTime), remove local entries not present on server.
+        // Safe because we aligned local IDs to remote IDs above.
+        if lastSyncTime == nil {
+            for habit in updatedHabits {
+                for record in habit.records {
+                    if !remoteEntryIds.contains(record.id.uuidString) {
+                        context.delete(record)
+                    }
+                }
             }
         }
 

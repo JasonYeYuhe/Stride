@@ -78,6 +78,9 @@ struct ToggleHabitIntent: AppIntent {
         let calendar = Calendar.current
 
         if let existingRecord = habit.records.first(where: { calendar.isDate($0.date, inSameDayAs: today) }) {
+            // Track deletion for sync — write to shared app group UserDefaults
+            // so the main app's SyncService can pick it up on next push
+            Self.trackDeletedEntry(existingRecord.id.uuidString)
             context.delete(existingRecord)
         } else {
             let record = HabitRecord(date: today)
@@ -87,6 +90,15 @@ struct ToggleHabitIntent: AppIntent {
         try context.save()
         WidgetCenter.shared.reloadAllTimelines()
         return .result()
+    }
+
+    /// Track a deleted entry ID in the shared app group UserDefaults for sync.
+    private static func trackDeletedEntry(_ id: String) {
+        let key = "stride_deleted_entry_ids_widget"
+        guard let defaults = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier) else { return }
+        var ids = defaults.stringArray(forKey: key) ?? []
+        ids.append(id)
+        defaults.set(ids, forKey: key)
     }
 }
 
