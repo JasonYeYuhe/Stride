@@ -9,24 +9,19 @@ const { requestLogger } = require("./logger");
 const app = express();
 const PORT = process.env.PORT || 3002;
 
-// Serve static pages (terms, privacy, support) — before security middleware
-// since these are read-only HTML with inline styles and no user input
-app.use(express.static(path.join(__dirname, "docs"), { extensions: ["html"] }));
+// Security headers — allow inline styles for HTML pages (docs + /login use <style> blocks)
+// style-src 'unsafe-inline' is safe: inline styles cannot execute scripts
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+      "style-src": ["'self'", "'unsafe-inline'"],
+    },
+  },
+}));
 
-// Security headers — relax only inline styles for /login page
-app.use((req, res, next) => {
-  if (req.path === "/login") {
-    return helmet({
-      contentSecurityPolicy: {
-        directives: {
-          ...helmet.contentSecurityPolicy.getDefaultDirectives(),
-          "style-src": ["'self'", "'unsafe-inline'"],
-        },
-      },
-    })(req, res, next);
-  }
-  return helmet()(req, res, next);
-});
+// Serve static pages (terms, privacy, support) — after helmet so they get security headers
+app.use(express.static(path.join(__dirname, "docs"), { extensions: ["html"] }));
 
 // Request logging
 app.use(requestLogger);
