@@ -78,20 +78,23 @@ function consumeMagicLinkToken(token) {
   const tokenHash = hashToken(token);
   const record = db.prepare(`
     SELECT magic_link_tokens.id, magic_link_tokens.user_id, magic_link_tokens.expires_at,
-           magic_link_tokens.used_at, users.email, users.created_at
+           magic_link_tokens.used_at, magic_link_tokens.is_reusable,
+           users.email, users.created_at
     FROM magic_link_tokens
     INNER JOIN users ON users.id = magic_link_tokens.user_id
     WHERE magic_link_tokens.token_hash = ?
   `).get(tokenHash);
 
-  if (!record || record.used_at || record.expires_at < now()) {
-    if (record) {
+  if (!record || (!record.is_reusable && record.used_at) || record.expires_at < now()) {
+    if (record && !record.is_reusable) {
       db.prepare("DELETE FROM magic_link_tokens WHERE id = ?").run(record.id);
     }
     return null;
   }
 
-  db.prepare("UPDATE magic_link_tokens SET used_at = datetime('now') WHERE id = ?").run(record.id);
+  if (!record.is_reusable) {
+    db.prepare("UPDATE magic_link_tokens SET used_at = datetime('now') WHERE id = ?").run(record.id);
+  }
 
   return { id: record.user_id, email: record.email, created_at: record.created_at };
 }

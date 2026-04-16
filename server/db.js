@@ -79,6 +79,12 @@ db.exec(`
 
 // Migrate existing databases: add new columns if missing
 const migrateIfNeeded = db.transaction(() => {
+  // Add reusable flag for demo/review magic link tokens
+  const mlCols = db.prepare("PRAGMA table_info(magic_link_tokens)").all().map((c) => c.name);
+  if (!mlCols.includes("is_reusable")) {
+    db.exec("ALTER TABLE magic_link_tokens ADD COLUMN is_reusable INTEGER NOT NULL DEFAULT 0");
+  }
+
   const habitCols = db.prepare("PRAGMA table_info(habits)").all().map((c) => c.name);
   if (!habitCols.includes("reminder_enabled")) {
     db.exec("ALTER TABLE habits ADD COLUMN reminder_enabled INTEGER NOT NULL DEFAULT 0");
