@@ -944,3 +944,78 @@ describe("Stats", () => {
     assert.equal(status, 404);
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Auth: delete account", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+
+    // Create a habit and entry so we can verify cascade deletion
+    const { json } = await api("POST", "/v1/habits", { token, body: { name: "To delete" } });
+    habitId = json.habit.id;
+    await api("POST", `/v1/habits/${habitId}/entries`, { token, body: { date: "2025-06-01" } });
+  });
+
+  // No after() cleanup — delete-account should clean up everything
+
+  it("POST /v1/auth/delete-account returns ok", async () => {
+    const { status, json } = await api("POST", "/v1/auth/delete-account", { token });
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+  });
+
+  it("subsequent requests with the same token return 401", async () => {
+    const { status } = await api("GET", "/v1/habits", { token });
+    assert.equal(status, 401);
+  });
+
+  it("user and all habits/entries are deleted from database", () => {
+    const user = db.prepare("SELECT id FROM users WHERE id = ?").get(userId);
+    assert.equal(user, undefined, "User should be deleted");
+
+    const habits = db.prepare("SELECT id FROM habits WHERE user_id = ?").all(userId);
+    assert.equal(habits.length, 0, "All habits should be deleted");
+
+    const entries = db.prepare("SELECT id FROM habit_entries WHERE habit_id = ?").all(habitId);
+    assert.equal(entries.length, 0, "All entries should be deleted");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Auth: session expiration", () => {
+  let expiredToken;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+
+    // Create a session that already expired (1 second in the past)
+    expiredToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = hashToken(expiredToken);
+    const expiredAt = Date.now() - 1000;
+    db.prepare("INSERT INTO sessions (user_id, token_hash, expires_at) VALUES (?, ?, ?)").run(
+      userId,
+      tokenHash,
+      expiredAt,
+    );
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("expired session token returns 401", async () => {
+    const { status } = await api("GET", "/v1/habits", { token: expiredToken });
+    assert.equal(status, 401);
+  });
+});
