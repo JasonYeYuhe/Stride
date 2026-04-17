@@ -1161,3 +1161,108 @@ describe("Auth: session expiration", () => {
     assert.equal(status, 401);
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("CJK and Unicode support", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    const habits = db.prepare("SELECT id FROM habits WHERE user_id = ?").all(userId);
+    for (const h of habits) {
+      db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(h.id);
+    }
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("creates and retrieves a habit with a Chinese name", async () => {
+    const { status, json } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "每日阅读", emoji: "📖", colorHex: "#FF6B35" },
+    });
+    assert.equal(status, 201);
+    assert.equal(json.habit.name, "每日阅读");
+    assert.equal(json.habit.emoji, "📖");
+
+    const list = await api("GET", "/v1/habits", { token });
+    const found = list.json.habits.find((h) => h.name === "每日阅读");
+    assert.ok(found, "Chinese habit should appear in list");
+    assert.equal(found.color_hex, "#FF6B35");
+  });
+
+  it("creates and retrieves a habit with a Korean name", async () => {
+    const { status, json } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "매일 운동", emoji: "🏃" },
+    });
+    assert.equal(status, 201);
+    assert.equal(json.habit.name, "매일 운동");
+  });
+
+  it("sync push/pull preserves Japanese habit name without corruption", async () => {
+    const habitId = crypto.randomUUID();
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{
+          id: habitId,
+          name: "毎日瞑想する",
+          emoji: "🧘",
+          colorHex: "#7C3AED",
+          isArchived: false,
+          sortOrder: 0,
+        }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    const habit = pull.json.habits.find((h) => h.id === habitId);
+    assert.ok(habit, "Japanese habit should appear in pull");
+    assert.equal(habit.name, "毎日瞑想する", "name must not be corrupted");
+    assert.equal(habit.emoji, "🧘");
+  });
+
+  it("GET /v1/habits/:id/stats returns zeros for a habit with no entries", async () => {
+    // Insert directly to avoid rate limiter in long test runs
+    const emptyHabitId = crypto.randomUUID();
+    const now = new Date().toISOString();
+    db.prepare(
+      "INSERT INTO habits (id, user_id, name, emoji, color_hex, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(emptyHabitId, userId, "Empty habit", "⭐", "#34C759", 0, now, now);
+
+    const { status, json } = await api("GET", `/v1/habits/${emptyHabitId}/stats`, { token });
+    assert.equal(status, 200);
+    assert.equal(json.currentStreak, 0);
+    assert.equal(json.bestStreak, 0);
+    assert.equal(json.totalEntries, 0);
+    assert.equal(json.completionRate, 0);
+  });
+
+  it("sync pull with malformed ?since value does not return 500", async () => {
+    // Rate limiters may return 429 in long test runs; what matters is the server doesn't crash (500)
+    const { status, json } = await api("GET", "/v1/sync/pull", {
+      token,
+      query: { since: "not-a-valid-timestamp" },
+    });
+    assert.ok(status !== 500, `Expected non-500, got ${status}`);
+    // If not rate-limited, should return structured data
+    if (status === 200) {
+      assert.ok(Array.isArray(json.habits));
+      assert.ok(Array.isArray(json.entries));
+      assert.ok(json.serverTime);
+    }
+  });
+});

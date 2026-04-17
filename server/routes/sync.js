@@ -11,13 +11,15 @@ const db = require("../db");
 const { requireUser } = require("../auth");
 
 // Sync-specific rate limit: 30 requests per minute per IP
-const syncLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 30,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: "Too many sync requests, please try again later" },
-});
+const syncLimiter = process.env.NODE_ENV === "test"
+  ? /** @type {import('express').RequestHandler} */ ((req, res, next) => next())
+  : rateLimit({
+      windowMs: 60 * 1000,
+      max: 30,
+      standardHeaders: true,
+      legacyHeaders: false,
+      message: { error: "Too many sync requests, please try again later" },
+    });
 
 router.use(requireUser);
 router.use(syncLimiter);

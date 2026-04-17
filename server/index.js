@@ -26,15 +26,17 @@ app.use(express.static(path.join(__dirname, "docs"), { extensions: ["html"] }));
 // Request logging
 app.use(requestLogger);
 
-// Global rate limit: 100 requests per 15 minutes per IP
-const globalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: "Too many requests, please try again later" },
-});
-app.use(globalLimiter);
+// Global rate limit: 100 requests per 15 minutes per IP (bypassed in test environment)
+if (process.env.NODE_ENV !== "test") {
+  const globalLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many requests, please try again later" },
+  });
+  app.use(globalLimiter);
+}
 
 const allowedOrigins = new Set([
   process.env.FRONTEND_ORIGIN || "https://stride.colorarchive.me",
