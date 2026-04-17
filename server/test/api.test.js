@@ -1132,6 +1132,127 @@ describe("Stats", () => {
 
 // ----------------------------------------------------------------
 
+describe("Stats: broken streak", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+
+    const { json } = await api("POST", "/v1/habits", { token, body: { name: "Meditate" } });
+    habitId = json.habit.id;
+
+    // 5 entries from 6 days ago to 2 days ago — no entry today or yesterday
+    for (let i = 6; i >= 2; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      await api("POST", `/v1/habits/${habitId}/entries`, {
+        token,
+        body: { date: d.toISOString().slice(0, 10) },
+      });
+    }
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("currentStreak is 0 when last entry was >1 day ago", async () => {
+    const { status, json } = await api("GET", `/v1/habits/${habitId}/stats`, { token });
+    assert.equal(status, 200);
+    assert.equal(json.currentStreak, 0);
+    assert.equal(json.bestStreak, 5);
+    assert.equal(json.totalEntries, 5);
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Stats: best streak with gap", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+
+    const { json } = await api("POST", "/v1/habits", { token, body: { name: "Read" } });
+    habitId = json.habit.id;
+
+    // 3 consecutive days (-15,-14,-13), gap at -12, then 2 more (-11,-10)
+    for (const offset of [15, 14, 13, 11, 10]) {
+      const d = new Date();
+      d.setDate(d.getDate() - offset);
+      await api("POST", `/v1/habits/${habitId}/entries`, {
+        token,
+        body: { date: d.toISOString().slice(0, 10) },
+      });
+    }
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("bestStreak is the longest consecutive run, ignoring gaps", async () => {
+    const { status, json } = await api("GET", `/v1/habits/${habitId}/stats`, { token });
+    assert.equal(status, 200);
+    assert.equal(json.bestStreak, 3);
+    assert.equal(json.currentStreak, 0);
+    assert.equal(json.totalEntries, 5);
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Stats: completionRate for new habit", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+
+    const { json } = await api("POST", "/v1/habits", { token, body: { name: "Journal" } });
+    habitId = json.habit.id;
+
+    // Single entry for today
+    const today = new Date().toISOString().slice(0, 10);
+    await api("POST", `/v1/habits/${habitId}/entries`, { token, body: { date: today } });
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("completionRate is 1.0 when habit created today with one entry", async () => {
+    const { status, json } = await api("GET", `/v1/habits/${habitId}/stats`, { token });
+    assert.equal(status, 200);
+    assert.equal(json.completionRate, 1);
+    assert.equal(json.currentStreak, 1);
+    assert.equal(json.bestStreak, 1);
+    assert.equal(json.totalEntries, 1);
+  });
+});
+
+// ----------------------------------------------------------------
+
 describe("Auth: delete account", () => {
   let token;
   let userId;
