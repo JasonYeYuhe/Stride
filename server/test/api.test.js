@@ -990,6 +990,148 @@ describe("Auth: delete account", () => {
 
 // ----------------------------------------------------------------
 
+describe("Auth: reusable magic link tokens", () => {
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM magic_link_tokens WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("reusable token can be verified multiple times", async () => {
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = hashToken(rawToken);
+    const expiresAt = Date.now() + 1000 * 60 * 30; // 30 min
+    db.prepare(
+      "INSERT INTO magic_link_tokens (user_id, token_hash, expires_at, is_reusable) VALUES (?, ?, ?, 1)"
+    ).run(userId, tokenHash, expiresAt);
+
+    const first = await api("POST", "/v1/auth/verify", { body: { token: rawToken } });
+    assert.equal(first.status, 200, "first verification should succeed");
+    assert.ok(first.json.sessionToken, "first call should return session token");
+
+    const second = await api("POST", "/v1/auth/verify", { body: { token: rawToken } });
+    assert.equal(second.status, 200, "second verification should also succeed (reusable)");
+    assert.ok(second.json.sessionToken, "second call should return a new session token");
+  });
+
+  it("reusable token does not have used_at set after use", async () => {
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = hashToken(rawToken);
+    const expiresAt = Date.now() + 1000 * 60 * 30;
+    db.prepare(
+      "INSERT INTO magic_link_tokens (user_id, token_hash, expires_at, is_reusable) VALUES (?, ?, ?, 1)"
+    ).run(userId, tokenHash, expiresAt);
+
+    await api("POST", "/v1/auth/verify", { body: { token: rawToken } });
+
+    const record = db.prepare("SELECT used_at FROM magic_link_tokens WHERE token_hash = ?").get(tokenHash);
+    assert.ok(record, "token record should still exist after use");
+    assert.equal(record.used_at, null, "used_at should remain null for reusable tokens");
+  });
+
+  it("normal token is single-use only", async () => {
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = hashToken(rawToken);
+    const expiresAt = Date.now() + 1000 * 60 * 30;
+    db.prepare(
+      "INSERT INTO magic_link_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)"
+    ).run(userId, tokenHash, expiresAt);
+
+    const first = await api("POST", "/v1/auth/verify", { body: { token: rawToken } });
+    assert.equal(first.status, 200, "first use should succeed");
+
+    const second = await api("POST", "/v1/auth/verify", { body: { token: rawToken } });
+    assert.equal(second.status, 400, "second use of normal token should fail");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync: cross-user isolation", () => {
+  let userAToken;
+  let userAId;
+  let userBToken;
+  let userBId;
+  let habitAId;
+
+  before(async () => {
+    const userA = createTestUser();
+    userAId = userA.userId;
+    userAToken = createTestSession(userAId);
+
+    const userB = createTestUser();
+    userBId = userB.userId;
+    userBToken = createTestSession(userBId);
+
+    // Create a habit owned by user A via sync push
+    habitAId = crypto.randomUUID();
+    await api("POST", "/v1/sync/push", {
+      token: userAToken,
+      body: {
+        habits: [{ id: habitAId, name: "User A Habit", emoji: "🏃", colorHex: "#FF0000",
+                   isArchived: false, sortOrder: 0, reminderEnabled: false,
+                   reminderHour: 20, reminderMinute: 0, note: null,
+                   createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userAId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userBId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userAId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userBId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userAId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userBId);
+  });
+
+  it("user B cannot overwrite user A habit via sync push", async () => {
+    await api("POST", "/v1/sync/push", {
+      token: userBToken,
+      body: {
+        habits: [{ id: habitAId, name: "HIJACKED", emoji: "💀", colorHex: "#000000",
+                   isArchived: false, sortOrder: 0, reminderEnabled: false,
+                   reminderHour: 20, reminderMinute: 0, note: null,
+                   createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    const habit = db.prepare("SELECT name FROM habits WHERE id = ?").get(habitAId);
+    assert.ok(habit, "habit should still exist");
+    assert.equal(habit.name, "User A Habit", "user B should not be able to rename user A's habit");
+  });
+
+  it("user B cannot delete user A habit via sync push deletedHabitIds", async () => {
+    await api("POST", "/v1/sync/push", {
+      token: userBToken,
+      body: {
+        habits: [],
+        entries: [],
+        deletedHabitIds: [habitAId],
+        deletedEntryIds: [],
+      },
+    });
+
+    const habit = db.prepare("SELECT id FROM habits WHERE id = ?").get(habitAId);
+    assert.ok(habit, "user B should not be able to delete user A's habit");
+  });
+});
+
+// ----------------------------------------------------------------
+
 describe("Auth: session expiration", () => {
   let expiredToken;
   let userId;
