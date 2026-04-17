@@ -27,7 +27,9 @@ router.get("/", (req, res) => {
   const offset = Math.max(parseInt(String(req.query.offset), 10) || 0, 0);
 
   const habits = db.prepare(`
-    SELECT id, name, emoji, color_hex, is_archived, sort_order, created_at, updated_at
+    SELECT id, name, emoji, color_hex, is_archived, sort_order,
+           reminder_enabled, reminder_hour, reminder_minute, note,
+           created_at, updated_at
     FROM habits
     WHERE user_id = ?
     ORDER BY sort_order ASC, created_at ASC
@@ -44,7 +46,7 @@ router.get("/", (req, res) => {
 
 // POST /habits — create a new habit
 router.post("/", (req, res) => {
-  const { id, name, emoji, colorHex } = req.body;
+  const { id, name, emoji, colorHex, reminderEnabled, reminderHour, reminderMinute, note } = req.body;
 
   if (!name || typeof name !== "string" || name.trim().length === 0) {
     return res.status(400).json({ error: "Name is required" });
@@ -60,17 +62,28 @@ router.post("/", (req, res) => {
 
   const now = new Date().toISOString();
   db.prepare(`
-    INSERT INTO habits (id, user_id, name, emoji, color_hex, sort_order, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(habitId, req.user.id, name.trim(), emoji || "⭐", colorHex || "#34C759", maxOrder.next, now, now);
+    INSERT INTO habits (id, user_id, name, emoji, color_hex, sort_order,
+                        reminder_enabled, reminder_hour, reminder_minute, note,
+                        created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    habitId, req.user.id, name.trim(), emoji || "⭐", colorHex || "#34C759", maxOrder.next,
+    reminderEnabled ? 1 : 0, reminderHour ?? 20, reminderMinute ?? 0, note ?? null,
+    now, now,
+  );
 
-  const habit = db.prepare("SELECT id, name, emoji, color_hex, is_archived, sort_order, created_at, updated_at FROM habits WHERE id = ?").get(habitId);
+  const habit = db.prepare(`
+    SELECT id, name, emoji, color_hex, is_archived, sort_order,
+           reminder_enabled, reminder_hour, reminder_minute, note,
+           created_at, updated_at
+    FROM habits WHERE id = ?
+  `).get(habitId);
   return res.status(201).json({ habit });
 });
 
 // PUT /habits/:id — update a habit
 router.put("/:id", (req, res) => {
-  const { name, emoji, colorHex, isArchived, sortOrder } = req.body;
+  const { name, emoji, colorHex, isArchived, sortOrder, reminderEnabled, reminderHour, reminderMinute, note } = req.body;
 
   const existing = db.prepare("SELECT id FROM habits WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
   if (!existing) return res.status(404).json({ error: "Habit not found" });
@@ -82,6 +95,10 @@ router.put("/:id", (req, res) => {
       color_hex = COALESCE(?, color_hex),
       is_archived = COALESCE(?, is_archived),
       sort_order = COALESCE(?, sort_order),
+      reminder_enabled = COALESCE(?, reminder_enabled),
+      reminder_hour = COALESCE(?, reminder_hour),
+      reminder_minute = COALESCE(?, reminder_minute),
+      note = CASE WHEN ? THEN ? ELSE note END,
       updated_at = ?
     WHERE id = ? AND user_id = ?
   `).run(
@@ -90,12 +107,21 @@ router.put("/:id", (req, res) => {
     colorHex ?? null,
     isArchived != null ? (isArchived ? 1 : 0) : null,
     sortOrder ?? null,
+    reminderEnabled != null ? (reminderEnabled ? 1 : 0) : null,
+    reminderHour ?? null,
+    reminderMinute ?? null,
+    "note" in req.body ? 1 : 0, note ?? null,
     new Date().toISOString(),
     req.params.id,
     req.user.id,
   );
 
-  const habit = db.prepare("SELECT id, name, emoji, color_hex, is_archived, sort_order, created_at, updated_at FROM habits WHERE id = ?").get(req.params.id);
+  const habit = db.prepare(`
+    SELECT id, name, emoji, color_hex, is_archived, sort_order,
+           reminder_enabled, reminder_hour, reminder_minute, note,
+           created_at, updated_at
+    FROM habits WHERE id = ?
+  `).get(req.params.id);
   return res.json({ habit });
 });
 
