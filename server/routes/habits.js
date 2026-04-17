@@ -104,7 +104,13 @@ router.delete("/:id", (req, res) => {
   const existing = db.prepare("SELECT id FROM habits WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
   if (!existing) return res.status(404).json({ error: "Habit not found" });
 
-  db.prepare("DELETE FROM habits WHERE id = ? AND user_id = ?").run(req.params.id, req.user.id);
+  const deletedAt = new Date().toISOString();
+  db.transaction(() => {
+    db.prepare("DELETE FROM habits WHERE id = ? AND user_id = ?").run(req.params.id, req.user.id);
+    db.prepare(
+      "INSERT INTO deletion_tombstones (user_id, entity_type, entity_id, deleted_at) VALUES (?, ?, ?, ?)",
+    ).run(req.user.id, "habit", req.params.id, deletedAt);
+  })();
   return res.json({ ok: true });
 });
 
