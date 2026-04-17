@@ -1451,3 +1451,100 @@ describe("CJK and Unicode support", () => {
     }
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("CRUD: cross-user isolation", () => {
+  let userAToken;
+  let userAId;
+  let userBToken;
+  let userBId;
+  let habitAId;
+
+  before(async () => {
+    const userA = createTestUser();
+    userAId = userA.userId;
+    userAToken = createTestSession(userAId);
+
+    const userB = createTestUser();
+    userBId = userB.userId;
+    userBToken = createTestSession(userBId);
+
+    // User A creates a habit via CRUD POST
+    const { json } = await api("POST", "/v1/habits", {
+      token: userAToken,
+      body: { name: "User A private habit", emoji: "🔒", colorHex: "#FF0000" },
+    });
+    habitAId = json.habit.id;
+
+    // User A adds an entry so user B's entry GET has something to not-return
+    await api("POST", `/v1/habits/${habitAId}/entries`, {
+      token: userAToken,
+      body: { date: "2026-01-01" },
+    });
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id IN (SELECT id FROM habits WHERE user_id = ?)").run(userAId);
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userAId);
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userBId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userAId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userBId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userAId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userBId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userAId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userBId);
+  });
+
+  it("user B cannot update user A habit via CRUD PUT (returns 404)", async () => {
+    const { status, json } = await api("PUT", `/v1/habits/${habitAId}`, {
+      token: userBToken,
+      body: { name: "HIJACKED" },
+    });
+    assert.equal(status, 404);
+    assert.ok(json.error);
+
+    // Verify user A's habit is unchanged
+    const { json: listJson } = await api("GET", "/v1/habits", { token: userAToken });
+    const habit = listJson.habits.find((h) => h.id === habitAId);
+    assert.equal(habit.name, "User A private habit");
+  });
+
+  it("user B cannot delete user A habit via CRUD DELETE (returns 404)", async () => {
+    const { status, json } = await api("DELETE", `/v1/habits/${habitAId}`, {
+      token: userBToken,
+    });
+    assert.equal(status, 404);
+    assert.ok(json.error);
+
+    // Verify user A's habit still exists
+    const { json: listJson } = await api("GET", "/v1/habits", { token: userAToken });
+    const habit = listJson.habits.find((h) => h.id === habitAId);
+    assert.ok(habit, "habit should still exist after failed cross-user delete");
+  });
+
+  it("user B cannot get entries for user A habit via CRUD GET (returns 404)", async () => {
+    const { status, json } = await api("GET", `/v1/habits/${habitAId}/entries`, {
+      token: userBToken,
+    });
+    assert.equal(status, 404);
+    assert.ok(json.error);
+  });
+
+  it("user B cannot post entries to user A habit via CRUD POST (returns 404)", async () => {
+    const { status, json } = await api("POST", `/v1/habits/${habitAId}/entries`, {
+      token: userBToken,
+      body: { date: "2026-02-01" },
+    });
+    assert.equal(status, 404);
+    assert.ok(json.error);
+  });
+
+  it("user B cannot get stats for user A habit via CRUD GET (returns 404)", async () => {
+    const { status, json } = await api("GET", `/v1/habits/${habitAId}/stats`, {
+      token: userBToken,
+    });
+    assert.equal(status, 404);
+    assert.ok(json.error);
+  });
+});
