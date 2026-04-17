@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const crypto = require("crypto");
-const rateLimit = require("express-rate-limit");
+const { rateLimit } = require("express-rate-limit");
 const db = require("../db");
 const { requireUser } = require("../auth");
 
@@ -21,8 +21,8 @@ router.use(habitsLimiter);
 // GET /habits — list all habits for the user
 // Query params: limit (default 50, max 200), offset (default 0)
 router.get("/", (req, res) => {
-  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
-  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+  const limit = Math.min(Math.max(parseInt(String(req.query.limit), 10) || 50, 1), 200);
+  const offset = Math.max(parseInt(String(req.query.offset), 10) || 0, 0);
 
   const habits = db.prepare(`
     SELECT id, name, emoji, color_hex, is_archived, sort_order, created_at, updated_at
@@ -32,7 +32,7 @@ router.get("/", (req, res) => {
     LIMIT ? OFFSET ?
   `).all(req.user.id, limit, offset);
 
-  const total = db.prepare("SELECT COUNT(*) as count FROM habits WHERE user_id = ?").get(req.user.id).count;
+  const total = /** @type {any} */ (db.prepare("SELECT COUNT(*) as count FROM habits WHERE user_id = ?").get(req.user.id)).count;
 
   return res.json({
     habits,
@@ -52,9 +52,9 @@ router.post("/", (req, res) => {
   }
 
   const habitId = id || crypto.randomUUID();
-  const maxOrder = db.prepare(
+  const maxOrder = /** @type {any} */ (db.prepare(
     "SELECT COALESCE(MAX(sort_order), -1) + 1 as next FROM habits WHERE user_id = ?",
-  ).get(req.user.id);
+  ).get(req.user.id));
 
   const now = new Date().toISOString();
   db.prepare(`
@@ -156,8 +156,8 @@ router.get("/:id/entries", (req, res) => {
   if (!habit) return res.status(404).json({ error: "Habit not found" });
 
   const { from, to } = req.query;
-  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 500);
-  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+  const limit = Math.min(Math.max(parseInt(String(req.query.limit), 10) || 100, 1), 500);
+  const offset = Math.max(parseInt(String(req.query.offset), 10) || 0, 0);
 
   let entries;
   let total;
@@ -166,16 +166,16 @@ router.get("/:id/entries", (req, res) => {
     entries = db.prepare(
       "SELECT id, habit_id, date, created_at FROM habit_entries WHERE habit_id = ? AND date >= ? AND date <= ? ORDER BY date LIMIT ? OFFSET ?",
     ).all(req.params.id, from, to, limit, offset);
-    total = db.prepare(
+    total = /** @type {any} */ (db.prepare(
       "SELECT COUNT(*) as count FROM habit_entries WHERE habit_id = ? AND date >= ? AND date <= ?",
-    ).get(req.params.id, from, to).count;
+    ).get(req.params.id, from, to)).count;
   } else {
     entries = db.prepare(
       "SELECT id, habit_id, date, created_at FROM habit_entries WHERE habit_id = ? ORDER BY date LIMIT ? OFFSET ?",
     ).all(req.params.id, limit, offset);
-    total = db.prepare(
+    total = /** @type {any} */ (db.prepare(
       "SELECT COUNT(*) as count FROM habit_entries WHERE habit_id = ?",
-    ).get(req.params.id).count;
+    ).get(req.params.id)).count;
   }
 
   return res.json({
@@ -186,12 +186,12 @@ router.get("/:id/entries", (req, res) => {
 
 // GET /habits/:id/stats — get streak and completion stats
 router.get("/:id/stats", (req, res) => {
-  const habit = db.prepare("SELECT id, created_at FROM habits WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
+  const habit = /** @type {{ id: string, created_at: string } | undefined} */ (db.prepare("SELECT id, created_at FROM habits WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id));
   if (!habit) return res.status(404).json({ error: "Habit not found" });
 
   const entries = db.prepare(
     "SELECT date FROM habit_entries WHERE habit_id = ? ORDER BY date",
-  ).all(req.params.id).map((e) => e.date);
+  ).all(req.params.id).map((e) => /** @type {{ date: string }} */ (e).date);
 
   const today = new Date().toISOString().slice(0, 10);
   const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
@@ -219,7 +219,7 @@ router.get("/:id/stats", (req, res) => {
     } else {
       const prev = new Date(entries[i - 1]);
       const curr = new Date(entries[i]);
-      const diffDays = (curr - prev) / 86400000;
+      const diffDays = (curr.getTime() - prev.getTime()) / 86400000;
       streak = diffDays === 1 ? streak + 1 : (diffDays === 0 ? streak : 1);
     }
     bestStreak = Math.max(bestStreak, streak);
@@ -229,7 +229,7 @@ router.get("/:id/stats", (req, res) => {
   const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
   const createdDate = habit.created_at.slice(0, 10);
   const effectiveStart = thirtyDaysAgo > createdDate ? thirtyDaysAgo : createdDate;
-  const totalDays = Math.max(1, Math.ceil((new Date(today) - new Date(effectiveStart)) / 86400000) + 1);
+  const totalDays = Math.max(1, Math.ceil((new Date(today).getTime() - new Date(effectiveStart).getTime()) / 86400000) + 1);
   const completedInRange = entries.filter((d) => d >= effectiveStart && d <= today).length;
   const completionRate = completedInRange / totalDays;
 

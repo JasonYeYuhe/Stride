@@ -1,5 +1,10 @@
+// @ts-check
 const crypto = require("crypto");
 const db = require("./db");
+
+/** @typedef {{ id: number, user_id: number, expires_at: number, used_at: string|null, is_reusable: number, email: string, created_at: string }} MagicLinkRecord */
+/** @typedef {{ session_id: number, user_id: number, expires_at: number, email: string, tier: string, created_at: string }} SessionRecord */
+/** @typedef {{ id: number, email: string, tier: string, created_at: string }} UserRecord */
 
 const SESSION_COOKIE = "stride_session";
 const MAGIC_LINK_TTL_MS = 1000 * 60 * 30; // 30 min
@@ -55,7 +60,7 @@ function buildClearCookie() {
 function getOrCreateUser(email) {
   const normalized = email.trim().toLowerCase();
   db.prepare("INSERT OR IGNORE INTO users (email) VALUES (?)").run(normalized);
-  return db.prepare("SELECT id, email, tier, created_at FROM users WHERE email = ?").get(normalized);
+  return /** @type {UserRecord} */ (db.prepare("SELECT id, email, tier, created_at FROM users WHERE email = ?").get(normalized));
 }
 
 function createMagicLinkToken(email) {
@@ -76,14 +81,14 @@ function consumeMagicLinkToken(token) {
   db.prepare("DELETE FROM magic_link_tokens WHERE expires_at < ? OR used_at IS NOT NULL").run(now() - 86400000);
 
   const tokenHash = hashToken(token);
-  const record = db.prepare(`
+  const record = /** @type {MagicLinkRecord | undefined} */ (db.prepare(`
     SELECT magic_link_tokens.id, magic_link_tokens.user_id, magic_link_tokens.expires_at,
            magic_link_tokens.used_at, magic_link_tokens.is_reusable,
            users.email, users.created_at
     FROM magic_link_tokens
     INNER JOIN users ON users.id = magic_link_tokens.user_id
     WHERE magic_link_tokens.token_hash = ?
-  `).get(tokenHash);
+  `).get(tokenHash));
 
   if (!record || (!record.is_reusable && record.used_at) || record.expires_at < now()) {
     if (record && !record.is_reusable) {
@@ -117,13 +122,13 @@ function getSessionUser(req) {
   if (!sessionToken) return null;
 
   const tokenHash = hashToken(sessionToken);
-  const session = db.prepare(`
+  const session = /** @type {SessionRecord | undefined} */ (db.prepare(`
     SELECT sessions.id as session_id, sessions.user_id, sessions.expires_at,
            users.email, users.created_at, users.tier
     FROM sessions
     INNER JOIN users ON users.id = sessions.user_id
     WHERE sessions.token_hash = ?
-  `).get(tokenHash);
+  `).get(tokenHash));
 
   if (!session || session.expires_at < now()) {
     if (session) {
@@ -141,13 +146,13 @@ function getSessionUserFromHeader(req) {
   if (authHeader && authHeader.startsWith("Bearer ")) {
     const token = authHeader.slice(7);
     const tokenHash = hashToken(token);
-    const session = db.prepare(`
+    const session = /** @type {SessionRecord | undefined} */ (db.prepare(`
       SELECT sessions.id as session_id, sessions.user_id, sessions.expires_at,
              users.email, users.created_at, users.tier
       FROM sessions
       INNER JOIN users ON users.id = sessions.user_id
       WHERE sessions.token_hash = ?
-    `).get(tokenHash);
+    `).get(tokenHash));
 
     if (!session || session.expires_at < now()) {
       if (session) {
@@ -186,7 +191,7 @@ function requireUser(req, res, next) {
 function deleteUserAccount(userId) {
   // Foreign keys with ON DELETE CASCADE handle magic_link_tokens and sessions.
   // Habits don't cascade, so delete entries first, then habits, then user.
-  const habitIds = db.prepare("SELECT id FROM habits WHERE user_id = ?").all(userId).map(r => r.id);
+  const habitIds = db.prepare("SELECT id FROM habits WHERE user_id = ?").all(userId).map(r => /** @type {any} */ (r).id);
   if (habitIds.length > 0) {
     const placeholders = habitIds.map(() => "?").join(",");
     db.prepare(`DELETE FROM habit_entries WHERE habit_id IN (${placeholders})`).run(...habitIds);

@@ -1,7 +1,12 @@
+// @ts-check
 const express = require("express");
 const router = express.Router();
 const crypto = require("crypto");
-const rateLimit = require("express-rate-limit");
+const { rateLimit } = require("express-rate-limit");
+
+/** @typedef {{ id: string, name: string, emoji: string, color_hex: string, is_archived: number, sort_order: number, reminder_enabled: number, reminder_hour: number, reminder_minute: number, note: string|null, created_at: string, updated_at: string }} HabitRow */
+/** @typedef {{ id: string, habit_id: string, date: string, note: string|null, created_at: string }} EntryRow */
+/** @typedef {{ entity_type: string, entity_id: string }} TombstoneRow */
 const db = require("../db");
 const { requireUser } = require("../auth");
 
@@ -118,7 +123,7 @@ router.get("/pull", (req, res) => {
 
     const habitIds = db.prepare(
       "SELECT id FROM habits WHERE user_id = ?",
-    ).all(userId).map((h) => h.id);
+    ).all(userId).map((h) => /** @type {{ id: string }} */ (h).id);
 
     if (habitIds.length > 0) {
       const placeholders = habitIds.map(() => "?").join(",");
@@ -134,8 +139,8 @@ router.get("/pull", (req, res) => {
       "SELECT entity_type, entity_id FROM deletion_tombstones WHERE user_id = ? AND deleted_at > ?"
     ).all(userId, since);
 
-    deletedHabitIds = tombstones.filter((t) => t.entity_type === "habit").map((t) => t.entity_id);
-    deletedEntryIds = tombstones.filter((t) => t.entity_type === "entry").map((t) => t.entity_id);
+    deletedHabitIds = tombstones.map((t) => /** @type {TombstoneRow} */ (t)).filter((t) => t.entity_type === "habit").map((t) => t.entity_id);
+    deletedEntryIds = tombstones.map((t) => /** @type {TombstoneRow} */ (t)).filter((t) => t.entity_type === "entry").map((t) => t.entity_id);
   } else {
     habits = db.prepare(
       `SELECT id, name, emoji, color_hex, is_archived, sort_order,
@@ -143,7 +148,7 @@ router.get("/pull", (req, res) => {
               created_at, updated_at
        FROM habits WHERE user_id = ?`
     ).all(userId);
-    const habitIds = habits.map((h) => h.id);
+    const habitIds = habits.map((h) => /** @type {HabitRow} */ (h).id);
 
     if (habitIds.length > 0) {
       const placeholders = habitIds.map(() => "?").join(",");
@@ -160,27 +165,16 @@ router.get("/pull", (req, res) => {
   }
 
   return res.json({
-    habits: habits.map((h) => ({
-      id: h.id,
-      name: h.name,
-      emoji: h.emoji,
-      colorHex: h.color_hex,
-      isArchived: Boolean(h.is_archived),
-      sortOrder: h.sort_order,
-      reminderEnabled: Boolean(h.reminder_enabled),
-      reminderHour: h.reminder_hour,
-      reminderMinute: h.reminder_minute,
-      note: h.note || null,
-      createdAt: h.created_at,
-      updatedAt: h.updated_at,
-    })),
-    entries: entries.map((e) => ({
-      id: e.id,
-      habitId: e.habit_id,
-      date: e.date,
-      note: e.note || null,
-      createdAt: e.created_at,
-    })),
+    habits: habits.map((h) => { const row = /** @type {HabitRow} */ (h); return {
+      id: row.id, name: row.name, emoji: row.emoji, colorHex: row.color_hex,
+      isArchived: Boolean(row.is_archived), sortOrder: row.sort_order,
+      reminderEnabled: Boolean(row.reminder_enabled), reminderHour: row.reminder_hour,
+      reminderMinute: row.reminder_minute, note: row.note || null,
+      createdAt: row.created_at, updatedAt: row.updated_at,
+    }; }),
+    entries: entries.map((e) => { const row = /** @type {EntryRow} */ (e); return {
+      id: row.id, habitId: row.habit_id, date: row.date, note: row.note || null, createdAt: row.created_at,
+    }; }),
     deletedHabitIds,
     deletedEntryIds,
     serverTime: new Date().toISOString(),
