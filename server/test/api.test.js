@@ -735,6 +735,34 @@ describe("Sync", () => {
     // Cleanup tombstones
     db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
   });
+
+  it("CRUD DELETE /habits/:id creates a tombstone visible in incremental sync pull", async () => {
+    const habitId = crypto.randomUUID();
+
+    // Create via CRUD
+    await api("POST", "/v1/habits", { token, body: { id: habitId, name: "CRUD tombstone target" } });
+
+    const beforeDelete = new Date(Date.now() - 1000).toISOString();
+
+    // Delete via CRUD route (not sync push)
+    const { status } = await api("DELETE", `/v1/habits/${habitId}`, { token });
+    assert.equal(status, 200);
+
+    // Incremental pull with ?since should include the habit in deletedHabitIds
+    const pull = await api("GET", "/v1/sync/pull", { token, query: { since: beforeDelete } });
+    assert.ok(Array.isArray(pull.json.deletedHabitIds), "deletedHabitIds should be an array");
+    assert.ok(
+      pull.json.deletedHabitIds.includes(habitId),
+      "CRUD-deleted habit should appear in tombstones on incremental pull",
+    );
+
+    // Habit should not appear in habits array
+    const found = pull.json.habits.find((h) => h.id === habitId);
+    assert.equal(found, undefined, "deleted habit should not appear in habits list");
+
+    // Cleanup tombstones
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+  });
 });
 
 // ----------------------------------------------------------------
