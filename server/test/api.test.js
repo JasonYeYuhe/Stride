@@ -375,6 +375,73 @@ describe("Habits CRUD", () => {
     assert.equal(json.habit.name, "Swim (open water)");
     assert.equal(json.habit.note, "pool at 8am");
   });
+
+  it("POST /v1/habits rejects out-of-range reminderHour", async () => {
+    const { status, json } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Night Habit", reminderEnabled: true, reminderHour: 24, reminderMinute: 0 },
+    });
+    assert.equal(status, 400);
+    assert.match(json.error, /reminderHour/);
+  });
+
+  it("POST /v1/habits rejects out-of-range reminderMinute", async () => {
+    const { status, json } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Bad Minute Habit", reminderEnabled: true, reminderHour: 8, reminderMinute: 60 },
+    });
+    assert.equal(status, 400);
+    assert.match(json.error, /reminderMinute/);
+  });
+
+  it("POST /v1/habits rejects negative reminderHour", async () => {
+    const { status, json } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Neg Hour Habit", reminderEnabled: true, reminderHour: -1, reminderMinute: 0 },
+    });
+    assert.equal(status, 400);
+    assert.match(json.error, /reminderHour/);
+  });
+
+  it("PUT /v1/habits/:id rejects out-of-range reminderHour", async () => {
+    const create = await api("POST", "/v1/habits", { token, body: { name: "Update Reminder Test" } });
+    const id = create.json.habit.id;
+    const { status, json } = await api("PUT", `/v1/habits/${id}`, {
+      token,
+      body: { reminderHour: 99 },
+    });
+    assert.equal(status, 400);
+    assert.match(json.error, /reminderHour/);
+  });
+
+  it("PUT /v1/habits/:id rejects out-of-range reminderMinute", async () => {
+    const create = await api("POST", "/v1/habits", { token, body: { name: "Update Minute Test" } });
+    const id = create.json.habit.id;
+    const { status, json } = await api("PUT", `/v1/habits/${id}`, {
+      token,
+      body: { reminderMinute: -5 },
+    });
+    assert.equal(status, 400);
+    assert.match(json.error, /reminderMinute/);
+  });
+
+  it("POST /v1/habits accepts valid boundary reminder values (0:0 and 23:59)", async () => {
+    const { status: s1, json: j1 } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Midnight Habit", reminderEnabled: true, reminderHour: 0, reminderMinute: 0 },
+    });
+    assert.equal(s1, 201);
+    assert.equal(j1.habit.reminder_hour, 0);
+    assert.equal(j1.habit.reminder_minute, 0);
+
+    const { status: s2, json: j2 } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Late Night Habit", reminderEnabled: true, reminderHour: 23, reminderMinute: 59 },
+    });
+    assert.equal(s2, 201);
+    assert.equal(j2.habit.reminder_hour, 23);
+    assert.equal(j2.habit.reminder_minute, 59);
+  });
 });
 
 // ----------------------------------------------------------------
