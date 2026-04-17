@@ -55,6 +55,17 @@ router.post("/", (req, res) => {
     return res.status(400).json({ error: "Name must be 100 characters or less" });
   }
 
+  if (reminderEnabled) {
+    const hour = reminderHour ?? 20;
+    const minute = reminderMinute ?? 0;
+    if (!Number.isInteger(hour) || hour < 0 || hour > 23) {
+      return res.status(400).json({ error: "reminderHour must be an integer 0–23" });
+    }
+    if (!Number.isInteger(minute) || minute < 0 || minute > 59) {
+      return res.status(400).json({ error: "reminderMinute must be an integer 0–59" });
+    }
+  }
+
   const habitId = id || crypto.randomUUID();
   const maxOrder = /** @type {any} */ (db.prepare(
     "SELECT COALESCE(MAX(sort_order), -1) + 1 as next FROM habits WHERE user_id = ?",
@@ -87,6 +98,17 @@ router.put("/:id", (req, res) => {
 
   const existing = db.prepare("SELECT id FROM habits WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
   if (!existing) return res.status(404).json({ error: "Habit not found" });
+
+  if ("reminderHour" in req.body && reminderHour != null) {
+    if (!Number.isInteger(reminderHour) || reminderHour < 0 || reminderHour > 23) {
+      return res.status(400).json({ error: "reminderHour must be an integer 0–23" });
+    }
+  }
+  if ("reminderMinute" in req.body && reminderMinute != null) {
+    if (!Number.isInteger(reminderMinute) || reminderMinute < 0 || reminderMinute > 59) {
+      return res.status(400).json({ error: "reminderMinute must be an integer 0–59" });
+    }
+  }
 
   db.prepare(`
     UPDATE habits SET
