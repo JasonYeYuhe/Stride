@@ -314,6 +314,67 @@ describe("Habits CRUD", () => {
     const { status } = await api("DELETE", "/v1/habits/nonexistent-id", { token });
     assert.equal(status, 404);
   });
+
+  it("POST /v1/habits creates habit with reminder and note fields", async () => {
+    const { status, json } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Morning Alarm", reminderEnabled: true, reminderHour: 7, reminderMinute: 30, note: "wake up!" },
+    });
+    assert.equal(status, 201);
+    assert.equal(json.habit.reminder_enabled, 1);
+    assert.equal(json.habit.reminder_hour, 7);
+    assert.equal(json.habit.reminder_minute, 30);
+    assert.equal(json.habit.note, "wake up!");
+  });
+
+  it("GET /v1/habits returns reminder and note fields", async () => {
+    const { status, json } = await api("GET", "/v1/habits", { token });
+    assert.equal(status, 200);
+    const h = json.habits.find((x) => x.note === "wake up!");
+    assert.ok(h, "habit with note should be in list");
+    assert.equal(h.reminder_enabled, 1);
+    assert.equal(h.reminder_hour, 7);
+    assert.equal(h.reminder_minute, 30);
+  });
+
+  it("PUT /v1/habits/:id updates reminder and note fields", async () => {
+    const create = await api("POST", "/v1/habits", { token, body: { name: "Yoga" } });
+    const id = create.json.habit.id;
+
+    // Defaults: no reminder, no note
+    assert.equal(create.json.habit.reminder_enabled, 0);
+    assert.equal(create.json.habit.note, null);
+
+    // Update reminder + note
+    const { status, json } = await api("PUT", `/v1/habits/${id}`, {
+      token,
+      body: { reminderEnabled: true, reminderHour: 6, reminderMinute: 0, note: "stretch first" },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.habit.reminder_enabled, 1);
+    assert.equal(json.habit.reminder_hour, 6);
+    assert.equal(json.habit.reminder_minute, 0);
+    assert.equal(json.habit.note, "stretch first");
+  });
+
+  it("PUT /v1/habits/:id clears note when explicitly set to null", async () => {
+    const create = await api("POST", "/v1/habits", { token, body: { name: "Run", note: "10km" } });
+    const id = create.json.habit.id;
+    assert.equal(create.json.habit.note, "10km");
+
+    const { json } = await api("PUT", `/v1/habits/${id}`, { token, body: { note: null } });
+    assert.equal(json.habit.note, null);
+  });
+
+  it("PUT /v1/habits/:id preserves note when not included in body", async () => {
+    const create = await api("POST", "/v1/habits", { token, body: { name: "Swim", note: "pool at 8am" } });
+    const id = create.json.habit.id;
+
+    // Update only the name — note should be unchanged
+    const { json } = await api("PUT", `/v1/habits/${id}`, { token, body: { name: "Swim (open water)" } });
+    assert.equal(json.habit.name, "Swim (open water)");
+    assert.equal(json.habit.note, "pool at 8am");
+  });
 });
 
 // ----------------------------------------------------------------
