@@ -851,6 +851,35 @@ describe("Sync timestamp consistency", () => {
     assert.equal(found.habitId, habitId);
   });
 
+  it("entry deleted via CRUD route creates tombstone visible in sync pull with ?since", async () => {
+    // Create habit + entry
+    const { json: created } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Tombstone entry test" },
+    });
+    const habitId = created.habit.id;
+
+    const { json: entryRes } = await api("POST", `/v1/habits/${habitId}/entries`, {
+      token,
+      body: { date: "2025-11-20" },
+    });
+    const entryId = entryRes.entry.id;
+
+    const beforeDelete = new Date(Date.now() - 1000).toISOString();
+
+    // Delete the entry via CRUD route
+    await api("DELETE", `/v1/habits/${habitId}/entries/2025-11-20`, { token });
+
+    // Incremental pull should return the entry id in deletedEntryIds
+    const pull = await api("GET", "/v1/sync/pull", { token, query: { since: beforeDelete } });
+    assert.ok(Array.isArray(pull.json.deletedEntryIds), "deletedEntryIds should be an array");
+    assert.ok(pull.json.deletedEntryIds.includes(entryId),
+      `deleted entry ${entryId} should appear in tombstones`);
+    // The entry itself should not appear in the entries list
+    const stillPresent = pull.json.entries.find((e) => e.id === entryId);
+    assert.equal(stillPresent, undefined, "deleted entry should not appear in entries list");
+  });
+
   it("legacy space-format timestamps are migrated and visible in pull with ?since", async () => {
     const habitId = crypto.randomUUID();
     const entryId = crypto.randomUUID();
