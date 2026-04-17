@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "ignoreDeprecations": "6.0",
+    "lib": ["ES2022"],
+    "strict": false,
+    "noImplicitAny": false,
+    "checkJs": true,
+    "allowJs": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true
+  },
+  "include": [
+    "*.d.ts",
+    "*.js",
+    "routes/**/*.js",
+    "auth.js",
+    "db.js",
+    "logger.js",
+    "email.js"
+  ],
+  "exclude": [
+    "node_modules",
+    "test",
+    "seed-demo.js"
+  ]
+}

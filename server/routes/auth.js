@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const rateLimit = require("express-rate-limit");
+const { rateLimit } = require("express-rate-limit");
 const {
   MAGIC_LINK_TTL_MS,
   clearSession,
