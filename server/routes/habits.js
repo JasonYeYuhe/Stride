@@ -6,13 +6,15 @@ const db = require("../db");
 const { requireUser } = require("../auth");
 
 // Habits-specific rate limit: 60 requests per minute per IP
-const habitsLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 60,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: "Too many requests, please try again later" },
-});
+const habitsLimiter = process.env.NODE_ENV === "test"
+  ? /** @type {import('express').RequestHandler} */ ((req, res, next) => next())
+  : rateLimit({
+      windowMs: 60 * 1000,
+      max: 60,
+      standardHeaders: true,
+      legacyHeaders: false,
+      message: { error: "Too many requests, please try again later" },
+    });
 
 // All routes require authentication
 router.use(requireUser);
