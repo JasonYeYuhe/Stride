@@ -2633,3 +2633,116 @@ describe("PUT /habits/:id: note field clearing", () => {
     assert.equal(json.habit.note, null, "note should be null after explicit clear");
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("POST /habits: name validation", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("POST /habits with missing name returns 400", async () => {
+    const { status, json } = await api("POST", "/v1/habits", { token, body: {} });
+    assert.equal(status, 400);
+    assert.match(json.error, /name/i);
+  });
+
+  it("POST /habits with empty name returns 400", async () => {
+    const { status, json } = await api("POST", "/v1/habits", { token, body: { name: "" } });
+    assert.equal(status, 400);
+    assert.match(json.error, /name/i);
+  });
+
+  it("POST /habits with whitespace-only name returns 400", async () => {
+    const { status, json } = await api("POST", "/v1/habits", { token, body: { name: "   " } });
+    assert.equal(status, 400);
+    assert.match(json.error, /name/i);
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("GET /habits/:id/entries: limit clamping", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+    const { json } = await api("POST", "/v1/habits", { token, body: { name: "Limit clamp test" } });
+    habitId = json.habit.id;
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("GET /habits/:id/entries clamps limit to maximum of 500", async () => {
+    const { status, json } = await api("GET", `/v1/habits/${habitId}/entries`, {
+      token,
+      query: { limit: "9999" },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.pagination.limit, 500, "limit should be capped at 500");
+  });
+
+  it("GET /habits/:id/entries treats limit=0 as default (100)", async () => {
+    const { status, json } = await api("GET", `/v1/habits/${habitId}/entries`, {
+      token,
+      query: { limit: "0" },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.pagination.limit, 100, "limit=0 is falsy and falls back to default of 100");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Stats: currentStreak from yesterday only", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+    const { json } = await api("POST", "/v1/habits", { token, body: { name: "Yesterday only" } });
+    habitId = json.habit.id;
+
+    // Insert one entry for yesterday, nothing today
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    await api("POST", `/v1/habits/${habitId}/entries`, { token, body: { date: yesterday } });
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("currentStreak is 1 when only yesterday has an entry", async () => {
+    const { status, json } = await api("GET", `/v1/habits/${habitId}/stats`, { token });
+    assert.equal(status, 200);
+    assert.equal(json.currentStreak, 1, "streak should be 1 when only yesterday is completed");
+    assert.equal(json.bestStreak, 1);
+    assert.equal(json.totalEntries, 1);
+  });
+});
