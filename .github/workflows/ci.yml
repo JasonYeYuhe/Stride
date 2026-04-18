@@ -29,10 +29,10 @@ jobs:
 
   ios-build-and-test:
     name: iOS Build & Test
-    runs-on: macos-15
-    timeout-minutes: 30
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_16.app/Contents/Developer
+    # macos-14 has iOS 17 simulators preinstalled with Xcode 15
+    # (macos-15 + Xcode 16 requires separate simulator runtime download)
+    runs-on: macos-14
+    timeout-minutes: 25
 
     steps:
       - uses: actions/checkout@v4
@@ -43,23 +43,12 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Install iOS simulator runtime (if missing)
-        run: |
-          # Xcode 16 on macos-15 runners ships without preinstalled iOS runtimes
-          # since ~Apr 2025. Download platform if no simulators are available.
-          if ! xcrun simctl list devices available iOS 2>/dev/null | grep -q "iPhone"; then
-            echo "No iOS simulators available, downloading platform..."
-            sudo xcodebuild -downloadPlatform iOS
-          else
-            echo "iOS simulators already available"
-          fi
-          echo "=== Available iOS devices ==="
-          xcrun simctl list devices available iOS
+      - name: List available iOS simulators
+        run: xcrun simctl list devices available iOS
 
       - name: Determine iOS simulator to use
         id: sim
         run: |
-          # Pick the latest available iPhone (any model)
           DEVICE=$(xcrun simctl list devices available iOS --json | python3 -c "
           import json, sys
           data = json.load(sys.stdin)
@@ -68,15 +57,14 @@ jobs:
               for d in devs:
                   if 'iPhone' in d['name'] and d.get('isAvailable', False):
                       candidates.append(d['name'])
-          # Prefer iPhone 16 Pro > iPhone 16 > any iPhone
-          for pref in ['iPhone 16 Pro', 'iPhone 16', 'iPhone 15 Pro', 'iPhone 15']:
+          for pref in ['iPhone 15 Pro', 'iPhone 15', 'iPhone 14 Pro', 'iPhone 14']:
               if pref in candidates:
                   print(pref)
                   sys.exit(0)
           if candidates:
               print(candidates[0])
           else:
-              print('NONE_AVAILABLE', file=sys.stderr)
+              print('NONE', file=sys.stderr)
               sys.exit(1)
           ")
           echo "Selected: $DEVICE"
@@ -101,10 +89,8 @@ jobs:
 
   macos-build:
     name: macOS Build
-    runs-on: macos-15
+    runs-on: macos-14
     timeout-minutes: 20
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_16.app/Contents/Developer
 
     steps:
       - uses: actions/checkout@v4
