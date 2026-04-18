@@ -2423,3 +2423,139 @@ describe("Sync: full and incremental pull for user with no habits", () => {
     assert.equal(json.deletedEntryIds.length, 0);
   });
 });
+
+describe("Habit entries: GET with only ?to (no ?from)", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    ({ userId } = createTestUser());
+    token = createTestSession(userId);
+    const h = await api("POST", "/v1/habits", { token, body: { name: "Only-to filter habit" } });
+    habitId = h.json.habit.id;
+    await api("POST", `/v1/habits/${habitId}/entries`, { token, body: { date: "2025-01-10" } });
+    await api("POST", `/v1/habits/${habitId}/entries`, { token, body: { date: "2025-02-10" } });
+    await api("POST", `/v1/habits/${habitId}/entries`, { token, body: { date: "2025-03-10" } });
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("GET /habits/:id/entries with only ?to (no ?from) returns all entries", async () => {
+    // The route only applies the date range filter when BOTH from AND to are present
+    const { status, json } = await api("GET", `/v1/habits/${habitId}/entries`, {
+      token,
+      query: { to: "2025-01-31" },
+    });
+    assert.equal(status, 200);
+    // ?to alone is ignored — all 3 entries are returned
+    assert.equal(json.pagination.total, 3);
+  });
+});
+
+describe("POST /habits: name boundary at 100 characters", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    ({ userId } = createTestUser());
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("POST /habits with name of exactly 100 characters is accepted", async () => {
+    const name = "A".repeat(100);
+    assert.equal(name.length, 100);
+    const { status, json } = await api("POST", "/v1/habits", { token, body: { name } });
+    assert.equal(status, 201);
+    assert.equal(json.habit.name, name);
+    db.prepare("DELETE FROM habits WHERE id = ?").run(json.habit.id);
+  });
+
+  it("POST /habits with name of exactly 101 characters is rejected", async () => {
+    const name = "A".repeat(101);
+    assert.equal(name.length, 101);
+    const { status } = await api("POST", "/v1/habits", { token, body: { name } });
+    assert.equal(status, 400);
+  });
+});
+
+describe("Sync: sortOrder round-trip via push/pull", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    ({ userId } = createTestUser());
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("push habit with sortOrder=7; pull returns sortOrder=7", async () => {
+    const habitId = crypto.randomUUID();
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Sort-order habit", sortOrder: 7 }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    const { json } = await api("GET", "/v1/sync/pull", { token });
+    const habit = json.habits.find((h) => h.id === habitId);
+    assert.ok(habit, "habit should exist in pull");
+    assert.equal(habit.sortOrder, 7);
+
+    db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
+  });
+});
+
+describe("Stats: totalEntries counts entries outside the 30-day window", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    ({ userId } = createTestUser());
+    token = createTestSession(userId);
+    const h = await api("POST", "/v1/habits", { token, body: { name: "Old entries habit" } });
+    habitId = h.json.habit.id;
+    // Insert two old entries directly (well outside the 30-day window)
+    db.prepare("INSERT INTO habit_entries (id, habit_id, date, created_at) VALUES (?, ?, ?, ?)").run(
+      crypto.randomUUID(), habitId, "2020-01-01", new Date().toISOString(),
+    );
+    db.prepare("INSERT INTO habit_entries (id, habit_id, date, created_at) VALUES (?, ?, ?, ?)").run(
+      crypto.randomUUID(), habitId, "2020-01-02", new Date().toISOString(),
+    );
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("totalEntries reflects all-time entries, not just the 30-day window", async () => {
+    const { status, json } = await api("GET", `/v1/habits/${habitId}/stats`, { token });
+    assert.equal(status, 200);
+    // totalEntries = 2 (both old entries), completionRate = 0 (none within 30 days)
+    assert.equal(json.totalEntries, 2);
+    assert.equal(json.completionRate, 0);
+    assert.equal(json.currentStreak, 0);
+  });
+});
