@@ -99,6 +99,15 @@ router.put("/:id", (req, res) => {
   const existing = db.prepare("SELECT id FROM habits WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
   if (!existing) return res.status(404).json({ error: "Habit not found" });
 
+  if ("name" in req.body) {
+    if (!name || typeof name !== "string" || name.trim().length === 0) {
+      return res.status(400).json({ error: "Name is required" });
+    }
+    if (name.trim().length > 100) {
+      return res.status(400).json({ error: "Name must be 100 characters or less" });
+    }
+  }
+
   if ("reminderHour" in req.body && reminderHour != null) {
     if (!Number.isInteger(reminderHour) || reminderHour < 0 || reminderHour > 23) {
       return res.status(400).json({ error: "reminderHour must be an integer 0–23" });
@@ -124,7 +133,7 @@ router.put("/:id", (req, res) => {
       updated_at = ?
     WHERE id = ? AND user_id = ?
   `).run(
-    name ?? null,
+    name != null ? name.trim() : null,
     emoji ?? null,
     colorHex ?? null,
     isArchived != null ? (isArchived ? 1 : 0) : null,

@@ -1945,3 +1945,160 @@ describe("Habit entries: idempotent delete", () => {
     assert.equal(json.ok, true);
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("PUT /habits/:id: name validation", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+    const { json } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Original name", emoji: "⭐", colorHex: "#34C759" },
+    });
+    habitId = json.habit.id;
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("PUT with empty name returns 400", async () => {
+    const { status, json } = await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: { name: "" },
+    });
+    assert.equal(status, 400);
+    assert.match(json.error, /name/i);
+  });
+
+  it("PUT with whitespace-only name returns 400", async () => {
+    const { status, json } = await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: { name: "   " },
+    });
+    assert.equal(status, 400);
+    assert.match(json.error, /name/i);
+  });
+
+  it("PUT with name longer than 100 chars returns 400", async () => {
+    const { status, json } = await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: { name: "あ".repeat(101) },
+    });
+    assert.equal(status, 400);
+    assert.match(json.error, /100/);
+  });
+
+  it("PUT with name omitted leaves name unchanged", async () => {
+    const { status, json } = await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: { emoji: "🔥" },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.habit.name, "Original name");
+    assert.equal(json.habit.emoji, "🔥");
+  });
+
+  it("PUT with Japanese name preserves CJK characters without corruption", async () => {
+    const jaName = "毎日の瞑想と読書の習慣";
+    const { status, json } = await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: { name: jaName },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.habit.name, jaName, "Japanese name must not be corrupted");
+
+    // Verify via GET list too
+    const list = await api("GET", "/v1/habits", { token });
+    const found = list.json.habits.find((h) => h.id === habitId);
+    assert.ok(found, "habit should appear in list");
+    assert.equal(found.name, jaName);
+  });
+
+  it("PUT with Traditional Chinese name (zh-Hant) preserves characters", async () => {
+    const zhHantName = "每日閱讀與冥想習慣";
+    const { status, json } = await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: { name: zhHantName },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.habit.name, zhHantName);
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync: edge cases", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    const habits = db.prepare("SELECT id FROM habits WHERE user_id = ?").all(userId);
+    for (const h of habits) {
+      db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(/** @type {any} */ (h).id);
+    }
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("sync push: if habit is in both habits array and deletedHabitIds, deletion wins", async () => {
+    const conflictHabitId = crypto.randomUUID();
+
+    // Push the same habit in both arrays simultaneously
+    const { status, json } = await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: conflictHabitId, name: "Conflict habit", sortOrder: 0 }],
+        entries: [],
+        deletedHabitIds: [conflictHabitId],
+        deletedEntryIds: [],
+      },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+
+    // The habit should NOT appear in pull (deletion wins)
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    const found = pull.json.habits.find((h) => h.id === conflictHabitId);
+    assert.equal(found, undefined, "habit in deletedHabitIds should not be upserted");
+  });
+
+  it("sync push: entry for a habit that does not exist is silently skipped", async () => {
+    const ghostHabitId = crypto.randomUUID();
+    const orphanEntryId = crypto.randomUUID();
+
+    // Push an entry referencing a habit that was never created
+    const { status, json } = await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [],
+        entries: [{ id: orphanEntryId, habitId: ghostHabitId, date: "2025-10-01" }],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+
+    // Verify the orphan entry is NOT in pull
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    const found = pull.json.entries.find((e) => e.id === orphanEntryId);
+    assert.equal(found, undefined, "entry for non-existent habit should be silently skipped");
+  });
+});
