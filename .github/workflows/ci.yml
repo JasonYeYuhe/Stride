@@ -29,10 +29,12 @@ jobs:
 
   ios-build-and-test:
     name: iOS Build & Test
-    # macos-14 has iOS 17 simulators preinstalled with Xcode 15
-    # (macos-15 + Xcode 16 requires separate simulator runtime download)
-    runs-on: macos-14
-    timeout-minutes: 25
+    # Need Xcode 16 (project format 77). macos-15 has Xcode 16 but iOS
+    # simulator runtimes need explicit download + device creation.
+    runs-on: macos-15
+    timeout-minutes: 35
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.app/Contents/Developer
 
     steps:
       - uses: actions/checkout@v4
@@ -43,38 +45,44 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: List available iOS simulators
-        run: xcrun simctl list devices available iOS
-
-      - name: Determine iOS simulator to use
-        id: sim
+      - name: Download iOS platform + create simulator
         run: |
-          DEVICE=$(xcrun simctl list devices available iOS --json | python3 -c "
+          echo "=== Before: available runtimes ==="
+          xcrun simctl list runtimes
+          echo ""
+          # Download iOS platform (installs SDK + simulator runtime)
+          sudo xcodebuild -downloadPlatform iOS
+          echo ""
+          echo "=== After: available runtimes ==="
+          xcrun simctl list runtimes
+          echo ""
+          echo "=== Available device types with iOS ==="
+          xcrun simctl list devicetypes | grep -i iPhone | head -10
+          echo ""
+          # Find latest installed iOS runtime ID
+          RUNTIME_ID=$(xcrun simctl list runtimes --json | python3 -c "
           import json, sys
           data = json.load(sys.stdin)
-          candidates = []
-          for runtime, devs in data['devices'].items():
-              for d in devs:
-                  if 'iPhone' in d['name'] and d.get('isAvailable', False):
-                      candidates.append(d['name'])
-          for pref in ['iPhone 15 Pro', 'iPhone 15', 'iPhone 14 Pro', 'iPhone 14']:
-              if pref in candidates:
-                  print(pref)
-                  sys.exit(0)
-          if candidates:
-              print(candidates[0])
-          else:
-              print('NONE', file=sys.stderr)
-              sys.exit(1)
+          ios_runtimes = [r for r in data['runtimes'] if r['platform'] == 'iOS' and r.get('isAvailable', False)]
+          if not ios_runtimes:
+              print('NONE', file=sys.stderr); sys.exit(1)
+          latest = sorted(ios_runtimes, key=lambda r: r['version'], reverse=True)[0]
+          print(latest['identifier'])
           ")
-          echo "Selected: $DEVICE"
-          echo "device=$DEVICE" >> $GITHUB_OUTPUT
+          echo "Using runtime: $RUNTIME_ID"
+          # Create an iPhone 16 Pro device if none exists
+          if ! xcrun simctl list devices available iOS | grep -q "iPhone 16 Pro"; then
+              xcrun simctl create "iPhone 16 Pro" "com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro" "$RUNTIME_ID"
+          fi
+          echo ""
+          echo "=== Final available iPhone devices ==="
+          xcrun simctl list devices available iOS | grep iPhone
 
       - name: Build iOS target
         run: |
           xcodebuild build \
             -scheme Stride \
-            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device }}" \
+            -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
             CODE_SIGNING_ALLOWED=NO \
             -quiet
 
@@ -83,14 +91,16 @@ jobs:
           xcodebuild test \
             -scheme StrideTests \
             -project Stride.xcodeproj \
-            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device }}" \
+            -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
             CODE_SIGNING_ALLOWED=NO \
             -quiet
 
   macos-build:
     name: macOS Build
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.app/Contents/Developer
 
     steps:
       - uses: actions/checkout@v4
