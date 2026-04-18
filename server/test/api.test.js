@@ -2336,3 +2336,90 @@ describe("Habit entries: GET 404", () => {
     db.prepare("DELETE FROM users WHERE id = ?").run(user.userId);
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("GET /habits: empty list for fresh user", () => {
+  it("returns empty habits array and zero pagination totals", async () => {
+    const user = createTestUser();
+    const token = createTestSession(user.userId);
+
+    const { status, json } = await api("GET", "/v1/habits", { token });
+    assert.equal(status, 200);
+    assert.ok(Array.isArray(json.habits), "habits should be an array");
+    assert.equal(json.habits.length, 0, "fresh user should have no habits");
+    assert.equal(json.pagination.total, 0);
+    assert.equal(json.pagination.hasMore, false);
+    assert.equal(json.pagination.offset, 0);
+
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(user.userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(user.userId);
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Auth: GET /session with expired Bearer token", () => {
+  it("returns status 200 with null user (not 401)", async () => {
+    const user = createTestUser();
+    const userId = user.userId;
+
+    // Insert an already-expired session
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = hashToken(rawToken);
+    const expiredAt = Date.now() - 5000; // 5 seconds in the past
+    db.prepare("INSERT INTO sessions (user_id, token_hash, expires_at) VALUES (?, ?, ?)").run(
+      userId, tokenHash, expiredAt,
+    );
+
+    // /session is a public endpoint — it returns {user: null} for expired/missing tokens, not 401
+    const { status, json } = await api("GET", "/v1/auth/session", { token: rawToken });
+    assert.equal(status, 200, "GET /session should return 200 even for expired token");
+    assert.equal(json.user, null, "expired token should yield null user");
+
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync: full and incremental pull for user with no habits", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("full pull returns empty arrays", async () => {
+    const { status, json } = await api("GET", "/v1/sync/pull", { token });
+    assert.equal(status, 200);
+    assert.ok(Array.isArray(json.habits));
+    assert.equal(json.habits.length, 0);
+    assert.ok(Array.isArray(json.entries));
+    assert.equal(json.entries.length, 0);
+    assert.ok(Array.isArray(json.deletedHabitIds));
+    assert.equal(json.deletedHabitIds.length, 0);
+    assert.ok(Array.isArray(json.deletedEntryIds));
+    assert.equal(json.deletedEntryIds.length, 0);
+    assert.ok(json.serverTime, "serverTime should be present");
+  });
+
+  it("incremental pull with ?since also returns empty arrays", async () => {
+    const since = new Date(Date.now() - 60000).toISOString(); // 1 minute ago
+    const { status, json } = await api("GET", "/v1/sync/pull", { token, query: { since } });
+    assert.equal(status, 200);
+    assert.equal(json.habits.length, 0);
+    assert.equal(json.entries.length, 0);
+    assert.equal(json.deletedHabitIds.length, 0);
+    assert.equal(json.deletedEntryIds.length, 0);
+  });
+});
