@@ -3022,3 +3022,146 @@ describe("PUT /habits/:id: explicit null reminderHour leaves value unchanged", (
     assert.equal(json.habit.reminder_hour, 9, "reminder_hour should remain 9 when null is sent");
   });
 });
+
+describe("GET /habits/:id/entries: same-day date range", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+    const now = new Date().toISOString();
+    habitId = crypto.randomUUID();
+    db.prepare(
+      "INSERT INTO habits (id, user_id, name, emoji, color_hex, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(habitId, userId, "Range test", "⭐", "#34C759", 0, now, now);
+    db.prepare("INSERT INTO habit_entries (id, habit_id, date, created_at) VALUES (?, ?, ?, ?)").run(
+      crypto.randomUUID(), habitId, "2025-03-10", now
+    );
+    db.prepare("INSERT INTO habit_entries (id, habit_id, date, created_at) VALUES (?, ?, ?, ?)").run(
+      crypto.randomUUID(), habitId, "2025-03-11", now
+    );
+    db.prepare("INSERT INTO habit_entries (id, habit_id, date, created_at) VALUES (?, ?, ?, ?)").run(
+      crypto.randomUUID(), habitId, "2025-03-12", now
+    );
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("from=to same-day range returns exactly that day's entry", async () => {
+    const { status, json } = await api("GET", `/v1/habits/${habitId}/entries`, {
+      token,
+      query: { from: "2025-03-11", to: "2025-03-11" },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.entries.length, 1, "should return exactly one entry");
+    assert.equal(json.entries[0].date, "2025-03-11");
+    assert.equal(json.pagination.total, 1);
+  });
+
+  it("reversed range (from > to) returns empty entries gracefully", async () => {
+    const { status, json } = await api("GET", `/v1/habits/${habitId}/entries`, {
+      token,
+      query: { from: "2025-03-12", to: "2025-03-10" },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.entries.length, 0, "reversed range should return empty results");
+    assert.equal(json.pagination.total, 0);
+  });
+});
+
+describe("Auth: request-link with null email", () => {
+  it("POST /auth/request-link with null email returns 400", async () => {
+    const { status, json } = await api("POST", "/v1/auth/request-link", { body: { email: null } });
+    assert.equal(status, 400);
+    assert.ok(json.error, "should return an error message");
+  });
+});
+
+describe("Habit entries: future date accepted", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+    const now = new Date().toISOString();
+    habitId = crypto.randomUUID();
+    db.prepare(
+      "INSERT INTO habits (id, user_id, name, emoji, color_hex, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(habitId, userId, "Future entry test", "⭐", "#34C759", 0, now, now);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("POST /habits/:id/entries with a future date is accepted (no future-date restriction)", async () => {
+    const futureDate = "2099-12-31";
+    const { status, json } = await api("POST", `/v1/habits/${habitId}/entries`, {
+      token,
+      body: { date: futureDate },
+    });
+    assert.equal(status, 201);
+    assert.equal(json.entry.date, futureDate);
+    assert.equal(json.entry.habit_id, habitId);
+  });
+});
+
+describe("Sync pull incremental: entry note included in ?since response", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id IN (SELECT id FROM habits WHERE user_id = ?)", userId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("incremental pull with ?since includes entry note field", async () => {
+    const habitId = crypto.randomUUID();
+    const entryId = crypto.randomUUID();
+    const beforePush = new Date(Date.now() - 2000).toISOString();
+
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Note test habit", sortOrder: 0 }],
+        entries: [{ id: entryId, habitId, date: "2025-07-15", note: "my entry note" }],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    const { status, json } = await api("GET", "/v1/sync/pull", {
+      token,
+      query: { since: beforePush },
+    });
+    assert.equal(status, 200);
+    const entry = json.entries.find((e) => e.id === entryId);
+    assert.ok(entry, "entry should appear in incremental pull");
+    assert.equal(entry.note, "my entry note", "entry note must be included in incremental pull response");
+
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
+  });
+});
