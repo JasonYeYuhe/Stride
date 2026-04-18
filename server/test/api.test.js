@@ -2880,3 +2880,145 @@ describe("Stats: completionRate uses 30-day window for old habits", () => {
     assert.equal(json.totalEntries, 2);
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Habit entries: DELETE for nonexistent habit returns 404", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("DELETE /habits/:id/entries/:date returns 404 when habit does not exist", async () => {
+    const fakeId = crypto.randomUUID();
+    const { status, json } = await api("DELETE", `/v1/habits/${fakeId}/entries/2025-01-01`, { token });
+    assert.equal(status, 404);
+    assert.ok(json.error, "error message should be present");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("POST /habits: reminderEnabled=true defaults hour and minute", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("POST /habits with reminderEnabled=true stores default hour=20 and minute=0 when omitted", async () => {
+    const { status, json } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Reminder defaults test", reminderEnabled: true },
+    });
+    assert.equal(status, 201);
+    assert.equal(json.habit.reminder_enabled, 1);
+    assert.equal(json.habit.reminder_hour, 20);
+    assert.equal(json.habit.reminder_minute, 0);
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync: empty push body", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("POST /sync/push with empty body {} returns ok:true", async () => {
+    const { status, json } = await api("POST", "/v1/sync/push", { token, body: {} });
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("GET /habits: negative limit clamped to 1", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("GET /habits with limit=-5 returns pagination.limit of 1", async () => {
+    await api("POST", "/v1/habits", { token, body: { name: "Negative limit test" } });
+    const { status, json } = await api("GET", "/v1/habits", { token, query: { limit: "-5" } });
+    assert.equal(status, 200);
+    assert.equal(json.pagination.limit, 1);
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("PUT /habits/:id: explicit null reminderHour leaves value unchanged", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+    const created = db.prepare(
+      "INSERT INTO habits (id, user_id, name, emoji, color_hex, sort_order, reminder_enabled, reminder_hour, reminder_minute, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(
+      crypto.randomUUID(), userId, "Null hour test", "⭐", "#34C759", 0, 1, 9, 30,
+      new Date().toISOString(), new Date().toISOString()
+    );
+    const h = db.prepare("SELECT id FROM habits WHERE user_id = ? AND name = ?").get(userId, "Null hour test");
+    habitId = h.id;
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("PUT with reminderHour:null leaves reminder_hour unchanged", async () => {
+    const { status, json } = await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: { reminderHour: null },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.habit.reminder_hour, 9, "reminder_hour should remain 9 when null is sent");
+  });
+});
