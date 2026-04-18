@@ -2102,3 +2102,151 @@ describe("Sync: edge cases", () => {
     assert.equal(found, undefined, "entry for non-existent habit should be silently skipped");
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Habit entries: DELETE date validation", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("DELETE /habits/:id/entries/:date with malformed date returns 400", async () => {
+    const { json: created } = await api("POST", "/v1/habits", { token, body: { name: "Entry date check" } });
+    const habitId = created.habit.id;
+
+    const { status, json } = await api("DELETE", `/v1/habits/${habitId}/entries/not-a-date`, { token });
+    assert.equal(status, 400);
+    assert.ok(json.error, "error message should be present");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Habit archive/unarchive round-trip", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("PUT isArchived=true then false round-trips correctly", async () => {
+    const { json: created } = await api("POST", "/v1/habits", { token, body: { name: "Archive test" } });
+    const habitId = created.habit.id;
+
+    // Archive
+    const { json: archived } = await api("PUT", `/v1/habits/${habitId}`, { token, body: { isArchived: true } });
+    assert.equal(archived.habit.is_archived, 1, "habit should be archived");
+
+    // Unarchive
+    const { json: unarchived } = await api("PUT", `/v1/habits/${habitId}`, { token, body: { isArchived: false } });
+    assert.equal(unarchived.habit.is_archived, 0, "habit should be unarchived");
+
+    // Verify via GET
+    const { json: list } = await api("GET", "/v1/habits", { token });
+    const found = list.habits.find((h) => h.id === habitId);
+    assert.equal(found.is_archived, 0, "GET list should reflect unarchived state");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Habit entries: GET pagination and filter", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+
+    const { json } = await api("POST", "/v1/habits", { token, body: { name: "Entry pagination habit" } });
+    habitId = json.habit.id;
+
+    // Create 5 entries on consecutive dates
+    for (let i = 1; i <= 5; i++) {
+      await api("POST", `/v1/habits/${habitId}/entries`, {
+        token,
+        body: { date: `2025-11-0${i}` },
+      });
+    }
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("GET /habits/:id/entries with ?offset skips entries correctly", async () => {
+    const { json } = await api("GET", `/v1/habits/${habitId}/entries`, {
+      token,
+      query: { limit: "2", offset: "2" },
+    });
+    assert.equal(json.entries.length, 2, "should return 2 entries");
+    assert.equal(json.pagination.offset, 2);
+    assert.equal(json.pagination.total, 5);
+    // Entries are ordered by date; offset 2 should start from the 3rd date
+    assert.equal(json.entries[0].date, "2025-11-03");
+  });
+
+  it("GET /habits/:id/entries with only ?from (no ?to) returns all entries", async () => {
+    // The route does `if (from && to)` — passing only `from` falls through to unfiltered query
+    const { json } = await api("GET", `/v1/habits/${habitId}/entries`, {
+      token,
+      query: { from: "2025-11-03" },
+    });
+    // Without ?to, the filter is not applied — all 5 entries are returned
+    assert.equal(json.pagination.total, 5, "unfiltered query returns all entries when ?to is absent");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("POST /habits with client-provided id", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("POST /habits with client-provided id returns that id", async () => {
+    const clientId = crypto.randomUUID();
+    const { status, json } = await api("POST", "/v1/habits", {
+      token,
+      body: { id: clientId, name: "Custom ID habit" },
+    });
+    assert.equal(status, 201);
+    assert.equal(json.habit.id, clientId, "returned habit should use client-provided id");
+
+    // Verify it's retrievable by that id
+    const { json: list } = await api("GET", "/v1/habits", { token });
+    const found = list.habits.find((h) => h.id === clientId);
+    assert.ok(found, "habit with client-provided id should be findable in list");
+  });
+});
