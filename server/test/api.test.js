@@ -2559,3 +2559,77 @@ describe("Stats: totalEntries counts entries outside the 30-day window", () => {
     assert.equal(json.currentStreak, 0);
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Login page: /login endpoint", () => {
+  it("GET /login returns 200 and text/html content-type", async () => {
+    const res = await fetch(`${BASE}/login`);
+    assert.equal(res.status, 200);
+    const ct = res.headers.get("content-type") || "";
+    assert.ok(ct.includes("text/html"), `Expected text/html, got: ${ct}`);
+  });
+
+  it("GET /login with no token shows error message", async () => {
+    const res = await fetch(`${BASE}/login`);
+    const text = await res.text();
+    assert.ok(text.includes("No login token found"), "should show error when token absent");
+  });
+
+  it("GET /login?token=abc123 renders token in page", async () => {
+    const res = await fetch(`${BASE}/login?token=abc123`);
+    const text = await res.text();
+    assert.ok(text.includes("abc123"), "page should contain the token value");
+  });
+
+  it("GET /login escapes XSS in token query param", async () => {
+    const xss = '<script>alert(1)</script>';
+    const res = await fetch(`${BASE}/login?token=${encodeURIComponent(xss)}`);
+    const text = await res.text();
+    assert.ok(!text.includes("<script>"), "raw <script> tag must not appear in response");
+    assert.ok(text.includes("&lt;script&gt;"), "< and > must be HTML-escaped");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("PUT /habits/:id: note field clearing", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+    const { json } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Note clearing test", note: "original note" },
+    });
+    habitId = json.habit.id;
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("PUT without note key preserves existing note", async () => {
+    const { status, json } = await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: { emoji: "🔥" },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.habit.note, "original note", "note should be unchanged when key absent");
+  });
+
+  it("PUT with note: null explicitly clears the note", async () => {
+    const { status, json } = await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: { note: null },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.habit.note, null, "note should be null after explicit clear");
+  });
+});
