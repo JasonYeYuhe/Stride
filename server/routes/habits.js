@@ -72,16 +72,23 @@ router.post("/", (req, res) => {
   ).get(req.user.id));
 
   const now = new Date().toISOString();
-  db.prepare(`
-    INSERT INTO habits (id, user_id, name, emoji, color_hex, sort_order,
-                        reminder_enabled, reminder_hour, reminder_minute, note,
-                        created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    habitId, req.user.id, name.trim(), emoji || "⭐", colorHex || "#34C759", maxOrder.next,
-    reminderEnabled ? 1 : 0, reminderHour ?? 20, reminderMinute ?? 0, note ?? null,
-    now, now,
-  );
+  try {
+    db.prepare(`
+      INSERT INTO habits (id, user_id, name, emoji, color_hex, sort_order,
+                          reminder_enabled, reminder_hour, reminder_minute, note,
+                          created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      habitId, req.user.id, name.trim(), emoji || "⭐", colorHex || "#34C759", maxOrder.next,
+      reminderEnabled ? 1 : 0, reminderHour ?? 20, reminderMinute ?? 0, note ?? null,
+      now, now,
+    );
+  } catch (err) {
+    if (err.message && err.message.includes("UNIQUE constraint")) {
+      return res.status(409).json({ error: "A habit with this ID already exists" });
+    }
+    throw err;
+  }
 
   const habit = db.prepare(`
     SELECT id, name, emoji, color_hex, is_archived, sort_order,

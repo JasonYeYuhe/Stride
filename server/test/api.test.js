@@ -2249,4 +2249,90 @@ describe("POST /habits with client-provided id", () => {
     const found = list.habits.find((h) => h.id === clientId);
     assert.ok(found, "habit with client-provided id should be findable in list");
   });
+
+  it("POST /habits with duplicate client-provided id returns 409", async () => {
+    const clientId = crypto.randomUUID();
+
+    // First create succeeds
+    const first = await api("POST", "/v1/habits", { token, body: { id: clientId, name: "Original" } });
+    assert.equal(first.status, 201);
+
+    // Second create with same id should fail gracefully
+    const second = await api("POST", "/v1/habits", { token, body: { id: clientId, name: "Duplicate" } });
+    assert.equal(second.status, 409, "duplicate habit id should return 409, not 500");
+    assert.ok(second.json.error, "error message should be present");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Auth: logout invalidates Bearer session", () => {
+  it("POST /auth/logout invalidates the session token for Bearer-authenticated clients", async () => {
+    const user = createTestUser();
+    const token = createTestSession(user.userId);
+
+    // Verify authenticated access works before logout
+    const before = await api("GET", "/v1/habits", { token });
+    assert.equal(before.status, 200, "should be accessible before logout");
+
+    // Logout using the Bearer token
+    const logoutResp = await api("POST", "/v1/auth/logout", { token });
+    assert.equal(logoutResp.status, 200);
+    assert.equal(logoutResp.json.ok, true);
+
+    // After logout, the Bearer token must no longer work
+    const after = await api("GET", "/v1/habits", { token });
+    assert.equal(after.status, 401, "token should be rejected after logout");
+
+    // Cleanup
+    db.prepare("DELETE FROM users WHERE id = ?").run(user.userId);
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Stats: zero entries", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+
+    const { json } = await api("POST", "/v1/habits", { token, body: { name: "Never done" } });
+    habitId = json.habit.id;
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("GET /habits/:id/stats returns all zeros for a habit with no entries", async () => {
+    const { status, json } = await api("GET", `/v1/habits/${habitId}/stats`, { token });
+    assert.equal(status, 200);
+    assert.equal(json.currentStreak, 0);
+    assert.equal(json.bestStreak, 0);
+    assert.equal(json.completionRate, 0);
+    assert.equal(json.totalEntries, 0);
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Habit entries: GET 404", () => {
+  it("GET /habits/:id/entries returns 404 for nonexistent habit", async () => {
+    const user = createTestUser();
+    const token = createTestSession(user.userId);
+
+    const { status } = await api("GET", "/v1/habits/nonexistent-habit-id/entries", { token });
+    assert.equal(status, 404);
+
+    // Cleanup
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(user.userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(user.userId);
+  });
 });

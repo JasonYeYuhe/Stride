@@ -167,6 +167,14 @@ function getSessionUserFromHeader(req) {
 }
 
 function clearSession(req) {
+  // Mobile app uses Bearer token — delete that session first
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    const token = authHeader.slice(7);
+    db.prepare("DELETE FROM sessions WHERE token_hash = ?").run(hashToken(token));
+    return;
+  }
+  // Web flow uses cookie
   const cookies = parseCookies(req);
   const sessionToken = cookies[SESSION_COOKIE];
   if (!sessionToken) return;
