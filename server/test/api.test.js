@@ -2746,3 +2746,137 @@ describe("Stats: currentStreak from yesterday only", () => {
     assert.equal(json.totalEntries, 1);
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("DELETE /habits/:id: cascade-deletes entries", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("deleting a habit removes all its entries from the database", async () => {
+    // Create habit
+    const { json: createJson } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Cascade test habit", emoji: "🗑️", colorHex: "#FF0000" },
+    });
+    const habitId = createJson.habit.id;
+
+    // Add 3 entries directly in DB for speed
+    const now = new Date().toISOString();
+    for (const date of ["2026-01-01", "2026-01-02", "2026-01-03"]) {
+      db.prepare("INSERT INTO habit_entries (id, habit_id, date, created_at) VALUES (?, ?, ?, ?)").run(
+        crypto.randomUUID(), habitId, date, now
+      );
+    }
+
+    // Verify entries exist before delete
+    const before = db.prepare("SELECT COUNT(*) as n FROM habit_entries WHERE habit_id = ?").get(habitId);
+    assert.equal(before.n, 3, "should have 3 entries before delete");
+
+    // Delete the habit
+    const { status } = await api("DELETE", `/v1/habits/${habitId}`, { token });
+    assert.equal(status, 200);
+
+    // Entries should be cascade-deleted
+    const after = db.prepare("SELECT COUNT(*) as n FROM habit_entries WHERE habit_id = ?").get(habitId);
+    assert.equal(after.n, 0, "entries should be cascade-deleted when habit is deleted");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Auth: expired magic link token", () => {
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM magic_link_tokens WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("verify with an expired magic link token returns 400", async () => {
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = hashToken(rawToken);
+    // expires_at is 1 second in the past — token is expired
+    const expiredAt = Date.now() - 1000;
+    db.prepare(
+      "INSERT INTO magic_link_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)"
+    ).run(userId, tokenHash, expiredAt);
+
+    const { status, json } = await api("POST", "/v1/auth/verify", { body: { token: rawToken } });
+    assert.equal(status, 400);
+    assert.ok(json.error, "should return an error message");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Stats: completionRate uses 30-day window for old habits", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+
+    // Create habit 60 days ago
+    habitId = crypto.randomUUID();
+    const habitCreatedAt = new Date(Date.now() - 60 * 86400000).toISOString();
+    db.prepare(
+      "INSERT INTO habits (id, user_id, name, emoji, color_hex, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(habitId, userId, "Old habit", "⭐", "#34C759", 0, habitCreatedAt, habitCreatedAt);
+
+    // Add 2 entries: today and yesterday
+    const today = new Date().toISOString().slice(0, 10);
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    const now = new Date().toISOString();
+    db.prepare("INSERT INTO habit_entries (id, habit_id, date, created_at) VALUES (?, ?, ?, ?)").run(
+      crypto.randomUUID(), habitId, today, now
+    );
+    db.prepare("INSERT INTO habit_entries (id, habit_id, date, created_at) VALUES (?, ?, ?, ?)").run(
+      crypto.randomUUID(), habitId, yesterday, now
+    );
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("completionRate is based on 30-day window, not habit age", async () => {
+    const { status, json } = await api("GET", `/v1/habits/${habitId}/stats`, { token });
+    assert.equal(status, 200);
+
+    // With 30-day window: 2 entries / ~31 days ≈ 0.065
+    // With 60-day window: 2 entries / ~61 days ≈ 0.033
+    // The rate should be significantly higher than the 60-day rate
+    const sixtydayRate = Math.round((2 / 61) * 1000) / 1000;
+    assert.ok(
+      json.completionRate > sixtydayRate,
+      `completionRate ${json.completionRate} should exceed 60-day rate ${sixtydayRate} (30-day window expected)`
+    );
+    assert.ok(json.completionRate > 0, "completionRate should be positive");
+    assert.ok(json.completionRate <= 1, "completionRate should not exceed 1");
+    assert.equal(json.totalEntries, 2);
+  });
+});
