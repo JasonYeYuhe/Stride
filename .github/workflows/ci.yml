@@ -27,34 +27,13 @@ jobs:
       - run: npm ci
       - run: npm test
 
-  ios-build:
-    name: iOS Build (generic)
-    # Uses generic iOS Simulator destination — does NOT require an actual
-    # simulator runtime to be installed on the runner, which has been
-    # unreliable on macos-15 + Xcode 16. Test step runs locally or via
-    # macOS build (same codebase). iOS tests can be added later if the
-    # GitHub runner situation improves.
-    runs-on: macos-15
-    timeout-minutes: 20
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_16.app/Contents/Developer
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install XcodeGen
-        run: brew install xcodegen
-
-      - name: Generate Xcode project
-        run: xcodegen generate
-
-      - name: Build iOS target (generic simulator)
-        run: |
-          xcodebuild build \
-            -scheme Stride \
-            -destination 'generic/platform=iOS Simulator' \
-            CODE_SIGNING_ALLOWED=NO \
-            -quiet
+  # iOS build disabled in CI due to GitHub runner limitations:
+  # - macos-15 ships Xcode 16 but iOS simulator runtimes are not preinstalled
+  # - -downloadPlatform iOS downloads runtimes that don't match the SDK build version
+  # - generic/platform=iOS Simulator still needs a runtime to compile asset catalogs
+  # - macos-14 has Xcode 15 which can't read Stride's project format (v77, Xcode 16+)
+  # macOS build covers the shared Swift code; rotation automation's local build
+  # (Xcode with proper simulators) catches iOS-specific issues.
 
   macos-build:
     name: macOS Build
