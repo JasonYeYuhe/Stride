@@ -30,7 +30,7 @@ jobs:
   ios-build-and-test:
     name: iOS Build & Test
     runs-on: macos-15
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
       DEVELOPER_DIR: /Applications/Xcode_16.app/Contents/Developer
 
@@ -43,11 +43,50 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      - name: Install iOS simulator runtime (if missing)
+        run: |
+          # Xcode 16 on macos-15 runners ships without preinstalled iOS runtimes
+          # since ~Apr 2025. Download platform if no simulators are available.
+          if ! xcrun simctl list devices available iOS 2>/dev/null | grep -q "iPhone"; then
+            echo "No iOS simulators available, downloading platform..."
+            sudo xcodebuild -downloadPlatform iOS
+          else
+            echo "iOS simulators already available"
+          fi
+          echo "=== Available iOS devices ==="
+          xcrun simctl list devices available iOS
+
+      - name: Determine iOS simulator to use
+        id: sim
+        run: |
+          # Pick the latest available iPhone (any model)
+          DEVICE=$(xcrun simctl list devices available iOS --json | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          candidates = []
+          for runtime, devs in data['devices'].items():
+              for d in devs:
+                  if 'iPhone' in d['name'] and d.get('isAvailable', False):
+                      candidates.append(d['name'])
+          # Prefer iPhone 16 Pro > iPhone 16 > any iPhone
+          for pref in ['iPhone 16 Pro', 'iPhone 16', 'iPhone 15 Pro', 'iPhone 15']:
+              if pref in candidates:
+                  print(pref)
+                  sys.exit(0)
+          if candidates:
+              print(candidates[0])
+          else:
+              print('NONE_AVAILABLE', file=sys.stderr)
+              sys.exit(1)
+          ")
+          echo "Selected: $DEVICE"
+          echo "device=$DEVICE" >> $GITHUB_OUTPUT
+
       - name: Build iOS target
         run: |
           xcodebuild build \
             -scheme Stride \
-            -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
+            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device }}" \
             CODE_SIGNING_ALLOWED=NO \
             -quiet
 
@@ -56,7 +95,7 @@ jobs:
           xcodebuild test \
             -scheme StrideTests \
             -project Stride.xcodeproj \
-            -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
+            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device }}" \
             CODE_SIGNING_ALLOWED=NO \
             -quiet
 
