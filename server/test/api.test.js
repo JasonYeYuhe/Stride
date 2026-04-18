@@ -1669,3 +1669,154 @@ describe("CRUD: cross-user isolation", () => {
     assert.ok(json.error);
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Habit list pagination", () => {
+  let token;
+  let userId;
+  const habitIds = [];
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+
+    // Insert 5 habits directly so sort_order is deterministic
+    const now = new Date().toISOString();
+    for (let i = 0; i < 5; i++) {
+      const id = crypto.randomUUID();
+      habitIds.push(id);
+      db.prepare(
+        "INSERT INTO habits (id, user_id, name, emoji, color_hex, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      ).run(id, userId, `Page habit ${i + 1}`, "⭐", "#34C759", i, now, now);
+    }
+  });
+
+  after(() => {
+    for (const id of habitIds) {
+      db.prepare("DELETE FROM habits WHERE id = ?").run(id);
+    }
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("GET /v1/habits returns all habits by default", async () => {
+    const { status, json } = await api("GET", "/v1/habits", { token });
+    assert.equal(status, 200);
+    assert.equal(json.pagination.total, 5);
+    assert.equal(json.habits.length, 5);
+    assert.equal(json.pagination.hasMore, false);
+  });
+
+  it("GET /v1/habits respects ?limit", async () => {
+    const { status, json } = await api("GET", "/v1/habits", {
+      token,
+      query: { limit: "2" },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.habits.length, 2);
+    assert.equal(json.pagination.total, 5);
+    assert.equal(json.pagination.hasMore, true);
+  });
+
+  it("GET /v1/habits respects ?offset", async () => {
+    const { status, json } = await api("GET", "/v1/habits", {
+      token,
+      query: { limit: "2", offset: "4" },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.habits.length, 1);
+    assert.equal(json.pagination.hasMore, false);
+    assert.equal(json.pagination.offset, 4);
+  });
+
+  it("GET /v1/habits with offset beyond total returns empty list", async () => {
+    const { status, json } = await api("GET", "/v1/habits", {
+      token,
+      query: { limit: "10", offset: "10" },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.habits.length, 0);
+    assert.equal(json.pagination.hasMore, false);
+    assert.equal(json.pagination.total, 5);
+  });
+
+  it("GET /v1/habits clamps limit to maximum of 200", async () => {
+    const { status, json } = await api("GET", "/v1/habits", {
+      token,
+      query: { limit: "999" },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.habits.length, 5);
+    assert.equal(json.pagination.limit, 200);
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync: archived habit round-trip", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    const habits = db.prepare("SELECT id FROM habits WHERE user_id = ?").all(userId);
+    for (const h of habits) {
+      db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(/** @type {any} */ (h).id);
+    }
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("sync push/pull preserves isArchived=true", async () => {
+    const habitId = crypto.randomUUID();
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{
+          id: habitId,
+          name: "Archived habit",
+          emoji: "📦",
+          colorHex: "#8E8E93",
+          isArchived: true,
+          sortOrder: 0,
+        }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    const habit = pull.json.habits.find((h) => h.id === habitId);
+    assert.ok(habit, "archived habit should appear in pull");
+    assert.equal(habit.isArchived, true, "isArchived should be true");
+    assert.equal(habit.name, "Archived habit");
+  });
+
+  it("CRUD PUT archives a habit; pull reflects isArchived=true", async () => {
+    const { json: created } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "To be archived" },
+    });
+    const habitId = created.habit.id;
+    assert.equal(created.habit.is_archived, 0);
+
+    await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: { isArchived: true },
+    });
+
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    const habit = pull.json.habits.find((h) => h.id === habitId);
+    assert.ok(habit, "archived habit should appear in pull");
+    assert.equal(habit.isArchived, true, "isArchived should be true after CRUD PUT");
+  });
+});
