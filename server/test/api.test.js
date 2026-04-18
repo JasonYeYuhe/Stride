@@ -1820,3 +1820,128 @@ describe("Sync: archived habit round-trip", () => {
     assert.equal(habit.isArchived, true, "isArchived should be true after CRUD PUT");
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Habits: field defaults and sort ordering", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    const habits = db.prepare("SELECT id FROM habits WHERE user_id = ?").all(userId);
+    for (const h of habits) {
+      db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(h.id);
+    }
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("POST /v1/habits defaults emoji to ⭐ when omitted", async () => {
+    const { status, json } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "No emoji habit" },
+    });
+    assert.equal(status, 201);
+    assert.equal(json.habit.emoji, "⭐");
+  });
+
+  it("POST /v1/habits defaults colorHex to #34C759 when omitted", async () => {
+    const { status, json } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "No color habit" },
+    });
+    assert.equal(status, 201);
+    assert.equal(json.habit.color_hex, "#34C759");
+  });
+
+  it("GET /v1/habits returns habits ordered by sort_order ASC", async () => {
+    // Create 3 habits — they get auto-assigned sort_order 0, 1, 2
+    const a = await api("POST", "/v1/habits", { token, body: { name: "Alpha" } });
+    const b = await api("POST", "/v1/habits", { token, body: { name: "Beta" } });
+    const c = await api("POST", "/v1/habits", { token, body: { name: "Gamma" } });
+    const idA = a.json.habit.id;
+    const idB = b.json.habit.id;
+    const idC = c.json.habit.id;
+
+    // Reorder: set Gamma to sort_order 0, Alpha to 1, Beta to 2
+    await api("PUT", `/v1/habits/${idC}`, { token, body: { sortOrder: 0 } });
+    await api("PUT", `/v1/habits/${idA}`, { token, body: { sortOrder: 1 } });
+    await api("PUT", `/v1/habits/${idB}`, { token, body: { sortOrder: 2 } });
+
+    const { json } = await api("GET", "/v1/habits", { token });
+    const ids = json.habits.map((h) => h.id);
+    const posC = ids.indexOf(idC);
+    const posA = ids.indexOf(idA);
+    const posB = ids.indexOf(idB);
+    assert.ok(posC < posA, "Gamma (order 0) should appear before Alpha (order 1)");
+    assert.ok(posA < posB, "Alpha (order 1) should appear before Beta (order 2)");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Auth: authenticated session", () => {
+  let token;
+  let userId;
+  let email;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    email = user.email;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("GET /v1/auth/session returns user id and email when authenticated", async () => {
+    const { status, json } = await api("GET", "/v1/auth/session", { token });
+    assert.equal(status, 200);
+    assert.ok(json.user, "user should be non-null");
+    assert.equal(json.user.id, userId);
+    assert.equal(json.user.email, email);
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Habit entries: idempotent delete", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    if (habitId) {
+      db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+      db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
+    }
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("DELETE /v1/habits/:id/entries/:date for non-existent date returns 200 ok", async () => {
+    const created = await api("POST", "/v1/habits", { token, body: { name: "Idempotent entry habit" } });
+    habitId = created.json.habit.id;
+
+    // Delete a date that was never checked in
+    const { status, json } = await api("DELETE", `/v1/habits/${habitId}/entries/2020-01-01`, { token });
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+  });
+});
