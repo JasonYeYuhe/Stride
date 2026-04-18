@@ -47,7 +47,7 @@ jobs:
         run: |
           xcodebuild build \
             -scheme Stride \
-            -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+            -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
             CODE_SIGNING_ALLOWED=NO \
             -quiet
 
@@ -56,7 +56,7 @@ jobs:
           xcodebuild test \
             -scheme StrideTests \
             -project Stride.xcodeproj \
-            -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+            -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
             CODE_SIGNING_ALLOWED=NO \
             -quiet
 
