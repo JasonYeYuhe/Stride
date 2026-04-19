@@ -3313,3 +3313,158 @@ describe("POST /habits: note as empty string", () => {
     assert.equal(json.habit.note, "", "note should be stored as empty string, not null");
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Sync: full pull returns habit and entry notes", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id IN (SELECT id FROM habits WHERE user_id = ?)").run(userId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("full pull includes habit note pushed via sync", async () => {
+    const habitId = crypto.randomUUID();
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Noted habit", sortOrder: 0, note: "my habit note" }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    const { status, json } = await api("GET", "/v1/sync/pull", { token });
+    assert.equal(status, 200);
+    const habit = json.habits.find((h) => h.id === habitId);
+    assert.ok(habit, "habit should appear in full pull");
+    assert.equal(habit.note, "my habit note", "habit note must be included in full pull response");
+  });
+
+  it("full pull includes entry note pushed via sync", async () => {
+    const habitId = crypto.randomUUID();
+    const entryId = crypto.randomUUID();
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Entry-note habit", sortOrder: 1 }],
+        entries: [{ id: entryId, habitId, date: "2025-08-01", note: "entry note text" }],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    const { status, json } = await api("GET", "/v1/sync/pull", { token });
+    assert.equal(status, 200);
+    const entry = json.entries.find((e) => e.id === entryId);
+    assert.ok(entry, "entry should appear in full pull");
+    assert.equal(entry.note, "entry note text", "entry note must be included in full pull response");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Auth: session fields include tier and created_at", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("GET /v1/auth/session includes tier and created_at", async () => {
+    const { status, json } = await api("GET", "/v1/auth/session", { token });
+    assert.equal(status, 200);
+    assert.ok(json.user, "user should be non-null");
+    assert.equal(json.user.tier, "free", "default tier should be free");
+    assert.ok(json.user.created_at, "created_at should be present");
+    assert.match(json.user.created_at, /^\d{4}-\d{2}-\d{2}/, "created_at should be ISO8601");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync push: entry for non-owned habit is silently skipped", () => {
+  let userAToken;
+  let userAId;
+  let userBToken;
+  let userBId;
+  let habitAId;
+
+  before(async () => {
+    const userA = createTestUser();
+    userAId = userA.userId;
+    userAToken = createTestSession(userAId);
+
+    const userB = createTestUser();
+    userBId = userB.userId;
+    userBToken = createTestSession(userBId);
+
+    habitAId = crypto.randomUUID();
+    await api("POST", "/v1/sync/push", {
+      token: userAToken,
+      body: {
+        habits: [{ id: habitAId, name: "User A habit", sortOrder: 0 }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitAId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userAId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userBId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userAId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userBId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userAId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userBId);
+  });
+
+  it("user B entry for user A habit is silently dropped", async () => {
+    const entryId = crypto.randomUUID();
+    const { status, json } = await api("POST", "/v1/sync/push", {
+      token: userBToken,
+      body: {
+        habits: [],
+        entries: [{ id: entryId, habitId: habitAId, date: "2025-08-02", note: null }],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+
+    const entry = db.prepare("SELECT id FROM habit_entries WHERE id = ?").get(entryId);
+    assert.equal(entry, undefined, "entry for non-owned habit must be silently skipped");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Auth: logout without session token returns 200", () => {
+  it("POST /v1/auth/logout with no token returns 200 ok", async () => {
+    const { status, json } = await api("POST", "/v1/auth/logout");
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+  });
+});
