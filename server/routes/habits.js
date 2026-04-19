@@ -185,7 +185,7 @@ router.delete("/:id", (req, res) => {
 
 // POST /habits/:id/entries — check in (complete a habit for a date)
 router.post("/:id/entries", (req, res) => {
-  const { date, id } = req.body;
+  const { date, id, note } = req.body;
 
   const habit = db.prepare("SELECT id FROM habits WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
   if (!habit) return res.status(404).json({ error: "Habit not found" });
@@ -202,8 +202,8 @@ router.post("/:id/entries", (req, res) => {
 
   try {
     const entryNow = new Date().toISOString();
-    db.prepare("INSERT INTO habit_entries (id, habit_id, date, created_at) VALUES (?, ?, ?, ?)").run(entryId, req.params.id, date, entryNow);
-    return res.status(201).json({ entry: { id: entryId, habit_id: req.params.id, date, created_at: entryNow } });
+    db.prepare("INSERT INTO habit_entries (id, habit_id, date, note, created_at) VALUES (?, ?, ?, ?, ?)").run(entryId, req.params.id, date, note ?? null, entryNow);
+    return res.status(201).json({ entry: { id: entryId, habit_id: req.params.id, date, note: note ?? null, created_at: entryNow } });
   } catch (err) {
     if (err.message.includes("UNIQUE constraint")) {
       return res.status(409).json({ error: "Already checked in for this date" });
