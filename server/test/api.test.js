@@ -4046,3 +4046,49 @@ describe("GET /login: HTML entity escaping for & and \" chars", () => {
     assert.ok(text.includes("tok&quot;end"), '\" must be escaped as &quot;');
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("express.json body size limit", () => {
+  it("POST /v1/auth/request-link with >10kb body returns 413", async () => {
+    // express.json({ limit: "10kb" }) — oversized payload must be rejected
+    const bigBody = JSON.stringify({ email: "x".repeat(12 * 1024) });
+    const res = await fetch(`${BASE}/v1/auth/request-link`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: bigBody,
+    });
+    assert.equal(res.status, 413, "oversized JSON body must be rejected with 413");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("CORS: disallowed origin is rejected", () => {
+  it("request from disallowed origin receives no Access-Control-Allow-Origin header", async () => {
+    const res = await fetch(`${BASE}/health`, {
+      headers: { Origin: "https://evil.example.com" },
+    });
+    // CORS rejection means the header is absent (not that the request itself fails)
+    const allowOrigin = res.headers.get("access-control-allow-origin");
+    assert.ok(
+      !allowOrigin || allowOrigin !== "https://evil.example.com",
+      "disallowed origin must not be reflected in Access-Control-Allow-Origin",
+    );
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Legacy routes (without /v1/ prefix)", () => {
+  it("GET /habits returns same response as GET /v1/habits for authenticated user", async () => {
+    const { userId } = createTestUser();
+    const token = createTestSession(userId);
+
+    const v1 = await api("GET", "/v1/habits", { token });
+    const legacy = await api("GET", "/habits", { token });
+
+    assert.equal(legacy.status, v1.status, "legacy /habits status must match /v1/habits");
+    assert.deepEqual(legacy.json, v1.json, "legacy /habits body must match /v1/habits");
+  });
+});
