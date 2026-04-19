@@ -3548,3 +3548,193 @@ describe("PUT /habits/:id: non-integer reminderHour rejected", () => {
     assert.equal(json.habit.reminder_enabled, 0, "reminderEnabled:false should set reminder_enabled to 0");
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Sync push: cross-user entry deletion isolation", () => {
+  let userAToken;
+  let userAId;
+  let userBToken;
+  let userBId;
+  let habitAId;
+  let entryAId;
+
+  before(async () => {
+    const userA = createTestUser();
+    userAId = userA.userId;
+    userAToken = createTestSession(userAId);
+
+    const userB = createTestUser();
+    userBId = userB.userId;
+    userBToken = createTestSession(userBId);
+
+    habitAId = crypto.randomUUID();
+    entryAId = crypto.randomUUID();
+
+    // Create user A's habit and entry via sync push
+    await api("POST", "/v1/sync/push", {
+      token: userAToken,
+      body: {
+        habits: [{ id: habitAId, name: "User A habit", sortOrder: 0 }],
+        entries: [{ id: entryAId, habitId: habitAId, date: "2025-06-15" }],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitAId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userAId);
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userBId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userBId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userAId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userBId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userAId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userBId);
+  });
+
+  it("user B deletedEntryIds cannot delete user A's entry", async () => {
+    const { status, json } = await api("POST", "/v1/sync/push", {
+      token: userBToken,
+      body: {
+        habits: [],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [entryAId],
+      },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+
+    const entry = db.prepare("SELECT id FROM habit_entries WHERE id = ?").get(entryAId);
+    assert.ok(entry, "user B should not be able to delete user A's entry");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync push: non-existent deletedEntryIds is a silent no-op", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("push with non-existent entry id in deletedEntryIds returns ok and does not error", async () => {
+    const fakeEntryId = crypto.randomUUID();
+    const { status, json } = await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [fakeEntryId],
+      },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync: full pull returns empty deletion arrays even when tombstones exist", () => {
+  let token;
+  let userId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+
+    // Push then delete a habit — creates a tombstone
+    const habitId = crypto.randomUUID();
+    const entryId = crypto.randomUUID();
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Will be deleted", sortOrder: 0 }],
+        entries: [{ id: entryId, habitId, date: "2025-07-04" }],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [],
+        entries: [],
+        deletedHabitIds: [habitId],
+        deletedEntryIds: [entryId],
+      },
+    });
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("full pull (no ?since) returns empty deletedHabitIds and deletedEntryIds even with tombstones", async () => {
+    const { status, json } = await api("GET", "/v1/sync/pull", { token });
+    assert.equal(status, 200);
+    assert.ok(Array.isArray(json.deletedHabitIds), "deletedHabitIds should be an array");
+    assert.ok(Array.isArray(json.deletedEntryIds), "deletedEntryIds should be an array");
+    assert.equal(json.deletedHabitIds.length, 0, "full pull should never include tombstones");
+    assert.equal(json.deletedEntryIds.length, 0, "full pull should never include tombstones");
+    assert.ok(json.serverTime, "serverTime should be present");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync: ?since=empty string falls through to full pull", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+
+    habitId = crypto.randomUUID();
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Full pull fallback habit", sortOrder: 0 }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("?since= empty string returns all habits (treated as full pull)", async () => {
+    const { status, json } = await api("GET", "/v1/sync/pull", {
+      token,
+      query: { since: "" },
+    });
+    assert.equal(status, 200);
+    const found = json.habits.find((h) => h.id === habitId);
+    assert.ok(found, "habit should appear when since='' falls through to full pull");
+    assert.ok(json.serverTime, "serverTime should be present");
+  });
+});
