@@ -3165,3 +3165,151 @@ describe("Sync pull incremental: entry note included in ?since response", () => 
     db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Auth: verify with falsy non-string token", () => {
+  it("POST /v1/auth/verify with explicit null token returns 400", async () => {
+    const { status, json } = await api("POST", "/v1/auth/verify", {
+      body: { token: null },
+    });
+    assert.equal(status, 400);
+    assert.ok(json.error, "should return error message");
+  });
+
+  it("POST /v1/auth/verify with numeric token is rejected (400 or 429 if rate-limited)", async () => {
+    const { status, json } = await api("POST", "/v1/auth/verify", {
+      body: { token: 0 },
+    });
+    // 400 = validation rejection; 429 = rate-limited (verifyLimiter has no test bypass)
+    assert.ok(status === 400 || status === 429, `expected 400 or 429, got ${status}`);
+    assert.ok(json.error, "should return error message");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Habit entries: GET with offset beyond total", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+
+    const { json } = await api("POST", "/v1/habits", { token, body: { name: "Offset test habit" } });
+    habitId = json.habit.id;
+
+    // Insert 3 entries
+    for (let i = 1; i <= 3; i++) {
+      await api("POST", `/v1/habits/${habitId}/entries`, {
+        token,
+        body: { date: `2025-12-0${i}` },
+      });
+    }
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("GET /habits/:id/entries with offset beyond total returns empty list and hasMore=false", async () => {
+    const { status, json } = await api("GET", `/v1/habits/${habitId}/entries`, {
+      token,
+      query: { offset: "10" },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.entries.length, 0, "no entries at offset beyond total");
+    assert.equal(json.pagination.total, 3, "total should still reflect all entries");
+    assert.equal(json.pagination.hasMore, false, "hasMore must be false when offset exceeds total");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync push: entry note update via re-push", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id IN (SELECT id FROM habits WHERE user_id = ?)", userId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("sync push updates entry note when same habit+date pushed again with new note", async () => {
+    const habitId = crypto.randomUUID();
+    const entryId = crypto.randomUUID();
+
+    // First push: entry with note "original"
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Note update habit", sortOrder: 0 }],
+        entries: [{ id: entryId, habitId, date: "2025-12-10", note: "original note" }],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    // Second push: same habit+date with updated note (ON CONFLICT DO UPDATE SET note = excluded.note)
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [],
+        entries: [{ id: crypto.randomUUID(), habitId, date: "2025-12-10", note: "updated note" }],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    const entry = pull.json.entries.find((e) => e.habitId === habitId && e.date === "2025-12-10");
+    assert.ok(entry, "entry should exist in pull");
+    assert.equal(entry.note, "updated note", "note should be updated by second sync push");
+
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("POST /habits: note as empty string", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("POST /habits with note as empty string stores empty string (not null)", async () => {
+    const { status, json } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Empty note habit", note: "" },
+    });
+    assert.equal(status, 201);
+    // "" ?? null = "" (empty string, not null), so note is stored as ""
+    assert.equal(json.habit.note, "", "note should be stored as empty string, not null");
+  });
+});
