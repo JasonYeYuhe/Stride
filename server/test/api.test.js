@@ -3468,3 +3468,83 @@ describe("Auth: logout without session token returns 200", () => {
     assert.equal(json.ok, true);
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("POST /habits: non-integer reminderHour/Minute rejected", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("POST /habits with reminderEnabled:true and float reminderHour returns 400", async () => {
+    const { status, json } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Float Hour Habit", reminderEnabled: true, reminderHour: 8.5, reminderMinute: 0 },
+    });
+    assert.equal(status, 400);
+    assert.match(json.error, /reminderHour/);
+  });
+
+  it("POST /habits with reminderEnabled:true and float reminderMinute returns 400", async () => {
+    const { status, json } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Float Minute Habit", reminderEnabled: true, reminderHour: 8, reminderMinute: 30.5 },
+    });
+    assert.equal(status, 400);
+    assert.match(json.error, /reminderMinute/);
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("PUT /habits/:id: non-integer reminderHour rejected", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+    const { json } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Float PUT test", reminderEnabled: true, reminderHour: 8, reminderMinute: 0 },
+    });
+    habitId = json.habit.id;
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("PUT /habits/:id with float reminderHour returns 400", async () => {
+    const { status, json } = await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: { reminderHour: 9.9 },
+    });
+    assert.equal(status, 400);
+    assert.match(json.error, /reminderHour/);
+  });
+
+  it("PUT /habits/:id with reminderEnabled:false disables reminder", async () => {
+    const { status, json } = await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: { reminderEnabled: false },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.habit.reminder_enabled, 0, "reminderEnabled:false should set reminder_enabled to 0");
+  });
+});
