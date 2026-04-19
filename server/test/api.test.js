@@ -3738,3 +3738,96 @@ describe("Sync: ?since=empty string falls through to full pull", () => {
     assert.ok(json.serverTime, "serverTime should be present");
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("CRUD GET /habits/:id/entries: note field included", () => {
+  let token;
+  let userId;
+  let habitId;
+  let entryId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+
+    habitId = crypto.randomUUID();
+    entryId = crypto.randomUUID();
+    // Push a habit + entry with a note via sync
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Note entry habit", sortOrder: 0 }],
+        entries: [{ id: entryId, habitId, date: "2025-11-01", note: "crud note check" }],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("GET /habits/:id/entries includes note field (note set via sync push)", async () => {
+    const { status, json } = await api("GET", `/v1/habits/${habitId}/entries`, { token });
+    assert.equal(status, 200);
+    assert.equal(json.entries.length, 1);
+    assert.equal(json.entries[0].note, "crud note check", "note must appear in CRUD GET entries response");
+  });
+
+  it("GET /habits/:id/entries with only ?from returns all entries (no ?to filter)", async () => {
+    const { status, json } = await api("GET", `/v1/habits/${habitId}/entries`, {
+      token,
+      query: { from: "2025-01-01" },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.entries.length, 1, "only-from filter falls through to full list");
+    assert.equal(json.entries[0].note, "crud note check");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("CRUD GET /habits/:id/entries: note field in date range query", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+
+    habitId = crypto.randomUUID();
+    // Push habit + entry with note via sync
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Range note habit", sortOrder: 0 }],
+        entries: [{ id: crypto.randomUUID(), habitId, date: "2025-09-15", note: "range note" }],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("GET /habits/:id/entries?from=&to= includes note field in range query", async () => {
+    const { status, json } = await api("GET", `/v1/habits/${habitId}/entries`, {
+      token,
+      query: { from: "2025-09-01", to: "2025-09-30" },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.entries.length, 1);
+    assert.equal(json.entries[0].note, "range note", "note must appear in range-filtered CRUD GET entries response");
+  });
+});
