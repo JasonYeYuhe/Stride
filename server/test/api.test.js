@@ -4144,3 +4144,145 @@ describe("CRUD POST /habits/:id/entries: note field", () => {
     assert.equal(json.entry.note, null, "explicitly null note must be stored as null");
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("POST /habits: name with leading/trailing whitespace is trimmed", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    if (habitId) db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("POST with '  Walk Daily  ' stores name as 'Walk Daily'", async () => {
+    const { status, json } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "  Walk Daily  " },
+    });
+    assert.equal(status, 201);
+    assert.equal(json.habit.name, "Walk Daily", "stored name must be trimmed");
+    habitId = json.habit.id;
+
+    // Verify the trimmed name is returned in list
+    const { json: listJson } = await api("GET", "/v1/habits", { token });
+    const found = listJson.habits.find((h) => h.id === habitId);
+    assert.ok(found, "habit must appear in list");
+    assert.equal(found.name, "Walk Daily", "list must return trimmed name");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("PUT /habits/:id: name with leading/trailing whitespace is trimmed", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+    const { json } = await api("POST", "/v1/habits", { token, body: { name: "Original Name" } });
+    habitId = json.habit.id;
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("PUT with '  Updated Name  ' stores name as 'Updated Name'", async () => {
+    const { status, json } = await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: { name: "  Updated Name  " },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.habit.name, "Updated Name", "stored name must be trimmed on update");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("GET /habits: limit=0 falls back to default (50)", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("GET /habits with limit=0 uses default limit of 50", async () => {
+    const { status, json } = await api("GET", "/v1/habits", {
+      token,
+      query: { limit: "0" },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.pagination.limit, 50, "limit=0 must fall back to default 50");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("PUT /habits/:id: reminderEnabled=true only preserves stored hour/minute", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+    // Create habit with explicit reminder hour/minute
+    const { json } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Reminder test", reminderEnabled: true, reminderHour: 7, reminderMinute: 30 },
+    });
+    habitId = json.habit.id;
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("PUT with only reminderEnabled=false does not change stored hour/minute", async () => {
+    const { status, json } = await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: { reminderEnabled: false },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.habit.reminder_enabled, 0, "reminder must be disabled");
+    assert.equal(json.habit.reminder_hour, 7, "hour must be preserved from creation");
+    assert.equal(json.habit.reminder_minute, 30, "minute must be preserved from creation");
+  });
+
+  it("PUT with reminderEnabled=true (no hour/minute) re-enables without changing stored values", async () => {
+    const { status, json } = await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: { reminderEnabled: true },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.habit.reminder_enabled, 1, "reminder must be re-enabled");
+    assert.equal(json.habit.reminder_hour, 7, "hour must still be 7 (unchanged by enable-only PUT)");
+    assert.equal(json.habit.reminder_minute, 30, "minute must still be 30 (unchanged by enable-only PUT)");
+  });
+});
