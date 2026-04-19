@@ -1,3 +1,4 @@
+// @ts-check
 require("dotenv").config();
 const express = require("express");
 const path = require("path");
@@ -77,7 +78,8 @@ app.use("/sync", syncRouter);
 
 // Magic link login page — handles email link taps from mobile
 app.get("/login", (req, res) => {
-  const token = req.query.token || "";
+  const token = /** @type {string} */ (req.query.token) || "";
+  /** @param {string} s @returns {string} */
   const escapeHtml = (s) =>
     s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
