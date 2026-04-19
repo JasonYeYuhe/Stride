@@ -4092,3 +4092,55 @@ describe("Legacy routes (without /v1/ prefix)", () => {
     assert.deepEqual(legacy.json, v1.json, "legacy /habits body must match /v1/habits");
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("CRUD POST /habits/:id/entries: note field", () => {
+  let token;
+  let habitId;
+
+  before(async () => {
+    const { userId } = createTestUser();
+    token = createTestSession(userId);
+    const { json } = await api("POST", "/v1/habits", { token, body: { name: "Note entry test" } });
+    habitId = json.habit.id;
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
+  });
+
+  it("POST with note persists and returns note in response", async () => {
+    const { status, json } = await api("POST", `/v1/habits/${habitId}/entries`, {
+      token,
+      body: { date: "2025-09-01", note: "walked 5km" },
+    });
+    assert.equal(status, 201);
+    assert.equal(json.entry.note, "walked 5km", "response must include the provided note");
+  });
+
+  it("GET /entries returns note from CRUD-created entry", async () => {
+    const { json } = await api("GET", `/v1/habits/${habitId}/entries`, { token });
+    const entry = json.entries.find((e) => e.date === "2025-09-01");
+    assert.ok(entry, "entry must be present");
+    assert.equal(entry.note, "walked 5km", "GET must return the note stored via CRUD POST");
+  });
+
+  it("POST without note stores null note", async () => {
+    const { status, json } = await api("POST", `/v1/habits/${habitId}/entries`, {
+      token,
+      body: { date: "2025-09-02" },
+    });
+    assert.equal(status, 201);
+    assert.equal(json.entry.note, null, "note must be null when not provided");
+  });
+
+  it("POST with note: null stores null note", async () => {
+    const { status, json } = await api("POST", `/v1/habits/${habitId}/entries`, {
+      token,
+      body: { date: "2025-09-03", note: null },
+    });
+    assert.equal(status, 201);
+    assert.equal(json.entry.note, null, "explicitly null note must be stored as null");
+  });
+});
