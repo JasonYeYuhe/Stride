@@ -3831,3 +3831,180 @@ describe("CRUD GET /habits/:id/entries: note field in date range query", () => {
     assert.equal(json.entries[0].note, "range note", "note must appear in range-filtered CRUD GET entries response");
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("PUT /habits/:id: empty body preserves all fields", () => {
+  let token;
+  let userId;
+  let habitId;
+  let originalName;
+  let originalEmoji;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+
+    const { json } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Preserve test", emoji: "🌟", colorHex: "#FF6B35", note: "keep me" },
+    });
+    habitId = json.habit.id;
+    originalName = json.habit.name;
+    originalEmoji = json.habit.emoji;
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("PUT with empty body {} returns 200 and preserves all fields", async () => {
+    const { status, json } = await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: {},
+    });
+    assert.equal(status, 200);
+    assert.equal(json.habit.name, originalName, "name must be preserved");
+    assert.equal(json.habit.emoji, originalEmoji, "emoji must be preserved");
+    assert.equal(json.habit.color_hex, "#FF6B35", "color_hex must be preserved");
+    assert.equal(json.habit.note, "keep me", "note must be preserved when not in body");
+    assert.equal(json.habit.is_archived, 0, "is_archived must be preserved");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("GET /habits/:id/entries: zero entries returns empty array", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+
+    const { json } = await api("POST", "/v1/habits", { token, body: { name: "Zero entries habit" } });
+    habitId = json.habit.id;
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("GET /habits/:id/entries for habit with no entries returns empty list and correct pagination", async () => {
+    const { status, json } = await api("GET", `/v1/habits/${habitId}/entries`, { token });
+    assert.equal(status, 200);
+    assert.deepEqual(json.entries, [], "entries should be empty array");
+    assert.equal(json.pagination.total, 0, "total should be 0");
+    assert.equal(json.pagination.hasMore, false, "hasMore should be false");
+    assert.equal(json.pagination.limit, 100, "default limit should be 100");
+    assert.equal(json.pagination.offset, 0, "default offset should be 0");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync push: entry for self-deleted habit is silently dropped", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("push entry for a habit the user previously deleted returns ok:true without error", async () => {
+    const habitId = crypto.randomUUID();
+
+    // Push a habit, then delete it
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Soon deleted", sortOrder: 0 }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: { habits: [], entries: [], deletedHabitIds: [habitId], deletedEntryIds: [] },
+    });
+
+    // Now push an entry for the (now-deleted) habit — stale client data scenario
+    const staleEntryId = crypto.randomUUID();
+    const { status, json } = await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [],
+        entries: [{ id: staleEntryId, habitId, date: "2025-06-01" }],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.ok, true, "should return ok:true even with stale entry for deleted habit");
+
+    // Verify the stale entry was NOT inserted
+    const entry = db.prepare("SELECT id FROM habit_entries WHERE id = ?").get(staleEntryId);
+    assert.equal(entry, undefined, "entry for deleted habit should not be persisted");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("PUT /habits/:id: boundary reminder values accepted", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+
+    const { json } = await api("POST", "/v1/habits", { token, body: { name: "Boundary reminder" } });
+    habitId = json.habit.id;
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("PUT with reminderHour=23 and reminderMinute=59 (max boundary) is accepted", async () => {
+    const { status, json } = await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: { reminderEnabled: true, reminderHour: 23, reminderMinute: 59 },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.habit.reminder_enabled, 1);
+    assert.equal(json.habit.reminder_hour, 23);
+    assert.equal(json.habit.reminder_minute, 59);
+  });
+
+  it("PUT with reminderHour=0 and reminderMinute=0 (min boundary) is accepted", async () => {
+    const { status, json } = await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: { reminderEnabled: true, reminderHour: 0, reminderMinute: 0 },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.habit.reminder_hour, 0);
+    assert.equal(json.habit.reminder_minute, 0);
+  });
+});

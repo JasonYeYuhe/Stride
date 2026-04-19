@@ -1,9 +1,14 @@
+// @ts-check
 const express = require("express");
 const router = express.Router();
 const crypto = require("crypto");
 const { rateLimit } = require("express-rate-limit");
 const db = require("../db");
 const { requireUser } = require("../auth");
+
+/** @typedef {{ id: string, name: string, emoji: string, color_hex: string, is_archived: number, sort_order: number, reminder_enabled: number, reminder_hour: number, reminder_minute: number, note: string|null, created_at: string, updated_at: string }} HabitRow */
+/** @typedef {{ id: string, habit_id: string, date: string, note: string|null, created_at: string }} EntryRow */
+/** @typedef {{ count: number }} CountRow */
 
 // Habits-specific rate limit: 60 requests per minute per IP
 const habitsLimiter = process.env.NODE_ENV === "test"
@@ -36,7 +41,7 @@ router.get("/", (req, res) => {
     LIMIT ? OFFSET ?
   `).all(req.user.id, limit, offset);
 
-  const total = /** @type {any} */ (db.prepare("SELECT COUNT(*) as count FROM habits WHERE user_id = ?").get(req.user.id)).count;
+  const total = /** @type {CountRow} */ (db.prepare("SELECT COUNT(*) as count FROM habits WHERE user_id = ?").get(req.user.id)).count;
 
   return res.json({
     habits,
@@ -67,7 +72,7 @@ router.post("/", (req, res) => {
   }
 
   const habitId = id || crypto.randomUUID();
-  const maxOrder = /** @type {any} */ (db.prepare(
+  const maxOrder = /** @type {{ next: number }} */ (db.prepare(
     "SELECT COALESCE(MAX(sort_order), -1) + 1 as next FROM habits WHERE user_id = ?",
   ).get(req.user.id));
 
@@ -249,14 +254,14 @@ router.get("/:id/entries", (req, res) => {
     entries = db.prepare(
       "SELECT id, habit_id, date, note, created_at FROM habit_entries WHERE habit_id = ? AND date >= ? AND date <= ? ORDER BY date LIMIT ? OFFSET ?",
     ).all(req.params.id, from, to, limit, offset);
-    total = /** @type {any} */ (db.prepare(
+    total = /** @type {CountRow} */ (db.prepare(
       "SELECT COUNT(*) as count FROM habit_entries WHERE habit_id = ? AND date >= ? AND date <= ?",
     ).get(req.params.id, from, to)).count;
   } else {
     entries = db.prepare(
       "SELECT id, habit_id, date, note, created_at FROM habit_entries WHERE habit_id = ? ORDER BY date LIMIT ? OFFSET ?",
     ).all(req.params.id, limit, offset);
-    total = /** @type {any} */ (db.prepare(
+    total = /** @type {CountRow} */ (db.prepare(
       "SELECT COUNT(*) as count FROM habit_entries WHERE habit_id = ?",
     ).get(req.params.id)).count;
   }
