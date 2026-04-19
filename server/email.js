@@ -1,7 +1,10 @@
+// @ts-check
+
 const { Resend } = require("resend");
 
 const FROM_EMAIL = process.env.FROM_EMAIL || "Stride <hello@strideapp.me>";
 
+/** @type {import('resend').Resend | undefined} */
 let _resend;
 function getResend() {
   if (!_resend) {
@@ -10,6 +13,10 @@ function getResend() {
   return _resend;
 }
 
+/**
+ * @param {string} to
+ * @param {{ loginUrl: string, expiresInMinutes: number }} opts
+ */
 async function sendMagicLinkEmail(to, { loginUrl, expiresInMinutes }) {
   await getResend().emails.send({
     from: FROM_EMAIL,

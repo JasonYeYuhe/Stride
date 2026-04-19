@@ -1,6 +1,10 @@
+// @ts-check
+
 /**
  * Simple request logger middleware.
- * Logs method, path, status code, and response time.
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ * @param {import('express').NextFunction} next
  */
 function requestLogger(req, res, next) {
   const start = Date.now();

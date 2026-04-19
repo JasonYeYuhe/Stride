@@ -4008,3 +4008,41 @@ describe("PUT /habits/:id: boundary reminder values accepted", () => {
     assert.equal(json.habit.reminder_minute, 0);
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Auth: delete-account without session returns 401", () => {
+  it("POST /v1/auth/delete-account without token returns 401", async () => {
+    const { status } = await api("POST", "/v1/auth/delete-account", { body: {} });
+    assert.equal(status, 401);
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Auth: request-link with missing email field", () => {
+  it("POST /v1/auth/request-link with empty body returns 400", async () => {
+    const { status, json } = await api("POST", "/v1/auth/request-link", { body: {} });
+    assert.equal(status, 400);
+    assert.ok(json.error, "should return an error message");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("GET /login: HTML entity escaping for & and \" chars", () => {
+  it("GET /login escapes & in token query param", async () => {
+    const res = await fetch(`${BASE}/login?token=${encodeURIComponent("abc&def")}`);
+    const text = await res.text();
+    assert.ok(!text.includes("abc&def"), "raw & must not appear unescaped");
+    assert.ok(text.includes("abc&amp;def"), "& must be escaped as &amp;");
+  });
+
+  it("GET /login escapes double-quote in token query param", async () => {
+    const rawToken = 'tok"end';
+    const res = await fetch(`${BASE}/login?token=${encodeURIComponent(rawToken)}`);
+    const text = await res.text();
+    assert.ok(!text.includes(rawToken), 'raw token with " must not appear verbatim');
+    assert.ok(text.includes("tok&quot;end"), '\" must be escaped as &quot;');
+  });
+});
