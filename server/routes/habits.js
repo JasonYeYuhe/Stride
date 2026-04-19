@@ -247,14 +247,14 @@ router.get("/:id/entries", (req, res) => {
 
   if (from && to) {
     entries = db.prepare(
-      "SELECT id, habit_id, date, created_at FROM habit_entries WHERE habit_id = ? AND date >= ? AND date <= ? ORDER BY date LIMIT ? OFFSET ?",
+      "SELECT id, habit_id, date, note, created_at FROM habit_entries WHERE habit_id = ? AND date >= ? AND date <= ? ORDER BY date LIMIT ? OFFSET ?",
     ).all(req.params.id, from, to, limit, offset);
     total = /** @type {any} */ (db.prepare(
       "SELECT COUNT(*) as count FROM habit_entries WHERE habit_id = ? AND date >= ? AND date <= ?",
     ).get(req.params.id, from, to)).count;
   } else {
     entries = db.prepare(
-      "SELECT id, habit_id, date, created_at FROM habit_entries WHERE habit_id = ? ORDER BY date LIMIT ? OFFSET ?",
+      "SELECT id, habit_id, date, note, created_at FROM habit_entries WHERE habit_id = ? ORDER BY date LIMIT ? OFFSET ?",
     ).all(req.params.id, limit, offset);
     total = /** @type {any} */ (db.prepare(
       "SELECT COUNT(*) as count FROM habit_entries WHERE habit_id = ?",
