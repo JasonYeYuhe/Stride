@@ -5344,3 +5344,135 @@ describe("Sync push + pull: empty-string note normalizes to null", () => {
     assert.equal(h.note, null, "sync pull normalizes empty string to null");
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("POST /habits: empty-string emoji falls back to default ⭐", () => {
+  let token;
+  let habitId;
+
+  before(async () => {
+    const { userId } = createTestUser();
+    token = createTestSession(userId);
+    const { json } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Emoji fallback test", emoji: "" },
+    });
+    habitId = json.habit.id;
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
+  });
+
+  it("empty-string emoji is stored as default ⭐", async () => {
+    const { json } = await api("GET", "/v1/habits", { token });
+    const habit = json.habits.find((h) => h.id === habitId);
+    assert.ok(habit, "habit must exist");
+    assert.equal(habit.emoji, "⭐", "empty emoji must fall back to ⭐");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("POST /habits: empty-string colorHex falls back to default #34C759", () => {
+  let token;
+  let habitId;
+
+  before(async () => {
+    const { userId } = createTestUser();
+    token = createTestSession(userId);
+    const { json } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "ColorHex fallback test", colorHex: "" },
+    });
+    habitId = json.habit.id;
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
+  });
+
+  it("empty-string colorHex is stored as default #34C759", async () => {
+    const { json } = await api("GET", "/v1/habits", { token });
+    const habit = json.habits.find((h) => h.id === habitId);
+    assert.ok(habit, "habit must exist");
+    assert.equal(habit.color_hex, "#34C759", "empty colorHex must fall back to #34C759");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync push: empty-string emoji falls back to default ⭐", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+    habitId = crypto.randomUUID();
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("habit pushed with emoji:'' is stored with default ⭐", async () => {
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Sync emoji fallback", emoji: "", colorHex: "#FF0000" }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    const h = pull.json.habits.find((x) => x.id === habitId);
+    assert.ok(h, "habit must appear in pull");
+    assert.equal(h.emoji, "⭐", "empty-string emoji must fall back to ⭐ in sync pull");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync push: empty-string colorHex falls back to default #34C759", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+    habitId = crypto.randomUUID();
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("habit pushed with colorHex:'' is stored with default #34C759", async () => {
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Sync colorHex fallback", emoji: "🏃", colorHex: "" }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    const h = pull.json.habits.find((x) => x.id === habitId);
+    assert.ok(h, "habit must appear in pull");
+    assert.equal(h.colorHex, "#34C759", "empty-string colorHex must fall back to #34C759 in sync pull");
+  });
+});
