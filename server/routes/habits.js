@@ -7,7 +7,7 @@ const db = require("../db");
 const { requireUser } = require("../auth");
 
 /** @typedef {{ id: string, name: string, emoji: string, color_hex: string, is_archived: number, sort_order: number, reminder_enabled: number, reminder_hour: number, reminder_minute: number, note: string|null, created_at: string, updated_at: string }} HabitRow */
-/** @typedef {{ id: string, habit_id: string, date: string, note: string|null, created_at: string }} EntryRow */
+/** @typedef {{ id: string, habit_id: string, date: string, note: string|null, created_at: string, updated_at: string }} EntryRow */
 /** @typedef {{ count: number }} CountRow */
 
 // Habits-specific rate limit: 60 requests per minute per IP
@@ -202,7 +202,7 @@ router.post("/:id/entries", (req, res) => {
 
   try {
     const entryNow = new Date().toISOString();
-    db.prepare("INSERT INTO habit_entries (id, habit_id, date, note, created_at) VALUES (?, ?, ?, ?, ?)").run(entryId, req.params.id, date, note ?? null, entryNow);
+    db.prepare("INSERT INTO habit_entries (id, habit_id, date, note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)").run(entryId, req.params.id, date, note ?? null, entryNow, entryNow);
     return res.status(201).json({ entry: { id: entryId, habit_id: req.params.id, date, note: note ?? null, created_at: entryNow } });
   } catch (err) {
     if (err.message.includes("UNIQUE constraint")) {

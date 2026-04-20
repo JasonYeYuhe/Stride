@@ -5,7 +5,7 @@ const crypto = require("crypto");
 const { rateLimit } = require("express-rate-limit");
 
 /** @typedef {{ id: string, name: string, emoji: string, color_hex: string, is_archived: number, sort_order: number, reminder_enabled: number, reminder_hour: number, reminder_minute: number, note: string|null, created_at: string, updated_at: string }} HabitRow */
-/** @typedef {{ id: string, habit_id: string, date: string, note: string|null, created_at: string }} EntryRow */
+/** @typedef {{ id: string, habit_id: string, date: string, note: string|null, created_at: string, updated_at: string }} EntryRow */
 /** @typedef {{ entity_type: string, entity_id: string }} TombstoneRow */
 const db = require("../db");
 const { requireUser } = require("../auth");
@@ -53,10 +53,11 @@ router.post("/push", (req, res) => {
   `);
 
   const upsertEntry = db.prepare(`
-    INSERT INTO habit_entries (id, habit_id, date, note, created_at)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO habit_entries (id, habit_id, date, note, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(habit_id, date) DO UPDATE SET
-      note = excluded.note
+      note = excluded.note,
+      updated_at = excluded.updated_at
   `);
 
   const deleteHabit = db.prepare("DELETE FROM habits WHERE id = ? AND user_id = ?");
@@ -103,7 +104,7 @@ router.post("/push", (req, res) => {
       // Verify the habit belongs to this user
       const habit = db.prepare("SELECT id FROM habits WHERE id = ? AND user_id = ?").get(e.habitId, userId);
       if (habit) {
-        upsertEntry.run(e.id, e.habitId, e.date, e.note ?? null, e.createdAt || new Date().toISOString());
+        upsertEntry.run(e.id, e.habitId, e.date, e.note ?? null, e.createdAt || now, now);
       }
     }
   });
@@ -135,7 +136,7 @@ router.get("/pull", (req, res) => {
     if (habitIds.length > 0) {
       const placeholders = habitIds.map(() => "?").join(",");
       entries = db.prepare(
-        `SELECT id, habit_id, date, note, created_at FROM habit_entries WHERE habit_id IN (${placeholders}) AND created_at > ?`,
+        `SELECT id, habit_id, date, note, created_at FROM habit_entries WHERE habit_id IN (${placeholders}) AND updated_at > ?`,
       ).all(...habitIds, since);
     } else {
       entries = [];
