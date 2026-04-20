@@ -5038,3 +5038,184 @@ describe("Sync push: omitting updatedAt uses server time (habit visible in subse
     assert.ok(found, "habit pushed without updatedAt should appear in incremental pull (server uses current time)");
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Sync push: entry with null habitId is silently skipped", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("sync push with null habitId entry does not crash and entry is skipped", async () => {
+    const habitId = crypto.randomUUID();
+    const validEntryId = crypto.randomUUID();
+    const badEntryId = crypto.randomUUID();
+
+    // First push the habit
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Habit for null-habitId test", sortOrder: 0 }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    // Push entries: one with null habitId (should be skipped), one valid
+    const { status, json } = await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [],
+        entries: [
+          { id: badEntryId, habitId: null, date: "2026-03-01" },
+          { id: validEntryId, habitId, date: "2026-03-01" },
+        ],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    assert.equal(status, 200);
+    assert.equal(json.ok, true, "sync push with null habitId entry should return ok:true");
+
+    // Valid entry should be stored; bad entry should be absent
+    const entries = db.prepare("SELECT id FROM habit_entries WHERE habit_id = ?").all(habitId);
+    const entryIds = entries.map((e) => e.id);
+    assert.ok(entryIds.includes(validEntryId), "valid entry must be inserted");
+    assert.ok(!entryIds.includes(badEntryId), "entry with null habitId must be skipped");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync push: entry in both entries[] and deletedEntryIds[] — delete wins", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("entry listed in both entries[] and deletedEntryIds[] is not upserted (delete wins)", async () => {
+    const habitId = crypto.randomUUID();
+    const entryId = crypto.randomUUID();
+
+    // Push habit first
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Conflict-resolution test habit", sortOrder: 0 }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    // Push entry in BOTH entries[] and deletedEntryIds[] simultaneously (offline conflict)
+    const { status, json } = await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [],
+        entries: [{ id: entryId, habitId, date: "2026-04-01" }],
+        deletedHabitIds: [],
+        deletedEntryIds: [entryId],
+      },
+    });
+
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+
+    // Entry must NOT be upserted because it was in deletedEntryIds (delete wins)
+    const stored = db.prepare("SELECT id FROM habit_entries WHERE id = ?").get(entryId);
+    assert.equal(stored, undefined, "entry in both entries[] and deletedEntryIds[] must not be stored");
+
+    // Tombstone must exist for the entry
+    const tombstone = db.prepare(
+      "SELECT id FROM deletion_tombstones WHERE user_id = ? AND entity_type = 'entry' AND entity_id = ?"
+    ).get(userId, entryId);
+    assert.ok(tombstone, "tombstone must be created for the deleted entry");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync push deletedHabitIds: cascade-deletes entries, only habit tombstone created", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("deleting habit via sync push cascades to entries and creates only habit tombstone", async () => {
+    const habitId = crypto.randomUUID();
+    const entry1Id = crypto.randomUUID();
+    const entry2Id = crypto.randomUUID();
+
+    // Push habit with entries
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Habit to delete via push", sortOrder: 0 }],
+        entries: [
+          { id: entry1Id, habitId, date: "2026-02-01" },
+          { id: entry2Id, habitId, date: "2026-02-02" },
+        ],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    // Verify entries exist before deletion
+    const beforeCount = db.prepare("SELECT COUNT(*) as n FROM habit_entries WHERE habit_id = ?").get(habitId);
+    assert.equal(beforeCount.n, 2, "should have 2 entries before deletion");
+
+    const sinceBeforeDelete = new Date(Date.now() - 500).toISOString();
+
+    // Delete habit via sync push deletedHabitIds
+    const { status } = await api("POST", "/v1/sync/push", {
+      token,
+      body: { habits: [], entries: [], deletedHabitIds: [habitId], deletedEntryIds: [] },
+    });
+    assert.equal(status, 200);
+
+    // Entries must be cascade-deleted
+    const afterCount = db.prepare("SELECT COUNT(*) as n FROM habit_entries WHERE habit_id = ?").get(habitId);
+    assert.equal(afterCount.n, 0, "entries must be cascade-deleted when habit is deleted via sync push");
+
+    // Incremental pull: habit tombstone present, NO entry tombstones
+    const pull = await api("GET", "/v1/sync/pull", { token, query: { since: sinceBeforeDelete } });
+    assert.equal(pull.status, 200);
+    assert.ok(pull.json.deletedHabitIds.includes(habitId), "habit tombstone should appear in deletedHabitIds");
+    assert.equal(pull.json.deletedEntryIds.length, 0, "no entry tombstones when habit deleted via sync push");
+  });
+});
