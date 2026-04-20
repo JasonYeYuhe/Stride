@@ -4750,3 +4750,108 @@ describe("Sync pull: duplicate tombstones de-duplicated (retry-safe deletion)", 
     assert.equal(occurrences, 1, "duplicate entry tombstones from retry should be de-duplicated to one entry");
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Sync push: null array fields are treated as empty arrays", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("POST /sync/push with habits: null returns ok:true (no crash)", async () => {
+    const { status, json } = await api("POST", "/v1/sync/push", {
+      token,
+      body: { habits: null, entries: [], deletedHabitIds: [], deletedEntryIds: [] },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+  });
+
+  it("POST /sync/push with entries: null returns ok:true (no crash)", async () => {
+    const { status, json } = await api("POST", "/v1/sync/push", {
+      token,
+      body: { habits: [], entries: null, deletedHabitIds: [], deletedEntryIds: [] },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+  });
+
+  it("POST /sync/push with deletedHabitIds: null returns ok:true (no crash)", async () => {
+    const { status, json } = await api("POST", "/v1/sync/push", {
+      token,
+      body: { habits: [], entries: [], deletedHabitIds: null, deletedEntryIds: [] },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+  });
+
+  it("POST /sync/push with deletedEntryIds: null returns ok:true (no crash)", async () => {
+    const { status, json } = await api("POST", "/v1/sync/push", {
+      token,
+      body: { habits: [], entries: [], deletedHabitIds: [], deletedEntryIds: null },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("CRUD DELETE habit-with-entries: no individual entry tombstones in sync pull", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("deleting a habit via CRUD creates habit tombstone but NOT entry tombstones", async () => {
+    const habitId = crypto.randomUUID();
+    const entry1Id = crypto.randomUUID();
+    const entry2Id = crypto.randomUUID();
+
+    // Create habit + entries via sync push
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Tombstone entry test", sortOrder: 0 }],
+        entries: [
+          { id: entry1Id, habitId, date: "2026-01-10" },
+          { id: entry2Id, habitId, date: "2026-01-11" },
+        ],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    const sinceBeforeDelete = new Date(Date.now() - 500).toISOString();
+
+    // Delete the habit via CRUD route
+    const { status } = await api("DELETE", `/v1/habits/${habitId}`, { token });
+    assert.equal(status, 200);
+
+    // Incremental pull should include habit tombstone but NO entry tombstones
+    const pull = await api("GET", "/v1/sync/pull", { token, query: { since: sinceBeforeDelete } });
+    assert.equal(pull.status, 200);
+    assert.ok(pull.json.deletedHabitIds.includes(habitId), "habit tombstone should appear in deletedHabitIds");
+    assert.equal(pull.json.deletedEntryIds.length, 0, "no individual entry tombstones when whole habit is deleted");
+  });
+});
