@@ -27,7 +27,10 @@ router.use(syncLimiter);
 // POST /sync/push — mobile app pushes local changes to server
 // Accepts { habits: [...], entries: [...], deletedHabitIds: [...], deletedEntryIds: [...] }
 router.post("/push", (req, res) => {
-  const { habits = [], entries = [], deletedHabitIds = [], deletedEntryIds = [] } = req.body;
+  const habits = req.body.habits ?? [];
+  const entries = req.body.entries ?? [];
+  const deletedHabitIds = req.body.deletedHabitIds ?? [];
+  const deletedEntryIds = req.body.deletedEntryIds ?? [];
   const userId = req.user.id;
 
   const upsertHabit = db.prepare(`
