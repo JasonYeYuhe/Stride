@@ -4286,3 +4286,160 @@ describe("PUT /habits/:id: reminderEnabled=true only preserves stored hour/minut
     assert.equal(json.habit.reminder_minute, 30, "minute must still be 30 (unchanged by enable-only PUT)");
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("PUT /habits/:id: colorHex-only update", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+    const created = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "ColorHex Test Habit", emoji: "🎨", colorHex: "#FF0000" },
+    });
+    habitId = created.json.habit.id;
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("PUT with only colorHex updates color_hex and preserves name and emoji", async () => {
+    const { status, json } = await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: { colorHex: "#0000FF" },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.habit.color_hex, "#0000FF", "color_hex should be updated");
+    assert.equal(json.habit.name, "ColorHex Test Habit", "name should be unchanged");
+    assert.equal(json.habit.emoji, "🎨", "emoji should be unchanged");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("PUT /habits/:id: emoji-only update", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+    const created = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Emoji Test Habit", emoji: "⭐", colorHex: "#34C759" },
+    });
+    habitId = created.json.habit.id;
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("PUT with only emoji updates emoji and preserves name and color_hex", async () => {
+    const { status, json } = await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: { emoji: "🔥" },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.habit.emoji, "🔥", "emoji should be updated");
+    assert.equal(json.habit.name, "Emoji Test Habit", "name should be unchanged");
+    assert.equal(json.habit.color_hex, "#34C759", "color_hex should be unchanged");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("POST /habits: cross-user UUID collision returns 409", () => {
+  let userAToken;
+  let userAId;
+  let userBToken;
+  let userBId;
+  let sharedId;
+
+  before(async () => {
+    const userA = createTestUser();
+    userAId = userA.userId;
+    userAToken = createTestSession(userAId);
+
+    const userB = createTestUser();
+    userBId = userB.userId;
+    userBToken = createTestSession(userBId);
+
+    // User A creates a habit with a specific UUID
+    sharedId = crypto.randomUUID();
+    await api("POST", "/v1/habits", {
+      token: userAToken,
+      body: { id: sharedId, name: "User A habit" },
+    });
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userAId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userBId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userAId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userBId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userAId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userBId);
+  });
+
+  it("user B POST /habits with same UUID as user A returns 409", async () => {
+    const { status, json } = await api("POST", "/v1/habits", {
+      token: userBToken,
+      body: { id: sharedId, name: "User B colliding habit" },
+    });
+    assert.equal(status, 409, "duplicate UUID across users should return 409");
+    assert.ok(json.error, "error message should be present");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("DELETE /habits/:id/entries/:date: no tombstone on no-op delete", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+    const created = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "No-tombstone habit" },
+    });
+    habitId = created.json.habit.id;
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("DELETE for non-existent entry date does not create a tombstone", async () => {
+    const sinceBefore = new Date().toISOString();
+
+    // Delete a date that was never checked in
+    const { status, json } = await api("DELETE", `/v1/habits/${habitId}/entries/2020-06-15`, { token });
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+
+    // Incremental pull must return empty deletedEntryIds (no tombstone created)
+    const pull = await api("GET", `/v1/sync/pull?since=${encodeURIComponent(sinceBefore)}`, { token });
+    assert.equal(pull.status, 200);
+    assert.equal(pull.json.deletedEntryIds.length, 0, "no tombstone should exist for a never-created entry");
+  });
+});
