@@ -4443,3 +4443,114 @@ describe("DELETE /habits/:id/entries/:date: no tombstone on no-op delete", () =>
     assert.equal(pull.json.deletedEntryIds.length, 0, "no tombstone should exist for a never-created entry");
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Sync push: malformed habit with null name is silently skipped", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("sync push with null name habit does not crash (returns ok:true, habit is skipped)", async () => {
+    const nullNameId = crypto.randomUUID();
+    const validId = crypto.randomUUID();
+    const { status, json } = await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [
+          { id: nullNameId, name: null, sortOrder: 0 },
+          { id: validId, name: "Valid habit after null", sortOrder: 1 },
+        ],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    const ids = pull.json.habits.map((h) => h.id);
+    assert.ok(!ids.includes(nullNameId), "malformed habit (null name) must not be inserted");
+    assert.ok(ids.includes(validId), "valid habit after null-name one must still be inserted");
+  });
+
+  it("sync push with missing id in habit is silently skipped", async () => {
+    const validId = crypto.randomUUID();
+    const { status, json } = await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [
+          { name: "No id habit", sortOrder: 0 },
+          { id: validId, name: "After no-id habit", sortOrder: 1 },
+        ],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    const validHabit = pull.json.habits.find((h) => h.id === validId);
+    assert.ok(validHabit, "valid habit after no-id one must be inserted");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync push: malformed entry with null date is silently skipped", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id IN (SELECT id FROM habits WHERE user_id = ?)").run(userId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("sync push with null date entry does not crash (returns ok:true, entry is skipped)", async () => {
+    const habitId = crypto.randomUUID();
+    const nullDateEntryId = crypto.randomUUID();
+    const validEntryId = crypto.randomUUID();
+
+    const { status, json } = await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Test habit for null date entry", sortOrder: 0 }],
+        entries: [
+          { id: nullDateEntryId, habitId, date: null },
+          { id: validEntryId, habitId, date: "2025-11-15" },
+        ],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    const entryIds = pull.json.entries.map((e) => e.id);
+    assert.ok(!entryIds.includes(nullDateEntryId), "entry with null date must be skipped");
+    assert.ok(entryIds.includes(validEntryId), "valid entry after null-date one must be inserted");
+  });
+});
