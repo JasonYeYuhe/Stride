@@ -5219,3 +5219,128 @@ describe("Sync push deletedHabitIds: cascade-deletes entries, only habit tombsto
     assert.equal(pull.json.deletedEntryIds.length, 0, "no entry tombstones when habit deleted via sync push");
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("PUT /habits/:id: note as empty string stores '' not null", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+    const { json } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Empty note PUT test", note: "original" },
+    });
+    habitId = json.habit.id;
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("PUT with note:'' stores empty string, GET list returns ''", async () => {
+    const put = await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: { note: "" },
+    });
+    assert.equal(put.status, 200);
+    assert.equal(put.json.habit.note, "", "PUT response note should be empty string");
+
+    const list = await api("GET", "/v1/habits", { token });
+    const found = list.json.habits.find((h) => h.id === habitId);
+    assert.ok(found, "habit should appear in list");
+    assert.equal(found.note, "", "GET list note should be empty string, not null");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("GET /habits: archived habits appear in list and total", () => {
+  let token;
+  let userId;
+  let archivedId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+
+    const { json } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Archive me" },
+    });
+    archivedId = json.habit.id;
+
+    await api("PUT", `/v1/habits/${archivedId}`, {
+      token,
+      body: { isArchived: true },
+    });
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("archived habit still appears in GET /habits list", async () => {
+    const { status, json } = await api("GET", "/v1/habits", { token });
+    assert.equal(status, 200);
+    const found = json.habits.find((h) => h.id === archivedId);
+    assert.ok(found, "archived habit should be in list");
+    assert.equal(found.is_archived, 1, "is_archived should be 1");
+    assert.equal(json.pagination.total, 1, "total should include archived habit");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync push + pull: empty-string note normalizes to null", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+    habitId = crypto.randomUUID();
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("push note:'' stored as empty string; pull returns note:null via || normalization", async () => {
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Empty note sync", note: "" }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    // DB should store ""
+    const row = db.prepare("SELECT note FROM habits WHERE id = ?").get(habitId);
+    assert.equal(row.note, "", "DB stores empty string as stored");
+
+    // Sync pull normalizes "" to null via `row.note || null`
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    assert.equal(pull.status, 200);
+    const h = pull.json.habits.find((x) => x.id === habitId);
+    assert.ok(h, "habit should appear in pull");
+    assert.equal(h.note, null, "sync pull normalizes empty string to null");
+  });
+});
