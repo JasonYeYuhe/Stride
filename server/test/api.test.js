@@ -3539,6 +3539,42 @@ describe("PUT /habits/:id: non-integer reminderHour rejected", () => {
     assert.match(json.error, /reminderHour/);
   });
 
+  it("PUT /habits/:id with float reminderMinute returns 400", async () => {
+    const { status, json } = await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: { reminderMinute: 30.5 },
+    });
+    assert.equal(status, 400);
+    assert.match(json.error, /reminderMinute/);
+  });
+
+  it("PUT /habits/:id with reminderHour=24 (out of range) returns 400", async () => {
+    const { status, json } = await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: { reminderHour: 24 },
+    });
+    assert.equal(status, 400);
+    assert.match(json.error, /reminderHour/);
+  });
+
+  it("PUT /habits/:id with reminderMinute=60 (out of range) returns 400", async () => {
+    const { status, json } = await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: { reminderMinute: 60 },
+    });
+    assert.equal(status, 400);
+    assert.match(json.error, /reminderMinute/);
+  });
+
+  it("PUT /habits/:id with reminderHour=-1 (negative) returns 400", async () => {
+    const { status, json } = await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: { reminderHour: -1 },
+    });
+    assert.equal(status, 400);
+    assert.match(json.error, /reminderHour/);
+  });
+
   it("PUT /habits/:id with reminderEnabled:false disables reminder", async () => {
     const { status, json } = await api("PUT", `/v1/habits/${habitId}`, {
       token,
