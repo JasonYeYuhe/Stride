@@ -4855,3 +4855,186 @@ describe("CRUD DELETE habit-with-entries: no individual entry tombstones in sync
     assert.equal(pull.json.deletedEntryIds.length, 0, "no individual entry tombstones when whole habit is deleted");
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Stats: completionRate rounds to 3 decimal places", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id IN (SELECT id FROM habits WHERE user_id = ?)").run(userId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("2 entries in a 7-day window gives completionRate=0.286", async () => {
+    const habitId = crypto.randomUUID();
+    const sixDaysAgo = new Date(Date.now() - 6 * 86400000).toISOString();
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    const twoDaysAgo = new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10);
+
+    // Push habit with createdAt = 6 days ago so effectiveStart = 6 days ago (7-day window)
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Rate rounding test", createdAt: sixDaysAgo, updatedAt: sixDaysAgo }],
+        entries: [
+          { id: crypto.randomUUID(), habitId, date: yesterday },
+          { id: crypto.randomUUID(), habitId, date: twoDaysAgo },
+        ],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    const { status, json } = await api("GET", `/v1/habits/${habitId}/stats`, { token });
+    assert.equal(status, 200);
+    // totalDays = 7, completedInRange = 2 → 2/7 ≈ 0.2857… → rounded to 0.286
+    assert.equal(json.completionRate, 0.286, "completionRate should be rounded to 3 decimal places");
+    assert.equal(json.totalEntries, 2);
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync pull ?since: strict > boundary — habit with updated_at === since is not returned", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("incremental pull with since=updated_at does NOT include the habit (strict >)", async () => {
+    const habitId = crypto.randomUUID();
+    const updatedAt = "2026-01-10T12:00:00.000Z";
+
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Boundary habit", updatedAt }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    // Pull with since = exact updated_at value — strict > means this habit should NOT appear
+    const pull = await api("GET", "/v1/sync/pull", { token, query: { since: updatedAt } });
+    assert.equal(pull.status, 200);
+    const found = pull.json.habits.find((h) => h.id === habitId);
+    assert.equal(found, undefined, "habit with updated_at === since should not appear in incremental pull");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync push: createdAt preserved on re-push (ON CONFLICT does not update created_at)", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("re-pushing the same habit with a newer createdAt does not change the stored createdAt", async () => {
+    const habitId = crypto.randomUUID();
+    const originalCreatedAt = "2025-01-10T00:00:00.000Z";
+    const newerCreatedAt = "2026-03-01T00:00:00.000Z";
+
+    // First push: establish createdAt
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "CreatedAt test", createdAt: originalCreatedAt, updatedAt: originalCreatedAt }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    // Second push: same id, different name and newer createdAt
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Updated name", createdAt: newerCreatedAt, updatedAt: new Date().toISOString() }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    // Full pull: verify createdAt is still the original
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    assert.equal(pull.status, 200);
+    const habit = pull.json.habits.find((h) => h.id === habitId);
+    assert.ok(habit, "habit should exist in pull");
+    assert.equal(habit.name, "Updated name", "name should be updated");
+    assert.equal(habit.createdAt, originalCreatedAt, "createdAt must not be overwritten by re-push");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync push: omitting updatedAt uses server time (habit visible in subsequent incremental pull)", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("habit pushed without updatedAt uses server time and appears in incremental pull", async () => {
+    const habitId = crypto.randomUUID();
+    const beforePush = new Date(Date.now() - 1000).toISOString();
+
+    // Push habit without providing updatedAt — server should assign current time
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "No updatedAt test" }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    // Incremental pull since 1s before push — habit should appear (server-assigned updated_at)
+    const pull = await api("GET", "/v1/sync/pull", { token, query: { since: beforePush } });
+    assert.equal(pull.status, 200);
+    const found = pull.json.habits.find((h) => h.id === habitId);
+    assert.ok(found, "habit pushed without updatedAt should appear in incremental pull (server uses current time)");
+  });
+});
