@@ -4554,3 +4554,104 @@ describe("Sync push: malformed entry with null date is silently skipped", () => 
     assert.ok(entryIds.includes(validEntryId), "valid entry after null-date one must be inserted");
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Sync pull incremental: habit note included in ?since response", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id IN (SELECT id FROM habits WHERE user_id = ?)").run(userId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("incremental pull with ?since includes habit note field", async () => {
+    const habitId = crypto.randomUUID();
+    const beforePush = new Date(Date.now() - 2000).toISOString();
+
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Habit note incremental test", sortOrder: 0, note: "incremental habit note" }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    const { status, json } = await api("GET", "/v1/sync/pull", {
+      token,
+      query: { since: beforePush },
+    });
+    assert.equal(status, 200);
+    const habit = json.habits.find((h) => h.id === habitId);
+    assert.ok(habit, "habit should appear in incremental pull");
+    assert.equal(habit.note, "incremental habit note", "habit note must be included in incremental pull response");
+
+    db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync push: habit note update via re-push", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id IN (SELECT id FROM habits WHERE user_id = ?)").run(userId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("sync push updates habit note when same habit pushed again with new note", async () => {
+    const habitId = crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Note update habit", sortOrder: 0, note: "original note", updatedAt: now }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    const later = new Date(Date.now() + 1000).toISOString();
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Note update habit", sortOrder: 0, note: "updated note", updatedAt: later }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    const { status, json } = await api("GET", "/v1/sync/pull", { token });
+    assert.equal(status, 200);
+    const habit = json.habits.find((h) => h.id === habitId);
+    assert.ok(habit, "habit should exist in full pull");
+    assert.equal(habit.note, "updated note", "habit note should be updated by second sync push");
+
+    db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
+  });
+});
