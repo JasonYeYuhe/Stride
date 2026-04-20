@@ -138,9 +138,9 @@ router.get("/pull", (req, res) => {
       entries = [];
     }
 
-    // Return tombstones created since last sync
+    // Return tombstones created since last sync (DISTINCT prevents duplicate IDs on retry pushes)
     const tombstones = db.prepare(
-      "SELECT entity_type, entity_id FROM deletion_tombstones WHERE user_id = ? AND deleted_at > ?"
+      "SELECT DISTINCT entity_type, entity_id FROM deletion_tombstones WHERE user_id = ? AND deleted_at > ?"
     ).all(userId, since);
 
     deletedHabitIds = tombstones.map((t) => /** @type {TombstoneRow} */ (t)).filter((t) => t.entity_type === "habit").map((t) => t.entity_id);
