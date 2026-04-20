@@ -5476,3 +5476,65 @@ describe("Sync push: empty-string colorHex falls back to default #34C759", () =>
     assert.equal(h.colorHex, "#34C759", "empty-string colorHex must fall back to #34C759 in sync pull");
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Sync: entry note update visible in incremental pull (updated_at)", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("re-pushing an entry with updated note is visible in subsequent incremental pull", async () => {
+    const habitId = crypto.randomUUID();
+    const entryId = crypto.randomUUID();
+
+    // Initial push: habit + entry with "original" note
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Note update sync test", sortOrder: 0 }],
+        entries: [{ id: entryId, habitId, date: "2025-11-05", note: "original note" }],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    // Wait briefly to ensure the second push's updated_at is strictly > sinceAfterFirstPush
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const sinceAfterFirstPush = new Date().toISOString();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    // Re-push the same habit+date with an updated note (ON CONFLICT triggers updated_at)
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [],
+        entries: [{ id: crypto.randomUUID(), habitId, date: "2025-11-05", note: "updated note" }],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    // Incremental pull: only changes since after the first push
+    const pull = await api("GET", "/v1/sync/pull", {
+      token,
+      query: { since: sinceAfterFirstPush },
+    });
+    assert.equal(pull.status, 200);
+
+    const entry = pull.json.entries.find((e) => e.habitId === habitId && e.date === "2025-11-05");
+    assert.ok(entry, "updated entry must appear in incremental pull");
+    assert.equal(entry.note, "updated note", "incremental pull must return the updated note value");
+  });
+});

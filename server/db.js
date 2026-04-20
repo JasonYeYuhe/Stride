@@ -59,6 +59,7 @@ db.exec(`
     date      TEXT NOT NULL,
     note      TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     FOREIGN KEY (habit_id) REFERENCES habits(id) ON DELETE CASCADE,
     UNIQUE(habit_id, date)
   );
@@ -105,6 +106,10 @@ const migrateIfNeeded = db.transaction(() => {
   const entryCols = db.prepare("PRAGMA table_info(habit_entries)").all().map((c) => /** @type {PragmaColumn} */ (c).name);
   if (!entryCols.includes("note")) {
     db.exec("ALTER TABLE habit_entries ADD COLUMN note TEXT");
+  }
+  if (!entryCols.includes("updated_at")) {
+    db.exec("ALTER TABLE habit_entries ADD COLUMN updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))");
+    db.exec("UPDATE habit_entries SET updated_at = created_at");
   }
 
   // Convert legacy space-separated timestamps (YYYY-MM-DD HH:MM:SS) to ISO8601.
