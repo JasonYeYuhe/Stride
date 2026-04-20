@@ -4691,3 +4691,62 @@ describe("Sync push: habit note update via re-push", () => {
     db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Sync pull: duplicate tombstones de-duplicated (retry-safe deletion)", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("pushing same deletedHabitId twice yields no duplicate in incremental pull response", async () => {
+    const habitId = crypto.randomUUID();
+    const beforePush = new Date(Date.now() - 1000).toISOString();
+
+    // Push the same deletion twice (simulating a client retry)
+    for (let i = 0; i < 2; i++) {
+      await api("POST", "/v1/sync/push", {
+        token,
+        body: { habits: [], entries: [], deletedHabitIds: [habitId], deletedEntryIds: [] },
+      });
+    }
+
+    const pull = await api("GET", "/v1/sync/pull", { token, query: { since: beforePush } });
+    assert.equal(pull.status, 200);
+    const ids = pull.json.deletedHabitIds;
+    assert.ok(Array.isArray(ids), "deletedHabitIds should be an array");
+    const occurrences = ids.filter((id) => id === habitId).length;
+    assert.equal(occurrences, 1, "duplicate tombstones from retry should be de-duplicated to one entry");
+  });
+
+  it("pushing same deletedEntryId twice yields no duplicate in incremental pull response", async () => {
+    const entryId = crypto.randomUUID();
+    const beforePush = new Date(Date.now() - 1000).toISOString();
+
+    // Push the same entry deletion twice (simulating a client retry)
+    for (let i = 0; i < 2; i++) {
+      await api("POST", "/v1/sync/push", {
+        token,
+        body: { habits: [], entries: [], deletedHabitIds: [], deletedEntryIds: [entryId] },
+      });
+    }
+
+    const pull = await api("GET", "/v1/sync/pull", { token, query: { since: beforePush } });
+    assert.equal(pull.status, 200);
+    const ids = pull.json.deletedEntryIds;
+    assert.ok(Array.isArray(ids), "deletedEntryIds should be an array");
+    const occurrences = ids.filter((id) => id === entryId).length;
+    assert.equal(occurrences, 1, "duplicate entry tombstones from retry should be de-duplicated to one entry");
+  });
+});
