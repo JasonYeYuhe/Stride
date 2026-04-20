@@ -77,10 +77,11 @@ router.post("/push", (req, res) => {
       insertTombstone.run(userId, "entry", id, now);
     }
 
-    // Upsert habits — skip any that were just deleted
+    // Upsert habits — skip any that were just deleted or are malformed
     const deletedHabitSet = new Set(deletedHabitIds);
     for (const h of habits) {
       if (deletedHabitSet.has(h.id)) continue;
+      if (!h.id || !h.name) continue;
       upsertHabit.run(
         h.id, userId, h.name, h.emoji || "⭐", h.colorHex || "#34C759",
         h.isArchived ? 1 : 0, h.sortOrder || 0,
@@ -91,10 +92,11 @@ router.post("/push", (req, res) => {
       );
     }
 
-    // Upsert entries — skip any that were just deleted
+    // Upsert entries — skip any that were just deleted or are malformed
     const deletedEntrySet = new Set(deletedEntryIds);
     for (const e of entries) {
       if (deletedEntrySet.has(e.id)) continue;
+      if (!e.id || !e.habitId || !e.date) continue;
       // Verify the habit belongs to this user
       const habit = db.prepare("SELECT id FROM habits WHERE id = ? AND user_id = ?").get(e.habitId, userId);
       if (habit) {
