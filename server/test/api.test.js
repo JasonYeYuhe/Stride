@@ -5922,3 +5922,125 @@ describe("GET /habits/:id/entries: only ?from (no ?to) returns all entries ignor
     assert.equal(json.entries.length, 3);
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Sync push: reminderHour=0 (midnight) preserved via full pull", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("push habit with reminderHour=0; pull returns reminderHour=0 not 20 (nullish coalescing ?? not ||)", async () => {
+    const habitId = crypto.randomUUID();
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{
+          id: habitId,
+          name: "Midnight reminder habit",
+          reminderEnabled: true,
+          reminderHour: 0,
+          reminderMinute: 30,
+        }],
+        entries: [], deletedHabitIds: [], deletedEntryIds: [],
+      },
+    });
+
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    const habit = pull.json.habits.find((h) => h.id === habitId);
+    assert.ok(habit, "habit should exist in pull");
+    assert.equal(habit.reminderHour, 0, "reminderHour=0 (midnight) must not be coerced to default 20");
+    assert.equal(habit.reminderMinute, 30, "reminderMinute=30 should be preserved");
+    assert.equal(habit.reminderEnabled, true);
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync push: omitted reminderHour defaults to 20 in pull", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("push habit without reminderHour field; pull returns reminderHour=20 (server default)", async () => {
+    const habitId = crypto.randomUUID();
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{
+          id: habitId,
+          name: "Default hour habit",
+          reminderEnabled: true,
+          // reminderHour intentionally omitted — server should default to 20 via ?? 20
+          reminderMinute: 15,
+        }],
+        entries: [], deletedHabitIds: [], deletedEntryIds: [],
+      },
+    });
+
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    const habit = pull.json.habits.find((h) => h.id === habitId);
+    assert.ok(habit, "habit should exist in pull");
+    assert.equal(habit.reminderHour, 20, "omitted reminderHour should fall back to default 20");
+    assert.equal(habit.reminderMinute, 15);
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Stats: currentStreak=2 when today and yesterday both have entries", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+
+    const { json } = await api("POST", "/v1/habits", { token, body: { name: "Two-day streak" } });
+    habitId = json.habit.id;
+
+    const today = new Date().toISOString().slice(0, 10);
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    await api("POST", `/v1/habits/${habitId}/entries`, { token, body: { date: today } });
+    await api("POST", `/v1/habits/${habitId}/entries`, { token, body: { date: yesterday } });
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("currentStreak is exactly 2 with entries for today and yesterday", async () => {
+    const { status, json } = await api("GET", `/v1/habits/${habitId}/stats`, { token });
+    assert.equal(status, 200);
+    assert.equal(json.currentStreak, 2, "today + yesterday = streak of 2");
+    assert.equal(json.bestStreak, 2);
+    assert.equal(json.totalEntries, 2);
+  });
+});
