@@ -5538,3 +5538,79 @@ describe("Sync: entry note update visible in incremental pull (updated_at)", () 
     assert.equal(entry.note, "updated note", "incremental pull must return the updated note value");
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Habit API: created_at and updated_at timestamp fields", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("POST /habits response includes ISO8601 created_at and updated_at", async () => {
+    const { status, json } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Timestamp test habit" },
+    });
+    assert.equal(status, 201);
+    assert.ok(json.habit.created_at, "created_at must be present in POST response");
+    assert.ok(json.habit.updated_at, "updated_at must be present in POST response");
+    assert.match(json.habit.created_at, /^\d{4}-\d{2}-\d{2}T/, "created_at must be ISO8601");
+    assert.match(json.habit.updated_at, /^\d{4}-\d{2}-\d{2}T/, "updated_at must be ISO8601");
+  });
+
+  it("POST /habits: created_at equals updated_at immediately after creation", async () => {
+    const { json } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Equality timestamp habit" },
+    });
+    assert.equal(json.habit.created_at, json.habit.updated_at, "created_at and updated_at should be equal right after creation");
+  });
+
+  it("PUT /habits/:id updates updated_at but preserves created_at", async () => {
+    const created = await api("POST", "/v1/habits", { token, body: { name: "Preserve createdAt habit" } });
+    const habitId = created.json.habit.id;
+    const originalCreatedAt = created.json.habit.created_at;
+
+    // Wait a tick to ensure updated_at will differ from created_at
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    const { json } = await api("PUT", `/v1/habits/${habitId}`, { token, body: { name: "Renamed habit" } });
+    assert.equal(json.habit.created_at, originalCreatedAt, "created_at must not change on PUT");
+    assert.ok(json.habit.updated_at >= originalCreatedAt, "updated_at must be >= created_at after PUT");
+    assert.match(json.habit.updated_at, /^\d{4}-\d{2}-\d{2}T/, "updated_at must remain ISO8601 after PUT");
+  });
+
+  it("GET /habits list includes created_at and updated_at for each habit", async () => {
+    const { json } = await api("GET", "/v1/habits", { token });
+    assert.ok(json.habits.length > 0, "at least one habit should exist");
+    for (const habit of json.habits) {
+      assert.ok(habit.created_at, `habit ${habit.id} must have created_at in GET list`);
+      assert.ok(habit.updated_at, `habit ${habit.id} must have updated_at in GET list`);
+      assert.match(habit.created_at, /^\d{4}-\d{2}-\d{2}T/, "created_at must be ISO8601 in GET list");
+      assert.match(habit.updated_at, /^\d{4}-\d{2}-\d{2}T/, "updated_at must be ISO8601 in GET list");
+    }
+  });
+
+  it("PUT /habits/:id response includes created_at and updated_at", async () => {
+    const created = await api("POST", "/v1/habits", { token, body: { name: "PUT timestamp check habit" } });
+    const habitId = created.json.habit.id;
+
+    const { status, json } = await api("PUT", `/v1/habits/${habitId}`, { token, body: { name: "Updated name" } });
+    assert.equal(status, 200);
+    assert.ok(json.habit.created_at, "created_at must be present in PUT response");
+    assert.ok(json.habit.updated_at, "updated_at must be present in PUT response");
+    assert.match(json.habit.created_at, /^\d{4}-\d{2}-\d{2}T/, "created_at must be ISO8601 in PUT response");
+    assert.match(json.habit.updated_at, /^\d{4}-\d{2}-\d{2}T/, "updated_at must be ISO8601 in PUT response");
+  });
+});
