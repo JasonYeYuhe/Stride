@@ -6044,3 +6044,130 @@ describe("Stats: currentStreak=2 when today and yesterday both have entries", ()
     assert.equal(json.totalEntries, 2);
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Auth: delete-account removes deletion_tombstones (CASCADE)", () => {
+  it("tombstones are gone after delete-account", async () => {
+    const { userId } = createTestUser();
+    const token = createTestSession(userId);
+
+    // Create a habit, an entry, then delete the entry to generate a tombstone
+    const { json: created } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Tombstone cleanup habit" },
+    });
+    const habitId = created.habit.id;
+    await api("POST", `/v1/habits/${habitId}/entries`, { token, body: { date: "2025-08-01" } });
+    await api("DELETE", `/v1/habits/${habitId}/entries/2025-08-01`, { token });
+
+    // Verify tombstone exists before account deletion
+    const before = db.prepare(
+      "SELECT id FROM deletion_tombstones WHERE user_id = ?",
+    ).all(userId);
+    assert.ok(before.length > 0, "tombstone should exist before account deletion");
+
+    // Delete account
+    const { status } = await api("POST", "/v1/auth/delete-account", { token });
+    assert.equal(status, 200);
+
+    // Tombstones for this user should be gone (ON DELETE CASCADE on user_id)
+    const after = db.prepare(
+      "SELECT id FROM deletion_tombstones WHERE user_id = ?",
+    ).all(userId);
+    assert.equal(after.length, 0, "all tombstones must be removed when account is deleted");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Stats: bestStreak counts today + tomorrow (future extends consecutive streak)", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+
+    const { json } = await api("POST", "/v1/habits", { token, body: { name: "Future streak habit" } });
+    habitId = json.habit.id;
+
+    const today = new Date().toISOString().slice(0, 10);
+    const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+    await api("POST", `/v1/habits/${habitId}/entries`, { token, body: { date: today } });
+    await api("POST", `/v1/habits/${habitId}/entries`, { token, body: { date: tomorrow } });
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("bestStreak=2 with today+tomorrow; currentStreak=1 (backward from today, no yesterday)", async () => {
+    const { status, json } = await api("GET", `/v1/habits/${habitId}/stats`, { token });
+    assert.equal(status, 200);
+    assert.equal(json.currentStreak, 1, "currentStreak counts backward from today — tomorrow has no effect");
+    assert.equal(json.bestStreak, 2, "bestStreak includes future consecutive entry");
+    assert.equal(json.totalEntries, 2, "totalEntries counts all entries including future");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync push: reminderEnabled toggle false → true via re-push", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+    habitId = crypto.randomUUID();
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("re-pushing habit with reminderEnabled:true enables reminder after it was false", async () => {
+    // First push: reminderEnabled false
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Reminder toggle habit", reminderEnabled: false, reminderHour: 8, reminderMinute: 0 }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    const before = await api("GET", "/v1/sync/pull", { token });
+    const h1 = before.json.habits.find((h) => h.id === habitId);
+    assert.ok(h1, "habit should appear in pull after first push");
+    assert.equal(h1.reminderEnabled, false, "reminderEnabled should be false after first push");
+
+    // Re-push: toggle reminderEnabled to true
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Reminder toggle habit", reminderEnabled: true, reminderHour: 8, reminderMinute: 0 }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    const after = await api("GET", "/v1/sync/pull", { token });
+    const h2 = after.json.habits.find((h) => h.id === habitId);
+    assert.ok(h2, "habit should appear in pull after re-push");
+    assert.equal(h2.reminderEnabled, true, "reminderEnabled must be true after re-push with true");
+    assert.equal(h2.reminderHour, 8, "reminderHour should be preserved during toggle");
+  });
+});
