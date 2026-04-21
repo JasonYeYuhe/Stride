@@ -5783,3 +5783,142 @@ describe("Stats: future-only entries — currentStreak and completionRate exclud
     assert.equal(json.bestStreak, 1, "bestStreak counts the one future entry as a streak of 1");
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Sync push: entry with cross-user habitId is silently skipped", () => {
+  let userAToken;
+  let userAId;
+  let userBToken;
+  let userBId;
+  let habitAId;
+  let entryBId;
+
+  before(async () => {
+    const userA = createTestUser();
+    userAId = userA.userId;
+    userAToken = createTestSession(userAId);
+
+    const userB = createTestUser();
+    userBId = userB.userId;
+    userBToken = createTestSession(userBId);
+
+    // User A creates a habit via sync push
+    habitAId = crypto.randomUUID();
+    await api("POST", "/v1/sync/push", {
+      token: userAToken,
+      body: {
+        habits: [{ id: habitAId, name: "User A habit", sortOrder: 0 }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitAId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userAId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userBId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userAId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userBId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userAId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userBId);
+  });
+
+  it("user B pushes entry for user A's habitId — entry is not created", async () => {
+    entryBId = crypto.randomUUID();
+    const { status, json } = await api("POST", "/v1/sync/push", {
+      token: userBToken,
+      body: {
+        habits: [],
+        entries: [{ id: entryBId, habitId: habitAId, date: "2026-01-15" }],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+    // Push succeeds (200) but entry is silently skipped
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+
+    const entry = db.prepare("SELECT id FROM habit_entries WHERE id = ?").get(entryBId);
+    assert.equal(entry, undefined, "entry for another user's habit must not be persisted");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync push: habit with sortOrder=0 preserved on re-push", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    ({ userId } = createTestUser());
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("push habit with sortOrder=0; pull returns sortOrder=0 (not reset to default)", async () => {
+    const habitId = crypto.randomUUID();
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "First habit", sortOrder: 0 }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    const { json } = await api("GET", "/v1/sync/pull", { token });
+    const habit = json.habits.find((h) => h.id === habitId);
+    assert.ok(habit, "habit should exist in pull response");
+    assert.equal(habit.sortOrder, 0, "sortOrder=0 must round-trip correctly; 0 must not be treated as falsy");
+
+    db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("GET /habits/:id/entries: only ?from (no ?to) returns all entries ignoring ?from", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+
+    const { json } = await api("POST", "/v1/habits", { token, body: { name: "From-only filter test" } });
+    habitId = json.habit.id;
+
+    // Create 3 entries spanning different dates
+    for (const date of ["2024-01-01", "2025-06-01", "2026-01-01"]) {
+      await api("POST", `/v1/habits/${habitId}/entries`, { token, body: { date } });
+    }
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("?from=2025-01-01 without ?to returns all 3 entries (date filter requires both bounds)", async () => {
+    const { status, json } = await api("GET", `/v1/habits/${habitId}/entries`, {
+      token,
+      query: { from: "2025-01-01" },
+    });
+    assert.equal(status, 200);
+    // Server requires both ?from AND ?to to activate date filter; one bound alone is ignored
+    assert.equal(json.pagination.total, 3, "all 3 entries returned when only ?from is provided");
+    assert.equal(json.entries.length, 3);
+  });
+});
