@@ -6283,3 +6283,147 @@ describe("Sync push: tombstoned entry is not resurrected by stale push from anot
     assert.equal(found, undefined, "tombstoned entry must not be resurrected by stale push");
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Sync pull incremental: tombstone deleted_at === since is not returned (strict >)", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("tombstone with deleted_at === since does not appear in incremental pull (strict >)", async () => {
+    const habitId = crypto.randomUUID();
+    const entryId = crypto.randomUUID();
+
+    // Push habit + entry
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Boundary tombstone habit", sortOrder: 0 }],
+        entries: [{ id: entryId, habitId, date: "2025-11-01" }],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    // Delete the habit via sync push — server creates tombstone with current time
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: { habits: [], entries: [], deletedHabitIds: [habitId], deletedEntryIds: [] },
+    });
+
+    // Read the exact deleted_at timestamp from the DB
+    const tombstone = db.prepare(
+      "SELECT deleted_at FROM deletion_tombstones WHERE user_id = ? AND entity_type = 'habit' AND entity_id = ?"
+    ).get(userId, habitId);
+    assert.ok(tombstone, "tombstone should exist");
+
+    // Pull with since = exact deleted_at value — strict > means this tombstone should NOT appear
+    const pull = await api("GET", "/v1/sync/pull", { token, query: { since: tombstone.deleted_at } });
+    assert.equal(pull.status, 200);
+    assert.ok(Array.isArray(pull.json.deletedHabitIds), "deletedHabitIds should be an array");
+    assert.equal(
+      pull.json.deletedHabitIds.includes(habitId),
+      false,
+      "tombstone with deleted_at === since must not appear in incremental pull (strict >)"
+    );
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync pull incremental: tombstones are user-scoped (cross-user isolation)", () => {
+  let userAToken;
+  let userAId;
+  let userBToken;
+  let userBId;
+  let habitAId;
+  let entryAId;
+
+  before(async () => {
+    const userA = createTestUser();
+    userAId = userA.userId;
+    userAToken = createTestSession(userAId);
+
+    const userB = createTestUser();
+    userBId = userB.userId;
+    userBToken = createTestSession(userBId);
+
+    habitAId = crypto.randomUUID();
+    entryAId = crypto.randomUUID();
+
+    // User A pushes a habit + entry
+    await api("POST", "/v1/sync/push", {
+      token: userAToken,
+      body: {
+        habits: [{ id: habitAId, name: "User A habit to delete", sortOrder: 0 }],
+        entries: [{ id: entryAId, habitId: habitAId, date: "2025-12-01" }],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userAId);
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userBId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userAId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userBId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userAId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userBId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userAId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userBId);
+  });
+
+  it("user B incremental pull does not include user A's deleted habit in deletedHabitIds", async () => {
+    const beforeDelete = new Date(Date.now() - 1000).toISOString();
+
+    // User A deletes their habit
+    await api("POST", "/v1/sync/push", {
+      token: userAToken,
+      body: { habits: [], entries: [], deletedHabitIds: [habitAId], deletedEntryIds: [] },
+    });
+
+    // User B incremental pull — should NOT contain user A's tombstone
+    const pull = await api("GET", "/v1/sync/pull", { token: userBToken, query: { since: beforeDelete } });
+    assert.equal(pull.status, 200);
+    assert.ok(Array.isArray(pull.json.deletedHabitIds), "deletedHabitIds should be an array");
+    assert.equal(
+      pull.json.deletedHabitIds.includes(habitAId),
+      false,
+      "user B should not see user A's deletion tombstone in pull"
+    );
+  });
+
+  it("user B incremental pull does not include user A's deleted entry in deletedEntryIds", async () => {
+    const beforeDelete = new Date(Date.now() - 1000).toISOString();
+
+    // User A deletes their entry (via re-push after habit is already tombstoned — but entry tombstone was already created above)
+    // Insert entry tombstone directly for user A to test isolation
+    const isolatedEntryId = crypto.randomUUID();
+    db.prepare(
+      "INSERT INTO deletion_tombstones (user_id, entity_type, entity_id, deleted_at) VALUES (?, 'entry', ?, ?)"
+    ).run(userAId, isolatedEntryId, new Date().toISOString());
+
+    const pull = await api("GET", "/v1/sync/pull", { token: userBToken, query: { since: beforeDelete } });
+    assert.equal(pull.status, 200);
+    assert.ok(Array.isArray(pull.json.deletedEntryIds), "deletedEntryIds should be an array");
+    assert.equal(
+      pull.json.deletedEntryIds.includes(isolatedEntryId),
+      false,
+      "user B should not see user A's entry deletion tombstone in pull"
+    );
+  });
+});
