@@ -6171,3 +6171,115 @@ describe("Sync push: reminderEnabled toggle false → true via re-push", () => {
     assert.equal(h2.reminderHour, 8, "reminderHour should be preserved during toggle");
   });
 });
+
+describe("Sync push: tombstoned habit is not resurrected by stale push from another device", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("re-pushing a previously-tombstoned habit does not resurrect it in full pull", async () => {
+    const habitId = crypto.randomUUID();
+
+    // Push habit, then delete it (tombstone recorded)
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: { habits: [{ id: habitId, name: "Ghost Habit", sortOrder: 0 }], entries: [], deletedHabitIds: [], deletedEntryIds: [] },
+    });
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: { habits: [], entries: [], deletedHabitIds: [habitId], deletedEntryIds: [] },
+    });
+
+    // Stale device B re-pushes the habit without knowing it was deleted
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: { habits: [{ id: habitId, name: "Ghost Habit", sortOrder: 0 }], entries: [], deletedHabitIds: [], deletedEntryIds: [] },
+    });
+
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    const found = pull.json.habits.find((h) => h.id === habitId);
+    assert.equal(found, undefined, "tombstoned habit must not be resurrected by stale push");
+  });
+
+  it("tombstone is preserved in incremental pull after stale re-push", async () => {
+    const habitId = crypto.randomUUID();
+
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: { habits: [{ id: habitId, name: "Ghost Habit 2", sortOrder: 0 }], entries: [], deletedHabitIds: [], deletedEntryIds: [] },
+    });
+    const beforeDelete = new Date(Date.now() - 1000).toISOString();
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: { habits: [], entries: [], deletedHabitIds: [habitId], deletedEntryIds: [] },
+    });
+
+    // Stale re-push
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: { habits: [{ id: habitId, name: "Ghost Habit 2", sortOrder: 0 }], entries: [], deletedHabitIds: [], deletedEntryIds: [] },
+    });
+
+    const incremental = await api("GET", `/v1/sync/pull?since=${beforeDelete}`, { token });
+    assert.ok(incremental.json.deletedHabitIds.includes(habitId), "tombstone still present in incremental pull after stale re-push");
+  });
+});
+
+describe("Sync push: tombstoned entry is not resurrected by stale push from another device", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("re-pushing a previously-tombstoned entry does not resurrect it in full pull", async () => {
+    const habitId = crypto.randomUUID();
+    const entryId = crypto.randomUUID();
+
+    // Push habit + entry, then tombstone the entry
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: { habits: [{ id: habitId, name: "Active Habit", sortOrder: 0 }], entries: [], deletedHabitIds: [], deletedEntryIds: [] },
+    });
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: { habits: [], entries: [{ id: entryId, habitId, date: "2025-07-15" }], deletedHabitIds: [], deletedEntryIds: [] },
+    });
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: { habits: [], entries: [], deletedHabitIds: [], deletedEntryIds: [entryId] },
+    });
+
+    // Stale device re-pushes the entry
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: { habits: [], entries: [{ id: entryId, habitId, date: "2025-07-15" }], deletedHabitIds: [], deletedEntryIds: [] },
+    });
+
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    const found = pull.json.entries.find((e) => e.id === entryId);
+    assert.equal(found, undefined, "tombstoned entry must not be resurrected by stale push");
+  });
+});

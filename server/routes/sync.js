@@ -69,22 +69,38 @@ router.post("/push", (req, res) => {
     "INSERT INTO deletion_tombstones (user_id, entity_type, entity_id, deleted_at) VALUES (?, ?, ?, ?)"
   );
 
+  const fetchHabitTombstones = db.prepare(
+    "SELECT entity_id FROM deletion_tombstones WHERE user_id = ? AND entity_type = 'habit'"
+  );
+  const fetchEntryTombstones = db.prepare(
+    "SELECT entity_id FROM deletion_tombstones WHERE user_id = ? AND entity_type = 'entry'"
+  );
+
   const transaction = db.transaction(() => {
+    // Load pre-existing tombstones to prevent cross-device resurrection
+    const blockedHabits = new Set(
+      /** @type {{ entity_id: string }[]} */ (fetchHabitTombstones.all(userId)).map((r) => r.entity_id)
+    );
+    const blockedEntries = new Set(
+      /** @type {{ entity_id: string }[]} */ (fetchEntryTombstones.all(userId)).map((r) => r.entity_id)
+    );
+
     // Delete first and record tombstones
     const now = new Date().toISOString();
     for (const id of deletedHabitIds) {
       deleteHabit.run(id, userId);
       insertTombstone.run(userId, "habit", id, now);
+      blockedHabits.add(id);
     }
     for (const id of deletedEntryIds) {
       deleteEntry.run(id, userId);
       insertTombstone.run(userId, "entry", id, now);
+      blockedEntries.add(id);
     }
 
-    // Upsert habits — skip any that were just deleted or are malformed
-    const deletedHabitSet = new Set(deletedHabitIds);
+    // Upsert habits — skip any that are tombstoned (deleted in this push or previously)
     for (const h of habits) {
-      if (deletedHabitSet.has(h.id)) continue;
+      if (blockedHabits.has(h.id)) continue;
       if (!h.id || !h.name) continue;
       upsertHabit.run(
         h.id, userId, h.name, h.emoji || "⭐", h.colorHex || "#34C759",
@@ -96,10 +112,9 @@ router.post("/push", (req, res) => {
       );
     }
 
-    // Upsert entries — skip any that were just deleted or are malformed
-    const deletedEntrySet = new Set(deletedEntryIds);
+    // Upsert entries — skip any that are tombstoned (deleted in this push or previously)
     for (const e of entries) {
-      if (deletedEntrySet.has(e.id)) continue;
+      if (blockedEntries.has(e.id)) continue;
       if (!e.id || !e.habitId || !e.date) continue;
       // Verify the habit belongs to this user
       const habit = db.prepare("SELECT id FROM habits WHERE id = ? AND user_id = ?").get(e.habitId, userId);
