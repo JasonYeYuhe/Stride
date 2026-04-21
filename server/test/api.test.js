@@ -5698,3 +5698,88 @@ describe("Cookie-based authentication", () => {
     db.prepare("DELETE FROM users WHERE id = ?").run(userId);
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("POST /habits: sort_order auto-assignment is per-user, not global", () => {
+  let userAToken;
+  let userAId;
+  let userBToken;
+  let userBId;
+
+  before(async () => {
+    const a = createTestUser();
+    userAId = a.userId;
+    userAToken = createTestSession(userAId);
+
+    const b = createTestUser();
+    userBId = b.userId;
+    userBToken = createTestSession(userBId);
+
+    // User A creates 3 habits → sort_order 0, 1, 2
+    await api("POST", "/v1/habits", { token: userAToken, body: { name: "A1" } });
+    await api("POST", "/v1/habits", { token: userAToken, body: { name: "A2" } });
+    await api("POST", "/v1/habits", { token: userAToken, body: { name: "A3" } });
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userAId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userBId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userAId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userBId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userAId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userBId);
+  });
+
+  it("user B's first habit gets sort_order 0, unaffected by user A's habits (sort_orders 0/1/2)", async () => {
+    const { status, json } = await api("POST", "/v1/habits", {
+      token: userBToken,
+      body: { name: "B first habit" },
+    });
+    assert.equal(status, 201);
+    assert.equal(json.habit.sort_order, 0, "sort_order must be 0 for user B's first habit, independent of user A's 3 habits");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Stats: future-only entries — currentStreak and completionRate exclude future dates", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+
+    // Habit created >30 days ago so effectiveStart = thirtyDaysAgo
+    const longAgo = new Date(Date.now() - 31 * 86400000).toISOString();
+    habitId = crypto.randomUUID();
+    db.prepare(
+      "INSERT INTO habits (id, user_id, name, emoji, color_hex, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(habitId, userId, "Future-only habit", "⭐", "#34C759", 0, longAgo, longAgo);
+
+    // Only entry is far in the future
+    await api("POST", `/v1/habits/${habitId}/entries`, {
+      token,
+      body: { date: "2099-12-31" },
+    });
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("currentStreak=0 and completionRate=0 when all entries are future; totalEntries=1 and bestStreak=1", async () => {
+    const { status, json } = await api("GET", `/v1/habits/${habitId}/stats`, { token });
+    assert.equal(status, 200);
+    assert.equal(json.currentStreak, 0, "future entries do not count toward currentStreak");
+    assert.equal(json.completionRate, 0, "future entries are excluded from 30-day completionRate window");
+    assert.equal(json.totalEntries, 1, "totalEntries includes all entries, including future");
+    assert.equal(json.bestStreak, 1, "bestStreak counts the one future entry as a streak of 1");
+  });
+});
