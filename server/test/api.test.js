@@ -5614,3 +5614,87 @@ describe("Habit API: created_at and updated_at timestamp fields", () => {
     assert.match(json.habit.updated_at, /^\d{4}-\d{2}-\d{2}T/, "updated_at must be ISO8601 in PUT response");
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Cookie-based authentication", () => {
+  it("POST /v1/auth/logout sends Set-Cookie clear header (exercises clearSessionCookie)", async () => {
+    const { userId } = createTestUser();
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = hashToken(rawToken);
+    db.prepare("INSERT INTO sessions (user_id, token_hash, expires_at) VALUES (?, ?, ?)")
+      .run(userId, tokenHash, Date.now() + 1000 * 60 * 60);
+
+    const cookieHeader = `stride_session=${encodeURIComponent(rawToken)}`;
+    const res = await fetch(`${BASE}/v1/auth/logout`, {
+      method: "POST",
+      headers: { Cookie: cookieHeader },
+    });
+    assert.equal(res.status, 200);
+    const setCookie = res.headers.get("set-cookie");
+    assert.ok(setCookie, "Set-Cookie header should be present on logout");
+    assert.ok(setCookie.includes("stride_session="), "Set-Cookie should name stride_session");
+    assert.ok(setCookie.includes("Max-Age=0"), "Set-Cookie should clear cookie with Max-Age=0");
+
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("cookie session authenticates GET /v1/habits (exercises getSessionUser + parseCookies)", async () => {
+    const { userId } = createTestUser();
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = hashToken(rawToken);
+    db.prepare("INSERT INTO sessions (user_id, token_hash, expires_at) VALUES (?, ?, ?)")
+      .run(userId, tokenHash, Date.now() + 1000 * 60 * 60);
+
+    const cookieHeader = `stride_session=${encodeURIComponent(rawToken)}`;
+    const res = await fetch(`${BASE}/v1/habits`, { headers: { Cookie: cookieHeader } });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.ok("habits" in json, "response should contain habits array");
+
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("GET /v1/auth/session with cookie returns user details", async () => {
+    const { userId, email } = createTestUser();
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = hashToken(rawToken);
+    db.prepare("INSERT INTO sessions (user_id, token_hash, expires_at) VALUES (?, ?, ?)")
+      .run(userId, tokenHash, Date.now() + 1000 * 60 * 60);
+
+    const cookieHeader = `stride_session=${encodeURIComponent(rawToken)}`;
+    const res = await fetch(`${BASE}/v1/auth/session`, { headers: { Cookie: cookieHeader } });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.ok(json.user, "user should be non-null with a valid cookie session");
+    assert.equal(json.user.email, email);
+    assert.ok(json.user.id, "user.id should be present");
+    assert.ok(json.user.tier, "user.tier should be present");
+
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("POST /v1/auth/logout with cookie clears session (exercises clearSession cookie path)", async () => {
+    const { userId } = createTestUser();
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = hashToken(rawToken);
+    db.prepare("INSERT INTO sessions (user_id, token_hash, expires_at) VALUES (?, ?, ?)")
+      .run(userId, tokenHash, Date.now() + 1000 * 60 * 60);
+
+    const cookieHeader = `stride_session=${encodeURIComponent(rawToken)}`;
+
+    const logoutRes = await fetch(`${BASE}/v1/auth/logout`, {
+      method: "POST",
+      headers: { Cookie: cookieHeader },
+    });
+    assert.equal(logoutRes.status, 200);
+
+    // Session should be invalidated — subsequent cookie request returns 401
+    const afterRes = await fetch(`${BASE}/v1/habits`, { headers: { Cookie: cookieHeader } });
+    assert.equal(afterRes.status, 401, "cookie session should be invalidated after logout");
+
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+});
