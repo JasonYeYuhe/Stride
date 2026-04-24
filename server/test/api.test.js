@@ -6582,3 +6582,125 @@ describe("Sync push: entry note with CJK characters is preserved round-trip", ()
     assert.equal(entry.note, cjkNote, "CJK entry note must not be corrupted in push/pull round-trip");
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("CRUD DELETE entry: tombstone appears in incremental sync pull", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+    const h = await api("POST", "/v1/habits", { token, body: { name: "Entry tombstone CRUD test" } });
+    habitId = h.json.habit.id;
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("deleting an existing entry via CRUD route creates a tombstone visible in incremental sync pull", async () => {
+    const entryId = crypto.randomUUID();
+    const date = "2026-03-20";
+
+    await api("POST", `/v1/habits/${habitId}/entries`, {
+      token,
+      body: { id: entryId, date },
+    });
+
+    const sinceBefore = new Date(Date.now() - 500).toISOString();
+
+    const del = await api("DELETE", `/v1/habits/${habitId}/entries/${date}`, { token });
+    assert.equal(del.status, 200);
+
+    const pull = await api("GET", "/v1/sync/pull", { token, query: { since: sinceBefore } });
+    assert.equal(pull.status, 200);
+    assert.ok(
+      pull.json.deletedEntryIds.includes(entryId),
+      "entry tombstone should appear in deletedEntryIds after CRUD deletion",
+    );
+    assert.equal(pull.json.deletedHabitIds.length, 0, "habit tombstone must not be created");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("GET /habits/:id/entries: date-range filter with pagination — hasMore is accurate", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+    const h = await api("POST", "/v1/habits", { token, body: { name: "Date range pagination test" } });
+    habitId = h.json.habit.id;
+    // 4 entries inside range, 1 outside
+    for (const d of ["2025-12-01", "2025-12-02", "2025-12-03", "2025-12-04"]) {
+      await api("POST", `/v1/habits/${habitId}/entries`, { token, body: { date: d } });
+    }
+    await api("POST", `/v1/habits/${habitId}/entries`, { token, body: { date: "2025-11-30" } });
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("hasMore=true when date-range total exceeds page limit", async () => {
+    const { json } = await api("GET", `/v1/habits/${habitId}/entries`, {
+      token,
+      query: { from: "2025-12-01", to: "2025-12-04", limit: "2", offset: "0" },
+    });
+    assert.equal(json.entries.length, 2, "only 2 returned (page 1)");
+    assert.equal(json.pagination.total, 4, "total reflects filtered count, not all-time count");
+    assert.equal(json.pagination.hasMore, true, "hasMore=true: 4 filtered entries with limit=2");
+  });
+
+  it("hasMore=false on last page within date range", async () => {
+    const { json } = await api("GET", `/v1/habits/${habitId}/entries`, {
+      token,
+      query: { from: "2025-12-01", to: "2025-12-04", limit: "2", offset: "2" },
+    });
+    assert.equal(json.entries.length, 2, "last page returns remaining 2 entries");
+    assert.equal(json.pagination.hasMore, false, "hasMore=false on last page");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("PUT /habits/:id: emoji='' stores empty string (unlike POST which falls back to default ⭐)", () => {
+  let token;
+  let userId;
+  let habitId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+    const h = await api("POST", "/v1/habits", { token, body: { name: "Emoji clear test", emoji: "🏃" } });
+    habitId = h.json.habit.id;
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habits WHERE id = ?").run(habitId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("PUT with emoji:'' stores '' (COALESCE treats empty string as non-null; POST uses || fallback)", async () => {
+    const { status, json } = await api("PUT", `/v1/habits/${habitId}`, {
+      token,
+      body: { emoji: "" },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.habit.emoji, "", "PUT stores '' as-is without default fallback");
+  });
+});
