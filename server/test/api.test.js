@@ -6704,3 +6704,83 @@ describe("PUT /habits/:id: emoji='' stores empty string (unlike POST which falls
     assert.equal(json.habit.emoji, "", "PUT stores '' as-is without default fallback");
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Auth: delete-account removes magic_link_tokens (CASCADE)", () => {
+  it("pending magic link token is cleaned up when its user is deleted", () => {
+    // Create user and insert a pending (unused) magic link token
+    const { userId } = createTestUser();
+    const token = createTestSession(userId);
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = hashToken(rawToken);
+    db.prepare(
+      "INSERT INTO magic_link_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)"
+    ).run(userId, tokenHash, Date.now() + 1000 * 60 * 30);
+
+    // Verify it exists
+    const before = db.prepare("SELECT id FROM magic_link_tokens WHERE user_id = ?").get(userId);
+    assert.ok(before, "magic link token should exist before delete-account");
+
+    // Delete the user (simulates delete-account path — CASCADE should remove token)
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+
+    // Token must be gone via ON DELETE CASCADE
+    const after = db.prepare("SELECT id FROM magic_link_tokens WHERE user_id = ?").get(userId);
+    assert.equal(after, undefined, "magic_link_tokens must be CASCADE-deleted when user is removed");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("GET /habits: non-numeric ?limit string falls back to default 50", () => {
+  let token;
+  let userId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("limit='abc' is parsed as NaN and falls back to 50 via || operator", async () => {
+    const { status, json } = await api("GET", "/v1/habits", {
+      token,
+      query: { limit: "abc" },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.pagination.limit, 50, "non-numeric limit should fall back to default 50");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Auth: non-Bearer Authorization header is rejected as unauthenticated", () => {
+  it("Authorization: Token <valid-token> returns 401 (only 'Bearer ' prefix is accepted)", async () => {
+    // Create a valid session token, but send it with wrong scheme
+    const { userId } = createTestUser();
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = hashToken(rawToken);
+    db.prepare(
+      "INSERT INTO sessions (user_id, token_hash, expires_at) VALUES (?, ?, ?)"
+    ).run(userId, tokenHash, Date.now() + 1000 * 60 * 60 * 24);
+
+    const res = await fetch(`${BASE}/v1/habits`, {
+      headers: { Authorization: `Token ${rawToken}` },
+    });
+    const json = await res.json().catch(() => null);
+
+    // Cleanup
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+
+    assert.equal(res.status, 401, "non-Bearer scheme must not authenticate");
+    assert.ok(json && json.error, "should return error body");
+  });
+});
