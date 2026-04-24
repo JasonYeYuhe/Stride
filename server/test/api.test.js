@@ -6427,3 +6427,158 @@ describe("Sync pull incremental: tombstones are user-scoped (cross-user isolatio
     );
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Sync push: entry with note:'' normalizes to null in pull response", () => {
+  let token;
+  let userId;
+  let habitId;
+  let entryId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+    habitId = crypto.randomUUID();
+    entryId = crypto.randomUUID();
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("push entry with note:'' stores empty string in DB; pull normalizes to null", async () => {
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Entry empty-note habit", sortOrder: 0 }],
+        entries: [{ id: entryId, habitId, date: "2026-01-10", note: "" }],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    // DB should store empty string as-is (e.note ?? null keeps "")
+    const row = db.prepare("SELECT note FROM habit_entries WHERE id = ?").get(entryId);
+    assert.equal(row.note, "", "DB must store the empty string note for entries");
+
+    // Full pull normalizes "" to null via `row.note || null`
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    assert.equal(pull.status, 200);
+    const entry = pull.json.entries.find((e) => e.id === entryId);
+    assert.ok(entry, "entry must appear in pull");
+    assert.equal(entry.note, null, "pull must normalize empty-string entry note to null");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync push: entry for a habit deleted in same push is silently skipped", () => {
+  let token;
+  let userId;
+
+  before(async () => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("entry referencing a habit deleted in the same push is not created", async () => {
+    const habitId = crypto.randomUUID();
+    const entryId = crypto.randomUUID();
+
+    // First push: create the habit
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "Habit to be deleted", sortOrder: 0 }],
+        entries: [],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    // Second push: delete the habit AND send an entry for it in the same request
+    const { status, json } = await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [],
+        entries: [{ id: entryId, habitId, date: "2026-02-15" }],
+        deletedHabitIds: [habitId],
+        deletedEntryIds: [],
+      },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+
+    // Entry must NOT be stored (habit was deleted before entries are processed)
+    const stored = db.prepare("SELECT id FROM habit_entries WHERE id = ?").get(entryId);
+    assert.equal(stored, undefined, "entry for same-push deleted habit must not be created");
+
+    // Habit tombstone must exist
+    const tombstone = db.prepare(
+      "SELECT id FROM deletion_tombstones WHERE user_id = ? AND entity_type = 'habit' AND entity_id = ?"
+    ).get(userId, habitId);
+    assert.ok(tombstone, "habit tombstone must be created");
+
+    // Full pull must not contain the habit or the entry
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    assert.equal(pull.json.habits.find((h) => h.id === habitId), undefined, "deleted habit must not appear in pull");
+    assert.equal(pull.json.entries.find((e) => e.id === entryId), undefined, "entry for deleted habit must not appear in pull");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync push: entry note with CJK characters is preserved round-trip", () => {
+  let token;
+  let userId;
+  let habitId;
+  let entryId;
+
+  before(() => {
+    const user = createTestUser();
+    userId = user.userId;
+    token = createTestSession(userId);
+    habitId = crypto.randomUUID();
+    entryId = crypto.randomUUID();
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("push entry with Chinese note; pull returns note without corruption", async () => {
+    const cjkNote = "今日完成冥想🧘 感觉很好";
+
+    await api("POST", "/v1/sync/push", {
+      token,
+      body: {
+        habits: [{ id: habitId, name: "CJK entry note habit", sortOrder: 0 }],
+        entries: [{ id: entryId, habitId, date: "2026-03-01", note: cjkNote }],
+        deletedHabitIds: [],
+        deletedEntryIds: [],
+      },
+    });
+
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    assert.equal(pull.status, 200);
+    const entry = pull.json.entries.find((e) => e.id === entryId);
+    assert.ok(entry, "entry with CJK note must appear in pull");
+    assert.equal(entry.note, cjkNote, "CJK entry note must not be corrupted in push/pull round-trip");
+  });
+});
