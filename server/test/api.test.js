@@ -6784,3 +6784,88 @@ describe("Auth: non-Bearer Authorization header is rejected as unauthenticated",
     assert.ok(json && json.error, "should return error body");
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Auth: /v1/auth/verify with empty-string token is rejected (falsy guard, not typeof guard)", () => {
+  it("token:'' is rejected with 400 'Missing token' (or 429 if rate-limited)", async () => {
+    const { status, json } = await api("POST", "/v1/auth/verify", {
+      body: { token: "" },
+    });
+    // 400 = validation rejection from the !token branch in routes/auth.js;
+    // 429 = verifyLimiter exhausted (verifyLimiter has no test bypass — sibling
+    // test at line 3180 uses the same tolerance).
+    assert.ok(status === 400 || status === 429, `expected 400 or 429, got ${status}`);
+    assert.ok(json && json.error, "should return error body");
+    if (status === 400) {
+      assert.equal(json.error, "Missing token", "400 must come from the !token branch, not typeof");
+    }
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Auth: delete-account invalidates the Bearer session token (CASCADE on sessions)", () => {
+  it("after delete-account, the same Bearer token returns 401 on /v1/habits", async () => {
+    const { userId } = createTestUser();
+    const token = createTestSession(userId);
+
+    // Token works before delete-account
+    const before = await api("GET", "/v1/habits", { token });
+    assert.equal(before.status, 200, "token should be valid before delete-account");
+
+    // Delete the account
+    const del = await api("POST", "/v1/auth/delete-account", { token });
+    assert.equal(del.status, 200);
+
+    // Same token must now be rejected — sessions row was CASCADE-deleted with the user
+    const after = await api("GET", "/v1/habits", { token });
+    assert.equal(after.status, 401, "Bearer token must be unauthenticated after delete-account");
+    assert.ok(after.json && after.json.error, "should return error body");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Auth: delete-account physically removes habits and habit_entries (no orphans)", () => {
+  it("habits and habit_entries rows for the deleted user are gone (no FK CASCADE — explicit cleanup)", async () => {
+    const { userId } = createTestUser();
+    const token = createTestSession(userId);
+
+    // Create two habits, each with one entry, so we exercise the multi-id IN-clause path
+    const { json: h1 } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Cleanup habit 1" },
+    });
+    const { json: h2 } = await api("POST", "/v1/habits", {
+      token,
+      body: { name: "Cleanup habit 2" },
+    });
+    const habitId1 = h1.habit.id;
+    const habitId2 = h2.habit.id;
+
+    await api("POST", `/v1/habits/${habitId1}/entries`, { token, body: { date: "2025-09-01" } });
+    await api("POST", `/v1/habits/${habitId2}/entries`, { token, body: { date: "2025-09-02" } });
+
+    // Verify rows exist before delete-account
+    const habitsBefore = db.prepare("SELECT id FROM habits WHERE user_id = ?").all(userId);
+    assert.equal(habitsBefore.length, 2, "two habits should exist before delete-account");
+    const entriesBefore = db
+      .prepare("SELECT id FROM habit_entries WHERE habit_id IN (?, ?)")
+      .all(habitId1, habitId2);
+    assert.equal(entriesBefore.length, 2, "two entries should exist before delete-account");
+
+    // Delete the account
+    const { status } = await api("POST", "/v1/auth/delete-account", { token });
+    assert.equal(status, 200);
+
+    // Habits don't have ON DELETE CASCADE on user_id, so the explicit cleanup in
+    // deleteUserAccount() is what prevents orphan rows. Verify both tables are empty.
+    const habitsAfter = db.prepare("SELECT id FROM habits WHERE user_id = ?").all(userId);
+    assert.equal(habitsAfter.length, 0, "all habits must be removed when account is deleted");
+    const entriesAfter = db
+      .prepare("SELECT id FROM habit_entries WHERE habit_id IN (?, ?)")
+      .all(habitId1, habitId2);
+    assert.equal(entriesAfter.length, 0, "all habit_entries must be removed when account is deleted");
+  });
+});
