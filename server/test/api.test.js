@@ -6869,3 +6869,217 @@ describe("Auth: delete-account physically removes habits and habit_entries (no o
     assert.equal(entriesAfter.length, 0, "all habit_entries must be removed when account is deleted");
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("CRUD: user B cannot DELETE entry on user A's habit (404 + no tombstone in either user)", () => {
+  let userAToken, userAId, habitAId, entryDate;
+  let userBToken, userBId;
+
+  before(async () => {
+    const userA = createTestUser();
+    userAId = userA.userId;
+    userAToken = createTestSession(userAId);
+
+    const userB = createTestUser();
+    userBId = userB.userId;
+    userBToken = createTestSession(userBId);
+
+    const { json: hJson } = await api("POST", "/v1/habits", {
+      token: userAToken,
+      body: { name: "User A entry-delete-isolation habit" },
+    });
+    habitAId = hJson.habit.id;
+
+    entryDate = "2026-03-10";
+    await api("POST", `/v1/habits/${habitAId}/entries`, {
+      token: userAToken,
+      body: { date: entryDate },
+    });
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id IN (SELECT id FROM habits WHERE user_id = ?)").run(userAId);
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userAId);
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userBId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userAId);
+    db.prepare("DELETE FROM sessions WHERE user_id IN (?, ?)").run(userAId, userBId);
+    db.prepare("DELETE FROM users WHERE id IN (?, ?)").run(userAId, userBId);
+  });
+
+  it("user B's DELETE on user A's entry returns 404, leaves entry intact, creates no tombstone", async () => {
+    // Sanity: entry exists in user A's habit
+    const before = db
+      .prepare("SELECT id FROM habit_entries WHERE habit_id = ? AND date = ?")
+      .get(habitAId, entryDate);
+    assert.ok(before, "entry should exist before cross-user DELETE attempt");
+
+    // User B attempts to delete user A's entry — habit-ownership check must reject as 404
+    const { status, json } = await api(
+      "DELETE",
+      `/v1/habits/${habitAId}/entries/${entryDate}`,
+      { token: userBToken },
+    );
+    assert.equal(status, 404, "user B must get 404 for user A's habit (no leak of habit existence)");
+    assert.ok(json && json.error, "should return error body");
+
+    // Entry must still exist
+    const after = db
+      .prepare("SELECT id FROM habit_entries WHERE habit_id = ? AND date = ?")
+      .get(habitAId, entryDate);
+    assert.ok(after, "entry must remain after failed cross-user DELETE");
+    assert.equal(after.id, before.id, "same entry id (not recreated)");
+
+    // Critically: NO tombstone should have been inserted in EITHER user's row.
+    // The route returns 404 before the transaction block runs.
+    const aTombs = db
+      .prepare("SELECT COUNT(*) AS c FROM deletion_tombstones WHERE user_id = ?")
+      .get(userAId);
+    assert.equal(aTombs.c, 0, "no tombstone in user A's row (entry was not actually deleted)");
+    const bTombs = db
+      .prepare("SELECT COUNT(*) AS c FROM deletion_tombstones WHERE user_id = ?")
+      .get(userBId);
+    assert.equal(bTombs.c, 0, "no junk tombstone in user B's row from rejected request");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync push: deletedHabitIds with cross-user habit_id does not delete the other user's habit", () => {
+  let userAToken, userAId, habitAId;
+  let userBToken, userBId;
+
+  before(async () => {
+    const userA = createTestUser();
+    userAId = userA.userId;
+    userAToken = createTestSession(userAId);
+
+    const userB = createTestUser();
+    userBId = userB.userId;
+    userBToken = createTestSession(userBId);
+
+    const { json } = await api("POST", "/v1/habits", {
+      token: userAToken,
+      body: { name: "User A sync-isolation habit" },
+    });
+    habitAId = json.habit.id;
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id IN (SELECT id FROM habits WHERE user_id = ?)").run(userAId);
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userAId);
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userBId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userAId);
+    db.prepare("DELETE FROM sessions WHERE user_id IN (?, ?)").run(userAId, userBId);
+    db.prepare("DELETE FROM users WHERE id IN (?, ?)").run(userAId, userBId);
+  });
+
+  it("user B push deletedHabitIds=[habitAId] returns 200 but user A's habit is NOT deleted", async () => {
+    // Sanity: habit exists for user A
+    const before = db.prepare("SELECT id FROM habits WHERE id = ? AND user_id = ?").get(habitAId, userAId);
+    assert.ok(before, "user A's habit should exist before cross-user push attempt");
+
+    // User B tries to delete user A's habit by including its id in deletedHabitIds.
+    // The DELETE statement is scoped: `DELETE FROM habits WHERE id = ? AND user_id = ?`
+    // with user_id = userBId, so it must not affect user A's row.
+    const { status, json } = await api("POST", "/v1/sync/push", {
+      token: userBToken,
+      body: { deletedHabitIds: [habitAId] },
+    });
+    assert.equal(status, 200, "push itself succeeds (no-op delete on cross-user row)");
+    assert.equal(json.ok, true);
+
+    // User A's habit must still be present
+    const after = db.prepare("SELECT id, name FROM habits WHERE id = ? AND user_id = ?").get(habitAId, userAId);
+    assert.ok(after, "user A's habit must remain after user B's hostile push");
+    assert.equal(after.name, "User A sync-isolation habit", "name unchanged");
+
+    // User A's incremental pull must NOT see this habit_id in deletedHabitIds —
+    // tombstones live under user_id, so user B's tombstone is invisible to A.
+    const sinceBefore = "2020-01-01T00:00:00Z";
+    const pull = await api(
+      "GET",
+      `/v1/sync/pull?since=${encodeURIComponent(sinceBefore)}`,
+      { token: userAToken },
+    );
+    assert.equal(pull.status, 200);
+    assert.ok(
+      !pull.json.deletedHabitIds.includes(habitAId),
+      "user A must not see their own habit_id in deletedHabitIds — tombstones are user-scoped",
+    );
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync push: deletedEntryIds with cross-user entry_id does not delete the other user's entry", () => {
+  let userAToken, userAId, habitAId, entryAId;
+  let userBToken, userBId;
+
+  before(async () => {
+    const userA = createTestUser();
+    userAId = userA.userId;
+    userAToken = createTestSession(userAId);
+
+    const userB = createTestUser();
+    userBId = userB.userId;
+    userBToken = createTestSession(userBId);
+
+    const { json: hJson } = await api("POST", "/v1/habits", {
+      token: userAToken,
+      body: { name: "User A entry-sync-isolation habit" },
+    });
+    habitAId = hJson.habit.id;
+
+    const { json: eJson } = await api("POST", `/v1/habits/${habitAId}/entries`, {
+      token: userAToken,
+      body: { date: "2026-03-15" },
+    });
+    entryAId = eJson.entry.id;
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id IN (SELECT id FROM habits WHERE user_id = ?)").run(userAId);
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userAId);
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userBId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userAId);
+    db.prepare("DELETE FROM sessions WHERE user_id IN (?, ?)").run(userAId, userBId);
+    db.prepare("DELETE FROM users WHERE id IN (?, ?)").run(userAId, userBId);
+  });
+
+  it("user B push deletedEntryIds=[entryAId] returns 200 but user A's entry is NOT deleted", async () => {
+    // Sanity: entry exists under user A's habit
+    const before = db.prepare("SELECT id FROM habit_entries WHERE id = ?").get(entryAId);
+    assert.ok(before, "user A's entry should exist before cross-user push attempt");
+
+    // User B pushes a delete for user A's entry id. The route uses:
+    //   DELETE FROM habit_entries WHERE id = ? AND habit_id IN (SELECT id FROM habits WHERE user_id = ?)
+    // with user_id = userBId, so the subquery returns no habits owned by B that match,
+    // and the DELETE must affect 0 rows.
+    const { status, json } = await api("POST", "/v1/sync/push", {
+      token: userBToken,
+      body: { deletedEntryIds: [entryAId] },
+    });
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+
+    // User A's entry must still be present
+    const after = db.prepare("SELECT id, habit_id, date FROM habit_entries WHERE id = ?").get(entryAId);
+    assert.ok(after, "user A's entry must remain after user B's hostile push");
+    assert.equal(after.habit_id, habitAId, "still attached to the same habit");
+    assert.equal(after.date, "2026-03-15", "date unchanged");
+
+    // User A's incremental pull must NOT see this entry_id in deletedEntryIds.
+    const sinceBefore = "2020-01-01T00:00:00Z";
+    const pull = await api(
+      "GET",
+      `/v1/sync/pull?since=${encodeURIComponent(sinceBefore)}`,
+      { token: userAToken },
+    );
+    assert.equal(pull.status, 200);
+    assert.ok(
+      !pull.json.deletedEntryIds.includes(entryAId),
+      "user A must not see their own entry_id in deletedEntryIds — tombstones are user-scoped",
+    );
+  });
+});
