@@ -7083,3 +7083,194 @@ describe("Sync push: deletedEntryIds with cross-user entry_id does not delete th
     );
   });
 });
+
+// ----------------------------------------------------------------
+
+describe("Sync push: habit_id in both deletedHabitIds and habits[] of same push — delete wins (blockedHabits set)", () => {
+  let userToken, userId, habitId;
+
+  before(async () => {
+    const u = createTestUser();
+    userId = u.userId;
+    userToken = createTestSession(userId);
+
+    // Seed a habit so it actually exists pre-push
+    const { json } = await api("POST", "/v1/habits", {
+      token: userToken,
+      body: { name: "Same-push delete-vs-upsert" },
+    });
+    habitId = json.habit.id;
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id IN (SELECT id FROM habits WHERE user_id = ?)").run(userId);
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("habit pushed in both deletedHabitIds and habits[] is deleted, NOT resurrected (blockedHabits guard)", async () => {
+    // Sanity: habit exists
+    const before = db.prepare("SELECT id FROM habits WHERE id = ? AND user_id = ?").get(habitId, userId);
+    assert.ok(before, "seeded habit should exist before same-push test");
+
+    // Capture sync time BEFORE the push so the tombstone (deleted_at = now during push)
+    // is strictly greater than `since`.
+    const sinceBefore = new Date(Date.now() - 60_000).toISOString();
+
+    // Push includes the same habit id in BOTH deletedHabitIds and habits[].
+    // sync.js processes deletedHabitIds first (lines 79-83), adds id to blockedHabits set,
+    // then iterates habits[] and skips any id present in blockedHabits (line 92).
+    const pushBody = {
+      deletedHabitIds: [habitId],
+      habits: [{
+        id: habitId,
+        name: "Should-not-resurrect",
+        emoji: "💀",
+        colorHex: "#FF0000",
+        sortOrder: 0,
+      }],
+    };
+    const { status, json } = await api("POST", "/v1/sync/push", {
+      token: userToken,
+      body: pushBody,
+    });
+    assert.equal(status, 200, "push succeeds (200)");
+    assert.equal(json.ok, true);
+
+    // Habit must be GONE from DB (delete ran, upsert was blocked)
+    const after = db.prepare("SELECT id, name FROM habits WHERE id = ? AND user_id = ?").get(habitId, userId);
+    assert.equal(after, undefined, "habit must be absent after same-push delete+upsert (blockedHabits prevented resurrection)");
+
+    // Full pull must NOT include this habit
+    const full = await api("GET", "/v1/sync/pull", { token: userToken });
+    assert.equal(full.status, 200);
+    const stillPresent = full.json.habits.some((h) => h.id === habitId);
+    assert.equal(stillPresent, false, "deleted habit must not appear in full pull");
+
+    // Incremental pull (since strictly before tombstone) must include the tombstone
+    const incr = await api(
+      "GET",
+      `/v1/sync/pull?since=${encodeURIComponent(sinceBefore)}`,
+      { token: userToken },
+    );
+    assert.equal(incr.status, 200);
+    assert.ok(
+      incr.json.deletedHabitIds.includes(habitId),
+      "tombstone for the deleted habit must be visible in incremental pull",
+    );
+    assert.equal(
+      incr.json.habits.find((h) => h.id === habitId),
+      undefined,
+      "deleted habit must NOT appear in incremental pull's habits[] (delete won, upsert was skipped)",
+    );
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync pull (full): deletedHabitIds and deletedEntryIds are always empty arrays even when tombstones exist", () => {
+  let userToken, userId, habitId;
+
+  before(async () => {
+    const u = createTestUser();
+    userId = u.userId;
+    userToken = createTestSession(userId);
+
+    // Create habit, then delete it to generate a real tombstone in this user's row
+    const { json } = await api("POST", "/v1/habits", {
+      token: userToken,
+      body: { name: "Tombstone for full-pull suppression test" },
+    });
+    habitId = json.habit.id;
+
+    await api("POST", "/v1/sync/push", {
+      token: userToken,
+      body: { deletedHabitIds: [habitId] },
+    });
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id IN (SELECT id FROM habits WHERE user_id = ?)").run(userId);
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("GET /v1/sync/pull (no since) returns empty deleted*Ids even when tombstones exist for this user", async () => {
+    // Sanity: tombstone really exists in DB
+    const tombCount = db
+      .prepare("SELECT COUNT(*) AS c FROM deletion_tombstones WHERE user_id = ? AND entity_type = 'habit'")
+      .get(userId).c;
+    assert.equal(tombCount, 1, "exactly one habit tombstone should exist for this user");
+
+    // Full pull (no since param) — sync.js hardcodes deletedHabitIds=[] and deletedEntryIds=[]
+    // because clients reconcile against the full habits/entries set, not deltas.
+    const { status, json } = await api("GET", "/v1/sync/pull", { token: userToken });
+    assert.equal(status, 200);
+    assert.deepEqual(json.deletedHabitIds, [], "full pull must return empty deletedHabitIds even when tombstones exist");
+    assert.deepEqual(json.deletedEntryIds, [], "full pull must return empty deletedEntryIds even when tombstones exist");
+
+    // serverTime should still be present in the full-pull response
+    assert.ok(typeof json.serverTime === "string" && json.serverTime.length > 0, "full pull includes serverTime");
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Sync push: habit with name='' is silently skipped (server-side !h.name guard, no 4xx)", () => {
+  let userToken, userId;
+  const blankNameId = `00000000-0000-4000-8000-${Date.now().toString(16).padStart(12, "0")}`;
+
+  before(() => {
+    const u = createTestUser();
+    userId = u.userId;
+    userToken = createTestSession(userId);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id IN (SELECT id FROM habits WHERE user_id = ?)").run(userId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("push with habits=[{ id, name:'' }] returns 200 and does NOT insert the row", async () => {
+    // Sanity: this synthetic id is not yet in DB
+    const before = db
+      .prepare("SELECT id FROM habits WHERE id = ? AND user_id = ?")
+      .get(blankNameId, userId);
+    assert.equal(before, undefined, "synthetic blank-name habit id must not exist before push");
+
+    // sync.js line 91: `if (!h.id || !h.name) continue;` — '' is falsy, so this row is skipped.
+    // Distinct from POST /habits which returns 400 for missing/empty name.
+    const { status, json } = await api("POST", "/v1/sync/push", {
+      token: userToken,
+      body: {
+        habits: [{
+          id: blankNameId,
+          name: "",
+          emoji: "🧪",
+          colorHex: "#888888",
+          sortOrder: 0,
+        }],
+      },
+    });
+    assert.equal(status, 200, "push silently succeeds (no 4xx) for invalid rows");
+    assert.equal(json.ok, true);
+
+    // The row must not have been inserted
+    const after = db
+      .prepare("SELECT id FROM habits WHERE id = ? AND user_id = ?")
+      .get(blankNameId, userId);
+    assert.equal(after, undefined, "blank-name habit must not be inserted (silently dropped by !h.name guard)");
+
+    // Full pull must not include it
+    const full = await api("GET", "/v1/sync/pull", { token: userToken });
+    assert.equal(full.status, 200);
+    const found = full.json.habits.some((h) => h.id === blankNameId);
+    assert.equal(found, false, "blank-name habit must not appear in full pull");
+  });
+});
