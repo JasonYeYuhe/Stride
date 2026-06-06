@@ -83,6 +83,7 @@
 		A66A13E6D9D55FB08CE8B2AA /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = A6A05080F09126E507CF8705 /* Localizable.strings */; };
 		A92356E0D7DDAEC33623769F /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = F8C043D145E16EA12884687F /* Localizable.strings */; };
 		A947D36A4BFD9421CF26A007 /* LanguageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = F79BAF64C83FFB1147F14CE5 /* LanguageManager.swift */; };
+		AA79D7EAAAE9D47C30294A1B /* FrequencyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D288EEDE821222AD59C7BF9F /* FrequencyTests.swift */; };
 		B12D4A9971BB8AE40BBEF325 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = F8C043D145E16EA12884687F /* Localizable.strings */; };
 		B293372E0A9CEAE724495138 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 846D324A474DC86FFFE7DCA4 /* LoginView.swift */; };
 		B7BA77E96701BE19AB918640 /* AnalyticsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1E21F6759556BEEF5CD1C12 /* AnalyticsService.swift */; };
@@ -176,6 +177,7 @@
 		CCFCA3C10C208273A66FAB02 /* WatchTodayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchTodayView.swift; sourceTree = "<group>"; };
 		CE98D2D441CF6A791EF47340 /* HabitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HabitTests.swift; sourceTree = "<group>"; };
 		D21336DA7BBDF96DEA4D3407 /* Habit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Habit.swift; sourceTree = "<group>"; };
+		D288EEDE821222AD59C7BF9F /* FrequencyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FrequencyTests.swift; sourceTree = "<group>"; };
 		DCBB84E54BC0EC63FD063F7B /* ColorExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColorExtension.swift; sourceTree = "<group>"; };
 		E29D464DF830B44A56221444 /* StrideWidgetExtension.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = StrideWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		E7C6CB942A40E1B2BCC2061C /* StrideTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = StrideTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -345,6 +347,7 @@
 				0DA2E26F53AB0CCF80DEBF10 /* ColorExtensionTests.swift */,
 				1F8FF4E330322A974AB7AE18 /* CountHabitTests.swift */,
 				236C079BC5AADCCE973359EB /* DateHelpersTests.swift */,
+				D288EEDE821222AD59C7BF9F /* FrequencyTests.swift */,
 				CE98D2D441CF6A791EF47340 /* HabitTests.swift */,
 				B9523AC157C8D77E551424F5 /* SyncReconcileTests.swift */,
 				2A84DF4E9961E98C9495F8DA /* TimezoneTests.swift */,
@@ -651,6 +654,7 @@
 				DF74E8B2A7BEC5AABAB6A91F /* DateHelpers.swift in Sources */,
 				2AA1510563882737EF521243 /* DateHelpersTests.swift in Sources */,
 				C469689F6F45748C336BAE46 /* DemoData.swift in Sources */,
+				AA79D7EAAAE9D47C30294A1B /* FrequencyTests.swift in Sources */,
 				E83F02CD837080DFA6C5CE7F /* Habit.swift in Sources */,
 				0BFC1AB25F62D6A0FFCCD753 /* HabitTests.swift in Sources */,
 				073EEADD57659E0F816B2F6C /* SentryBootstrap.swift in Sources */,

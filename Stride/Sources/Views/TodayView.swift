@@ -206,13 +206,22 @@ struct HabitRowView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    if !habit.isScheduled(on: date) {
+                        Text("Rest day")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if habit.schedule == .timesPerWeek {
+                        Text("\(habit.weeklyCompletions(containing: date))/\(habit.timesPerWeek) this week")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     let streak = habit.currentStreak(from: date)
                     if streak > 0 {
                         HStack(spacing: 2) {
                             Image(systemName: "flame.fill")
                                 .font(.caption2)
                                 .foregroundStyle(.orange)
-                            Text("\(streak) day streak")
+                            Text("\(streak) \(habit.streakUnit) streak")
                                 .font(.caption)
                                 .foregroundStyle(.orange)
                         }

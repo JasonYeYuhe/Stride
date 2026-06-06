@@ -141,26 +141,99 @@ final class Habit {
         }
     }
 
-    func currentStreak(from referenceDate: Date = Date()) -> Int {
-        let calendar = HabitCalendar.utc
-        let sortedDates = completedDayKeys()
+    /// Whether the habit is expected on a given day (rest days for `specificDays`
+    /// don't count toward — or break — the streak).
+    func isScheduled(on date: Date) -> Bool {
+        switch schedule {
+        case .daily, .timesPerWeek:
+            return true
+        case .specificDays:
+            let weekday = HabitCalendar.utc.component(.weekday, from: HabitCalendar.dayKey(for: date)) // 1=Sun…7=Sat
+            return (activeDaysMask & (1 << (weekday - 1))) != 0
+        }
+    }
 
-        guard !sortedDates.isEmpty else { return 0 }
+    /// Unit label for the current streak ("day" for daily/specificDays, "week" for timesPerWeek).
+    var streakUnit: String { schedule == .timesPerWeek ? "week" : "day" }
+
+    func currentStreak(from referenceDate: Date = Date()) -> Int {
+        if schedule == .timesPerWeek { return currentWeeklyStreak(from: referenceDate) }
+
+        let calendar = HabitCalendar.utc
+        let completed = completedDayKeys()
+        guard !completed.isEmpty, let earliest = completed.min() else { return 0 }
 
         let today = HabitCalendar.dayKey(for: referenceDate)
-        guard let yesterday = calendar.date(byAdding: .day, value: -1, to: today) else { return 0 }
-
-        guard sortedDates.contains(today) || sortedDates.contains(yesterday) else { return 0 }
-
-        var streak = 0
-        var checkDate = sortedDates.contains(today) ? today : yesterday
-
-        while sortedDates.contains(checkDate) {
-            streak += 1
-            guard let prev = calendar.date(byAdding: .day, value: -1, to: checkDate) else { break }
-            checkDate = prev
+        var day = today
+        // Grace: if today isn't done yet, evaluate the streak ending yesterday.
+        if !completed.contains(day) {
+            guard let y = calendar.date(byAdding: .day, value: -1, to: day) else { return 0 }
+            day = y
         }
 
+        var streak = 0
+        while day >= earliest {
+            if isScheduled(on: day) {
+                if completed.contains(day) {
+                    streak += 1
+                } else {
+                    break // a scheduled day that's incomplete ends the streak
+                }
+            }
+            // unscheduled (rest) days are skipped — they neither count nor break
+            guard let prev = calendar.date(byAdding: .day, value: -1, to: day) else { break }
+            day = prev
+        }
+        return streak
+    }
+
+    // MARK: - Weekly (timesPerWeek) helpers
+
+    /// Monday-anchored start (as a day-key) of the week containing `date`.
+    private func weekStart(for date: Date) -> Date {
+        let cal = HabitCalendar.utc
+        let key = HabitCalendar.dayKey(for: date)
+        let weekday = cal.component(.weekday, from: key) // 1=Sun…7=Sat
+        let daysFromMonday = (weekday + 5) % 7           // Mon→0, Sun→6
+        return cal.date(byAdding: .day, value: -daysFromMonday, to: key) ?? key
+    }
+
+    /// Count of completed days in the week starting at `start`.
+    func weeklyCompletions(weekStarting start: Date) -> Int {
+        let cal = HabitCalendar.utc
+        guard let end = cal.date(byAdding: .day, value: 6, to: start) else { return 0 }
+        return completedDayKeys().filter { $0 >= start && $0 <= end }.count
+    }
+
+    /// Completions in the week containing `date` (for "3/5 this week" display).
+    func weeklyCompletions(containing date: Date = Date()) -> Int {
+        weeklyCompletions(weekStarting: weekStart(for: date))
+    }
+
+    private func currentWeeklyStreak(from referenceDate: Date) -> Int {
+        let cal = HabitCalendar.utc
+        let completed = completedDayKeys()
+        guard !completed.isEmpty, let earliest = completed.min() else { return 0 }
+        let target = max(1, timesPerWeek)
+        let earliestWeek = weekStart(for: earliest)
+
+        var week = weekStart(for: referenceDate)
+        // Grace: the current (in-progress) week not yet meeting target doesn't break the streak.
+        if weeklyCompletions(weekStarting: week) < target {
+            guard let prev = cal.date(byAdding: .day, value: -7, to: week) else { return 0 }
+            week = prev
+        }
+
+        var streak = 0
+        while week >= earliestWeek {
+            if weeklyCompletions(weekStarting: week) >= target {
+                streak += 1
+            } else {
+                break
+            }
+            guard let prev = cal.date(byAdding: .day, value: -7, to: week) else { break }
+            week = prev
+        }
         return streak
     }
 
@@ -193,12 +266,20 @@ final class Habit {
         let creationDate = HabitCalendar.dayKey(for: createdAt)
         let effectiveStart = max(startDate, creationDate)
 
-        guard let totalDays = calendar.dateComponents([.day], from: effectiveStart, to: today).day.map({ $0 + 1 }),
-              totalDays > 0 else { return 0 }
+        // Denominator = scheduled (expected) days in the window, so rest days
+        // for specificDays habits don't drag the rate down.
+        var expectedDays = 0
+        var day = effectiveStart
+        while day <= today {
+            if isScheduled(on: day) { expectedDays += 1 }
+            guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
+            day = next
+        }
+        guard expectedDays > 0 else { return 0 }
 
-        let completedDays = completedDayKeys().filter { $0 >= effectiveStart && $0 <= today }.count
+        let completedDays = completedDayKeys().filter { $0 >= effectiveStart && $0 <= today && isScheduled(on: $0) }.count
 
-        return Double(completedDays) / Double(totalDays)
+        return Double(completedDays) / Double(expectedDays)
     }
 
     func completionsPerWeekday() -> [Int: Int] {

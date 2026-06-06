@@ -18,6 +18,12 @@ struct AddHabitView: View {
     @State private var kind: HabitKind = .binary
     @State private var targetValue = 1
     @State private var unit = ""
+    @State private var schedule: HabitSchedule = .daily
+    @State private var timesPerWeek = 3
+    @State private var activeDays: Set<Int> = Set(0...6)   // 0=Sun … 6=Sat
+
+    /// Weekday symbols starting Sunday, matching the activeDays index.
+    private let weekdaySymbols = ["S", "M", "T", "W", "T", "F", "S"]
 
     private var isEditing: Bool { editingHabit != nil }
 
@@ -70,6 +76,58 @@ struct AddHabitView: View {
                         Text("Log a number each day and reach your target to complete the habit.")
                     } else {
                         Text("A simple done / not-done check each day.")
+                    }
+                }
+
+                Section {
+                    Picker("Frequency", selection: $schedule) {
+                        Text("Every day").tag(HabitSchedule.daily)
+                        Text("Specific days").tag(HabitSchedule.specificDays)
+                        Text("Times per week").tag(HabitSchedule.timesPerWeek)
+                    }
+
+                    if schedule == .specificDays {
+                        HStack(spacing: 6) {
+                            ForEach(0..<7, id: \.self) { day in
+                                let on = activeDays.contains(day)
+                                Button {
+                                    if on { activeDays.remove(day) } else { activeDays.insert(day) }
+                                } label: {
+                                    Text(weekdaySymbols[day])
+                                        .font(.caption.weight(.semibold))
+                                        .frame(maxWidth: .infinity, minHeight: 34)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 8)
+                                                .fill(on ? Color.green.opacity(0.25) : Color.gray.opacity(0.12))
+                                        )
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 8)
+                                                .stroke(on ? Color.green : .clear, lineWidth: 1.5)
+                                        )
+                                        .foregroundStyle(on ? .green : .secondary)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(Self.weekdayName(day))
+                                .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    } else if schedule == .timesPerWeek {
+                        Stepper(value: $timesPerWeek, in: 1...7) {
+                            HStack {
+                                Text("Goal")
+                                Spacer()
+                                Text("\(timesPerWeek)× per week").foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Frequency")
+                } footer: {
+                    switch schedule {
+                    case .daily: Text("Tracked every day.")
+                    case .specificDays: Text("Only the selected days count toward your streak — other days are rest days.")
+                    case .timesPerWeek: Text("Hit your weekly goal any days you like; your streak counts weeks.")
                     }
                 }
 
@@ -180,6 +238,9 @@ struct AddHabitView: View {
                     kind = habit.habitKind
                     targetValue = max(1, Int(habit.targetValue))
                     unit = habit.unit ?? ""
+                    schedule = habit.schedule
+                    timesPerWeek = max(1, habit.timesPerWeek)
+                    activeDays = Self.daySet(from: habit.activeDaysMask)
                     if let match = HabitColor.all.first(where: { $0.hex == habit.colorHex }) {
                         selectedColor = match
                     }
@@ -208,6 +269,7 @@ struct AddHabitView: View {
         habit.targetValue = Double(targetValue)
         habit.unit = (kind == .count && !unit.trimmingCharacters(in: .whitespaces).isEmpty)
             ? unit.trimmingCharacters(in: .whitespaces) : nil
+        applySchedule(to: habit)
         modelContext.insert(habit)
         do {
             try modelContext.save()
@@ -231,6 +293,26 @@ struct AddHabitView: View {
         }
     }
 
+    private func applySchedule(to habit: Habit) {
+        habit.schedule = schedule
+        habit.timesPerWeek = timesPerWeek
+        // An empty day selection would mean "never" — fall back to every day.
+        habit.activeDaysMask = (schedule == .specificDays && !activeDays.isEmpty)
+            ? Self.mask(from: activeDays) : 127
+    }
+
+    private static func mask(from days: Set<Int>) -> Int {
+        days.reduce(0) { $0 | (1 << $1) }
+    }
+
+    private static func daySet(from mask: Int) -> Set<Int> {
+        Set((0..<7).filter { mask & (1 << $0) != 0 })
+    }
+
+    private static func weekdayName(_ index: Int) -> String {
+        ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][index]
+    }
+
     private func updateHabit() {
         guard let habit = editingHabit else { return }
         habit.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -242,6 +324,7 @@ struct AddHabitView: View {
         habit.targetValue = Double(targetValue)
         habit.unit = (kind == .count && !unit.trimmingCharacters(in: .whitespaces).isEmpty)
             ? unit.trimmingCharacters(in: .whitespaces) : nil
+        applySchedule(to: habit)
         habit.touch()
         do {
             try modelContext.save()
