@@ -8,8 +8,27 @@ struct TodayView: View {
            sort: \Habit.sortOrder)
     private var habits: [Habit]
 
+    @Query(sort: \HabitGroup.sortOrder)
+    private var groups: [HabitGroup]
+
     @State private var showingAddHabit = false
     @State private var selectedDate = Date()
+    @State private var collapsedGroups: Set<UUID> = []
+
+    /// Habits split into ordered sections by group; falls back to a single flat
+    /// section when the user has no groups.
+    private var groupedSections: [(group: HabitGroup?, habits: [Habit])] {
+        guard !groups.isEmpty else { return [(nil, habits)] }
+        let groupIds = Set(groups.map { $0.id })
+        var sections: [(group: HabitGroup?, habits: [Habit])] = []
+        for g in groups {
+            let hs = habits.filter { $0.groupId == g.id }
+            if !hs.isEmpty { sections.append((g, hs)) }
+        }
+        let ungrouped = habits.filter { $0.groupId == nil || !groupIds.contains($0.groupId!) }
+        if !ungrouped.isEmpty { sections.append((nil, ungrouped)) }
+        return sections
+    }
 
     private var dateTitle: String {
         if Calendar.current.isDateInToday(selectedDate) {
@@ -48,13 +67,24 @@ struct TodayView: View {
                 if habits.isEmpty {
                     EmptyStateView(showingAddHabit: $showingAddHabit)
                         .padding(.top, 40)
-                } else {
+                } else if groups.isEmpty {
                     LazyVStack(spacing: 12) {
                         ForEach(habits) { habit in
-                            HabitRowView(
-                                habit: habit,
-                                date: selectedDate
-                            )
+                            HabitRowView(habit: habit, date: selectedDate)
+                        }
+                    }
+                    .padding(.horizontal)
+                } else {
+                    LazyVStack(spacing: 16) {
+                        ForEach(groupedSections, id: \.group?.id) { section in
+                            VStack(spacing: 12) {
+                                groupHeader(for: section.group, count: section.habits.count)
+                                if !isCollapsed(section.group) {
+                                    ForEach(section.habits) { habit in
+                                        HabitRowView(habit: habit, date: selectedDate)
+                                    }
+                                }
+                            }
                         }
                     }
                     .padding(.horizontal)
@@ -77,6 +107,46 @@ struct TodayView: View {
         .sheet(isPresented: $showingAddHabit) {
             AddHabitView()
         }
+    }
+
+    private func isCollapsed(_ group: HabitGroup?) -> Bool {
+        guard let group else { return false }
+        return collapsedGroups.contains(group.id)
+    }
+
+    @ViewBuilder
+    private func groupHeader(for group: HabitGroup?, count: Int) -> some View {
+        let title = group?.name ?? String(localized: "Ungrouped")
+        let collapsed = isCollapsed(group)
+        Button {
+            guard let id = group?.id else { return }
+            withAnimation(.easeInOut(duration: 0.2)) {
+                if collapsedGroups.contains(id) { collapsedGroups.remove(id) }
+                else { collapsedGroups.insert(id) }
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(group?.color ?? Color.gray)
+                    .frame(width: 8, height: 8)
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text("\(count)")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.tertiary)
+                Spacer()
+                if group != nil {
+                    Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(group == nil)
+        .accessibilityLabel("\(title), \(count) habits")
     }
 }
 

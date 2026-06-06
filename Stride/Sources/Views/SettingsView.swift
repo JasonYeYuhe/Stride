@@ -5,6 +5,10 @@ import UserNotifications
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Habit.sortOrder) private var allHabits: [Habit]
+    @Query(sort: \HabitGroup.sortOrder) private var allGroups: [HabitGroup]
+
+    @State private var groupToRename: HabitGroup?
+    @State private var groupNameText = ""
 
     @State private var showingDeleteAlert = false
     @State private var habitToDelete: Habit?
@@ -321,6 +325,34 @@ struct SettingsView: View {
                     }
                 }
 
+                // Groups
+                if !allGroups.isEmpty {
+                    Section("Groups") {
+                        ForEach(allGroups) { group in
+                            HStack {
+                                Circle().fill(group.color).frame(width: 10, height: 10)
+                                Text(group.name)
+                                Spacer()
+                                Text("\(allHabits.filter { $0.groupId == group.id && !$0.isArchived }.count)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                groupToRename = group
+                                groupNameText = group.name
+                            }
+                            .swipeActions(edge: .trailing) {
+                                Button(role: .destructive) {
+                                    deleteGroup(group)
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Archived
                 if !archivedHabits.isEmpty {
                     Section("Archived (\(archivedHabits.count))") {
@@ -498,6 +530,14 @@ struct SettingsView: View {
             } message: {
                 Text("Unable to save changes. Please try again.")
             }
+            .alert("Rename Group", isPresented: Binding(
+                get: { groupToRename != nil },
+                set: { if !$0 { groupToRename = nil } }
+            )) {
+                TextField("Group name", text: $groupNameText)
+                Button("Save") { renameGroup() }
+                Button("Cancel", role: .cancel) { groupToRename = nil }
+            }
             .onChange(of: auth.isLoggedIn) { _, loggedIn in
                 if loggedIn {
                     Task { await sync.sync(context: modelContext) }
@@ -547,6 +587,33 @@ struct SettingsView: View {
             deleteAccountError = error.localizedDescription
         }
         isDeletingAccount = false
+    }
+
+    private func renameGroup() {
+        guard let group = groupToRename else { return }
+        let trimmed = groupNameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            group.name = trimmed
+            group.touch()
+            do { try modelContext.save() } catch { showSaveError = true }
+        }
+        groupToRename = nil
+    }
+
+    private func deleteGroup(_ group: HabitGroup) {
+        // Detach member habits (they become ungrouped) before removing the group.
+        for habit in allHabits where habit.groupId == group.id {
+            habit.groupId = nil
+            habit.touch()
+        }
+        let id = group.id.uuidString
+        modelContext.delete(group)
+        do {
+            try modelContext.save()
+            sync.trackDeletedGroup(id)
+        } catch {
+            showSaveError = true
+        }
     }
 
     private func reorderHabits(from source: IndexSet, to destination: Int) {

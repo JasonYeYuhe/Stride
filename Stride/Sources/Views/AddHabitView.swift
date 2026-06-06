@@ -5,6 +5,8 @@ struct AddHabitView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 
+    @Query(sort: \HabitGroup.sortOrder) private var groups: [HabitGroup]
+
     /// Pass an existing habit to enter edit mode; nil = create mode
     var editingHabit: Habit?
 
@@ -21,6 +23,9 @@ struct AddHabitView: View {
     @State private var schedule: HabitSchedule = .daily
     @State private var timesPerWeek = 3
     @State private var activeDays: Set<Int> = Set(0...6)   // 0=Sun … 6=Sat
+    @State private var selectedGroupId: UUID?
+    @State private var showingNewGroup = false
+    @State private var newGroupName = ""
 
     /// Weekday symbols starting Sunday, matching the activeDays index.
     private let weekdaySymbols = ["S", "M", "T", "W", "T", "F", "S"]
@@ -128,6 +133,22 @@ struct AddHabitView: View {
                     case .daily: Text("Tracked every day.")
                     case .specificDays: Text("Only the selected days count toward your streak — other days are rest days.")
                     case .timesPerWeek: Text("Hit your weekly goal any days you like; your streak counts weeks.")
+                    }
+                }
+
+                Section("Group") {
+                    Picker("Group", selection: $selectedGroupId) {
+                        Text("None").tag(UUID?.none)
+                        ForEach(groups) { group in
+                            Text(group.name).tag(Optional(group.id))
+                        }
+                    }
+                    Button {
+                        newGroupName = ""
+                        showingNewGroup = true
+                    } label: {
+                        Label("New Group", systemImage: "folder.badge.plus")
+                            .foregroundStyle(.green)
                     }
                 }
 
@@ -241,6 +262,7 @@ struct AddHabitView: View {
                     schedule = habit.schedule
                     timesPerWeek = max(1, habit.timesPerWeek)
                     activeDays = Self.daySet(from: habit.activeDaysMask)
+                    selectedGroupId = habit.groupId
                     if let match = HabitColor.all.first(where: { $0.hex == habit.colorHex }) {
                         selectedColor = match
                     }
@@ -255,6 +277,23 @@ struct AddHabitView: View {
         } message: {
             Text("Unable to save your habit. Please try again.")
         }
+        .alert("New Group", isPresented: $showingNewGroup) {
+            TextField("Group name", text: $newGroupName)
+            Button("Create") { createGroup() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Organize related habits together.")
+        }
+    }
+
+    private func createGroup() {
+        let trimmed = newGroupName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let maxOrder = (groups.map(\.sortOrder).max() ?? -1) + 1
+        let group = HabitGroup(name: trimmed, colorHex: selectedColor.hex, sortOrder: maxOrder)
+        modelContext.insert(group)
+        try? modelContext.save()
+        selectedGroupId = group.id
     }
 
     private func createHabit() {
@@ -299,6 +338,7 @@ struct AddHabitView: View {
         // An empty day selection would mean "never" — fall back to every day.
         habit.activeDaysMask = (schedule == .specificDays && !activeDays.isEmpty)
             ? Self.mask(from: activeDays) : 127
+        habit.groupId = selectedGroupId
     }
 
     private static func mask(from days: Set<Int>) -> Int {
