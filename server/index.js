@@ -1,14 +1,37 @@
 // @ts-check
 require("dotenv").config();
+
+// APM tracing — must be initialized before any other instrumented library is
+// required, so this stays at the very top. No-op without a Datadog agent.
+if (process.env.NODE_ENV !== "test") {
+  require("dd-trace").init({ logInjection: true });
+}
+
 const express = require("express");
 const path = require("path");
 const cors = require("cors");
 const helmet = /** @type {any} */ (require("helmet"));
 const { rateLimit } = require("express-rate-limit");
+const Sentry = require("@sentry/node");
 const { requestLogger } = require("./logger");
+const db = require("./db");
+
+// Error tracking — only active when a DSN is configured (so tests/dev stay quiet).
+if (process.env.SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    environment: process.env.NODE_ENV || "development",
+    tracesSampleRate: Number(process.env.SENTRY_TRACES_SAMPLE_RATE ?? 0.1),
+  });
+}
 
 const app = express();
 const PORT = process.env.PORT || 3002;
+
+// Behind nginx (single hop): trust the first proxy so express-rate-limit and
+// req.ip key on the real client IP from X-Forwarded-For, not the loopback
+// upstream (otherwise every user shares one rate-limit bucket).
+app.set("trust proxy", 1);
 
 // Security headers — allow inline styles for HTML pages (docs + /login use <style> blocks)
 // style-src 'unsafe-inline' is safe: inline styles cannot execute scripts
@@ -114,11 +137,62 @@ ${safeToken ? `<div class="token-box">${safeToken}</div>` : '<p style="color:#ff
 </div></body></html>`);
 });
 
-// Health check
+// Health check — also verifies DB connectivity so a locked/corrupt SQLite
+// reports unhealthy instead of falsely OK.
 app.get("/health", (req, res) => {
+  try {
+    db.prepare("SELECT 1").get();
+  } catch (err) {
+    return res.status(503).json({ ok: false, error: "database unavailable" });
+  }
   res.json({ ok: true, version: "1.0.0", apiVersions: ["v1"], uptime: process.uptime() });
 });
 
-app.listen(PORT, () => {
-  console.log(`Stride API running on port ${PORT}`);
+// Global error handler — must be last. Preserves client-error statuses
+// (e.g. 413 payload too large, 400 malformed JSON) but never leaks stack
+// traces or internal messages for 5xx.
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  const status = err.status || err.statusCode || 500;
+  if (status >= 500) {
+    console.error(`[ERROR] ${req.method} ${req.originalUrl}:`, err && err.stack ? err.stack : err);
+    if (process.env.SENTRY_DSN) Sentry.captureException(err);
+  }
+  if (res.headersSent) return next(err);
+  const message = status >= 500
+    ? "Internal server error"
+    : (err.expose && err.message ? err.message : "Bad request");
+  res.status(status).json({ error: message });
 });
+
+const server = app.listen(PORT, () => {
+  console.log(`Stride API running on port ${PORT}`);
+  if (process.env.NODE_ENV !== "test") {
+    // Initial sweep + periodic GC of tombstones / expired sessions & magic links.
+    const sweep = () => { try { /** @type {any} */ (db).sweepStaleData(); } catch (e) { console.error("[sweep] failed:", e); } };
+    sweep();
+    const sweepTimer = setInterval(sweep, 6 * 60 * 60 * 1000); // every 6h
+    sweepTimer.unref();
+  }
+});
+
+// Graceful shutdown: stop accepting connections, checkpoint the WAL, close DB.
+function shutdown(signal) {
+  console.log(`Received ${signal}, shutting down gracefully...`);
+  // Release idle keep-alive sockets so close() resolves promptly (in-flight
+  // requests still get to finish).
+  if (typeof server.closeIdleConnections === "function") server.closeIdleConnections();
+  server.close(() => {
+    try {
+      db.pragma("wal_checkpoint(TRUNCATE)");
+      db.close();
+    } catch (e) {
+      console.error("Error during DB shutdown:", e);
+    }
+    process.exit(0);
+  });
+  // Force-exit if connections linger.
+  setTimeout(() => process.exit(1), 10000).unref();
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));

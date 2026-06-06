@@ -15,6 +15,29 @@ final class Habit {
     var reminderHour: Int
     var reminderMinute: Int
     var note: String?
+    /// Last time this habit's own fields were modified. Optional so existing
+    /// (pre-v2) stores migrate with no default; treated as `createdAt` when nil.
+    /// Drives correct multi-device last-write-wins on sync.
+    var updatedAt: Date?
+
+    // MARK: - v2 fields (all defaulted for lightweight SwiftData migration)
+
+    /// "binary" (done/not-done) or "count" (quantitative, e.g. 8 glasses).
+    var kind: String = HabitKind.binary.rawValue
+    /// Daily target for count habits (e.g. 8). Ignored for binary.
+    var targetValue: Double = 1
+    /// Unit label for count habits, e.g. "glasses", "min", "km".
+    var unit: String?
+    /// "daily", "timesPerWeek", or "specificDays".
+    var scheduleKind: String = HabitSchedule.daily.rawValue
+    /// Weekly target count when scheduleKind == "timesPerWeek".
+    var timesPerWeek: Int = 7
+    /// Bitmask of active weekdays (bit 0 = Sunday … bit 6 = Saturday) when
+    /// scheduleKind == "specificDays". 127 = every day.
+    var activeDaysMask: Int = 127
+    /// Optional grouping. Stored as the group's UUID; nil = ungrouped.
+    var groupId: UUID?
+
     @Relationship(deleteRule: .cascade) var records: [HabitRecord]
 
     init(name: String, emoji: String = "⭐", colorHex: String = "#34C759") {
@@ -29,7 +52,33 @@ final class Habit {
         self.reminderHour = 20
         self.reminderMinute = 0
         self.note = nil
+        self.updatedAt = Date()
+        self.kind = HabitKind.binary.rawValue
+        self.targetValue = 1
+        self.unit = nil
+        self.scheduleKind = HabitSchedule.daily.rawValue
+        self.timesPerWeek = 7
+        self.activeDaysMask = 127
+        self.groupId = nil
         self.records = []
+    }
+
+    // MARK: - v2 typed accessors
+
+    var habitKind: HabitKind {
+        get { HabitKind(rawValue: kind) ?? .binary }
+        set { kind = newValue.rawValue }
+    }
+
+    var schedule: HabitSchedule {
+        get { HabitSchedule(rawValue: scheduleKind) ?? .daily }
+        set { scheduleKind = newValue.rawValue }
+    }
+
+    /// Stamp `updatedAt = now` after modifying this habit's own fields, so sync
+    /// can resolve conflicts in favor of the most recent real edit.
+    func touch() {
+        updatedAt = Date()
     }
 
     var color: Color {
@@ -50,18 +99,55 @@ final class Habit {
         }
     }
 
+    /// The record for a given day, if any.
+    func record(on date: Date) -> HabitRecord? {
+        records.first { HabitCalendar.record($0.date, isOnSameDayAs: date) }
+    }
+
+    /// Amount logged on a day (0 if none). For binary habits a check-in is 1.
+    func loggedValue(on date: Date) -> Double {
+        record(on: date)?.value ?? 0
+    }
+
+    /// Progress toward the day's goal, clamped to 0...1.
+    func progress(on date: Date) -> Double {
+        switch habitKind {
+        case .binary:
+            return isCompletedOn(date) ? 1 : 0
+        case .count:
+            guard targetValue > 0 else { return loggedValue(on: date) > 0 ? 1 : 0 }
+            return min(1, loggedValue(on: date) / targetValue)
+        }
+    }
+
     func isCompletedOn(_ date: Date) -> Bool {
-        let calendar = Calendar.current
-        return records.contains { calendar.isDate($0.date, inSameDayAs: date) }
+        switch habitKind {
+        case .binary:
+            return record(on: date) != nil
+        case .count:
+            return loggedValue(on: date) >= targetValue && targetValue > 0
+        }
+    }
+
+    /// Day-keys that count as "completed" for streak/rate purposes — for count
+    /// habits only days that met the target qualify.
+    private func completedDayKeys() -> Set<Date> {
+        switch habitKind {
+        case .binary:
+            return Set(records.map { HabitCalendar.startOfKey($0.date) })
+        case .count:
+            return Set(records.filter { $0.value >= targetValue && targetValue > 0 }
+                .map { HabitCalendar.startOfKey($0.date) })
+        }
     }
 
     func currentStreak(from referenceDate: Date = Date()) -> Int {
-        let calendar = Calendar.current
-        let sortedDates = Set(records.map { calendar.startOfDay(for: $0.date) })
+        let calendar = HabitCalendar.utc
+        let sortedDates = completedDayKeys()
 
         guard !sortedDates.isEmpty else { return 0 }
 
-        let today = calendar.startOfDay(for: referenceDate)
+        let today = HabitCalendar.dayKey(for: referenceDate)
         guard let yesterday = calendar.date(byAdding: .day, value: -1, to: today) else { return 0 }
 
         guard sortedDates.contains(today) || sortedDates.contains(yesterday) else { return 0 }
@@ -79,9 +165,8 @@ final class Habit {
     }
 
     func bestStreak() -> Int {
-        let calendar = Calendar.current
-        let sortedDates = records.map { calendar.startOfDay(for: $0.date) }
-            .sorted()
+        let calendar = HabitCalendar.utc
+        let sortedDates = completedDayKeys().sorted()
 
         guard !sortedDates.isEmpty else { return 0 }
 
@@ -102,28 +187,25 @@ final class Habit {
     }
 
     func completionRate(days: Int = 30) -> Double {
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: Date())
+        let calendar = HabitCalendar.utc
+        let today = HabitCalendar.dayKey(for: Date())
         guard let startDate = calendar.date(byAdding: .day, value: -(days - 1), to: today) else { return 0 }
-        let creationDate = calendar.startOfDay(for: createdAt)
+        let creationDate = HabitCalendar.dayKey(for: createdAt)
         let effectiveStart = max(startDate, creationDate)
 
         guard let totalDays = calendar.dateComponents([.day], from: effectiveStart, to: today).day.map({ $0 + 1 }),
               totalDays > 0 else { return 0 }
 
-        let completedDays = records.filter { record in
-            let recordDate = calendar.startOfDay(for: record.date)
-            return recordDate >= effectiveStart && recordDate <= today
-        }.count
+        let completedDays = completedDayKeys().filter { $0 >= effectiveStart && $0 <= today }.count
 
         return Double(completedDays) / Double(totalDays)
     }
 
     func completionsPerWeekday() -> [Int: Int] {
-        let calendar = Calendar.current
+        let calendar = HabitCalendar.utc
         var counts: [Int: Int] = [:]
         for record in records {
-            let weekday = calendar.component(.weekday, from: record.date)
+            let weekday = calendar.component(.weekday, from: HabitCalendar.startOfKey(record.date))
             counts[weekday, default: 0] += 1
         }
         return counts
@@ -135,10 +217,62 @@ final class HabitRecord {
     var id: UUID
     var date: Date
     var note: String?
+    /// Last modification time (e.g. note edited). Optional for migration safety.
+    var updatedAt: Date?
+    /// Amount logged for the day. For binary habits this is always 1 (a check-in);
+    /// for count habits it accumulates toward the habit's `targetValue`.
+    var value: Double = 1
 
-    init(date: Date = Date(), note: String? = nil) {
+    init(date: Date = Date(), note: String? = nil, value: Double = 1) {
         self.id = UUID()
-        self.date = Calendar.current.startOfDay(for: date)
+        self.date = HabitCalendar.dayKey(for: date)
         self.note = note
+        self.updatedAt = Date()
+        self.value = value
     }
+
+    func touch() {
+        updatedAt = Date()
+    }
+}
+
+/// A user-defined grouping for habits (e.g. "Health", "Work").
+@Model
+final class HabitGroup {
+    var id: UUID
+    var name: String
+    var colorHex: String
+    var sortOrder: Double
+    var createdAt: Date
+    var updatedAt: Date?
+
+    init(name: String, colorHex: String = "#34C759", sortOrder: Double = 0) {
+        self.id = UUID()
+        self.name = name
+        self.colorHex = colorHex
+        self.sortOrder = sortOrder
+        self.createdAt = Date()
+        self.updatedAt = Date()
+    }
+
+    var color: Color {
+        Color(hex: colorHex) ?? .green
+    }
+
+    func touch() {
+        updatedAt = Date()
+    }
+}
+
+// MARK: - v2 enums
+
+enum HabitKind: String, CaseIterable {
+    case binary
+    case count
+}
+
+enum HabitSchedule: String, CaseIterable {
+    case daily
+    case timesPerWeek
+    case specificDays
 }

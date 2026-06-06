@@ -7274,3 +7274,159 @@ describe("Sync push: habit with name='' is silently skipped (server-side !h.name
     assert.equal(found, false, "blank-name habit must not appear in full pull");
   });
 });
+
+// ---------- tombstone / expiry GC (sweepStaleData) ----------
+
+describe("sweepStaleData GC", () => {
+  // Same DB file as the running server (WAL gives cross-connection read-your-writes
+  // after the sweep's transaction commits).
+  const appDb = require("../db");
+
+  it("deletes tombstones older than the retention window, keeps recent ones", () => {
+    const { userId } = createTestUser();
+    const oldIso = new Date(Date.now() - 200 * 86400000).toISOString(); // 200 days ago
+    const freshIso = new Date().toISOString();
+    db.prepare(
+      "INSERT INTO deletion_tombstones (user_id, entity_type, entity_id, deleted_at) VALUES (?, 'habit', ?, ?)"
+    ).run(userId, "old-tomb", oldIso);
+    db.prepare(
+      "INSERT INTO deletion_tombstones (user_id, entity_type, entity_id, deleted_at) VALUES (?, 'habit', ?, ?)"
+    ).run(userId, "fresh-tomb", freshIso);
+
+    appDb.sweepStaleData({ tombstoneRetentionDays: 90 });
+
+    const old = db.prepare("SELECT 1 FROM deletion_tombstones WHERE entity_id = ?").get("old-tomb");
+    const fresh = db.prepare("SELECT 1 FROM deletion_tombstones WHERE entity_id = ?").get("fresh-tomb");
+    assert.equal(old, undefined, "tombstone older than retention window is swept");
+    assert.ok(fresh, "recent tombstone is retained");
+  });
+
+  it("deletes expired sessions but keeps valid ones", () => {
+    const { userId } = createTestUser();
+    const expiredHash = hashToken(crypto.randomBytes(32).toString("hex"));
+    const validHash = hashToken(crypto.randomBytes(32).toString("hex"));
+    db.prepare("INSERT INTO sessions (user_id, token_hash, expires_at) VALUES (?, ?, ?)")
+      .run(userId, expiredHash, Date.now() - 1000);
+    db.prepare("INSERT INTO sessions (user_id, token_hash, expires_at) VALUES (?, ?, ?)")
+      .run(userId, validHash, Date.now() + 86400000);
+
+    appDb.sweepStaleData();
+
+    assert.equal(db.prepare("SELECT 1 FROM sessions WHERE token_hash = ?").get(expiredHash), undefined);
+    assert.ok(db.prepare("SELECT 1 FROM sessions WHERE token_hash = ?").get(validHash));
+  });
+});
+
+// ---------- multi-device last-write-wins on habit upsert ----------
+
+describe("Sync push LWW: stale device cannot clobber a newer edit", () => {
+  let userToken, userId, habitId;
+  before(() => {
+    const u = createTestUser();
+    userId = u.userId;
+    userToken = createTestSession(userId);
+    habitId = crypto.randomUUID();
+  });
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  const T1 = "2026-01-01T00:00:00.000Z";
+  const T2 = "2026-06-01T00:00:00.000Z";
+  const T3 = "2026-12-01T00:00:00.000Z";
+  const h = (name, updatedAt) => ({
+    id: habitId, name, emoji: "⭐", colorHex: "#34C759",
+    isArchived: false, sortOrder: 0, createdAt: T1, updatedAt,
+  });
+
+  it("newer push applies, then an older push is ignored", async () => {
+    let r = await api("POST", "/v1/sync/push", { token: userToken, body: { habits: [h("New", T2)] } });
+    assert.equal(r.status, 200);
+
+    // Stale device pushes older data for the same habit
+    r = await api("POST", "/v1/sync/push", { token: userToken, body: { habits: [h("Old", T1)] } });
+    assert.equal(r.status, 200, "push still returns ok (no error)");
+
+    const pull = await api("GET", "/v1/sync/pull", { token: userToken });
+    const found = pull.json.habits.find((x) => x.id === habitId);
+    assert.equal(found.name, "New", "older push must NOT overwrite the newer name");
+  });
+
+  it("a strictly newer push does overwrite", async () => {
+    const r = await api("POST", "/v1/sync/push", { token: userToken, body: { habits: [h("Newest", T3)] } });
+    assert.equal(r.status, 200);
+    const pull = await api("GET", "/v1/sync/pull", { token: userToken });
+    const found = pull.json.habits.find((x) => x.id === habitId);
+    assert.equal(found.name, "Newest", "newer push must overwrite");
+  });
+});
+
+// ---------- v2: quantitative + scheduling + grouping round-trip ----------
+
+describe("Sync v2 fields round-trip (count habit, schedule, group, entry value)", () => {
+  let token, userId, habitId, groupId;
+  before(() => {
+    const u = createTestUser();
+    userId = u.userId;
+    token = createTestSession(userId);
+    habitId = crypto.randomUUID();
+    groupId = crypto.randomUUID();
+  });
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM habit_groups WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("pushes and pulls back count habit + group + entry value", async () => {
+    const push = await api("POST", "/v1/sync/push", { token, body: {
+      groups: [{ id: groupId, name: "Health", colorHex: "#FF0000", sortOrder: 2,
+        createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }],
+      habits: [{ id: habitId, name: "Water", emoji: "💧", colorHex: "#007AFF",
+        isArchived: false, sortOrder: 1,
+        kind: "count", targetValue: 8, unit: "glasses",
+        scheduleKind: "timesPerWeek", timesPerWeek: 5, activeDaysMask: 62,
+        groupId,
+        createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-06-01T00:00:00.000Z" }],
+      entries: [{ id: crypto.randomUUID(), habitId, date: "2026-06-05", value: 5,
+        createdAt: "2026-06-05T00:00:00.000Z" }],
+    }});
+    assert.equal(push.status, 200);
+
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    assert.equal(pull.status, 200);
+
+    const h = pull.json.habits.find((x) => x.id === habitId);
+    assert.ok(h, "habit returned");
+    assert.equal(h.kind, "count");
+    assert.equal(h.targetValue, 8);
+    assert.equal(h.unit, "glasses");
+    assert.equal(h.scheduleKind, "timesPerWeek");
+    assert.equal(h.timesPerWeek, 5);
+    assert.equal(h.activeDaysMask, 62);
+    assert.equal(h.groupId, groupId);
+
+    const g = pull.json.groups.find((x) => x.id === groupId);
+    assert.ok(g, "group returned");
+    assert.equal(g.name, "Health");
+    assert.equal(g.colorHex, "#FF0000");
+    assert.equal(g.sortOrder, 2);
+
+    const e = pull.json.entries.find((x) => x.habitId === habitId);
+    assert.ok(e, "entry returned");
+    assert.equal(e.value, 5);
+  });
+
+  it("a deleted group is tombstoned and dropped from referencing habits on next device", async () => {
+    let r = await api("POST", "/v1/sync/push", { token, body: { deletedGroupIds: [groupId] } });
+    assert.equal(r.status, 200);
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    assert.ok(!pull.json.groups.some((x) => x.id === groupId), "group removed from full pull");
+  });
+});

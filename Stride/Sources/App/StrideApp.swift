@@ -9,7 +9,11 @@ struct StrideApp: App {
     @State private var showOnboarding = !UserDefaults.standard.bool(forKey: "stride_onboarding_completed")
 
     init() {
+        SentryBootstrap.start()   // crash/hang reporting; no-op until SentryDSN is set
         self.modelContainer = SharedModelContainer.modelContainer
+        // Re-anchor legacy local-midnight records to UTC day-keys before any
+        // streak math or sync runs (idempotent — see SharedModelContainer).
+        SharedModelContainer.migrateRecordDayKeysIfNeeded(modelContainer)
         if CommandLine.arguments.contains("-demo") {
             DemoData.populate(container: modelContainer)
         }

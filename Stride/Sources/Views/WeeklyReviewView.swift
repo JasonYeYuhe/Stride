@@ -25,9 +25,13 @@ struct WeeklyReviewView: View {
 
     private func completionRate(for habit: Habit, in range: (start: Date, end: Date)) -> Double {
         let days = calendar.dateComponents([.day], from: range.start, to: range.end).day! + 1
+        // Compare in day-key space: range bounds are local days, record dates are
+        // UTC-anchored day-keys (see HabitCalendar).
+        let startKey = HabitCalendar.dayKey(for: range.start)
+        let endKey = HabitCalendar.dayKey(for: range.end)
         let completions = habit.records.filter { record in
-            let d = calendar.startOfDay(for: record.date)
-            return d >= range.start && d <= range.end
+            let d = HabitCalendar.startOfKey(record.date)
+            return d >= startKey && d <= endKey
         }.count
         return days > 0 ? Double(completions) / Double(days) : 0
     }

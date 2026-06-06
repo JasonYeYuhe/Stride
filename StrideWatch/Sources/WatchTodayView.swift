@@ -48,10 +48,11 @@ struct WatchTodayView: View {
     }
 
     private func toggleCompletion(_ habit: Habit) {
-        let today = Calendar.current.startOfDay(for: Date())
+        let today = Date()
         let matchingRecords = habit.records.filter {
-            Calendar.current.isDate($0.date, inSameDayAs: today)
+            HabitCalendar.record($0.date, isOnSameDayAs: today)
         }
+        let deletedIds = matchingRecords.map { $0.id.uuidString }
         if !matchingRecords.isEmpty {
             for record in matchingRecords {
                 modelContext.delete(record)
@@ -62,10 +63,25 @@ struct WatchTodayView: View {
         }
         do {
             try modelContext.save()
+            // Record deletions for sync only after a successful save, mirroring the
+            // widget. (Full watch↔backend sync arrives in a later release via
+            // WatchConnectivity; this keeps the tombstone plumbing correct.)
+            for id in deletedIds {
+                Self.trackDeletedEntry(id)
+            }
         } catch {
             // Revert will happen on next fetch; log for debugging
             print("Failed to save: \(error)")
         }
+    }
+
+    /// Track a deleted entry ID in the shared app group UserDefaults for sync.
+    private static func trackDeletedEntry(_ id: String) {
+        let key = "stride_deleted_entry_ids_widget"
+        guard let defaults = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier) else { return }
+        var ids = defaults.stringArray(forKey: key) ?? []
+        ids.append(id)
+        defaults.set(ids, forKey: key)
     }
 }
 

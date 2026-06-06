@@ -7,7 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		00135612370590CC16AF6393 /* SentryBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57E8AF7596BAD4790E235C6A /* SentryBootstrap.swift */; };
 		02B02C365D766A86738F7090 /* Habit.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21336DA7BBDF96DEA4D3407 /* Habit.swift */; };
+		073EEADD57659E0F816B2F6C /* SentryBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57E8AF7596BAD4790E235C6A /* SentryBootstrap.swift */; };
 		0799250ECCF5C2CD02DB82AF /* WeeklyReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39DF81407676587A843D1904 /* WeeklyReviewView.swift */; };
 		09B715014BE564202F4319A9 /* AnalyticsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1E21F6759556BEEF5CD1C12 /* AnalyticsService.swift */; };
 		0A1C39DB21D3AC939AD09861 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 776A18644AC5D53D8278287F /* Localizable.strings */; };
@@ -25,6 +27,8 @@
 		283E7EF798517EC7EE874B59 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = A6A05080F09126E507CF8705 /* Localizable.strings */; };
 		2AA1510563882737EF521243 /* DateHelpersTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 236C079BC5AADCCE973359EB /* DateHelpersTests.swift */; };
 		2B764DE3B8D4BD7263E752E2 /* DemoData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1194AFE4DBCEA8AD9DE1B32A /* DemoData.swift */; };
+		2BB86BC1BC1DB52170DFD441 /* SentryBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57E8AF7596BAD4790E235C6A /* SentryBootstrap.swift */; };
+		2CDC253B8B8754159E211855 /* Sentry in Frameworks */ = {isa = PBXBuildFile; productRef = C48D183605B9AAED7906085A /* Sentry */; };
 		3018ACC1A67B15921D185D48 /* StatsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 447E56E91A805C7FB349BA2A /* StatsView.swift */; };
 		33D27613CD55C86DEA389EB5 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = F8C043D145E16EA12884687F /* Localizable.strings */; };
 		374114CAC590D39258CFA884 /* WatchTodayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCFCA3C10C208273A66FAB02 /* WatchTodayView.swift */; };
@@ -47,6 +51,7 @@
 		5B3E4FFD82BD0082781E1A4C /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 1CBC6DC599819FA1CA98CCBE /* Localizable.strings */; };
 		604566D2DFC1EC1A45B00DEA /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B0FADDB35158E7A8EFD42A6 /* OnboardingView.swift */; };
 		6123E563B249D4808E83390C /* AddHabitView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14E65DB3F54110A255BF1E2C /* AddHabitView.swift */; };
+		627D3480A5F7B40B2AD5D353 /* TimezoneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A84DF4E9961E98C9495F8DA /* TimezoneTests.swift */; };
 		63AE8BA4D976A6C9F7919E7A /* HabitTemplatesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48E2B457B97506287B51D6F1 /* HabitTemplatesView.swift */; };
 		67E694E85ABCB88CF15DC769 /* HabitTemplatesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48E2B457B97506287B51D6F1 /* HabitTemplatesView.swift */; };
 		68E2EC98D625A85205ADE15C /* DateHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4D33C9D974E05236A60E17E /* DateHelpers.swift */; };
@@ -88,18 +93,21 @@
 		C6A2CDBD665C9C2D0C2AD813 /* Habit.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21336DA7BBDF96DEA4D3407 /* Habit.swift */; };
 		C8A9F0ACC43746A1D4D12AE0 /* SharedModelContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14E5DE1DF2EA723656AA788 /* SharedModelContainer.swift */; };
 		CB17AAC833E1FAFD90CDF92A /* StrideWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F7762020997DD0185475C26 /* StrideWidget.swift */; };
+		CB672D3452D129ECEFFB0148 /* SentryBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57E8AF7596BAD4790E235C6A /* SentryBootstrap.swift */; };
 		D2F9EBB9B68B1A8B955F6F20 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B0FADDB35158E7A8EFD42A6 /* OnboardingView.swift */; };
 		D623F92517714132BBFAED51 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42BDA8DAD54978C63D7BF2E8 /* APIClient.swift */; };
 		D67CF51226BBB013281F2D76 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = FB281642FC1DF1EAB3330F7B /* Localizable.strings */; };
 		D7FFBC0D39A12BC9CFD7D7C5 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4EA67CF2EE47ECE75C3802D7 /* Assets.xcassets */; };
 		D868EFA61E31DB19FA05EE59 /* StrideApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FC15AE17382421CAEBA98D6 /* StrideApp.swift */; };
 		D976D47EBECE4A502DCC8610 /* DemoData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1194AFE4DBCEA8AD9DE1B32A /* DemoData.swift */; };
+		DA40279435AAAA821F5DFDB9 /* SentryBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57E8AF7596BAD4790E235C6A /* SentryBootstrap.swift */; };
 		DB60CA2C7DFE11AAED07DA02 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 9BB01452FD4AD5A55E0153E0 /* Assets.xcassets */; };
 		DD058608BADEAEFA4F277F04 /* DataExportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0C3325816F805915823CCF /* DataExportService.swift */; };
 		DF587B0822B4499E098F94D2 /* StoreService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5915E3575E09B02B6B55488D /* StoreService.swift */; };
 		DF74E8B2A7BEC5AABAB6A91F /* DateHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4D33C9D974E05236A60E17E /* DateHelpers.swift */; };
 		E0947C417A321DA2B1B2588C /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 776A18644AC5D53D8278287F /* Localizable.strings */; };
 		E1164CCFA97DD3C9E79EDE16 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = F8C043D145E16EA12884687F /* Localizable.strings */; };
+		E6553FC77D1634915D27A1EA /* Sentry in Frameworks */ = {isa = PBXBuildFile; productRef = 39783EF6BB5C62A3753E1A18 /* Sentry */; };
 		E80374CF29F99521E9AC8745 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 776A18644AC5D53D8278287F /* Localizable.strings */; };
 		E83F02CD837080DFA6C5CE7F /* Habit.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21336DA7BBDF96DEA4D3407 /* Habit.swift */; };
 		EEF6FE01548ACB8A3B38D37D /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 307E5C9F58DC7639E88B77A5 /* PrivacyInfo.xcprivacy */; };
@@ -108,6 +116,7 @@
 		F4DE49FD25EFB640024BF7CC /* StrideWatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49586A76C3DA5DCA5F71B60D /* StrideWatchApp.swift */; };
 		F52B050835F9DB2330C1B00A /* SharedModelContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14E5DE1DF2EA723656AA788 /* SharedModelContainer.swift */; };
 		F880E064D20BEAA7D82515D9 /* SyncReconcileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9523AC157C8D77E551424F5 /* SyncReconcileTests.swift */; };
+		F8E631103B145331AD1AC986 /* CountHabitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F8FF4E330322A974AB7AE18 /* CountHabitTests.swift */; };
 		FC4CDDD4154DB2A11EBC9BA5 /* DataExportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0C3325816F805915823CCF /* DataExportService.swift */; };
 		FE7F3CD42838D63DA8C087A0 /* StrideShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DE60126995C3E877AF2E464 /* StrideShortcuts.swift */; };
 		FEC6B54BEBA8C64848044E79 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = F8C043D145E16EA12884687F /* Localizable.strings */; };
@@ -133,7 +142,9 @@
 		14E65DB3F54110A255BF1E2C /* AddHabitView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddHabitView.swift; sourceTree = "<group>"; };
 		1706C0B4E08F1EAA14C993BA /* StrideWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = StrideWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1CBC6DC599819FA1CA98CCBE /* Localizable.strings */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = Localizable.strings; path = "zh-Hant.lproj/Localizable.strings"; sourceTree = "<group>"; };
+		1F8FF4E330322A974AB7AE18 /* CountHabitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CountHabitTests.swift; sourceTree = "<group>"; };
 		236C079BC5AADCCE973359EB /* DateHelpersTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DateHelpersTests.swift; sourceTree = "<group>"; };
+		2A84DF4E9961E98C9495F8DA /* TimezoneTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimezoneTests.swift; sourceTree = "<group>"; };
 		2AC83A4314C26492BF0BAEC8 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		2FC15AE17382421CAEBA98D6 /* StrideApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrideApp.swift; sourceTree = "<group>"; };
 		307E5C9F58DC7639E88B77A5 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
@@ -145,6 +156,7 @@
 		4BF44B6E74C40A2F7E664752 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		4EA67CF2EE47ECE75C3802D7 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		5771B2205EFDB2CB243D6658 /* Stride.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Stride.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		57E8AF7596BAD4790E235C6A /* SentryBootstrap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SentryBootstrap.swift; sourceTree = "<group>"; };
 		5915E3575E09B02B6B55488D /* StoreService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreService.swift; sourceTree = "<group>"; };
 		776A18644AC5D53D8278287F /* Localizable.strings */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = Localizable.strings; path = ko.lproj/Localizable.strings; sourceTree = "<group>"; };
 		7AD5CC02C52CBD646618317B /* ShareStreakView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareStreakView.swift; sourceTree = "<group>"; };
@@ -173,6 +185,25 @@
 		F8C043D145E16EA12884687F /* Localizable.strings */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = Localizable.strings; path = ja.lproj/Localizable.strings; sourceTree = "<group>"; };
 		FB281642FC1DF1EAB3330F7B /* Localizable.strings */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = Localizable.strings; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		4074C35C2C40CD6B8619C080 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2CDC253B8B8754159E211855 /* Sentry in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		47DA62A5C6E253A69D4FA4D0 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E6553FC77D1634915D27A1EA /* Sentry in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		0463BF9A3F8E446B44A2BD77 /* Products */ = {
@@ -302,6 +333,7 @@
 				776A18644AC5D53D8278287F /* Localizable.strings */,
 				FB281642FC1DF1EAB3330F7B /* Localizable.strings */,
 				1CBC6DC599819FA1CA98CCBE /* Localizable.strings */,
+				57E8AF7596BAD4790E235C6A /* SentryBootstrap.swift */,
 				A14E5DE1DF2EA723656AA788 /* SharedModelContainer.swift */,
 			);
 			path = Shared;
@@ -311,9 +343,11 @@
 			isa = PBXGroup;
 			children = (
 				0DA2E26F53AB0CCF80DEBF10 /* ColorExtensionTests.swift */,
+				1F8FF4E330322A974AB7AE18 /* CountHabitTests.swift */,
 				236C079BC5AADCCE973359EB /* DateHelpersTests.swift */,
 				CE98D2D441CF6A791EF47340 /* HabitTests.swift */,
 				B9523AC157C8D77E551424F5 /* SyncReconcileTests.swift */,
+				2A84DF4E9961E98C9495F8DA /* TimezoneTests.swift */,
 			);
 			path = StrideTests;
 			sourceTree = "<group>";
@@ -352,6 +386,7 @@
 			buildPhases = (
 				7E6A3FC499D44183A5FC311D /* Sources */,
 				DC0F954FF0D539A730AD05D1 /* Resources */,
+				4074C35C2C40CD6B8619C080 /* Frameworks */,
 			);
 			buildRules = (
 			);
@@ -359,6 +394,7 @@
 			);
 			name = Stride;
 			packageProductDependencies = (
+				C48D183605B9AAED7906085A /* Sentry */,
 			);
 			productName = Stride;
 			productReference = 5771B2205EFDB2CB243D6658 /* Stride.app */;
@@ -388,6 +424,7 @@
 			buildPhases = (
 				E79B6BBC5CFF52A6B9AA5E24 /* Sources */,
 				EAC1A78E7AC26CB85C3A4E00 /* Resources */,
+				47DA62A5C6E253A69D4FA4D0 /* Frameworks */,
 			);
 			buildRules = (
 			);
@@ -395,6 +432,7 @@
 			);
 			name = StrideMac;
 			packageProductDependencies = (
+				39783EF6BB5C62A3753E1A18 /* Sentry */,
 			);
 			productName = StrideMac;
 			productReference = 087B83A743EB0D6A9DD29F50 /* StrideMac.app */;
@@ -482,6 +520,9 @@
 			);
 			mainGroup = 7861F0F7BEAD8B1E151AE6CD;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				7555968A29B9163B261096D6 /* XCRemoteSwiftPackageReference "sentry-cocoa" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 0463BF9A3F8E446B44A2BD77 /* Products */;
 			projectDirPath = "";
@@ -586,6 +627,7 @@
 				B293372E0A9CEAE724495138 /* LoginView.swift in Sources */,
 				47B9B48865AD8666665DDA25 /* NotificationService.swift in Sources */,
 				604566D2DFC1EC1A45B00DEA /* OnboardingView.swift in Sources */,
+				00135612370590CC16AF6393 /* SentryBootstrap.swift in Sources */,
 				C2DD4FB74CD7A13DDAD9B3A6 /* SettingsView.swift in Sources */,
 				843732B78DE16A0C43D2BED3 /* ShareStreakView.swift in Sources */,
 				F52B050835F9DB2330C1B00A /* SharedModelContainer.swift in Sources */,
@@ -605,13 +647,16 @@
 			files = (
 				69D5CC204585B265C0AD972B /* ColorExtension.swift in Sources */,
 				A20337D9BCFEFE5B29C78296 /* ColorExtensionTests.swift in Sources */,
+				F8E631103B145331AD1AC986 /* CountHabitTests.swift in Sources */,
 				DF74E8B2A7BEC5AABAB6A91F /* DateHelpers.swift in Sources */,
 				2AA1510563882737EF521243 /* DateHelpersTests.swift in Sources */,
 				C469689F6F45748C336BAE46 /* DemoData.swift in Sources */,
 				E83F02CD837080DFA6C5CE7F /* Habit.swift in Sources */,
 				0BFC1AB25F62D6A0FFCCD753 /* HabitTests.swift in Sources */,
+				073EEADD57659E0F816B2F6C /* SentryBootstrap.swift in Sources */,
 				4B4ADE07E11E4960DE24489A /* SharedModelContainer.swift in Sources */,
 				F880E064D20BEAA7D82515D9 /* SyncReconcileTests.swift in Sources */,
+				627D3480A5F7B40B2AD5D353 /* TimezoneTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -623,6 +668,7 @@
 				5089C72CCDBC69F7A29DDE9B /* DateHelpers.swift in Sources */,
 				43D1EAA477394361526C2D3A /* DemoData.swift in Sources */,
 				1517A3B040DA1C518C9CAACD /* Habit.swift in Sources */,
+				CB672D3452D129ECEFFB0148 /* SentryBootstrap.swift in Sources */,
 				8B435A413D9BD001170112D6 /* SharedModelContainer.swift in Sources */,
 				F4DE49FD25EFB640024BF7CC /* StrideWatchApp.swift in Sources */,
 				374114CAC590D39258CFA884 /* WatchTodayView.swift in Sources */,
@@ -637,6 +683,7 @@
 				68E2EC98D625A85205ADE15C /* DateHelpers.swift in Sources */,
 				2B764DE3B8D4BD7263E752E2 /* DemoData.swift in Sources */,
 				6908530293997DB9FF513990 /* Habit.swift in Sources */,
+				2BB86BC1BC1DB52170DFD441 /* SentryBootstrap.swift in Sources */,
 				C8A9F0ACC43746A1D4D12AE0 /* SharedModelContainer.swift in Sources */,
 				CB17AAC833E1FAFD90CDF92A /* StrideWidget.swift in Sources */,
 			);
@@ -662,6 +709,7 @@
 				93D68D7CBE49AB5C5353CF38 /* LoginView.swift in Sources */,
 				3D038F4D40A1494A7D907F53 /* NotificationService.swift in Sources */,
 				D2F9EBB9B68B1A8B955F6F20 /* OnboardingView.swift in Sources */,
+				DA40279435AAAA821F5DFDB9 /* SentryBootstrap.swift in Sources */,
 				7EF6B91EEDC0C234A3F19BDD /* SettingsView.swift in Sources */,
 				22DE098F35175D87249FC4CE /* ShareStreakView.swift in Sources */,
 				1DA5B013F50AD53315F88C6C /* SharedModelContainer.swift in Sources */,
@@ -776,6 +824,7 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_SentryDSN = "https://461897892c305803cfd5d06c2b62a502@o4511263220891648.ingest.us.sentry.io/4511513693585408";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -961,6 +1010,7 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_SentryDSN = "https://461897892c305803cfd5d06c2b62a502@o4511263220891648.ingest.us.sentry.io/4511513693585408";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -989,6 +1039,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.healthcare-fitness";
+				INFOPLIST_KEY_SentryDSN = "https://461897892c305803cfd5d06c2b62a502@o4511263220891648.ingest.us.sentry.io/4511513693585408";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -1010,6 +1061,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.healthcare-fitness";
+				INFOPLIST_KEY_SentryDSN = "https://461897892c305803cfd5d06c2b62a502@o4511263220891648.ingest.us.sentry.io/4511513693585408";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -1079,6 +1131,30 @@
 			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		7555968A29B9163B261096D6 /* XCRemoteSwiftPackageReference "sentry-cocoa" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/getsentry/sentry-cocoa";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 8.45.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		39783EF6BB5C62A3753E1A18 /* Sentry */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 7555968A29B9163B261096D6 /* XCRemoteSwiftPackageReference "sentry-cocoa" */;
+			productName = Sentry;
+		};
+		C48D183605B9AAED7906085A /* Sentry */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 7555968A29B9163B261096D6 /* XCRemoteSwiftPackageReference "sentry-cocoa" */;
+			productName = Sentry;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 8F35F31970CD66C0431CF4BC /* Project object */;
 }

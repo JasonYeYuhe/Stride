@@ -1,5 +1,55 @@
 import Foundation
 
+/// Canonical "habit day" arithmetic.
+///
+/// A check-in is identified by the user's *local* calendar day at the moment of
+/// logging, stored as that day's midnight in **UTC** (a stable "day-key"). All
+/// streak / completion math is performed in this UTC-anchored space so a
+/// check-in never slips to an adjacent day when the user travels across time
+/// zones or through a DST transition (the previous code anchored to the device's
+/// current time zone, which could duplicate or orphan entries after travel).
+enum HabitCalendar {
+    /// Calendar pinned to UTC — used for all day-key arithmetic.
+    static let utc: Calendar = {
+        var c = Calendar(identifier: .gregorian)
+        c.timeZone = TimeZone(identifier: "UTC")!
+        return c
+    }()
+
+    /// Day-key for a local instant: take the user's local Y/M/D, anchor to UTC midnight.
+    static func dayKey(for date: Date = Date(), localCalendar: Calendar = .current) -> Date {
+        let c = localCalendar.dateComponents([.year, .month, .day], from: date)
+        return utc.date(from: DateComponents(year: c.year, month: c.month, day: c.day))
+            ?? utc.startOfDay(for: date)
+    }
+
+    /// Normalize an already-stored record date (idempotent on day-keys).
+    static func startOfKey(_ recordDate: Date) -> Date {
+        utc.startOfDay(for: recordDate)
+    }
+
+    /// True if a stored record date falls on the same habit-day as a local instant.
+    static func record(_ recordDate: Date, isOnSameDayAs localInstant: Date) -> Bool {
+        startOfKey(recordDate) == dayKey(for: localInstant)
+    }
+
+    /// `true` if `recordDate` is already a UTC-midnight day-key (used by the
+    /// one-time data migration to stay idempotent — see SharedModelContainer).
+    static func isDayKey(_ recordDate: Date) -> Bool {
+        let c = utc.dateComponents([.hour, .minute, .second, .nanosecond], from: recordDate)
+        return c.hour == 0 && c.minute == 0 && c.second == 0 && (c.nanosecond ?? 0) == 0
+    }
+
+    /// `yyyy-MM-dd` serialization in UTC, matching the day-key representation.
+    static let dayStringFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "UTC")
+        return f
+    }()
+}
+
 extension Date {
     var startOfDay: Date {
         Calendar.current.startOfDay(for: self)

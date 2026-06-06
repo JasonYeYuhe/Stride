@@ -189,8 +189,7 @@ struct HabitRowView: View {
     }
 
     private var todayRecord: HabitRecord? {
-        let calendar = Calendar.current
-        return habit.records.first { calendar.isDate($0.date, inSameDayAs: date) }
+        return habit.records.first { HabitCalendar.record($0.date, isOnSameDayAs: date) }
     }
 
     var body: some View {
@@ -202,6 +201,11 @@ struct HabitRowView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(habit.name)
                         .font(.body.weight(.medium))
+                    if habit.habitKind == .count {
+                        Text(countLabel)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     let streak = habit.currentStreak(from: date)
                     if streak > 0 {
                         HStack(spacing: 2) {
@@ -217,18 +221,49 @@ struct HabitRowView: View {
 
                 Spacer()
 
-                Button {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                        toggleCompletion()
+                if habit.habitKind == .count {
+                    Button {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+                            incrementCount()
+                        }
+                    } label: {
+                        ZStack {
+                            Circle()
+                                .stroke(habit.color.opacity(0.2), lineWidth: 4)
+                            Circle()
+                                .trim(from: 0, to: habit.progress(on: date))
+                                .stroke(habit.color, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                                .rotationEffect(.degrees(-90))
+                            if isCompleted {
+                                Image(systemName: "checkmark")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(habit.color)
+                            } else {
+                                Text("\(Self.numberFormat(habit.loggedValue(on: date)))")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(.primary)
+                            }
+                        }
+                        .frame(width: 40, height: 40)
+                        .scaleEffect(justCompleted ? 1.2 : 1.0)
                     }
-                } label: {
-                    Image(systemName: isCompleted ? "checkmark.circle.fill" : "circle")
-                        .font(.title)
-                        .foregroundStyle(isCompleted ? habit.color : .gray.opacity(0.4))
-                        .scaleEffect(justCompleted ? 1.3 : (isCompleted ? 1.1 : 1.0))
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Add one to \(habit.name)")
+                    .accessibilityValue(countLabel)
+                } else {
+                    Button {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+                            toggleCompletion()
+                        }
+                    } label: {
+                        Image(systemName: isCompleted ? "checkmark.circle.fill" : "circle")
+                            .font(.title)
+                            .foregroundStyle(isCompleted ? habit.color : .gray.opacity(0.4))
+                            .scaleEffect(justCompleted ? 1.3 : (isCompleted ? 1.1 : 1.0))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isCompleted ? "Mark \(habit.name) incomplete" : "Mark \(habit.name) complete")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(isCompleted ? "Mark \(habit.name) incomplete" : "Mark \(habit.name) complete")
             }
             .padding()
 
@@ -250,6 +285,25 @@ struct HabitRowView: View {
             } label: {
                 Label("Edit Habit", systemImage: "pencil")
             }
+            if habit.habitKind == .count {
+                Button {
+                    withAnimation { incrementCount() }
+                } label: {
+                    Label("Add 1", systemImage: "plus")
+                }
+                if habit.loggedValue(on: date) > 0 {
+                    Button {
+                        withAnimation { decrementCount() }
+                    } label: {
+                        Label("Subtract 1", systemImage: "minus")
+                    }
+                    Button(role: .destructive) {
+                        withAnimation { resetCount() }
+                    } label: {
+                        Label("Reset", systemImage: "arrow.counterclockwise")
+                    }
+                }
+            }
             if isCompleted {
                 Button {
                     noteText = todayRecord?.note ?? ""
@@ -266,6 +320,7 @@ struct HabitRowView: View {
             TextField("How did it go?", text: $noteText)
             Button("Save") {
                 todayRecord?.note = noteText.isEmpty ? nil : noteText
+                todayRecord?.touch()
                 try? modelContext.save()
             }
             Button("Cancel", role: .cancel) {}
@@ -278,8 +333,7 @@ struct HabitRowView: View {
     }
 
     private func toggleCompletion() {
-        let calendar = Calendar.current
-        if let existingRecord = habit.records.first(where: { calendar.isDate($0.date, inSameDayAs: date) }) {
+        if let existingRecord = habit.records.first(where: { HabitCalendar.record($0.date, isOnSameDayAs: date) }) {
             SyncService.shared.trackDeletedEntry(existingRecord.id.uuidString)
             modelContext.delete(existingRecord)
             justCompleted = false
@@ -305,6 +359,72 @@ struct HabitRowView: View {
         } catch {
             #if DEBUG
             print("Failed to save habit completion: \(error)")
+            #endif
+        }
+        WidgetCenter.shared.reloadAllTimelines()
+        NotificationService.shared.updateBadge(modelContainer: modelContext.container)
+    }
+
+    // MARK: - Count habit logging
+
+    private var countLabel: String {
+        let logged = Self.numberFormat(habit.loggedValue(on: date))
+        let target = Self.numberFormat(habit.targetValue)
+        let unit = habit.unit.map { " \($0)" } ?? ""
+        return "\(logged)/\(target)\(unit)"
+    }
+
+    static func numberFormat(_ value: Double) -> String {
+        value == value.rounded() ? String(Int(value)) : String(format: "%.1f", value)
+    }
+
+    private func incrementCount() {
+        if let record = habit.record(on: date) {
+            record.value += 1
+            record.touch()
+        } else {
+            let record = HabitRecord(date: date, value: 1)
+            habit.records.append(record)
+        }
+        let nowComplete = habit.isCompletedOn(date)
+        if nowComplete {
+            justCompleted = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                withAnimation(.easeOut(duration: 0.2)) { justCompleted = false }
+            }
+        }
+        AnalyticsService.shared.send("habitCompleted")
+        #if os(iOS)
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        #endif
+        saveAndRefresh()
+    }
+
+    private func decrementCount() {
+        guard let record = habit.record(on: date) else { return }
+        if record.value <= 1 {
+            SyncService.shared.trackDeletedEntry(record.id.uuidString)
+            modelContext.delete(record)
+        } else {
+            record.value -= 1
+            record.touch()
+        }
+        saveAndRefresh()
+    }
+
+    private func resetCount() {
+        guard let record = habit.record(on: date) else { return }
+        SyncService.shared.trackDeletedEntry(record.id.uuidString)
+        modelContext.delete(record)
+        saveAndRefresh()
+    }
+
+    private func saveAndRefresh() {
+        do {
+            try modelContext.save()
+        } catch {
+            #if DEBUG
+            print("Failed to save count update: \(error)")
             #endif
         }
         WidgetCenter.shared.reloadAllTimelines()

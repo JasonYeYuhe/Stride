@@ -15,6 +15,9 @@ struct AddHabitView: View {
     @State private var showSaveError = false
     @State private var reminderEnabled = false
     @State private var reminderTime = Calendar.current.date(from: DateComponents(hour: 20, minute: 0)) ?? Date()
+    @State private var kind: HabitKind = .binary
+    @State private var targetValue = 1
+    @State private var unit = ""
 
     private var isEditing: Bool { editingHabit != nil }
 
@@ -37,6 +40,37 @@ struct AddHabitView: View {
                         #if os(macOS)
                         .textFieldStyle(.plain)
                         #endif
+                }
+
+                Section {
+                    Picker("Type", selection: $kind) {
+                        Text("Yes / No").tag(HabitKind.binary)
+                        Text("Measurable").tag(HabitKind.count)
+                    }
+                    .pickerStyle(.segmented)
+
+                    if kind == .count {
+                        Stepper(value: $targetValue, in: 1...1000) {
+                            HStack {
+                                Text("Daily goal")
+                                Spacer()
+                                Text("\(targetValue)\(unit.isEmpty ? "" : " \(unit)")")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        TextField("Unit (e.g. glasses, min, km)", text: $unit)
+                            #if os(macOS)
+                            .textFieldStyle(.plain)
+                            #endif
+                    }
+                } header: {
+                    Text("Goal")
+                } footer: {
+                    if kind == .count {
+                        Text("Log a number each day and reach your target to complete the habit.")
+                    } else {
+                        Text("A simple done / not-done check each day.")
+                    }
                 }
 
                 Section("Icon") {
@@ -143,6 +177,9 @@ struct AddHabitView: View {
                     selectedEmoji = habit.emoji
                     reminderEnabled = habit.reminderEnabled
                     reminderTime = habit.reminderTimeDate
+                    kind = habit.habitKind
+                    targetValue = max(1, Int(habit.targetValue))
+                    unit = habit.unit ?? ""
                     if let match = HabitColor.all.first(where: { $0.hex == habit.colorHex }) {
                         selectedColor = match
                     }
@@ -167,6 +204,10 @@ struct AddHabitView: View {
         )
         habit.reminderEnabled = reminderEnabled
         habit.reminderTimeDate = reminderTime
+        habit.habitKind = kind
+        habit.targetValue = Double(targetValue)
+        habit.unit = (kind == .count && !unit.trimmingCharacters(in: .whitespaces).isEmpty)
+            ? unit.trimmingCharacters(in: .whitespaces) : nil
         modelContext.insert(habit)
         do {
             try modelContext.save()
@@ -197,6 +238,11 @@ struct AddHabitView: View {
         habit.colorHex = selectedColor.hex
         habit.reminderEnabled = reminderEnabled
         habit.reminderTimeDate = reminderTime
+        habit.habitKind = kind
+        habit.targetValue = Double(targetValue)
+        habit.unit = (kind == .count && !unit.trimmingCharacters(in: .whitespaces).isEmpty)
+            ? unit.trimmingCharacters(in: .whitespaces) : nil
+        habit.touch()
         do {
             try modelContext.save()
             if reminderEnabled {

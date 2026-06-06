@@ -92,7 +92,8 @@ router.post("/", (req, res) => {
     if (err.message && err.message.includes("UNIQUE constraint")) {
       return res.status(409).json({ error: "A habit with this ID already exists" });
     }
-    throw err;
+    console.error("POST /habits failed:", err && err.stack ? err.stack : err);
+    return res.status(500).json({ error: "Internal server error" });
   }
 
   const habit = db.prepare(`

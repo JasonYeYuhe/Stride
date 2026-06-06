@@ -66,3 +66,60 @@ Add A record: `api.stride.yyh.app` → Droplet IP
 
 - ColorArchive: 3001
 - Stride: 3002
+
+## Environment
+
+`index.js` reads these (see `.env.example`):
+
+- `NODE_ENV=production` — **required in production.** Disables dev CORS origins and
+  hardens error responses. The global error handler never leaks stack traces
+  regardless, but production mode is still expected.
+- `PORT` — defaults to 3002.
+- `FRONTEND_ORIGIN` — allowed CORS origin (default `https://stride.colorarchive.me`).
+- `RESEND_API_KEY` — magic-link email delivery.
+- `SENTRY_DSN` — optional; when set, server errors are reported to Sentry.
+- `SENTRY_TRACES_SAMPLE_RATE` — optional, default `0.1`.
+- Datadog APM (`dd-trace`) auto-initializes when `NODE_ENV !== test`; configure
+  via the standard `DD_*` env vars (no-op without a local agent).
+
+Start in production:
+
+```bash
+NODE_ENV=production pm2 start index.js --name stride-server --update-env
+```
+
+## Database Backups
+
+`stride.db` is the single source of truth for **all** user data. It is gitignored
+(never commit it). Back it up off the droplet on a schedule.
+
+SQLite in WAL mode is safely backed up with the online `.backup` command (do **not**
+just `cp` the file while the server is running — the WAL may be uncommitted):
+
+```bash
+# /root/stride-server/backup.sh
+set -euo pipefail
+DB=/root/stride-server/stride.db
+DEST=/root/backups
+mkdir -p "$DEST"
+STAMP=$(date +%F-%H%M)
+sqlite3 "$DB" ".backup '$DEST/stride-$STAMP.db'"
+# Retain 14 days
+find "$DEST" -name 'stride-*.db' -mtime +14 -delete
+# (optional) push offsite, e.g. rclone copy "$DEST/stride-$STAMP.db" remote:stride-backups/
+```
+
+```bash
+chmod +x /root/stride-server/backup.sh
+# Daily at 03:30
+( crontab -l 2>/dev/null; echo "30 3 * * * /root/stride-server/backup.sh" ) | crontab -
+```
+
+Graceful shutdown (`SIGTERM`/`SIGINT`) checkpoints the WAL before exit, so a
+PM2 `reload`/`restart` leaves the DB in a clean state.
+
+## Maintenance / GC
+
+The server self-maintains on a 6-hour timer (and once at boot): it deletes
+deletion tombstones older than 90 days and expired sessions / magic-link tokens
+(`db.sweepStaleData()` in `db.js`). No external cron needed for this.

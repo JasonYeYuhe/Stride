@@ -48,6 +48,13 @@ db.exec(`
     reminder_hour    INTEGER NOT NULL DEFAULT 20,
     reminder_minute  INTEGER NOT NULL DEFAULT 0,
     note        TEXT,
+    kind            TEXT NOT NULL DEFAULT 'binary',
+    target_value    REAL NOT NULL DEFAULT 1,
+    unit            TEXT,
+    schedule_kind   TEXT NOT NULL DEFAULT 'daily',
+    times_per_week  INTEGER NOT NULL DEFAULT 7,
+    active_days_mask INTEGER NOT NULL DEFAULT 127,
+    group_id        TEXT,
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     FOREIGN KEY (user_id) REFERENCES users(id)
@@ -58,10 +65,22 @@ db.exec(`
     habit_id  TEXT NOT NULL,
     date      TEXT NOT NULL,
     note      TEXT,
+    value     REAL NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     FOREIGN KEY (habit_id) REFERENCES habits(id) ON DELETE CASCADE,
     UNIQUE(habit_id, date)
+  );
+
+  CREATE TABLE IF NOT EXISTS habit_groups (
+    id          TEXT PRIMARY KEY,
+    user_id     INTEGER NOT NULL,
+    name        TEXT NOT NULL,
+    color_hex   TEXT NOT NULL DEFAULT '#34C759',
+    sort_order  REAL NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );
 
   -- Tombstones track deletions so other devices can pick them up on pull
@@ -77,8 +96,14 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_habits_user ON habits(user_id);
   CREATE INDEX IF NOT EXISTS idx_entries_habit ON habit_entries(habit_id);
   CREATE INDEX IF NOT EXISTS idx_entries_date ON habit_entries(date);
+  -- Serves the incremental ?since pull (WHERE habit_id IN (...) AND updated_at > ?)
+  CREATE INDEX IF NOT EXISTS idx_entries_habit_updated ON habit_entries(habit_id, updated_at);
   CREATE INDEX IF NOT EXISTS idx_tombstones_user ON deletion_tombstones(user_id);
   CREATE INDEX IF NOT EXISTS idx_tombstones_deleted_at ON deletion_tombstones(deleted_at);
+  CREATE INDEX IF NOT EXISTS idx_groups_user ON habit_groups(user_id);
+  -- Serve expiry sweeps
+  CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+  CREATE INDEX IF NOT EXISTS idx_magic_expires ON magic_link_tokens(expires_at);
 `);
 
 // Migrate existing databases: add new columns if missing
@@ -103,6 +128,20 @@ const migrateIfNeeded = db.transaction(() => {
     db.exec("ALTER TABLE habits ADD COLUMN note TEXT");
   }
 
+  // v2: quantitative + scheduling + grouping columns on habits
+  const v2HabitCols = {
+    kind: "ALTER TABLE habits ADD COLUMN kind TEXT NOT NULL DEFAULT 'binary'",
+    target_value: "ALTER TABLE habits ADD COLUMN target_value REAL NOT NULL DEFAULT 1",
+    unit: "ALTER TABLE habits ADD COLUMN unit TEXT",
+    schedule_kind: "ALTER TABLE habits ADD COLUMN schedule_kind TEXT NOT NULL DEFAULT 'daily'",
+    times_per_week: "ALTER TABLE habits ADD COLUMN times_per_week INTEGER NOT NULL DEFAULT 7",
+    active_days_mask: "ALTER TABLE habits ADD COLUMN active_days_mask INTEGER NOT NULL DEFAULT 127",
+    group_id: "ALTER TABLE habits ADD COLUMN group_id TEXT",
+  };
+  for (const [col, sql] of Object.entries(v2HabitCols)) {
+    if (!habitCols.includes(col)) db.exec(sql);
+  }
+
   const entryCols = db.prepare("PRAGMA table_info(habit_entries)").all().map((c) => /** @type {PragmaColumn} */ (c).name);
   if (!entryCols.includes("note")) {
     db.exec("ALTER TABLE habit_entries ADD COLUMN note TEXT");
@@ -110,6 +149,9 @@ const migrateIfNeeded = db.transaction(() => {
   if (!entryCols.includes("updated_at")) {
     db.exec("ALTER TABLE habit_entries ADD COLUMN updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))");
     db.exec("UPDATE habit_entries SET updated_at = created_at");
+  }
+  if (!entryCols.includes("value")) {
+    db.exec("ALTER TABLE habit_entries ADD COLUMN value REAL NOT NULL DEFAULT 1");
   }
 
   // Convert legacy space-separated timestamps (YYYY-MM-DD HH:MM:SS) to ISO8601.
@@ -130,5 +172,36 @@ const migrateIfNeeded = db.transaction(() => {
   `);
 });
 migrateIfNeeded();
+
+/**
+ * Garbage-collect stale rows so unbounded tables (tombstones, expired
+ * sessions / magic links) don't grow forever and slow down sync pulls.
+ *
+ * Tombstones are retained for `tombstoneRetentionDays` (default 90) — longer
+ * than any plausible client offline window — so a device that's been offline
+ * for weeks still learns about deletions on its next incremental pull.
+ *
+ * @param {{ tombstoneRetentionDays?: number }} [opts]
+ * @returns {{ tombstones: number, sessions: number, magicLinks: number }}
+ */
+function sweepStaleData(opts = {}) {
+  const retentionDays = opts.tombstoneRetentionDays ?? 90;
+  const cutoffIso = new Date(Date.now() - retentionDays * 86400000).toISOString();
+  const nowMs = Date.now();
+
+  const sweep = db.transaction(() => {
+    const t = db.prepare("DELETE FROM deletion_tombstones WHERE deleted_at < ?").run(cutoffIso);
+    const s = db.prepare("DELETE FROM sessions WHERE expires_at < ?").run(nowMs);
+    // Expired magic links, plus single-use links that were already consumed > 1 day ago.
+    const m = db.prepare(
+      "DELETE FROM magic_link_tokens WHERE expires_at < ? OR (is_reusable = 0 AND used_at IS NOT NULL)"
+    ).run(nowMs);
+    return { tombstones: t.changes, sessions: s.changes, magicLinks: m.changes };
+  });
+
+  return sweep();
+}
+
+/** @type {any} */ (db).sweepStaleData = sweepStaleData;
 
 module.exports = db;

@@ -19,9 +19,11 @@ Stride *.xcodeproj/
 # Python cache
 __pycache__/
 
-# SQLite temp files
+# SQLite databases + temp files (never commit user data)
+*.db
 *.db-shm
 *.db-wal
+server/stride*.db
 
 # Scripts secrets
 scripts/.env

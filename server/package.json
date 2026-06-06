@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@sentry/node": "^8.55.2",
     "better-sqlite3": "^12.8.0",
     "cors": "^2.8.6",
     "dd-trace": "^5.106.0",

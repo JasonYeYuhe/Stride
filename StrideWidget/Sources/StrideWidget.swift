@@ -74,20 +74,24 @@ struct ToggleHabitIntent: AppIntent {
             return .result()
         }
 
-        let today = Calendar.current.startOfDay(for: Date())
-        let calendar = Calendar.current
+        let today = Date()
 
-        if let existingRecord = habit.records.first(where: { calendar.isDate($0.date, inSameDayAs: today) }) {
-            // Track deletion for sync — write to shared app group UserDefaults
-            // so the main app's SyncService can pick it up on next push
-            Self.trackDeletedEntry(existingRecord.id.uuidString)
+        var deletedEntryId: String?
+        if let existingRecord = habit.records.first(where: { HabitCalendar.record($0.date, isOnSameDayAs: today) }) {
+            deletedEntryId = existingRecord.id.uuidString
             context.delete(existingRecord)
         } else {
             let record = HabitRecord(date: today)
             habit.records.append(record)
         }
 
+        // Persist first; only record the deletion tombstone for sync once the
+        // save actually succeeded, so a failed save can't emit a tombstone for
+        // a record that still exists.
         try context.save()
+        if let deletedEntryId {
+            Self.trackDeletedEntry(deletedEntryId)
+        }
         WidgetCenter.shared.reloadAllTimelines()
         return .result()
     }

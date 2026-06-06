@@ -2,7 +2,12 @@ import Foundation
 
 struct DataExportService {
 
-    private static let dateFormatter: DateFormatter = {
+    // Completion dates are day-keys (UTC-anchored) — format them in UTC so the
+    // exported yyyy-MM-dd matches what the app shows. createdAt / exportDate are
+    // wall-clock instants, so they use the local-zone formatter below.
+    private static let dateFormatter: DateFormatter = HabitCalendar.dayStringFormatter
+
+    private static let localDayFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd"
         f.locale = Locale(identifier: "en_US_POSIX")
@@ -32,7 +37,7 @@ struct DataExportService {
             let emoji = csvEscape(row.emoji)
             let date = dateFormatter.string(from: row.date)
             let note = csvEscape(row.note ?? "")
-            let createdAt = dateFormatter.string(from: row.createdAt)
+            let createdAt = localDayFormatter.string(from: row.createdAt)
             lines.append("\(name),\(emoji),\(date),\(note),\(createdAt)")
         }
 
@@ -60,14 +65,14 @@ struct DataExportService {
                 "name": habit.name,
                 "emoji": habit.emoji,
                 "color": habit.colorHex,
-                "createdAt": dateFormatter.string(from: habit.createdAt),
+                "createdAt": localDayFormatter.string(from: habit.createdAt),
                 "isArchived": habit.isArchived,
                 "completions": completions
             ] as [String: Any]
         }
 
         let exportDict: [String: Any] = [
-            "exportDate": dateFormatter.string(from: Date()),
+            "exportDate": localDayFormatter.string(from: Date()),
             "habits": habitDicts
         ]
 

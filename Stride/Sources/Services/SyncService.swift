@@ -15,19 +15,17 @@ final class SyncService {
     private let lastSyncKey = "stride_last_sync_time"
     private let deletedHabitsKey = "stride_deleted_habit_ids"
     private let deletedEntriesKey = "stride_deleted_entry_ids"
+    private let deletedGroupsKey = "stride_deleted_group_ids"
 
     private static let iso8601: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         return f
     }()
 
-    private static let dateOnly: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd"
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = .current
-        return f
-    }()
+    // Day-only dates are serialized in UTC to match the stored day-key
+    // representation (see HabitCalendar) — never the device's current zone,
+    // which would shift check-ins across day boundaries after travel.
+    private static let dateOnly: DateFormatter = HabitCalendar.dayStringFormatter
 
     init() {
         lastSyncTime = UserDefaults.standard.string(forKey: lastSyncKey)
@@ -49,11 +47,19 @@ final class SyncService {
         UserDefaults.standard.set(ids, forKey: deletedEntriesKey)
     }
 
+    /// Track a deleted group ID for next sync push.
+    func trackDeletedGroup(_ id: String) {
+        var ids = UserDefaults.standard.stringArray(forKey: deletedGroupsKey) ?? []
+        ids.append(id)
+        UserDefaults.standard.set(ids, forKey: deletedGroupsKey)
+    }
+
     private static let widgetDeletedEntriesKey = "stride_deleted_entry_ids_widget"
 
-    private func consumeDeletedIds() -> (habits: [String], entries: [String]) {
+    private func consumeDeletedIds() -> (habits: [String], entries: [String], groups: [String]) {
         let habits = UserDefaults.standard.stringArray(forKey: deletedHabitsKey) ?? []
         var entries = UserDefaults.standard.stringArray(forKey: deletedEntriesKey) ?? []
+        let groups = UserDefaults.standard.stringArray(forKey: deletedGroupsKey) ?? []
 
         // Also consume deletion IDs tracked by the widget extension via shared app group
         if let groupDefaults = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier) {
@@ -64,7 +70,8 @@ final class SyncService {
 
         UserDefaults.standard.removeObject(forKey: deletedHabitsKey)
         UserDefaults.standard.removeObject(forKey: deletedEntriesKey)
-        return (habits, entries)
+        UserDefaults.standard.removeObject(forKey: deletedGroupsKey)
+        return (habits, entries, groups)
     }
 
     /// Full sync: push local changes then pull remote changes.
@@ -107,8 +114,18 @@ final class SyncService {
                 reminderHour: habit.reminderHour,
                 reminderMinute: habit.reminderMinute,
                 note: habit.note,
+                kind: habit.kind,
+                targetValue: habit.targetValue,
+                unit: habit.unit,
+                scheduleKind: habit.scheduleKind,
+                timesPerWeek: habit.timesPerWeek,
+                activeDaysMask: habit.activeDaysMask,
+                groupId: habit.groupId?.uuidString,
                 createdAt: Self.iso8601.string(from: habit.createdAt),
-                updatedAt: Self.iso8601.string(from: Date())
+                // Truthful per-habit modification time (falls back to createdAt for
+                // legacy rows) so the server can resolve multi-device conflicts as
+                // last-write-wins instead of last-push-wins.
+                updatedAt: Self.iso8601.string(from: habit.updatedAt ?? habit.createdAt)
             )
         }
 
@@ -119,16 +136,31 @@ final class SyncService {
                     habitId: habit.id.uuidString,
                     date: Self.dateOnly.string(from: record.date),
                     note: record.note,
+                    value: record.value,
                     createdAt: Self.iso8601.string(from: record.date)
                 )
             }
         }
 
+        let localGroups = try context.fetch(FetchDescriptor<HabitGroup>())
+        let syncGroups = localGroups.map { group in
+            SyncGroup(
+                id: group.id.uuidString,
+                name: group.name,
+                colorHex: group.colorHex,
+                sortOrder: group.sortOrder,
+                createdAt: Self.iso8601.string(from: group.createdAt),
+                updatedAt: Self.iso8601.string(from: group.updatedAt ?? group.createdAt)
+            )
+        }
+
         let payload = SyncPushPayload(
             habits: syncHabits,
             entries: syncEntries,
+            groups: syncGroups,
             deletedHabitIds: deleted.habits,
-            deletedEntryIds: deleted.entries
+            deletedEntryIds: deleted.entries,
+            deletedGroupIds: deleted.groups
         )
 
         try await api.pushChanges(payload)
@@ -170,6 +202,16 @@ final class SyncService {
                 if let rh = remoteHabit.reminderHour { local.reminderHour = rh }
                 if let rm = remoteHabit.reminderMinute { local.reminderMinute = rm }
                 local.note = remoteHabit.note
+                local.kind = remoteHabit.kind ?? HabitKind.binary.rawValue
+                local.targetValue = remoteHabit.targetValue ?? 1
+                local.unit = remoteHabit.unit
+                local.scheduleKind = remoteHabit.scheduleKind ?? HabitSchedule.daily.rawValue
+                local.timesPerWeek = remoteHabit.timesPerWeek ?? 7
+                local.activeDaysMask = remoteHabit.activeDaysMask ?? 127
+                local.groupId = remoteHabit.groupId.flatMap { UUID(uuidString: $0) }
+                // Adopt the server's timestamp so applying remote state doesn't
+                // make this habit look locally-modified and re-push as "newer".
+                local.updatedAt = Self.iso8601.date(from: remoteHabit.updatedAt) ?? local.updatedAt
             } else {
                 let habit = Habit(name: remoteHabit.name, emoji: remoteHabit.emoji, colorHex: remoteHabit.colorHex)
                 habit.id = uuid
@@ -179,9 +221,17 @@ final class SyncService {
                 habit.reminderHour = remoteHabit.reminderHour ?? 20
                 habit.reminderMinute = remoteHabit.reminderMinute ?? 0
                 habit.note = remoteHabit.note
+                habit.kind = remoteHabit.kind ?? HabitKind.binary.rawValue
+                habit.targetValue = remoteHabit.targetValue ?? 1
+                habit.unit = remoteHabit.unit
+                habit.scheduleKind = remoteHabit.scheduleKind ?? HabitSchedule.daily.rawValue
+                habit.timesPerWeek = remoteHabit.timesPerWeek ?? 7
+                habit.activeDaysMask = remoteHabit.activeDaysMask ?? 127
+                habit.groupId = remoteHabit.groupId.flatMap { UUID(uuidString: $0) }
                 if let created = Self.iso8601.date(from: remoteHabit.createdAt) {
                     habit.createdAt = created
                 }
+                habit.updatedAt = Self.iso8601.date(from: remoteHabit.updatedAt) ?? habit.createdAt
                 context.insert(habit)
             }
         }
@@ -208,13 +258,18 @@ final class SyncService {
             guard let entryUUID = UUID(uuidString: remoteEntry.id) else { continue }
             guard let entryDate = Self.dateOnly.date(from: remoteEntry.date) else { continue }
 
-            if let existingRecord = habit.records.first(where: { Calendar.current.isDate($0.date, inSameDayAs: entryDate) }) {
+            if let existingRecord = habit.records.first(where: { HabitCalendar.utc.isDate($0.date, inSameDayAs: entryDate) }) {
                 // Align local ID to server ID so full-pull reconciliation won't delete it
                 existingRecord.id = entryUUID
                 existingRecord.note = remoteEntry.note
+                existingRecord.value = remoteEntry.value ?? 1
             } else {
-                let record = HabitRecord(date: entryDate, note: remoteEntry.note)
+                let record = HabitRecord(date: entryDate, note: remoteEntry.note, value: remoteEntry.value ?? 1)
                 record.id = entryUUID
+                // entryDate is already a UTC day-key parsed from the server's
+                // yyyy-MM-dd; store it verbatim rather than re-deriving it from
+                // the local calendar (which would shift it in non-UTC zones).
+                record.date = HabitCalendar.startOfKey(entryDate)
                 habit.records.append(record)
             }
         }
@@ -228,6 +283,38 @@ final class SyncService {
                         context.delete(record)
                     }
                 }
+            }
+        }
+
+        // Reconcile habit groups
+        let remoteGroups = response.groups ?? []
+        let deletedGroupSet = Set(response.deletedGroupIds ?? [])
+        let existingGroups = try context.fetch(FetchDescriptor<HabitGroup>())
+        let groupMap = Dictionary(existingGroups.map { ($0.id.uuidString, $0) }, uniquingKeysWith: { a, _ in a })
+
+        for deletedId in deletedGroupSet {
+            if let local = groupMap[deletedId] { context.delete(local) }
+        }
+        for remoteGroup in remoteGroups {
+            guard !deletedGroupSet.contains(remoteGroup.id) else { continue }
+            guard let uuid = UUID(uuidString: remoteGroup.id) else { continue }
+            if let local = groupMap[remoteGroup.id] {
+                local.name = remoteGroup.name
+                local.colorHex = remoteGroup.colorHex
+                local.sortOrder = remoteGroup.sortOrder
+                local.updatedAt = Self.iso8601.date(from: remoteGroup.updatedAt) ?? local.updatedAt
+            } else {
+                let group = HabitGroup(name: remoteGroup.name, colorHex: remoteGroup.colorHex, sortOrder: remoteGroup.sortOrder)
+                group.id = uuid
+                if let created = Self.iso8601.date(from: remoteGroup.createdAt) { group.createdAt = created }
+                group.updatedAt = Self.iso8601.date(from: remoteGroup.updatedAt) ?? group.createdAt
+                context.insert(group)
+            }
+        }
+        if lastSyncTime == nil {
+            let remoteGroupIds = Set(remoteGroups.map { $0.id })
+            for local in existingGroups where !remoteGroupIds.contains(local.id.uuidString) && !deletedGroupSet.contains(local.id.uuidString) {
+                context.delete(local)
             }
         }
 

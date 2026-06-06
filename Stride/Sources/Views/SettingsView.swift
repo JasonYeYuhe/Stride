@@ -293,6 +293,7 @@ struct SettingsView: View {
                                 Button {
                                     withAnimation {
                                         habit.isArchived = true
+                                        habit.touch()
                                         do {
                                             try modelContext.save()
                                         } catch {
@@ -332,6 +333,7 @@ struct SettingsView: View {
                                 Button("Restore") {
                                     withAnimation {
                                         habit.isArchived = false
+                                        habit.touch()
                                         do {
                                             try modelContext.save()
                                         } catch {
@@ -552,6 +554,7 @@ struct SettingsView: View {
         ordered.move(fromOffsets: source, toOffset: destination)
         for (index, habit) in ordered.enumerated() {
             habit.sortOrder = Double(index) * 1000.0
+            habit.touch()
         }
         do {
             try modelContext.save()
