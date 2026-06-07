@@ -83,7 +83,7 @@ struct SettingsView: View {
                                     Text("Upgrade to Pro")
                                         .font(.headline)
                                         .foregroundStyle(.primary)
-                                    Text("Unlimited habits, widgets, smart reminders & more")
+                                    Text("Habit groups, advanced analytics & weekly review")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
@@ -95,6 +95,12 @@ struct SettingsView: View {
                             .padding(.vertical, 4)
                         }
                         .buttonStyle(.plain)
+
+                        // Discoverable restore path: a returning buyer whose entitlement
+                        // isn't detected can recover Pro without opening the paywall.
+                        Button("Restore Purchases") {
+                            Task { await store.restorePurchases() }
+                        }
                     }
                 } else {
                     Section {

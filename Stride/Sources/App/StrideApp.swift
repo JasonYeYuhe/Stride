@@ -39,6 +39,11 @@ struct StrideApp: App {
                     await setupNotifications()
                     await syncIfLoggedIn()
                     await StoreService.shared.loadProducts()
+                    // Read existing entitlements on every cold launch so isPro reflects
+                    // prior purchases (incl. the lifetime non-consumable) before any view
+                    // appears. Without this, a paying user lands on Today/Stats with Pro
+                    // features locked until they happen to open Settings or the paywall.
+                    await StoreService.shared.refreshPurchasedProducts()
                 }
                 .onReceive(
                     NotificationCenter.default.publisher(for: .habitDataChanged)
