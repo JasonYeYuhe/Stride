@@ -263,22 +263,30 @@ final class Habit {
         let calendar = HabitCalendar.utc
         let today = HabitCalendar.dayKey(for: Date())
         guard let startDate = calendar.date(byAdding: .day, value: -(days - 1), to: today) else { return 0 }
-        let creationDate = HabitCalendar.dayKey(for: createdAt)
-        let effectiveStart = max(startDate, creationDate)
+        return completionRate(from: startDate, to: today)
+    }
 
-        // Denominator = scheduled (expected) days in the window, so rest days
-        // for specificDays habits don't drag the rate down.
+    /// Completion rate over an inclusive date range. Denominator = scheduled
+    /// (expected) days, so rest days for specificDays habits don't drag it down.
+    /// Clamped to the habit's creation date.
+    func completionRate(from start: Date, to end: Date) -> Double {
+        let calendar = HabitCalendar.utc
+        let endKey = HabitCalendar.dayKey(for: end)
+        let startKey = HabitCalendar.dayKey(for: start)
+        let creationDate = HabitCalendar.dayKey(for: createdAt)
+        let effectiveStart = max(startKey, creationDate)
+        guard effectiveStart <= endKey else { return 0 }
+
         var expectedDays = 0
         var day = effectiveStart
-        while day <= today {
+        while day <= endKey {
             if isScheduled(on: day) { expectedDays += 1 }
             guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
             day = next
         }
         guard expectedDays > 0 else { return 0 }
 
-        let completedDays = completedDayKeys().filter { $0 >= effectiveStart && $0 <= today && isScheduled(on: $0) }.count
-
+        let completedDays = completedDayKeys().filter { $0 >= effectiveStart && $0 <= endKey && isScheduled(on: $0) }.count
         return Double(completedDays) / Double(expectedDays)
     }
 

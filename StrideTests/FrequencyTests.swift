@@ -80,6 +80,30 @@ final class FrequencyTests: XCTestCase {
         XCTAssertEqual(h.streakUnit, "week")
     }
 
+    func testCompletionRateOverRange() {
+        let h = Habit(name: "Read")
+        h.createdAt = day(aWednesday(), minus: 30)
+        let ref = aWednesday()
+        // 7-day window ending ref; complete 3 of the 7 days.
+        for off in [0, 2, 4] {
+            h.records.append(HabitRecord(date: day(ref, minus: off)))
+        }
+        let rate = h.completionRate(from: day(ref, minus: 6), to: ref)
+        XCTAssertEqual(rate, 3.0 / 7.0, accuracy: 0.0001)
+    }
+
+    func testCompletionRateSpecificDaysDenominatorExcludesRestDays() {
+        let h = Habit(name: "Gym")
+        h.createdAt = day(aWednesday(), minus: 30)
+        h.schedule = .specificDays
+        let ref = aWednesday()
+        // Only ref's weekday is scheduled → in a 7-day window exactly 1 expected day.
+        h.activeDaysMask = 1 << (utc.component(.weekday, from: ref) - 1)
+        h.records.append(HabitRecord(date: ref))
+        let rate = h.completionRate(from: day(ref, minus: 6), to: ref)
+        XCTAssertEqual(rate, 1.0, accuracy: 0.0001, "rest days must not count in the denominator")
+    }
+
     func testTimesPerWeekInProgressWeekDoesNotBreakStreak() {
         let h = Habit(name: "Yoga")
         h.schedule = .timesPerWeek

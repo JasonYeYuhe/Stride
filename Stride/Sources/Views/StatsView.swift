@@ -53,6 +53,8 @@ struct StatsView: View {
                     if let habit = selectedHabit ?? habits.first {
                         VStack(spacing: 16) {
                             HabitDetailStatsCard(habit: habit)
+                            InsightsCard(habit: habit)
+                            TrendCard(habit: habit)
                             WeeklyBarChart(habit: habit)
                             HeatmapView(habit: habit)
                         }
@@ -196,7 +198,7 @@ struct HabitDetailStatsCard: View {
                     HStack(spacing: 4) {
                         Text("\(habit.currentStreak())")
                             .font(.title2.bold())
-                        Text("days")
+                        Text(habit.streakUnit == "week" ? "weeks" : "days")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -241,6 +243,136 @@ struct HabitDetailStatsCard: View {
         )
         .sheet(isPresented: $showShareSheet) {
             ShareStreakView(habit: habit)
+        }
+    }
+}
+
+// MARK: - Trend (last 8 weeks completion rate)
+struct TrendCard: View {
+    let habit: Habit
+    private let utc = HabitCalendar.utc
+    private let weekCount = 8
+
+    private struct WeekPoint: Identifiable {
+        let id = UUID()
+        let label: String
+        let rate: Double
+    }
+
+    private var points: [WeekPoint] {
+        // Monday-anchored weeks ending with the current week.
+        let todayKey = HabitCalendar.dayKey(for: Date())
+        let weekday = utc.component(.weekday, from: todayKey)
+        let daysFromMonday = (weekday + 5) % 7
+        guard let thisWeekStart = utc.date(byAdding: .day, value: -daysFromMonday, to: todayKey) else { return [] }
+
+        let fmt = DateFormatter()
+        fmt.dateFormat = "M/d"
+        fmt.timeZone = TimeZone(identifier: "UTC")
+
+        return (0..<weekCount).reversed().compactMap { back in
+            guard let start = utc.date(byAdding: .day, value: -7 * back, to: thisWeekStart),
+                  let end = utc.date(byAdding: .day, value: 6, to: start) else { return nil }
+            return WeekPoint(label: fmt.string(from: start), rate: habit.completionRate(from: start, to: end))
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("8-Week Trend")
+                .font(.headline)
+
+            HStack(alignment: .bottom, spacing: 6) {
+                ForEach(points) { point in
+                    VStack(spacing: 4) {
+                        Text("\(Int(point.rate * 100))")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(point.rate > 0 ? habit.color.opacity(0.4 + 0.6 * point.rate) : Color.gray.opacity(0.2))
+                            .frame(height: max(4, CGFloat(point.rate) * 80))
+                        Text(point.label)
+                            .font(.system(size: 8))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+            }
+            .frame(height: 110)
+        }
+        .padding()
+        .background(RoundedRectangle(cornerRadius: 16).fill(Color.appSecondaryBackground))
+    }
+}
+
+// MARK: - Insights (best/worst day, momentum)
+struct InsightsCard: View {
+    let habit: Habit
+    private let utc = HabitCalendar.utc
+
+    private var insights: [(icon: String, text: String)] {
+        var out: [(String, String)] = []
+        let symbols = Calendar.current.weekdaySymbols // index 0 = Sunday
+        let counts = habit.completionsPerWeekday()    // keys 1...7
+
+        if let best = counts.max(by: { $0.value < $1.value }), best.value > 0 {
+            out.append(("star.fill", "Strongest on \(symbols[best.key - 1])"))
+        }
+        // Toughest = scheduled weekday with the fewest completions
+        let scheduledWeekdays = (1...7).filter { weekdayScheduled($0) }
+        if scheduledWeekdays.count > 1,
+           let worst = scheduledWeekdays.min(by: { (counts[$0] ?? 0) < (counts[$1] ?? 0) }) {
+            out.append(("exclamationmark.triangle", "Toughest on \(symbols[worst - 1])"))
+        }
+
+        // Momentum: this week vs last week
+        let todayKey = HabitCalendar.dayKey(for: Date())
+        let weekday = utc.component(.weekday, from: todayKey)
+        let daysFromMonday = (weekday + 5) % 7
+        if let thisStart = utc.date(byAdding: .day, value: -daysFromMonday, to: todayKey),
+           let lastStart = utc.date(byAdding: .day, value: -7, to: thisStart),
+           let lastEnd = utc.date(byAdding: .day, value: -1, to: thisStart) {
+            let thisRate = habit.completionRate(from: thisStart, to: todayKey)
+            let lastRate = habit.completionRate(from: lastStart, to: lastEnd)
+            if lastRate > 0 || thisRate > 0 {
+                if thisRate >= lastRate {
+                    out.append(("arrow.up.right", "Up vs last week (\(Int(lastRate*100))% → \(Int(thisRate*100))%)"))
+                } else {
+                    out.append(("arrow.down.right", "Down vs last week (\(Int(lastRate*100))% → \(Int(thisRate*100))%)"))
+                }
+            }
+        }
+        return out
+    }
+
+    private func weekdayScheduled(_ weekday: Int) -> Bool {
+        switch habit.schedule {
+        case .daily, .timesPerWeek: return true
+        case .specificDays: return (habit.activeDaysMask & (1 << (weekday - 1))) != 0
+        }
+    }
+
+    var body: some View {
+        let items = insights
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Insights")
+                    .font(.headline)
+                ForEach(items.indices, id: \.self) { i in
+                    HStack(spacing: 8) {
+                        Image(systemName: items[i].icon)
+                            .font(.caption)
+                            .foregroundStyle(habit.color)
+                            .frame(width: 18)
+                        Text(items[i].text)
+                            .font(.subheadline)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding()
+            .background(RoundedRectangle(cornerRadius: 16).fill(Color.appSecondaryBackground))
         }
     }
 }
