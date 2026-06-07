@@ -92,18 +92,6 @@ db.exec(`
     deleted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );
-
-  CREATE INDEX IF NOT EXISTS idx_habits_user ON habits(user_id);
-  CREATE INDEX IF NOT EXISTS idx_entries_habit ON habit_entries(habit_id);
-  CREATE INDEX IF NOT EXISTS idx_entries_date ON habit_entries(date);
-  -- Serves the incremental ?since pull (WHERE habit_id IN (...) AND updated_at > ?)
-  CREATE INDEX IF NOT EXISTS idx_entries_habit_updated ON habit_entries(habit_id, updated_at);
-  CREATE INDEX IF NOT EXISTS idx_tombstones_user ON deletion_tombstones(user_id);
-  CREATE INDEX IF NOT EXISTS idx_tombstones_deleted_at ON deletion_tombstones(deleted_at);
-  CREATE INDEX IF NOT EXISTS idx_groups_user ON habit_groups(user_id);
-  -- Serve expiry sweeps
-  CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
-  CREATE INDEX IF NOT EXISTS idx_magic_expires ON magic_link_tokens(expires_at);
 `);
 
 // Migrate existing databases: add new columns if missing
@@ -147,7 +135,11 @@ const migrateIfNeeded = db.transaction(() => {
     db.exec("ALTER TABLE habit_entries ADD COLUMN note TEXT");
   }
   if (!entryCols.includes("updated_at")) {
-    db.exec("ALTER TABLE habit_entries ADD COLUMN updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))");
+    // SQLite forbids a non-constant default in ALTER TABLE ADD COLUMN (the fresh
+    // CREATE TABLE uses DEFAULT (strftime(...)), which is only legal there). Add
+    // the column nullable and backfill from created_at; every insert path sets
+    // updated_at explicitly, so the missing NOT NULL/default isn't observable.
+    db.exec("ALTER TABLE habit_entries ADD COLUMN updated_at TEXT");
     db.exec("UPDATE habit_entries SET updated_at = created_at");
   }
   if (!entryCols.includes("value")) {
@@ -172,6 +164,26 @@ const migrateIfNeeded = db.transaction(() => {
   `);
 });
 migrateIfNeeded();
+
+// Indexes are created AFTER migrations so they can reference columns that
+// migrateIfNeeded() adds on upgraded databases (e.g. habit_entries.updated_at).
+// On a fresh DB these columns already exist from the CREATE TABLE above; on a
+// pre-v2 DB the migration adds them first. Defining idx_entries_habit_updated in
+// the initial schema block fails with "no such column: updated_at" against an
+// existing pre-v2 database.
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_habits_user ON habits(user_id);
+  CREATE INDEX IF NOT EXISTS idx_entries_habit ON habit_entries(habit_id);
+  CREATE INDEX IF NOT EXISTS idx_entries_date ON habit_entries(date);
+  -- Serves the incremental ?since pull (WHERE habit_id IN (...) AND updated_at > ?)
+  CREATE INDEX IF NOT EXISTS idx_entries_habit_updated ON habit_entries(habit_id, updated_at);
+  CREATE INDEX IF NOT EXISTS idx_tombstones_user ON deletion_tombstones(user_id);
+  CREATE INDEX IF NOT EXISTS idx_tombstones_deleted_at ON deletion_tombstones(deleted_at);
+  CREATE INDEX IF NOT EXISTS idx_groups_user ON habit_groups(user_id);
+  -- Serve expiry sweeps
+  CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+  CREATE INDEX IF NOT EXISTS idx_magic_expires ON magic_link_tokens(expires_at);
+`);
 
 /**
  * Garbage-collect stale rows so unbounded tables (tombstones, expired

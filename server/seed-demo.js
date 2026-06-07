@@ -6,12 +6,16 @@
  * Output: prints the demo token for App Store Connect review notes.
  */
 
+require("dotenv").config();
 const crypto = require("crypto");
 const db = require("./db");
 
 const DEMO_EMAIL = "demo@stride-review.com";
-// Fixed token so it's deterministic across re-runs
-const DEMO_TOKEN = "stride-demo-review-2026-appstore-verification-token";
+// Token is supplied via the DEMO_TOKEN env var (set in the droplet's .env so it
+// stays stable across re-runs) and is NEVER hardcoded here. If unset, a fresh
+// random token is generated and printed below — paste that into the ASC review
+// notes. Re-running seed-demo revokes any previous demo token (see step 2).
+const DEMO_TOKEN = process.env.DEMO_TOKEN || crypto.randomBytes(24).toString("hex");
 const TOKEN_HASH = crypto.createHash("sha256").update(DEMO_TOKEN).digest("hex");
 // Expires in 1 year
 const EXPIRES_AT = Date.now() + 365 * 24 * 60 * 60 * 1000;
