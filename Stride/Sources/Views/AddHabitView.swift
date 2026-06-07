@@ -26,6 +26,8 @@ struct AddHabitView: View {
     @State private var selectedGroupId: UUID?
     @State private var showingNewGroup = false
     @State private var newGroupName = ""
+    @State private var showingPaywall = false
+    private var store: StoreService { StoreService.shared }
 
     /// Weekday symbols starting Sunday, matching the activeDays index.
     private let weekdaySymbols = ["S", "M", "T", "W", "T", "F", "S"]
@@ -84,73 +86,9 @@ struct AddHabitView: View {
                     }
                 }
 
-                Section {
-                    Picker("Frequency", selection: $schedule) {
-                        Text("Every day").tag(HabitSchedule.daily)
-                        Text("Specific days").tag(HabitSchedule.specificDays)
-                        Text("Times per week").tag(HabitSchedule.timesPerWeek)
-                    }
+                frequencySection
 
-                    if schedule == .specificDays {
-                        HStack(spacing: 6) {
-                            ForEach(0..<7, id: \.self) { day in
-                                let on = activeDays.contains(day)
-                                Button {
-                                    if on { activeDays.remove(day) } else { activeDays.insert(day) }
-                                } label: {
-                                    Text(weekdaySymbols[day])
-                                        .font(.caption.weight(.semibold))
-                                        .frame(maxWidth: .infinity, minHeight: 34)
-                                        .background(
-                                            RoundedRectangle(cornerRadius: 8)
-                                                .fill(on ? Color.green.opacity(0.25) : Color.gray.opacity(0.12))
-                                        )
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 8)
-                                                .stroke(on ? Color.green : .clear, lineWidth: 1.5)
-                                        )
-                                        .foregroundStyle(on ? .green : .secondary)
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel(Self.weekdayName(day))
-                                .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
-                            }
-                        }
-                        .padding(.vertical, 2)
-                    } else if schedule == .timesPerWeek {
-                        Stepper(value: $timesPerWeek, in: 1...7) {
-                            HStack {
-                                Text("Goal")
-                                Spacer()
-                                Text("\(timesPerWeek)× per week").foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                } header: {
-                    Text("Frequency")
-                } footer: {
-                    switch schedule {
-                    case .daily: Text("Tracked every day.")
-                    case .specificDays: Text("Only the selected days count toward your streak — other days are rest days.")
-                    case .timesPerWeek: Text("Hit your weekly goal any days you like; your streak counts weeks.")
-                    }
-                }
-
-                Section("Group") {
-                    Picker("Group", selection: $selectedGroupId) {
-                        Text("None").tag(UUID?.none)
-                        ForEach(groups) { group in
-                            Text(group.name).tag(Optional(group.id))
-                        }
-                    }
-                    Button {
-                        newGroupName = ""
-                        showingNewGroup = true
-                    } label: {
-                        Label("New Group", systemImage: "folder.badge.plus")
-                            .foregroundStyle(.green)
-                    }
-                }
+                groupSection
 
                 Section("Icon") {
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 8), spacing: 12) {
@@ -284,6 +222,9 @@ struct AddHabitView: View {
         } message: {
             Text("Organize related habits together.")
         }
+        .sheet(isPresented: $showingPaywall) {
+            ProPaywallView()
+        }
     }
 
     private func createGroup() {
@@ -329,6 +270,102 @@ struct AddHabitView: View {
             #if DEBUG
             print("Failed to save new habit: \(error)")
             #endif
+        }
+    }
+
+    @ViewBuilder
+    private var frequencySection: some View {
+        Section {
+            Picker("Frequency", selection: $schedule) {
+                Text("Every day").tag(HabitSchedule.daily)
+                Text("Specific days").tag(HabitSchedule.specificDays)
+                Text("Times per week").tag(HabitSchedule.timesPerWeek)
+            }
+
+            if schedule == .specificDays {
+                HStack(spacing: 6) {
+                    ForEach(0..<7, id: \.self) { day in
+                        weekdayToggle(day)
+                    }
+                }
+                .padding(.vertical, 2)
+            } else if schedule == .timesPerWeek {
+                Stepper(value: $timesPerWeek, in: 1...7) {
+                    HStack {
+                        Text("Goal")
+                        Spacer()
+                        Text("\(timesPerWeek)× per week").foregroundStyle(.secondary)
+                    }
+                }
+            }
+        } header: {
+            Text("Frequency")
+        } footer: {
+            switch schedule {
+            case .daily: Text("Tracked every day.")
+            case .specificDays: Text("Only the selected days count toward your streak — other days are rest days.")
+            case .timesPerWeek: Text("Hit your weekly goal any days you like; your streak counts weeks.")
+            }
+        }
+    }
+
+    private func weekdayToggle(_ day: Int) -> some View {
+        let on = activeDays.contains(day)
+        return Button {
+            if on { activeDays.remove(day) } else { activeDays.insert(day) }
+        } label: {
+            Text(weekdaySymbols[day])
+                .font(.caption.weight(.semibold))
+                .frame(maxWidth: .infinity, minHeight: 34)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(on ? Color.green.opacity(0.25) : Color.gray.opacity(0.12))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(on ? Color.green : Color.clear, lineWidth: 1.5)
+                )
+                .foregroundStyle(on ? Color.green : Color.secondary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Self.weekdayName(day))
+        .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
+    }
+
+    @ViewBuilder
+    private var groupSection: some View {
+        Section {
+            Picker("Group", selection: $selectedGroupId) {
+                Text("None").tag(UUID?.none)
+                ForEach(groups) { group in
+                    Text(group.name).tag(Optional(group.id))
+                }
+            }
+            Button {
+                if store.isPro {
+                    newGroupName = ""
+                    showingNewGroup = true
+                } else {
+                    showingPaywall = true
+                }
+            } label: {
+                HStack {
+                    Label("New Group", systemImage: "folder.badge.plus")
+                        .foregroundStyle(.green)
+                    if !store.isPro {
+                        Spacer()
+                        Image(systemName: "crown.fill")
+                            .font(.caption)
+                            .foregroundStyle(.yellow)
+                    }
+                }
+            }
+        } header: {
+            Text("Group")
+        } footer: {
+            if !store.isPro {
+                Text("Habit groups are a Stride Pro feature.")
+            }
         }
     }
 

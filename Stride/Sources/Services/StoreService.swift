@@ -5,11 +5,13 @@ import SwiftUI
 enum StrideProduct: String, CaseIterable {
     case monthlyPro = "yyh.stride.habittracker.pro.monthly"
     case yearlyPro = "yyh.stride.habittracker.pro.yearly"
+    case lifetimePro = "yyh.stride.habittracker.pro.lifetime"
 
     var displayName: String {
         switch self {
         case .monthlyPro: return "Monthly"
         case .yearlyPro: return "Yearly"
+        case .lifetimePro: return "Lifetime"
         }
     }
 }
@@ -189,13 +191,12 @@ struct ProPaywallView: View {
                     }
                     .padding(.top, 20)
 
-                    // Features
+                    // Features (everything else — habits, reminders, widgets,
+                    // sync, quantitative & flexible habits — is free)
                     VStack(alignment: .leading, spacing: 16) {
-                        ProFeatureRow(icon: "infinity", color: .green, title: "Unlimited Habits", subtitle: "Track as many habits as you want")
-                        ProFeatureRow(icon: "chart.line.uptrend.xyaxis", color: .blue, title: "Advanced Statistics", subtitle: "Deep insights into your progress")
-                        ProFeatureRow(icon: "widget.small", color: .purple, title: "Home Screen Widgets", subtitle: "Quick access from your home screen")
-                        ProFeatureRow(icon: "bell.badge.fill", color: .orange, title: "Smart Reminders", subtitle: "Never miss a habit again")
-                        ProFeatureRow(icon: "cloud.fill", color: .cyan, title: "Cloud Sync", subtitle: "Seamless across all your devices")
+                        ProFeatureRow(icon: "folder.fill", color: .blue, title: "Habit Groups", subtitle: "Organize habits into collapsible groups")
+                        ProFeatureRow(icon: "chart.line.uptrend.xyaxis", color: .green, title: "Advanced Analytics", subtitle: "8-week trends, insights & weekly review")
+                        ProFeatureRow(icon: "heart.fill", color: .pink, title: "Support an Indie Dev", subtitle: "Help keep Stride growing")
                     }
                     .padding(.horizontal, 24)
 
@@ -235,11 +236,14 @@ struct ProPaywallView: View {
                     } else {
                         VStack(spacing: 12) {
                             ForEach(store.products) { product in
+                                let isLifetime = product.id.contains("lifetime")
                                 let isYearly = product.id.contains("yearly")
                                 PricingCard(
-                                    title: isYearly ? "Yearly" : "Monthly",
-                                    price: product.displayPrice + (isYearly ? "/yr" : "/mo"),
-                                    isPopular: isYearly
+                                    title: isLifetime ? "Lifetime" : (isYearly ? "Yearly" : "Monthly"),
+                                    price: product.displayPrice + (isLifetime ? "" : (isYearly ? "/yr" : "/mo")),
+                                    badge: isLifetime ? "BEST VALUE" : (isYearly ? "SAVE" : nil),
+                                    subtitle: isLifetime ? "One-time purchase — yours forever" : (isYearly ? "Billed annually" : nil),
+                                    highlighted: isLifetime
                                 ) {
                                     purchaseProduct(product)
                                 }
@@ -356,7 +360,9 @@ struct ProFeatureRow: View {
 struct PricingCard: View {
     let title: LocalizedStringKey
     let price: String
-    let isPopular: Bool
+    var badge: String? = nil
+    var subtitle: String? = nil
+    var highlighted: Bool = false
     let action: () -> Void
 
     var body: some View {
@@ -366,8 +372,8 @@ struct PricingCard: View {
                     HStack(spacing: 6) {
                         Text(title)
                             .font(.headline)
-                        if isPopular {
-                            Text("BEST VALUE")
+                        if let badge {
+                            Text(badge)
                                 .font(.system(size: 9, weight: .bold))
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 6)
@@ -375,10 +381,10 @@ struct PricingCard: View {
                                 .background(Capsule().fill(.green))
                         }
                     }
-                    if isPopular {
-                        Text("Save 44%")
+                    if let subtitle {
+                        Text(subtitle)
                             .font(.caption)
-                            .foregroundStyle(.green)
+                            .foregroundStyle(.secondary)
                     }
                 }
                 Spacer()
@@ -391,7 +397,7 @@ struct PricingCard: View {
                     .fill(Color.appSecondaryBackground)
                     .overlay(
                         RoundedRectangle(cornerRadius: 14)
-                            .stroke(isPopular ? Color.green : Color.clear, lineWidth: 2)
+                            .stroke(highlighted ? Color.green : Color.clear, lineWidth: 2)
                     )
             )
         }

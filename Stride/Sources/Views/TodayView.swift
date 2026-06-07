@@ -268,81 +268,11 @@ struct HabitRowView: View {
                 Text(habit.emoji)
                     .font(.title2)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(habit.name)
-                        .font(.body.weight(.medium))
-                    if habit.habitKind == .count {
-                        Text(countLabel)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    if !habit.isScheduled(on: date) {
-                        Text("Rest day")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else if habit.schedule == .timesPerWeek {
-                        Text("\(habit.weeklyCompletions(containing: date))/\(habit.timesPerWeek) this week")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    let streak = habit.currentStreak(from: date)
-                    if streak > 0 {
-                        HStack(spacing: 2) {
-                            Image(systemName: "flame.fill")
-                                .font(.caption2)
-                                .foregroundStyle(.orange)
-                            Text("\(streak) \(habit.streakUnit) streak")
-                                .font(.caption)
-                                .foregroundStyle(.orange)
-                        }
-                    }
-                }
+                habitInfo
 
                 Spacer()
 
-                if habit.habitKind == .count {
-                    Button {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                            incrementCount()
-                        }
-                    } label: {
-                        ZStack {
-                            Circle()
-                                .stroke(habit.color.opacity(0.2), lineWidth: 4)
-                            Circle()
-                                .trim(from: 0, to: habit.progress(on: date))
-                                .stroke(habit.color, style: StrokeStyle(lineWidth: 4, lineCap: .round))
-                                .rotationEffect(.degrees(-90))
-                            if isCompleted {
-                                Image(systemName: "checkmark")
-                                    .font(.caption.bold())
-                                    .foregroundStyle(habit.color)
-                            } else {
-                                Text("\(Self.numberFormat(habit.loggedValue(on: date)))")
-                                    .font(.caption.bold())
-                                    .foregroundStyle(.primary)
-                            }
-                        }
-                        .frame(width: 40, height: 40)
-                        .scaleEffect(justCompleted ? 1.2 : 1.0)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Add one to \(habit.name)")
-                    .accessibilityValue(countLabel)
-                } else {
-                    Button {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                            toggleCompletion()
-                        }
-                    } label: {
-                        Image(systemName: isCompleted ? "checkmark.circle.fill" : "circle")
-                            .font(.title)
-                            .foregroundStyle(isCompleted ? habit.color : .gray.opacity(0.4))
-                            .scaleEffect(justCompleted ? 1.3 : (isCompleted ? 1.1 : 1.0))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(isCompleted ? "Mark \(habit.name) incomplete" : "Mark \(habit.name) complete")
-                }
+                trailingControl
             }
             .padding()
 
@@ -409,6 +339,86 @@ struct HabitRowView: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(habit.emoji) \(habit.name), \(isCompleted ? "completed" : "not completed")")
         .accessibilityHint("Double tap to toggle completion")
+    }
+
+    @ViewBuilder
+    private var habitInfo: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(habit.name)
+                .font(.body.weight(.medium))
+            if habit.habitKind == .count {
+                Text(countLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if !habit.isScheduled(on: date) {
+                Text("Rest day")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if habit.schedule == .timesPerWeek {
+                Text("\(habit.weeklyCompletions(containing: date))/\(habit.timesPerWeek) this week")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            let streak = habit.currentStreak(from: date)
+            if streak > 0 {
+                HStack(spacing: 2) {
+                    Image(systemName: "flame.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                    Text("\(streak) \(habit.streakUnit) streak")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var trailingControl: some View {
+        if habit.habitKind == .count {
+            Button {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { incrementCount() }
+            } label: {
+                countRing
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Add one to \(habit.name)")
+            .accessibilityValue(countLabel)
+        } else {
+            Button {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { toggleCompletion() }
+            } label: {
+                Image(systemName: isCompleted ? "checkmark.circle.fill" : "circle")
+                    .font(.title)
+                    .foregroundStyle(isCompleted ? habit.color : Color.gray.opacity(0.4))
+                    .scaleEffect(justCompleted ? 1.3 : (isCompleted ? 1.1 : 1.0))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isCompleted ? "Mark \(habit.name) incomplete" : "Mark \(habit.name) complete")
+        }
+    }
+
+    private var countRing: some View {
+        ZStack {
+            Circle()
+                .stroke(habit.color.opacity(0.2), lineWidth: 4)
+            Circle()
+                .trim(from: 0, to: habit.progress(on: date))
+                .stroke(habit.color, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            if isCompleted {
+                Image(systemName: "checkmark")
+                    .font(.caption.bold())
+                    .foregroundStyle(habit.color)
+            } else {
+                Text(Self.numberFormat(habit.loggedValue(on: date)))
+                    .font(.caption.bold())
+                    .foregroundStyle(.primary)
+            }
+        }
+        .frame(width: 40, height: 40)
+        .scaleEffect(justCompleted ? 1.2 : 1.0)
     }
 
     private func toggleCompletion() {

@@ -8,6 +8,8 @@ struct StatsView: View {
 
     @State private var selectedHabit: Habit?
     @State private var showingWeeklyReview = false
+    @State private var showingPaywall = false
+    private var store = StoreService.shared
 
     var body: some View {
         statsContent
@@ -53,8 +55,15 @@ struct StatsView: View {
                     if let habit = selectedHabit ?? habits.first {
                         VStack(spacing: 16) {
                             HabitDetailStatsCard(habit: habit)
-                            InsightsCard(habit: habit)
-                            TrendCard(habit: habit)
+                            if store.isPro {
+                                InsightsCard(habit: habit)
+                                TrendCard(habit: habit)
+                            } else {
+                                ProLockedCard(
+                                    title: "Advanced Analytics",
+                                    message: "8-week trends, insights & weekly review"
+                                ) { showingPaywall = true }
+                            }
                             WeeklyBarChart(habit: habit)
                             HeatmapView(habit: habit)
                         }
@@ -69,7 +78,7 @@ struct StatsView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    showingWeeklyReview = true
+                    if store.isPro { showingWeeklyReview = true } else { showingPaywall = true }
                 } label: {
                     Image(systemName: "calendar.badge.clock")
                 }
@@ -77,6 +86,9 @@ struct StatsView: View {
         }
         .sheet(isPresented: $showingWeeklyReview) {
             WeeklyReviewView()
+        }
+        .sheet(isPresented: $showingPaywall) {
+            ProPaywallView()
         }
         .onAppear {
             if selectedHabit == nil {
@@ -244,6 +256,40 @@ struct HabitDetailStatsCard: View {
         .sheet(isPresented: $showShareSheet) {
             ShareStreakView(habit: habit)
         }
+    }
+}
+
+// MARK: - Pro Locked Card
+struct ProLockedCard: View {
+    let title: LocalizedStringKey
+    let message: LocalizedStringKey
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 10) {
+                Image(systemName: "crown.fill")
+                    .font(.title2)
+                    .foregroundStyle(.yellow)
+                Text(title)
+                    .font(.headline)
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Text("Unlock with Pro")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 8)
+                    .background(Capsule().fill(.green))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 24)
+            .padding(.horizontal)
+            .background(RoundedRectangle(cornerRadius: 16).fill(Color.appSecondaryBackground))
+        }
+        .buttonStyle(.plain)
     }
 }
 
