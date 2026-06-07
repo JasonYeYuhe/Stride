@@ -49,6 +49,11 @@ final class AnalyticsService: @unchecked Sendable {
 
     func send(_ type: String, metadata: [String: String] = [:]) {
         guard isEnabled else { return }
+        // Dormant until a real TelemetryDeck App ID is configured. Without this,
+        // signals would POST to TelemetryDeck with the placeholder ID — the data
+        // still leaves the device even though the server discards it. Auto-activates
+        // once `appID` is set to a real App ID.
+        guard appID != "YOUR_TELEMETRYDECK_APP_ID" else { return }
 
         var payload = metadata
         payload["appVersion"] = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
