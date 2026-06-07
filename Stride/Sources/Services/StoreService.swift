@@ -196,7 +196,6 @@ struct ProPaywallView: View {
                     VStack(alignment: .leading, spacing: 16) {
                         ProFeatureRow(icon: "folder.fill", color: .blue, title: "Habit Groups", subtitle: "Organize habits into collapsible groups")
                         ProFeatureRow(icon: "chart.line.uptrend.xyaxis", color: .green, title: "Advanced Analytics", subtitle: "8-week trends, insights & weekly review")
-                        ProFeatureRow(icon: "heart.fill", color: .pink, title: "Support an Indie Dev", subtitle: "Help keep Stride growing")
                     }
                     .padding(.horizontal, 24)
 
@@ -261,7 +260,7 @@ struct ProPaywallView: View {
 
                     // Legal
                     VStack(spacing: 4) {
-                        Text("Payment will be charged to your Apple ID account. Subscription automatically renews unless cancelled at least 24 hours before the end of the current period.")
+                        Text("Payment will be charged to your Apple ID account. The Monthly and Yearly plans auto-renew unless cancelled at least 24 hours before the end of the period; Lifetime is a one-time purchase.")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                             .multilineTextAlignment(.center)
