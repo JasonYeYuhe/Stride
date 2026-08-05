@@ -47,7 +47,10 @@ targets:
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: YES
         SUPPORTS_MACCATALYST: NO
         CODE_SIGN_ENTITLEMENTS: Stride/Stride.entitlements
-        INFOPLIST_KEY_SentryDSN: "https://461897892c305803cfd5d06c2b62a502@o4511263220891648.ingest.us.sentry.io/4511513693585408"
+        # Do NOT add INFOPLIST_KEY_SentryDSN here. GENERATE_INFOPLIST_FILE only
+        # maps Xcode's fixed INFOPLIST_KEY_* allowlist into the built plist and
+        # drops custom names silently, so it shipped dead. DSN now lives in
+        # Shared/SentryBootstrap.swift.
       configs:
         debug:
           SWIFT_OPTIMIZATION_LEVEL: "-Onone"
@@ -75,7 +78,7 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         CODE_SIGN_ENTITLEMENTS: StrideMac/StrideMac.entitlements
-        INFOPLIST_KEY_SentryDSN: "https://461897892c305803cfd5d06c2b62a502@o4511263220891648.ingest.us.sentry.io/4511513693585408"
+        # See the Stride target above — same silently-dropped-key trap.
       configs:
         debug:
           SWIFT_OPTIMIZATION_LEVEL: "-Onone"
