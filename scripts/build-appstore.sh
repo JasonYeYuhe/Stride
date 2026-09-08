@@ -25,6 +25,26 @@ if [[ "${2:-}" == "--upload" ]] || [[ "${1:-}" == "--upload" ]]; then
     fi
 fi
 
+# Preflight: can we actually sign right now?
+# A locked login keychain fails ~20 minutes into the archive with the useless
+# "errSecInternalComponent"; this reproduces it in one second, before any work.
+# (Measured 2026-09-08: no-timeout does NOT guarantee the keychain stays unlocked.)
+preflight_signing() {
+    local probe; probe="$(mktemp -t stride-sigtest)"
+    cp /bin/echo "$probe"
+    if ! codesign -f -s "Apple Distribution: Yuhe Ye (${TEAM_ID})" "$probe" >/dev/null 2>&1; then
+        rm -f "$probe"
+        echo "  ✗ Cannot codesign: the login keychain is locked."
+        echo "    security show-keychain-info ~/Library/Keychains/login.keychain-db"
+        echo "    -> 'User interaction is not allowed.' confirms it."
+        echo "    Unlock the screen (or the keychain) and re-run. No agent can do this for you."
+        exit 1
+    fi
+    rm -f "$probe"
+    echo "  ✓ Signing identity usable"
+}
+preflight_signing
+
 # Regenerate Xcode project
 echo "  Regenerating Xcode project..."
 cd "$PROJECT_DIR" && xcodegen generate --quiet 2>/dev/null || xcodegen generate
