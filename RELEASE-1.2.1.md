@@ -18,8 +18,9 @@ allowlist). So there is **no crash or app-hang data from any shipped build since
   Everything shipped as 1.2.0 was still sitting on a branch until now.
 - Version bumped 1.2.0 → 1.2.1, build 14 → **15** (higher than every existing build on
   both platforms; iOS was at 12, macOS at 14).
-- Swift test suite: **71/71 passed** (`StrideTests` scheme — note the `Stride` scheme has
-  no test action, so `-scheme Stride test` exits 0 without running anything).
+- Swift test suite: **71/71 passed**, and `-scheme Stride test` now actually runs them —
+  the scheme had no test action, so that command exited 0 having run nothing. Server
+  suite is **278/278** green on CI at this commit.
 - Deleted the iCloud conflict copies that would have broken the next build:
   `Shared/SentryBootstrap 2.swift` (a pre-fix duplicate of `enum SentryBootstrap`, which
   `xcodegen` would have globbed into all five targets → invalid redeclaration), plus
