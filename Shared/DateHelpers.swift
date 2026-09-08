@@ -17,7 +17,20 @@ enum HabitCalendar {
     }()
 
     /// Day-key for a local instant: take the user's local Y/M/D, anchor to UTC midnight.
+    ///
+    /// **Idempotent.** A value that is already a day-key is returned unchanged.
+    /// This matters because the streak/schedule math re-keys values that are
+    /// already keys (`Habit.isScheduled(on:)`, `weekStart(for:)` and
+    /// `completionRate(from:to:)` all receive day-keys). Re-keying re-reads the
+    /// instant in the *local* calendar, so in any negative-UTC-offset zone —
+    /// i.e. all of the Americas — UTC midnight reads as the *previous* local
+    /// day and the weekday shifted back one: every scheduled day looked
+    /// unscheduled, every rest day looked scheduled, and `currentStreak()`
+    /// returned 0 for every "Specific days" habit. UTC and positive offsets
+    /// (Asia/Tokyo, Europe/*) are unaffected, which is why the whole suite
+    /// stayed green — the bug was invisible from the machine it was written on.
     static func dayKey(for date: Date = Date(), localCalendar: Calendar = .current) -> Date {
+        if isDayKey(date) { return date }
         let c = localCalendar.dateComponents([.year, .month, .day], from: date)
         return utc.date(from: DateComponents(year: c.year, month: c.month, day: c.day))
             ?? utc.startOfDay(for: date)

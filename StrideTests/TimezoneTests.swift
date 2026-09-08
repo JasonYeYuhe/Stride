@@ -66,6 +66,50 @@ final class TimezoneTests: XCTestCase {
         XCTAssertEqual(HabitCalendar.startOfKey(once), once)
     }
 
+    /// Regression: `dayKey(for:)` must be a no-op on a value that is already a
+    /// day-key. The streak/schedule math re-keys keys (isScheduled, weekStart,
+    /// completionRate); before the fix that shifted the day — and therefore the
+    /// weekday — back by one in every negative-UTC-offset zone, zeroing the
+    /// streak of every "Specific days" habit in the Americas.
+    ///
+    /// Note the zone list: the original suite only ever exercised Asia/Tokyo and
+    /// a *local instant* in Los Angeles, so it could not see this.
+    func testDayKeyIsIdempotentInEveryOffsetSign() {
+        let friday = HabitCalendar.utc.date(from: DateComponents(year: 2026, month: 9, day: 4))!
+        XCTAssertEqual(HabitCalendar.utc.component(.weekday, from: friday), 6, "sanity: 2026-09-04 is a Friday")
+
+        for id in ["UTC", "Asia/Tokyo", "Europe/Berlin", "Pacific/Honolulu",
+                   "America/Sao_Paulo", "America/New_York", "America/Los_Angeles"] {
+            let cal = calendar(id)
+            let reKeyed = HabitCalendar.dayKey(for: friday, localCalendar: cal)
+            XCTAssertEqual(reKeyed, friday, "re-keying an existing day-key must not move it (\(id))")
+            XCTAssertEqual(HabitCalendar.utc.component(.weekday, from: reKeyed), 6,
+                           "weekday must survive the round trip (\(id))")
+        }
+    }
+
+    /// A Mon/Wed/Fri habit evaluated on real day-keys, the way currentStreak()
+    /// walks them. Before the fix each scheduled day reported false and Saturday
+    /// reported true, so the streak loop broke immediately and returned 0.
+    func testSpecificDaysScheduleIsCorrectOnDayKeys() {
+        let h = Habit(name: "Gym")
+        h.schedule = .specificDays
+        h.activeDaysMask = (1 << 1) | (1 << 3) | (1 << 5) // Mon, Wed, Fri (bit 0 = Sunday)
+
+        let expectations: [(month: Int, day: Int, scheduled: Bool)] = [
+            (8, 31, true),  // Monday
+            (9,  2, true),  // Wednesday
+            (9,  4, true),  // Friday
+            (9,  5, false), // Saturday — a rest day
+            (9,  3, false), // Thursday — a rest day
+        ]
+        for e in expectations {
+            let key = HabitCalendar.utc.date(from: DateComponents(year: 2026, month: e.month, day: e.day))!
+            XCTAssertEqual(h.isScheduled(on: key), e.scheduled,
+                           "2026-\(e.month)-\(e.day) scheduled should be \(e.scheduled)")
+        }
+    }
+
     func testStreakUsesStableDayKeys() {
         let habit = Habit(name: "Streak")
         let cal = Calendar.current

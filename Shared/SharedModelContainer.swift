@@ -14,7 +14,14 @@ enum SharedModelContainer {
         return containerURL.appendingPathComponent("Stride.store")
     }
 
-    static var modelContainer: ModelContainer {
+    /// The process-wide container. This is a `let`, not a computed `var`: a
+    /// computed property handed every caller a BRAND-NEW ModelContainer over the
+    /// same store file. The app, widget and watch each stash it in a `let` and
+    /// were fine, but `StrideShortcuts` builds one per Siri invocation (x4) and
+    /// `StrideWidget`'s toggle path builds another — so several live containers
+    /// could hold the same store with independent caches, and a write through
+    /// one was not guaranteed to be visible through another.
+    static let modelContainer: ModelContainer = {
         let schema = Schema([Habit.self, HabitRecord.self, HabitGroup.self])
         let config = ModelConfiguration(
             "Stride",
@@ -34,7 +41,7 @@ enum SharedModelContainer {
                 fatalError("Failed to create ModelContainer: \(error)")
             }
         }
-    }
+    }()
 
     private static let dayKeyMigrationFlag = "stride_daykey_migration_v2_done"
 
