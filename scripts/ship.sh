@@ -43,10 +43,20 @@ fi
 echo
 
 # ~25 min of build ahead — survive the SSH connection dropping on mobile data.
+#
+# -L stride-ship is load-bearing, not tidiness. Keychain unlock is scoped to the
+# caller's security session, and a tmux SERVER outlives the session that started
+# it: plain `tmux new-session` attaches to the long-running default server, so the
+# build would run as its child, in whatever session that server was born in — with
+# the keychain still locked, failing exactly the way it did before you unlocked.
+# (Same root cause as needing GH_TOKEN in ~/.zshenv: the old tmux server cannot
+# read the keychain either.) A private socket forces a fresh server, spawned from
+# THIS ssh session, inheriting the unlock.
 if [[ -z "${TMUX:-}" ]] && command -v tmux >/dev/null; then
-    echo "==> Re-running inside tmux so a dropped connection can't kill the build."
-    echo "    Reattach with:  tmux attach -t stride-ship"
-    exec tmux new-session -A -s stride-ship "$0" "$VERSION" "$BUILD"
+    echo "==> Re-running inside a private tmux server so a dropped connection"
+    echo "    can't kill the build. Reattach with:"
+    echo "      tmux -L stride-ship attach -t ship"
+    exec tmux -L stride-ship new-session -A -s ship "$0" "$VERSION" "$BUILD"
 fi
 
 echo "==> [1/3] iOS archive + upload"
