@@ -97,7 +97,12 @@ def find_build(app_id, build_number, platform):
     d = a.get("/builds", params={
         "filter[app]": app_id, "filter[version]": str(build_number),
         "limit": 20, "include": "preReleaseVersion",
-        "fields[builds]": "version,processingState,expired,uploadedDate",
+        # preReleaseVersion MUST be listed here. fields[builds] is a whitelist over
+        # relationships too, so omitting it makes ASC return the builds with an EMPTY
+        # relationships object while still shipping the preReleaseVersions in
+        # `included` — the platform can then never be matched, find_build returns None
+        # for a build that plainly exists, and the caller waits out its whole timeout.
+        "fields[builds]": "version,processingState,expired,uploadedDate,preReleaseVersion",
         "fields[preReleaseVersions]": "platform,version",
     })
     pre = {i["id"]: i["attributes"]["platform"] for i in d.get("included", [])

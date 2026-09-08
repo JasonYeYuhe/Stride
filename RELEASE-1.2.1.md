@@ -1,16 +1,16 @@
-# Stride v1.2.1 — release record (IN PROGRESS)
+# Stride v1.2.1 — release record
 
-**Blocked at codesign, 2026-09-08.** App ID `6761262334`, bundle `yyh.stride.habittracker`.
+**Submitted to App Review 2026-09-08.** App ID `6761262334`, bundle `yyh.stride.habittracker`.
 
 Why this release exists: 1.2.0 shipped Sentry linked but inert (`dda470e` explains the
 mechanism — Xcode silently drops `INFOPLIST_KEY_SentryDSN`, which is not on its 95-name
 allowlist). So there is **no crash or app-hang data from any shipped build since
 2026-06-07**. 1.2.1 carries that fix and nothing else.
 
-| Item | Build | State |
+| Item | Build | State at submit |
 |---|---|---|
-| iOS 1.2.1 | 15 | `PREPARE_FOR_SUBMISSION` — version + What's New created, **no build attached** |
-| macOS 1.2.1 | 15 | `PREPARE_FOR_SUBMISSION` — version + What's New created, **no build attached** |
+| iOS 1.2.1 | 15 | `WAITING_FOR_REVIEW` |
+| macOS 1.2.1 | 15 | `WAITING_FOR_REVIEW` |
 
 ## Done
 
@@ -28,26 +28,59 @@ allowlist). So there is **no crash or app-hang data from any shipped build since
 - ASC 1.2.1 version records created for **both** platforms with What's New in all six
   locales, via `scripts/release.py prepare 1.2.1`.
 
-## Blocked
+## How it was signed, with the screen locked the whole time
 
-`xcodebuild archive` fails at `Sentry.framework: errSecInternalComponent` because the
-login keychain is locked — the console has been locked and nothing an agent has access to
-can unlock it (login password only; `op` is Touch-ID-gated). `scripts/build-appstore.sh`
-now preflights this in one second instead of failing 20 minutes in.
+A locked console does not block signing; a locked **login keychain** does, and that
+is what `errSecInternalComponent` means during `codesign`. SSH can unlock it —
+`security unlock-keychain`, password typed at the prompt — so no physical access was
+needed. Two things that are easy to get wrong, both hit here:
 
-## To finish (after unlocking the screen)
+- **The unlock does not cross security sessions.** Unlocking from the phone's ssh
+  session did not let the agent session (parented to the GUI login) sign; the build
+  has to run in the same session that unlocked.
+- **A pre-existing tmux server is in the OLD session.** `tmux new-session -A` attaches
+  to it and the build inherits its locked keychain, failing seconds after a successful
+  unlock. `scripts/ship.sh` uses `-L stride-ship` to force a private server.
+
+`scripts/build-appstore.sh` now preflights signing in one second rather than failing
+20 minutes into the archive.
+
+## Two bugs in release.py, found by it silently doing nothing
+
+Both were mine, both shipped in the first version of the script, and both are fixed:
+
+- `find_build` passed `fields[builds]` without `preReleaseVersion`. `fields` is a
+  whitelist over **relationships** too, so ASC returned each build with an empty
+  relationships object while still listing the preReleaseVersions under `included` —
+  the platform match could never succeed, and `finish` waited out its full 60-minute
+  timeout on builds that were sitting there VALID.
+- `asc_api.patch` called `.json()` unconditionally. Relationship endpoints answer
+  **204 with no body**, so attaching a build raised a JSONDecodeError *after* the
+  attach had already succeeded — iOS ended up attached, macOS never ran.
+
+The pairing is worth remembering: the first bug made a real object look absent, the
+second made a successful write look like a crash. Neither reports itself as a failure
+of the thing it broke.
+
+## Next release, from anywhere
 
 ```bash
-./scripts/build-appstore.sh ios --upload
-./scripts/build-appstore.sh macos --upload
-python3 scripts/release.py finish 1.2.1 15   # waits for processing, attaches, submits
-python3 scripts/release.py show 1.2.1        # confirm WAITING_FOR_REVIEW on both
+ssh mac-ts
+cd ~/Documents/Stride && ./scripts/ship.sh <version> <build>
 ```
 
-`release.py` replaces the hand-finished path 1.2.0 needed: `asc_api.py` is platform-blind
-(takes `versions[0]`) and posts to the retired `appStoreVersionSubmissions`, which is why
-1.2.0's final submit was done in Chrome. `release.py` is per-platform, uses
-`reviewSubmissions`, and every step is re-runnable.
+Unlocks the keychain if needed, builds and uploads both platforms, attaches the build,
+submits both for review. `scripts/release.py show <version>` reports state at any point
+and changes nothing.
+
+## After review
+
+- Release type is `AFTER_APPROVAL` on both platforms, so approval ships it — nothing
+  further to click.
+- **Confirm Sentry is actually receiving events once the build is live.** The entire
+  point of 1.2.1 is unverifiable from the project file; 1.2.0 looked correct in source
+  and was dead. Silence in the dashboard after a week of downloads means this failed
+  again, not that the app is flawless.
 
 ## Not part of this release
 

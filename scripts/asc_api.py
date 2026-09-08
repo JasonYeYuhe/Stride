@@ -59,6 +59,12 @@ def patch(path, data):
         print(f"PATCH {path} failed: {r.status_code}")
         print(r.text[:500])
     r.raise_for_status()
+    # Relationship endpoints (…/relationships/build) answer 204 with no body. Calling
+    # .json() on that raises AFTER the change has already been applied server-side, so
+    # the caller sees a traceback for an operation that succeeded — and stops before
+    # doing the same thing for the other platform.
+    if r.status_code == 204 or not r.content:
+        return None
     return r.json()
 
 
