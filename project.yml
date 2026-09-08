@@ -153,8 +153,16 @@ schemes:
     build:
       targets:
         Stride: all
+        StrideTests: [test]
     run:
       config: Debug
+    # Without this, `xcodebuild -scheme Stride test` exits 0 having run nothing
+    # ("Scheme Stride is not currently configured for the test action") — a green
+    # CI result that proves absolutely nothing.
+    test:
+      config: Debug
+      targets:
+        - StrideTests
     archive:
       config: Release
   StrideMac:
