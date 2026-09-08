@@ -61,7 +61,10 @@ async function api(method, urlPath, { body, token, query } = {}) {
 }
 
 /** Wait until the server responds on /health */
-async function waitForServer(maxMs = 8000) {
+// 8s was too tight: on a loaded machine (or a slow CI box) node takes longer
+// than that just to require express, and the whole suite then fails with a
+// misleading "Server did not start" rather than a real assertion failure.
+async function waitForServer(maxMs = Number(process.env.TEST_SERVER_START_TIMEOUT_MS || 60000)) {
   const start = Date.now();
   while (Date.now() - start < maxMs) {
     try {
@@ -7428,5 +7431,114 @@ describe("Sync v2 fields round-trip (count habit, schedule, group, entry value)"
     assert.equal(r.status, 200);
     const pull = await api("GET", "/v1/sync/pull", { token });
     assert.ok(!pull.json.groups.some((x) => x.id === groupId), "group removed from full pull");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REGRESSION: the exact bytes shipped clients put on the wire.
+//
+// Every iOS/macOS build up to and including 1.2.1 encodes with
+// JSONEncoder.keyEncodingStrategy = .convertToSnakeCase, so it sends
+// `habit_id` / `deleted_habit_ids` / `color_hex`, while these routes were
+// written against camelCase. Nothing tested that seam: the suite above pushes
+// camelCase, i.e. the server's own assumption on both sides, so 278 green tests
+// coexisted with a push path that silently discarded every check-in, reset habit
+// fields to defaults, and never propagated a deletion — after which the client's
+// full-pull reconciliation deleted the user's local records because the server
+// had none. The payloads below are copied verbatim from a real JSONEncoder run.
+// ---------------------------------------------------------------------------
+describe("Wire-format contract: snake_case payload from shipped (<=1.2.1) clients", () => {
+  let token, userId, habitId, entryId, groupId;
+  before(() => {
+    const u = createTestUser();
+    userId = u.userId;
+    token = createTestSession(userId);
+    habitId = crypto.randomUUID().toUpperCase();
+    entryId = crypto.randomUUID().toUpperCase();
+    groupId = crypto.randomUUID().toUpperCase();
+  });
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM habit_groups WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("stores the check-in instead of silently dropping it (the data-loss bug)", async () => {
+    const push = await api("POST", "/v1/sync/push", { token, body: {
+      groups: [{ id: groupId, name: "Health", color_hex: "#FF0000", sort_order: 2,
+        created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z" }],
+      habits: [{ id: habitId, name: "Morning Run", emoji: "\u{1F3C3}", color_hex: "#FF3B30",
+        is_archived: false, sort_order: 3,
+        reminder_enabled: true, reminder_hour: 7, reminder_minute: 30, note: "keep it up",
+        kind: "count", target_value: 5, unit: "km",
+        schedule_kind: "specificDays", times_per_week: 3, active_days_mask: 42,
+        group_id: groupId,
+        created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-06-01T00:00:00.000Z" }],
+      entries: [{ id: entryId, habit_id: habitId, date: "2026-06-05", value: 5,
+        created_at: "2026-06-05T00:00:00.000Z" }],
+      deleted_habit_ids: [], deleted_entry_ids: [], deleted_group_ids: [],
+    }});
+    assert.equal(push.status, 200);
+
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    assert.equal(pull.status, 200);
+
+    const e = pull.json.entries.find((x) => x.id === entryId);
+    assert.ok(e, "the check-in reached the server (was dropped by the !e.habitId guard)");
+    assert.equal(e.habitId, habitId);
+    assert.equal(e.value, 5);
+  });
+
+  it("keeps every habit field instead of resetting it to a server default", async () => {
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    const h = pull.json.habits.find((x) => x.id === habitId);
+    assert.ok(h, "habit returned");
+    assert.equal(h.colorHex, "#FF3B30", "colorHex must not fall back to #34C759");
+    assert.equal(h.sortOrder, 3);
+    assert.equal(h.reminderEnabled, true);
+    assert.equal(h.reminderHour, 7);
+    assert.equal(h.reminderMinute, 30);
+    assert.equal(h.kind, "count");
+    assert.equal(h.targetValue, 5);
+    assert.equal(h.unit, "km");
+    assert.equal(h.scheduleKind, "specificDays", "must not fall back to 'daily'");
+    assert.equal(h.timesPerWeek, 3, "must not fall back to 7");
+    assert.equal(h.activeDaysMask, 42, "must not fall back to 127");
+    assert.equal(h.groupId, groupId, "group membership must not be cleared");
+  });
+
+  it("propagates a deletion sent as deleted_habit_ids", async () => {
+    const r = await api("POST", "/v1/sync/push", { token, body: {
+      habits: [], entries: [], groups: [],
+      deleted_habit_ids: [habitId], deleted_entry_ids: [], deleted_group_ids: [],
+    }});
+    assert.equal(r.status, 200);
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    assert.ok(!pull.json.habits.some((x) => x.id === habitId), "habit deleted on server");
+  });
+
+  it("still accepts the camelCase form that fixed (>=1.2.2) clients send", async () => {
+    const id = crypto.randomUUID().toUpperCase();
+    const eid = crypto.randomUUID().toUpperCase();
+    const push = await api("POST", "/v1/sync/push", { token, body: {
+      habits: [{ id, name: "Read", emoji: "\u{1F4D6}", colorHex: "#00FF00", isArchived: false,
+        sortOrder: 9, kind: "binary", targetValue: 1, scheduleKind: "daily",
+        timesPerWeek: 7, activeDaysMask: 127,
+        createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-06-01T00:00:00.000Z" }],
+      entries: [{ id: eid, habitId: id, date: "2026-06-06", value: 1,
+        createdAt: "2026-06-06T00:00:00.000Z" }],
+    }});
+    assert.equal(push.status, 200);
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    const h = pull.json.habits.find((x) => x.id === id);
+    assert.ok(h, "camelCase habit stored");
+    assert.equal(h.colorHex, "#00FF00");
+    assert.equal(h.sortOrder, 9);
+    assert.ok(pull.json.entries.some((x) => x.id === eid), "camelCase entry stored");
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(id);
+    db.prepare("DELETE FROM habits WHERE id = ?").run(id);
   });
 });

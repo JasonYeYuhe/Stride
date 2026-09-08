@@ -12,7 +12,13 @@ actor APIClient {
 
     private let encoder: JSONEncoder = {
         let e = JSONEncoder()
-        e.keyEncodingStrategy = .convertToSnakeCase
+        // Do NOT set .convertToSnakeCase here. The backend speaks camelCase in
+        // BOTH directions (server/routes/sync.js reads `e.habitId`,
+        // `req.body.deletedHabitIds`, ... and its /sync/pull response emits
+        // `colorHex`/`habitId`). Encoding snake_case silently broke every push:
+        // entries were dropped by the `!e.habitId` guard, habit fields fell back
+        // to server defaults, and deletions never propagated. Shipped broken
+        // from 3829085 until now. Covered by StrideTests/SyncWireFormatTests.
         return e
     }()
 
@@ -68,15 +74,22 @@ actor APIClient {
     }
 
     func pullChanges(since: String? = nil) async throws -> SyncPullResponse {
-        var path = "/v1/sync/pull"
-        if let since { path += "?since=\(since)" }
-        return try await get(path)
+        // A query string must not go through appendingPathComponent — it
+        // percent-encodes '?' into %3F, so every incremental pull 404'd and
+        // sync became push-only after the first run.
+        try await get("/v1/sync/pull", query: since.map { [URLQueryItem(name: "since", value: $0)] })
     }
 
     // MARK: - HTTP Helpers
 
-    private func get<T: Decodable>(_ path: String) async throws -> T {
-        var request = URLRequest(url: baseURL.appendingPathComponent(path))
+    private func get<T: Decodable>(_ path: String, query: [URLQueryItem]? = nil) async throws -> T {
+        var url = baseURL.appendingPathComponent(path)
+        if let query, !query.isEmpty {
+            var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            components?.queryItems = query
+            if let built = components?.url { url = built }
+        }
+        var request = URLRequest(url: url)
         request.httpMethod = "GET"
         addAuth(&request)
         return try await perform(request)

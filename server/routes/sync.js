@@ -11,6 +11,27 @@ const { rateLimit } = require("express-rate-limit");
 const db = require("../db");
 const { requireUser } = require("../auth");
 
+/**
+ * Read a push-payload field that may arrive under either casing.
+ *
+ * Every shipped iOS/macOS client up to and including 1.2.1 encodes with
+ * `JSONEncoder.keyEncodingStrategy = .convertToSnakeCase`, so it sends
+ * `habit_id` / `deleted_habit_ids` / `color_hex` while this route was written
+ * against camelCase. The mismatch silently dropped EVERY check-in (the
+ * `!e.habitId` guard), reset habit fields to defaults, and stopped deletions
+ * from propagating — and the client's full-pull reconciliation then deleted the
+ * user's local records because the server had none. The client is fixed, but
+ * installed clients keep sending snake_case until users update, so the server
+ * must accept both. Do not remove while any <= 1.2.1 build is still in the wild.
+ */
+const toSnake = (k) => k.replace(/[A-Z]/g, (c) => "_" + c.toLowerCase());
+function field(obj, camelKey) {
+  if (obj === null || obj === undefined) return undefined;
+  const v = obj[camelKey];
+  return v !== undefined ? v : obj[toSnake(camelKey)];
+}
+
+
 // Sync-specific rate limit: 30 requests per minute per IP
 const syncLimiter = process.env.NODE_ENV === "test"
   ? /** @type {import('express').RequestHandler} */ ((req, res, next) => next())
@@ -31,9 +52,9 @@ router.post("/push", (req, res) => {
   const habits = req.body.habits ?? [];
   const entries = req.body.entries ?? [];
   const groups = req.body.groups ?? [];
-  const deletedHabitIds = req.body.deletedHabitIds ?? [];
-  const deletedEntryIds = req.body.deletedEntryIds ?? [];
-  const deletedGroupIds = req.body.deletedGroupIds ?? [];
+  const deletedHabitIds = field(req.body, "deletedHabitIds") ?? [];
+  const deletedEntryIds = field(req.body, "deletedEntryIds") ?? [];
+  const deletedGroupIds = field(req.body, "deletedGroupIds") ?? [];
   const userId = req.user.id;
 
   const upsertHabit = db.prepare(`
@@ -141,8 +162,8 @@ router.post("/push", (req, res) => {
       if (blockedGroups.has(g.id)) continue;
       if (!g.id || !g.name) continue;
       upsertGroup.run(
-        g.id, userId, g.name, g.colorHex || "#34C759", g.sortOrder || 0,
-        g.createdAt || now, g.updatedAt || now,
+        g.id, userId, g.name, field(g, "colorHex") || "#34C759", field(g, "sortOrder") || 0,
+        field(g, "createdAt") || now, field(g, "updatedAt") || now,
         userId,
       );
     }
@@ -152,16 +173,17 @@ router.post("/push", (req, res) => {
       if (blockedHabits.has(h.id)) continue;
       if (!h.id || !h.name) continue;
       // Drop a stale group reference (group deleted on another device)
-      const groupId = h.groupId && !blockedGroups.has(h.groupId) ? h.groupId : null;
+      const rawGroupId = field(h, "groupId");
+      const groupId = rawGroupId && !blockedGroups.has(rawGroupId) ? rawGroupId : null;
       upsertHabit.run(
-        h.id, userId, h.name, h.emoji || "⭐", h.colorHex || "#34C759",
-        h.isArchived ? 1 : 0, h.sortOrder || 0,
-        h.reminderEnabled ? 1 : 0, h.reminderHour ?? 20, h.reminderMinute ?? 0,
+        h.id, userId, h.name, h.emoji || "⭐", field(h, "colorHex") || "#34C759",
+        field(h, "isArchived") ? 1 : 0, field(h, "sortOrder") || 0,
+        field(h, "reminderEnabled") ? 1 : 0, field(h, "reminderHour") ?? 20, field(h, "reminderMinute") ?? 0,
         h.note ?? null,
-        h.kind || "binary", h.targetValue ?? 1, h.unit ?? null,
-        h.scheduleKind || "daily", h.timesPerWeek ?? 7, h.activeDaysMask ?? 127,
+        h.kind || "binary", field(h, "targetValue") ?? 1, h.unit ?? null,
+        field(h, "scheduleKind") || "daily", field(h, "timesPerWeek") ?? 7, field(h, "activeDaysMask") ?? 127,
         groupId,
-        h.createdAt || new Date().toISOString(), h.updatedAt || new Date().toISOString(),
+        field(h, "createdAt") || new Date().toISOString(), field(h, "updatedAt") || new Date().toISOString(),
         userId,
       );
     }
@@ -169,11 +191,12 @@ router.post("/push", (req, res) => {
     // Upsert entries — skip any that are tombstoned (deleted in this push or previously)
     for (const e of entries) {
       if (blockedEntries.has(e.id)) continue;
-      if (!e.id || !e.habitId || !e.date) continue;
+      const entryHabitId = field(e, "habitId");
+      if (!e.id || !entryHabitId || !e.date) continue;
       // Verify the habit belongs to this user
-      const habit = db.prepare("SELECT id FROM habits WHERE id = ? AND user_id = ?").get(e.habitId, userId);
+      const habit = db.prepare("SELECT id FROM habits WHERE id = ? AND user_id = ?").get(entryHabitId, userId);
       if (habit) {
-        upsertEntry.run(e.id, e.habitId, e.date, e.note ?? null, e.value ?? 1, e.createdAt || now, now);
+        upsertEntry.run(e.id, entryHabitId, e.date, e.note ?? null, e.value ?? 1, field(e, "createdAt") || now, now);
       }
     }
   });
