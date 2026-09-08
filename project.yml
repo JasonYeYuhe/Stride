@@ -59,6 +59,14 @@ targets:
     dependencies:
       - package: Sentry
         product: Sentry
+      # Without this the extension is never copied into the .app: no
+      # "Embed Foundation Extensions" phase is generated, Stride.app has no
+      # PlugIns/ directory, and the widget does not exist for any user — while
+      # the App Store description, the keyword list and the Pro feature list all
+      # sell it. The dependency used to point the other way (extension -> app,
+      # embed: false), which builds fine and ships nothing.
+      - target: StrideWidgetExtension
+        embed: true
 
   StrideMac:
     type: application
@@ -107,7 +115,11 @@ targets:
     sources:
       - StrideWatch/Sources
       - StrideWatch/Assets.xcassets
-      - Shared
+      - path: Shared
+        excludes:
+          # See StrideWidgetExtension: this target never calls SentryBootstrap
+          # and must not try to resolve the Sentry module.
+          - "SentryBootstrap.swift"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: yyh.stride.habittracker.watchkitapp
@@ -130,7 +142,18 @@ targets:
     sources:
       - StrideWidget/Sources
       - StrideWidget/Assets.xcassets
-      - Shared
+      - path: Shared
+        excludes:
+          # Not referenced by this target, and compiling it here is actively
+          # harmful: `#if canImport(Sentry)` makes the compiler probe for the
+          # module, and because the app has already built Sentry.framework into
+          # the SHARED products directory it finds a binary framework it does not
+          # link. It then tries to rebuild the module from
+          # Sentry.swiftmodule/*.private.swiftinterface and fails — the binary is
+          # built with Swift 5.9.2 while the toolchain is 6.3.3. The guard's
+          # comment assumes canImport is false in targets that don't link Sentry;
+          # that only held while this target was never built at all.
+          - "SentryBootstrap.swift"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: yyh.stride.habittracker.widget
@@ -144,9 +167,6 @@ targets:
           SWIFT_OPTIMIZATION_LEVEL: "-Onone"
         release:
           SWIFT_OPTIMIZATION_LEVEL: "-O"
-    dependencies:
-      - target: Stride
-        embed: false
 
 schemes:
   Stride:
