@@ -165,8 +165,25 @@ app.use((err, req, res, next) => {
   res.status(status).json({ error: message });
 });
 
-const server = app.listen(PORT, () => {
-  console.log(`Stride API running on port ${PORT}`);
+// Bind to loopback. This listened on 0.0.0.0 with ufw inactive, so
+// http://<public-ip>:3002/ answered 200 straight off the internet and nginx —
+// which terminates TLS and is the only thing setting X-Forwarded-For — was
+// bypassable. That mattered more than the missing TLS: `app.set("trust proxy", 1)`
+// above means Express trusts one hop of XFF, and a caller reaching Node directly
+// IS that hop, so it could forge req.ip and mint a fresh rate-limit bucket per
+// request. Demonstrated 2026-07-27: the same forged XFF decremented one bucket, a
+// different value got a fresh allowance. That made magicLinkLimiter on the
+// unauthenticated POST /auth/request-link a no-op — an unmetered mail sender on a
+// Resend key SHARED with ColorArchive, so abuse here would have broken that
+// project's magic-link login and transactional email too.
+//
+// nginx already proxies to http://localhost:3002 (stride-api.colorarchive.me) and
+// already sets X-Forwarded-For correctly, so restricting the bind surface costs
+// nothing and makes every per-IP limiter in this process real.
+const BIND_HOST = process.env.BIND_HOST || "127.0.0.1";
+
+const server = app.listen(PORT, BIND_HOST, () => {
+  console.log(`Stride API running on ${BIND_HOST}:${PORT}`);
   if (process.env.NODE_ENV !== "test") {
     // Initial sweep + periodic GC of tombstones / expired sessions & magic links.
     const sweep = () => { try { /** @type {any} */ (db).sweepStaleData(); } catch (e) { console.error("[sweep] failed:", e); } };
