@@ -8,6 +8,42 @@
 	<array/>
 	<key>NSPrivacyCollectedDataTypes</key>
 	<array>
+		<!-- Account identifier. requestMagicLink POSTs the address to
+		     /v1/auth/request-link (APIClient.swift:46) and the server stores it in
+		     the `users` table (db.js), so it is collected and it is Linked — it IS
+		     the account key. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeEmailAddress</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+		<!-- Habit names, emoji, per-habit notes, per-check-in notes and the full
+		     check-in history. SyncPushPayload sends all of it to the developer's own
+		     server on every sync (APIClient.swift:184-213), scoped to the user's
+		     account, so it is Linked. Only transmitted once the user signs in;
+		     without an account nothing leaves the device. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeOtherUserContent</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+		<!-- Declared but currently dormant: AnalyticsService is hard-guarded off
+		     until a real TelemetryDeck App ID is set (AnalyticsService.swift:56), so
+		     nothing is sent today. Kept so the label stays correct the moment it is. -->
 		<dict>
 			<key>NSPrivacyCollectedDataType</key>
 			<string>NSPrivacyCollectedDataTypeProductInteraction</string>
