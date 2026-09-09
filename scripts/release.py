@@ -19,7 +19,8 @@ import asc_api as a
 PLATFORMS = ["IOS", "MAC_OS"]
 LOCALES = ["en-US", "zh-Hans", "zh-Hant", "ja", "ko", "es-ES"]
 
-WHATS_NEW = {
+WHATS_NEW_BY_VERSION = {
+  "1.2.1": {
     "en-US": "Fixes a bug that stopped Stride from reporting crashes, so any problem "
              "you hit now reaches us and gets fixed faster. No changes to your habits or data.",
     "zh-Hans": "修复了崩溃上报失效的问题——现在你遇到的任何异常都能传回来,修得更快。习惯和数据不受影响。",
@@ -28,6 +29,33 @@ WHATS_NEW = {
     "ko": "충돌 보고가 전송되지 않던 문제를 수정했습니다. 이제 문제가 접수되어 더 빨리 해결됩니다. 습관과 데이터는 그대로입니다.",
     "es-ES": "Corrige un fallo que impedía a Stride informar de los cierres inesperados, "
              "así cualquier problema nos llega y se arregla antes. Tus hábitos y datos no cambian.",
+  },
+  "1.2.2": {
+    "en-US": "Widgets are here. Earlier versions shipped without them by mistake — add Stride "
+             "to your Home Screen or Lock Screen. This update also fixes cross-device sync, "
+             "which wasn't saving your check-ins to the server or carrying deletions between "
+             "devices, and corrects streaks for \u201cSpecific days\u201d habits in time zones "
+             "behind UTC.",
+    "zh-Hans": "小组件回来了 —— 之前的版本因失误没有打包进去,现在可以把 Stride 添加到主屏幕和锁定屏幕。"
+               "本次更新还修复了跨设备同步(此前打卡记录没有真正上传到服务器,删除也不会同步到其他设备),"
+               "以及 UTC 以西时区下「指定日期」习惯连续天数计算错误的问题。",
+    "zh-Hant": "小工具回來了 —— 先前的版本因疏失沒有打包進去,現在可以把 Stride 加入主畫面和鎖定畫面。"
+               "本次更新也修正了跨裝置同步(先前打卡紀錄沒有真正上傳到伺服器,刪除也不會同步到其他裝置),"
+               "以及 UTC 以西時區下「指定日期」習慣連續天數計算錯誤的問題。",
+    "ja": "ウィジェットが使えるようになりました。これまでのバージョンでは手違いで含まれていませんでした。"
+          "ホーム画面やロック画面に追加できます。今回の更新では、チェックインがサーバーに保存されず削除も"
+          "他の端末に反映されなかったデバイス間同期の不具合と、UTCより西のタイムゾーンで「特定の曜日」の"
+          "習慣の連続日数が正しく計算されない問題も修正しました。",
+    "ko": "위젯을 사용할 수 있습니다. 이전 버전에는 실수로 포함되지 않았습니다. 홈 화면과 잠금 화면에 "
+          "Stride를 추가해 보세요. 이번 업데이트에서는 체크인이 서버에 저장되지 않고 삭제도 다른 기기에 "
+          "반영되지 않던 기기 간 동기화 문제와, UTC보다 서쪽 시간대에서 \u2018특정 요일\u2019 습관의 "
+          "연속 일수가 잘못 계산되던 문제도 함께 수정했습니다.",
+    "es-ES": "Ya están los widgets. Las versiones anteriores se publicaron sin ellos por error: "
+             "añade Stride a tu pantalla de inicio o de bloqueo. Esta actualización también "
+             "corrige la sincronización entre dispositivos, que no guardaba tus registros en el "
+             "servidor ni propagaba las eliminaciones, y arregla las rachas de los hábitos de "
+             "\u201cDías concretos\u201d en zonas horarias al oeste de UTC.",
+  },
 }
 
 
@@ -71,11 +99,15 @@ def ensure_version(app_id, platform, version_string):
     return r["data"]["id"]
 
 
-def ensure_localizations(app_id, platform, version_id):
+def ensure_localizations(app_id, platform, version_id, version_string):
+    whats_new_all = WHATS_NEW_BY_VERSION.get(version_string)
+    if whats_new_all is None:
+        raise SystemExit(f"No What's New copy for {version_string} — add it to "
+                         f"WHATS_NEW_BY_VERSION in this script before releasing.")
     have = {l["attributes"]["locale"]: l for l in a.get_version_localizations(version_id)}
     prev = previous_localizations(app_id, platform, version_id) if len(have) < len(LOCALES) else {}
     for loc in LOCALES:
-        whats_new = WHATS_NEW[loc]
+        whats_new = whats_new_all[loc]
         if loc in have:
             if have[loc]["attributes"].get("whatsNew") == whats_new:
                 print(f"    {loc}: what's-new already set")
@@ -171,7 +203,7 @@ def main():
     if cmd == "prepare":
         for p in PLATFORMS:
             vid = ensure_version(app_id, p, version_string)
-            ensure_localizations(app_id, p, vid)
+            ensure_localizations(app_id, p, vid, version_string)
         return 0
 
     if cmd == "finish":
