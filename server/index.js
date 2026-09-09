@@ -83,6 +83,26 @@ app.use(
   }),
 );
 
+// The sync endpoints get their own, larger body parser, mounted BEFORE the
+// global one. body-parser sets `req._body` and the first parser to run wins, so
+// ordering here is load-bearing — moving this below the 10kb line silently
+// restores the bug.
+//
+// Why it is needed: SyncService.pushLocal sends a FULL SNAPSHOT of every habit
+// and every check-in on every sync (no incremental filter, no chunking), so the
+// payload grows without bound while the cap stayed at 10kb. Measured against
+// this exact config: one habit is 403 B and one entry 175 B, so 3 habits + 50
+// entries = 10,099 B still passes and 3 habits + 53 entries = 10,627 B returns
+// 413 "entity.too.large". That is under three weeks of daily use. Worse, sync()
+// awaits pushLocal BEFORE pullRemote, so a 413 kills BOTH directions and never
+// self-heals — the client just resends a larger payload next time.
+//
+// 5mb is ~15 years of daily check-ins at the measured wire size. Making the push
+// incremental is the real fix, but it is a client change that needs App Review;
+// this is deployable immediately and buys all the time that work needs.
+app.use("/v1/sync", express.json({ limit: "5mb" }));
+app.use("/sync", express.json({ limit: "5mb" }));   // legacy alias, mounted below
+
 app.use(express.json({ limit: "10kb" }));
 
 // API v1 routes

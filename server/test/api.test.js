@@ -7542,3 +7542,61 @@ describe("Wire-format contract: snake_case payload from shipped (<=1.2.1) client
     db.prepare("DELETE FROM habits WHERE id = ?").run(id);
   });
 });
+
+// ---------------------------------------------------------------------------
+// REGRESSION: the sync body limit.
+//
+// SyncService.pushLocal sends a FULL SNAPSHOT of every habit and every check-in
+// on every sync, so the payload grows without bound. Against the old global
+// 10kb cap that meant 3 habits + ~53 entries (10,627 B measured) returned 413,
+// and because sync() awaits pushLocal BEFORE pullRemote a 413 killed both
+// directions permanently — the client just resent a larger payload next time.
+// The sync routes now mount their own 5mb parser ABOVE the global one; ordering
+// is load-bearing, since body-parser lets the first parser to run win.
+// ---------------------------------------------------------------------------
+describe("Sync body limit: a large full-snapshot push is accepted", () => {
+  let token, userId, habitId;
+  before(() => {
+    const u = createTestUser();
+    userId = u.userId;
+    token = createTestSession(userId);
+    habitId = crypto.randomUUID().toUpperCase();
+  });
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id = ?").run(habitId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("accepts a year of check-ins (well past the old 10kb ceiling)", async () => {
+    const entries = [];
+    const start = new Date("2026-01-01T00:00:00.000Z");
+    for (let i = 0; i < 365; i++) {
+      const d = new Date(start.getTime() + i * 86400000).toISOString().slice(0, 10);
+      entries.push({ id: crypto.randomUUID().toUpperCase(), habitId, date: d, value: 1,
+        createdAt: `${d}T00:00:00.000Z` });
+    }
+    const body = {
+      habits: [{ id: habitId, name: "Morning Run", emoji: "\u{1F3C3}", colorHex: "#FF3B30",
+        isArchived: false, sortOrder: 1, kind: "binary", targetValue: 1, scheduleKind: "daily",
+        timesPerWeek: 7, activeDaysMask: 127,
+        createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-06-01T00:00:00.000Z" }],
+      entries, deletedHabitIds: [], deletedEntryIds: [], deletedGroupIds: [],
+    };
+    assert.ok(JSON.stringify(body).length > 10 * 1024,
+      "the fixture must exceed the old 10kb cap or this test proves nothing");
+
+    const push = await api("POST", "/v1/sync/push", { token, body });
+    assert.equal(push.status, 200, "a full-snapshot push must not 413");
+
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    assert.equal(pull.json.entries.filter((e) => e.habitId === habitId).length, 365);
+  });
+
+  it("still caps every other route, so the unauthenticated endpoints stay protected", async () => {
+    const r = await api("POST", "/v1/auth/request-link", { body: { email: "x".repeat(20000) + "@y.com" } });
+    assert.equal(r.status, 413, "non-sync routes must keep the 10kb limit");
+  });
+});
