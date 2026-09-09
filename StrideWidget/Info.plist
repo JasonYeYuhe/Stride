@@ -10,6 +10,12 @@
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
+	<key>CFBundleDisplayName</key>
+	<!-- Required by App Store submission for an embedded extension: without it
+	     the upload is rejected with error 90360. It went unnoticed until now
+	     only because the extension was never actually embedded in the app. This
+	     is also the name shown in the widget gallery, so keep it the brand name. -->
+	<string>Stride</string>
 	<key>CFBundleName</key>
 	<string>$(PRODUCT_NAME)</string>
 	<key>CFBundlePackageType</key>
