@@ -13,6 +13,52 @@ ssh -o IdentityAgent=none -i ~/.ssh/id_ed25519 azureuser@172.207.80.109
 > `IdentityAgent=none` is not optional for unattended sessions — the 1Password SSH
 > agent will otherwise hang the connection forever with no prompt.
 
+## ⚠️ Diff the host against the repo BEFORE you rsync
+
+The host has held changes that were never committed. On 2026-09-09 a deploy was
+one command away from reverting a live security fix: production's `index.js` was
+1160 bytes larger than the repo's because someone had bound the listener to
+`127.0.0.1` on 2026-07-27 and not pushed it. Overwriting it would have re-exposed
+port 3002 to the internet, and with `trust proxy` set, a direct caller can forge
+`X-Forwarded-For` and defeat every per-IP rate limit — including the one on the
+unauthenticated magic-link endpoint, whose Resend key is shared with ColorArchive.
+
+Always dry-run first and read the itemised output. `s` means the content differs;
+`t` alone is just an mtime.
+
+```bash
+rsync -avzn --itemize-changes \
+  --exclude node_modules --exclude '*.db' --exclude '*.db-shm' --exclude '*.db-wal' \
+  --exclude .env --exclude backup.sh --exclude test \
+  -e "ssh -o IdentityAgent=none -i ~/.ssh/id_ed25519" --rsync-path="sudo rsync" \
+  server/ azureuser@172.207.80.109:/root/stride-server/
+```
+
+For every file marked `s` that you did not change yourself, diff it and port the
+host's version into the repo first:
+
+```bash
+ssh -o IdentityAgent=none -i ~/.ssh/id_ed25519 azureuser@172.207.80.109 \
+  'sudo cat /root/stride-server/index.js' > /tmp/prod_index.js
+diff /tmp/prod_index.js server/index.js
+```
+
+Then take a backup before touching anything:
+
+```bash
+sudo sqlite3 /root/stride-server/stride.db \
+  ".backup /root/backups/stride-predeploy-$(date +%Y%m%d-%H%M%S).db"
+```
+
+Deploy, restart, verify:
+
+```bash
+# (same rsync without -n)
+sudo pm2 restart stride-server --update-env
+curl -s -o /dev/null -w '%{http_code}\n' https://stride-api.colorarchive.me/health   # 200
+curl -s -m 5 -o /dev/null -w '%{http_code}\n' http://172.207.80.109:3002/health      # 000 = loopback bind intact
+```
+
 ## Setup on the host
 
 ```bash
