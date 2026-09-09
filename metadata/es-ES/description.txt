@@ -1,54 +1,62 @@
-Los grandes cambios no ocurren de la noche a la mañana, se construyen día a día. Stride es la app de seguimiento de hábitos diseñada para ayudarte a ser constante, visualizar tu progreso y construir la vida que deseas, una racha a la vez.
+Los grandes cambios no ocurren de la noche a la mañana: se construyen día a día. Stride es la app de hábitos que te ayuda a ser constante, ver tu progreso y seguir adelante, racha a racha.
 
-Ya sea que quieras madrugar, leer más, hacer ejercicio, meditar o beber más agua, Stride hace que registrar tus hábitos sea sencillo, satisfactorio y motivador en todos tus dispositivos Apple.
+CREA TUS HÁBITOS EN SEGUNDOS
 
-CREA Y REGISTRA CON FACILIDAD
+Empieza desde cero o elige una plantilla ya preparada, y marca cada hábito con un solo toque. Ponle a cada uno su emoji y su color, y ordena la lista a tu gusto.
 
-Crea hábitos en segundos y márcalos con un solo toque. Personaliza iconos y colores, establece metas diarias y organiza tu panel de hábitos a tu medida. Stride está diseñado para que pases menos tiempo en la app y más tiempo haciendo lo que importa.
+No todo se reduce a un sí o un no: con los hábitos medibles defines un objetivo diario y su unidad —«Beber agua, 8 vasos» o «Correr, 5 km»— y vas sumando durante el día.
+
+FRECUENCIAS FLEXIBLES
+
+Tampoco todos los hábitos son diarios. Elige entre todos los días, un número de veces por semana o solo ciertos días: lunes, miércoles y viernes.
 
 RACHAS QUE TE IMPULSAN
 
-No hay nada como ver crecer tu racha día tras día. Stride registra automáticamente tus días consecutivos y te da esa satisfacción de sentir que avanzas. ¿Te saltaste un día? Sin culpa — simplemente retoma el ritmo. Tu mejor racha siempre queda guardada para que te retes a superarla.
+Stride cuenta tus rachas automáticamente. Los días que un hábito no toca son de descanso y no rompen la racha, y si te has propuesto un número de veces por semana, esa racha cuenta semanas en lugar de días. ¿Se te ha escapado un día? Retomas el ritmo y a seguir. Tu mejor racha queda guardada junto a la actual, y puedes compartir cualquiera como imagen.
 
-ESTADÍSTICAS Y MAPAS DE CALOR
+ESTADÍSTICAS Y MAPA DE CALOR
 
-Profundiza en tu progreso con estadísticas detalladas y hermosos mapas de calor estilo GitHub. Consulta tus tasas de cumplimiento por semanas, meses y años. Descubre tus patrones — qué días rindes mejor, dónde tiendes a flaquear y cuánto has avanzado desde el primer día.
+Sigue tu progreso con estadísticas detalladas y un mapa de calor de tus últimas 12 semanas. Consulta tu racha actual y la mejor, tu porcentaje de cumplimiento de los últimos 30 días y en qué días de la semana rindes más. En los hábitos programados solo ciertos días, ese porcentaje solo cuenta los días en los que tocaba.
 
-WIDGETS PARA LA PANTALLA DE INICIO
+WIDGETS PARA LA PANTALLA DE INICIO Y LA DE BLOQUEO (iPhone y iPad)
 
-Mantén tus hábitos siempre a la vista con 5 estilos de widgets para tu pantalla de inicio y pantalla de bloqueo. Consulta el progreso de hoy, sigue tus mejores rachas o echa un vistazo al mapa de calor semanal — todo sin abrir la app. Disponibles en tamaño pequeño, mediano y grande.
+Cinco estilos de widget para tenerlo todo a la vista: pequeño y mediano para la pantalla de inicio, y circular, en línea y rectangular para la pantalla de bloqueo. Comprueba de un vistazo cuántos hábitos llevas hoy y, desde el widget mediano, márcalos sin abrir la app.
 
-RECORDATORIOS INTELIGENTES
+RECORDATORIOS PARA CADA HÁBITO
 
-No vuelvas a olvidar un hábito. Configura notificaciones push personalizadas para cada hábito en el momento justo. Meditación a las 7 de la mañana, diario a las 9 de la noche — Stride te recuerda suavemente para que tus hábitos se vuelvan automáticos.
+Cada hábito puede tener su propio recordatorio, a la hora que tú elijas: meditar a las 7:00, diario a las 21:00.
 
 SINCRONIZACIÓN ENTRE DISPOSITIVOS
 
-Empieza tu registro matutino en el iPhone, revisa tus estadísticas en el iPad y completa tus hábitos nocturnos en el Mac. Con la sincronización de cuenta Stride, tus datos te acompañan a todas partes.
+Marca los hábitos de la mañana en el iPhone, revisa tus estadísticas en el iPad y cierra el día en el Mac. Con tu cuenta gratuita de Stride, tus datos te acompañan.
+
+CASI TODO ES GRATIS
+
+Hábitos sin límite, hábitos medibles (objetivo y unidad), frecuencias flexibles, widgets, recordatorios para cada hábito, mapa de calor y estadísticas, plantillas, compartir rachas, exportación de datos (CSV o JSON) y sincronización entre dispositivos.
 
 STRIDE PRO
 
-Lleva tu camino de hábitos al siguiente nivel con Stride Pro:
+Stride Pro añade tres cosas:
 
-- Hábitos ilimitados (la versión gratuita incluye hasta 5)
-- Estadísticas avanzadas y análisis profundo
-- Todos los estilos de widgets desbloqueados
-- Recordatorios inteligentes y contextuales
-- Sincronización entre dispositivos
+• Grupos de hábitos: organízalos en grupos plegables.
+• Estadísticas avanzadas: la tarjeta de información y el gráfico de tendencia de 8 semanas.
+• Revisión semanal: un repaso a cómo te ha ido la semana.
 
 TU PRIVACIDAD IMPORTA
 
-Tus datos de hábitos son tuyos. Stride almacena todo localmente en tu dispositivo por defecto. Cuando eliges sincronizar, tus datos se transmiten de forma segura y nunca se comparten con terceros ni se usan para publicidad.
+Stride guarda tus hábitos en tu dispositivo mientras no inicies sesión para sincronizar. Cuando lo haces, se envían al servidor propio de Stride, que los usa solo para mantener tus dispositivos al día: nunca se venden ni se comparten con fines publicitarios. Stride recopila informes anónimos de fallos y diagnóstico para corregir errores; no contienen ningún contenido de tus hábitos ni están vinculados a tu identidad.
 
 EMPIEZA HOY
 
-El mejor momento para crear un buen hábito fue ayer. El segundo mejor momento es ahora mismo. Descarga Stride y da el primer paso hacia la persona que quieres ser.
+No necesitas un lunes ni un año nuevo. Necesitas hoy. Descarga Stride y marca tu primer hábito.
 
-Stride está disponible en iPhone, iPad y Mac.
+Disponible para iPhone, iPad y Mac.
 
-INFORMACIÓN DE SUSCRIPCIÓN
+INFORMACIÓN DE COMPRA Y SUSCRIPCIÓN
 
-Stride Pro está disponible como suscripción mensual o anual con renovación automática. El pago se cargará a tu cuenta de Apple ID en el momento de la confirmación de la compra. La suscripción se renueva automáticamente a menos que la renovación automática se desactive al menos 24 horas antes del final del período actual. Se te cobrará la renovación dentro de las 24 horas previas al final del período actual. Puedes gestionar y cancelar tus suscripciones en los ajustes de tu cuenta en la App Store después de la compra.
+Stride Pro se ofrece como suscripción mensual o anual de renovación automática, o como compra única Lifetime, que se paga una sola vez y no se renueva.
+
+Para las suscripciones: el pago se cargará a tu cuenta de Apple al confirmar la compra. La suscripción se renueva automáticamente a menos que la renovación automática se desactive al menos 24 horas antes del final del periodo en curso, y el cobro se realiza en las 24 horas previas al final de ese periodo. Puedes gestionar o cancelar tu suscripción en los ajustes de tu cuenta de la App Store.
 
 Términos de uso: https://jasonyeyuhe.github.io/stride-site/terms
 Política de privacidad: https://jasonyeyuhe.github.io/stride-site/privacy

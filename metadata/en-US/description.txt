@@ -1,54 +1,60 @@
-Great things aren't built in a day — they're built one day at a time. Stride is the habit tracker designed to help you show up consistently, track your progress beautifully, and build the life you want, one streak at a time.
+Nothing worth building happens in a day. Stride is the habit tracker that helps you show up, see your progress, and keep the streak alive — one day at a time.
 
-Whether you're starting a morning routine, learning a new language, hitting the gym, or drinking more water, Stride makes it simple, satisfying, and motivating to stay on track across all your Apple devices.
+Whether it’s a morning routine, the gym, or drinking more water, Stride makes it simple to stay on track on your iPhone, iPad, and Mac.
 
 TRACK YOUR HABITS, YOUR WAY
 
-Create habits in seconds and check them off with a single tap. Stride keeps things beautifully simple so you spend less time in the app and more time doing what matters. Set daily goals, customize icons and colors, and organize habits into the perfect dashboard for your life.
+Create habits in seconds — from scratch or from a ready-made template — and check off a yes-or-no habit with a single tap. Pick an emoji and a color for each one, and arrange your list to match how your day runs.
+
+Not every habit is a simple yes or no. Measurable habits let you set a daily target and a unit, so “Drink Water — 8 glasses” or “Run — 5 km” tracks the amount, not just the checkmark.
+
+And not every habit is daily. Choose every day, a set number of times per week, or specific days — Monday, Wednesday, and Friday only, if that’s your gym schedule. Hit a weekly goal on whichever days suit you; that streak counts weeks, not days.
 
 STREAKS THAT KEEP YOU GOING
 
-There's nothing quite like watching your streak grow. Stride tracks your consecutive days automatically and gives you that satisfying feeling of momentum. Miss a day? No guilt — just pick back up and keep moving forward. Your best streak is always saved so you can challenge yourself to beat it.
+Stride counts every streak automatically, so you can watch your momentum build. On a day your habit isn’t scheduled, it’s a rest day — it never breaks your streak. Miss a day? No guilt — just pick back up. Your longest run is saved alongside your current streak, and any streak can be shared as an image.
 
-STATISTICS & HEATMAPS
+STATISTICS & HEATMAP
 
-Dive deep into your progress with detailed statistics and beautiful GitHub-style heatmaps. See your completion rates over weeks, months, and years. Understand your patterns — which days you're strongest, where you tend to slip, and how far you've come since day one.
+The Activity Heatmap is a color-coded grid of your last 12 weeks. You also get your current and best streak, your 30-day completion rate, and how you do by weekday. For a habit scheduled on specific days, that rate counts only the days it was actually due.
 
-HOME SCREEN WIDGETS
+WIDGETS ON IPHONE AND IPAD
 
-Keep your habits front and center with 5 different widget styles for your Home Screen and Lock Screen. See today's progress at a glance, track your top streaks, or get a quick overview of your weekly heatmap — all without opening the app. Available in small, medium, and large sizes.
+Five widget styles: small and medium on the Home Screen, plus circular, inline, and rectangular on the Lock Screen. See today’s progress without opening the app — and from the medium widget, tap a habit to check it off right there.
 
-SMART REMINDERS
+REMINDERS FOR EVERY HABIT
 
-Never forget a habit again. Set custom push notification reminders for each habit at exactly the right time. Morning meditation at 7 AM, evening journal at 9 PM — Stride nudges you gently so your habits become automatic.
+Give every habit its own reminder, at exactly the time you want it. Morning meditation at 7 AM, evening journal at 9 PM — Stride nudges you at the right moment, so the habit sticks.
 
-SYNC ACROSS ALL YOUR DEVICES
+SYNC ACROSS YOUR DEVICES
 
-Start your morning check-in on your iPhone, review your stats on your iPad, and track your evening habits on your Mac. With Stride account sync, your data follows you everywhere. Sign up once and everything stays perfectly in sync.
+Check in on your iPhone, review your stats on your iPad, finish the day on your Mac. With a free Stride account, your data follows you.
 
 STRIDE PRO
 
-Take your habit-building journey to the next level with Stride Pro:
+Almost everything in Stride is free: unlimited habits, measurable habits, flexible schedules, widgets, per-habit reminders, the heatmap and statistics, habit templates, streak sharing, data export (CSV or JSON), and cross-device sync.
 
-- Unlimited habits (free version includes up to 5)
-- Advanced statistics and insights
-- All widget styles unlocked
-- Smart, context-aware reminders
-- Cross-device sync via your Stride account
+Stride Pro adds three things:
+
+• Habit Groups — organize habits into collapsible groups
+• Advanced Analytics — the Insights card and the 8-week Trend chart
+• Weekly Review — a look back at how your week went
 
 YOUR PRIVACY MATTERS
 
-Your habit data is yours. Stride stores everything locally on your device by default. When you choose to sync, your data is transmitted securely and never shared with third parties or used for advertising.
+Your habit data is yours. Stride keeps it on your device unless you sign in to sync; when you do, it goes to Stride’s own server and is used only to keep your own devices in step — never sold, never shared for advertising. Stride collects anonymous crash and diagnostic reports to fix bugs; they contain no habit content and are not linked to your identity.
 
 START TODAY
 
-The best time to build a good habit was yesterday. The second best time is right now. Download Stride and take your first step toward the person you want to become.
+You don’t need a Monday, a new year, or a fresh start. You need today. Download Stride and check off one habit.
 
-Stride is available on iPhone, iPad, and Mac.
+iPhone, iPad, and Mac.
 
-SUBSCRIPTION INFORMATION
+PURCHASE & SUBSCRIPTION INFORMATION
 
-Stride Pro is available as a monthly or yearly auto-renewable subscription. Payment will be charged to your Apple ID account at the confirmation of purchase. Subscription automatically renews unless auto-renew is turned off at least 24 hours before the end of the current period. Your account will be charged for renewal within 24 hours prior to the end of the current period. You can manage and cancel your subscriptions by going to your account settings on the App Store after purchase.
+Stride Pro is available as a monthly or yearly auto-renewable subscription, or as a one-time Lifetime purchase. The Lifetime purchase is paid once and does not renew.
+
+For subscriptions: payment is charged to your Apple ID account on confirmation of purchase. The subscription renews automatically unless auto-renew is turned off at least 24 hours before the end of the current period, and your account is charged for renewal within 24 hours before that period ends. You can manage or cancel your subscription in your App Store account settings.
 
 Terms of Use: https://jasonyeyuhe.github.io/stride-site/terms
 Privacy Policy: https://jasonyeyuhe.github.io/stride-site/privacy
