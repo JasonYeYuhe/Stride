@@ -7600,3 +7600,120 @@ describe("Sync body limit: a large full-snapshot push is accepted", () => {
     assert.equal(r.status, 413, "non-sync routes must keep the 10kb limit");
   });
 });
+
+// ---------------------------------------------------------------------------
+// REGRESSION: server-generated ids were lower case, the apps' are upper case.
+//
+// crypto.randomUUID() is lower case; Swift's UUID.uuidString is upper case; the id
+// columns compare with BINARY collation. The App Review demo account (seeded here)
+// therefore had lower-case ids that shipped clients matched against nothing, and a
+// client that normalised them would push them back upper case and get every habit
+// and check-in inserted twice. migrations/canonicalizeIds.js upper-cases stored ids
+// at startup; these tests run it against rows written the way seed-demo.js used to.
+// ---------------------------------------------------------------------------
+describe("Id canonicalisation: stored ids are upper case, like the apps'", () => {
+  const { canonicalizeIds } = require("../migrations/canonicalizeIds");
+  let fk, token, userId;
+  const lower = () => crypto.randomUUID().toLowerCase();
+  const groupId = lower(), habitId = lower(), entryA = lower(), entryB = lower(), goneEntry = lower();
+
+  before(() => {
+    // Own connection with foreign keys on, as db.js has, so a re-key that orphans an
+    // entry fails here the way it would in production.
+    fk = new Database(DB_PATH);
+    fk.pragma("foreign_keys = ON");
+    const u = createTestUser();
+    userId = u.userId;
+    token = createTestSession(userId);
+
+    fk.prepare("INSERT INTO habit_groups (id, user_id, name) VALUES (?, ?, 'Morning')").run(groupId, userId);
+    fk.prepare("INSERT INTO habits (id, user_id, name, group_id) VALUES (?, ?, 'Read', ?)").run(habitId, userId, groupId);
+    fk.prepare("INSERT INTO habit_entries (id, habit_id, date, created_at, updated_at) VALUES (?, ?, '2026-09-01', '2026-09-01T08:00:00.000Z', '2026-09-01T08:00:00.000Z')").run(entryA, habitId);
+    fk.prepare("INSERT INTO habit_entries (id, habit_id, date, created_at, updated_at) VALUES (?, ?, '2026-09-02', '2026-09-02T08:00:00.000Z', '2026-09-02T08:00:00.000Z')").run(entryB, habitId);
+    fk.prepare("INSERT INTO deletion_tombstones (user_id, entity_type, entity_id, deleted_at) VALUES (?, 'entry', ?, '2026-09-03T08:00:00.000Z')").run(userId, goneEntry);
+  });
+
+  after(() => {
+    fk.prepare("DELETE FROM habit_entries WHERE habit_id IN (SELECT id FROM habits WHERE user_id = ?)").run(userId);
+    fk.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    fk.prepare("DELETE FROM habit_groups WHERE user_id = ?").run(userId);
+    fk.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    fk.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    fk.prepare("DELETE FROM users WHERE id = ?").run(userId);
+    fk.close();
+  });
+
+  it("refuses to run outside a transaction", () => {
+    assert.throws(() => canonicalizeIds(fk), /inside a transaction/);
+  });
+
+  it("upper-cases every id and keeps the check-ins attached to their habit", () => {
+    const result = fk.transaction(() => canonicalizeIds(fk))();
+    assert.equal(result.changed, true, `expected a re-key, got ${JSON.stringify(result)}`);
+
+    const habit = fk.prepare("SELECT id, group_id FROM habits WHERE user_id = ?").get(userId);
+    assert.equal(habit.id, habitId.toUpperCase());
+    assert.equal(habit.group_id, groupId.toUpperCase());
+    assert.equal(fk.prepare("SELECT id FROM habit_groups WHERE user_id = ?").get(userId).id, groupId.toUpperCase());
+
+    const entries = fk.prepare("SELECT id, habit_id FROM habit_entries WHERE habit_id = ? ORDER BY date").all(habitId.toUpperCase());
+    assert.deepEqual(entries.map((e) => e.id), [entryA.toUpperCase(), entryB.toUpperCase()]);
+
+    const tomb = fk.prepare("SELECT entity_id FROM deletion_tombstones WHERE user_id = ?").get(userId);
+    assert.equal(tomb.entity_id, goneEntry.toUpperCase());
+
+    assert.deepEqual(fk.pragma("foreign_key_check"), [], "no entry may be left pointing at the old habit id");
+  });
+
+  it("is idempotent", () => {
+    const again = fk.transaction(() => canonicalizeIds(fk))();
+    assert.deepEqual(again, { lowercase: 0, twins: 0, changed: false });
+  });
+
+  it("an app pushing the same habit and check-ins back updates them rather than duplicating", async () => {
+    const H = habitId.toUpperCase();
+    const body = {
+      habits: [{ id: H, name: "Read", emoji: "\u{1F4D6}", colorHex: "#34C759", isArchived: false, sortOrder: 0,
+        kind: "binary", targetValue: 1, scheduleKind: "daily", timesPerWeek: 7, activeDaysMask: 127,
+        groupId: groupId.toUpperCase(), createdAt: "2026-09-01T00:00:00.000Z", updatedAt: "2026-09-10T00:00:00.000Z" }],
+      entries: [
+        { id: entryA.toUpperCase(), habitId: H, date: "2026-09-01", value: 1, createdAt: "2026-09-01T08:00:00.000Z" },
+        { id: entryB.toUpperCase(), habitId: H, date: "2026-09-02", value: 1, createdAt: "2026-09-02T08:00:00.000Z" },
+      ],
+      groups: [{ id: groupId.toUpperCase(), name: "Morning", sortOrder: 0,
+        createdAt: "2026-09-01T00:00:00.000Z", updatedAt: "2026-09-10T00:00:00.000Z" }],
+      deletedHabitIds: [], deletedEntryIds: [], deletedGroupIds: [],
+    };
+    const push = await api("POST", "/v1/sync/push", { token, body });
+    assert.equal(push.status, 200);
+
+    assert.equal(fk.prepare("SELECT count(*) AS n FROM habits WHERE user_id = ?").get(userId).n, 1);
+    assert.equal(fk.prepare("SELECT count(*) AS n FROM habit_groups WHERE user_id = ?").get(userId).n, 1);
+    assert.equal(fk.prepare("SELECT count(*) AS n FROM habit_entries WHERE habit_id = ?").get(H).n, 2);
+
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    assert.deepEqual(pull.json.habits.map((h) => h.id), [H]);
+    assert.ok(pull.json.entries.every((e) => e.habitId === H && e.id === e.id.toUpperCase()));
+  });
+
+  it("changes nothing when a lower-case id already has an upper-case twin", () => {
+    const twin = lower();
+    fk.prepare("INSERT INTO habits (id, user_id, name) VALUES (?, ?, 'Twin lower')").run(twin, userId);
+    fk.prepare("INSERT INTO habits (id, user_id, name) VALUES (?, ?, 'Twin upper')").run(twin.toUpperCase(), userId);
+    try {
+      const result = fk.transaction(() => canonicalizeIds(fk))();
+      assert.equal(result.changed, false);
+      assert.ok(result.twins >= 1);
+      assert.equal(fk.prepare("SELECT count(*) AS n FROM habits WHERE id IN (?, ?)").get(twin, twin.toUpperCase()).n, 2,
+        "both rows must survive untouched; startup must never throw or merge");
+    } finally {
+      fk.prepare("DELETE FROM habits WHERE id IN (?, ?)").run(twin, twin.toUpperCase());
+    }
+  });
+
+  it("the REST create route now generates upper-case ids", async () => {
+    const r = await api("POST", "/v1/habits", { token, body: { name: "Generated" } });
+    assert.equal(r.status, 201);
+    assert.match(r.json.habit.id, /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/);
+  });
+});

@@ -71,7 +71,8 @@ router.post("/", (req, res) => {
     }
   }
 
-  const habitId = id || crypto.randomUUID();
+  // Generated ids are upper case, like the apps' (migrations/canonicalizeIds.js).
+  const habitId = id || crypto.randomUUID().toUpperCase();
   const maxOrder = /** @type {{ next: number }} */ (db.prepare(
     "SELECT COALESCE(MAX(sort_order), -1) + 1 as next FROM habits WHERE user_id = ?",
   ).get(req.user.id));
@@ -199,7 +200,7 @@ router.post("/:id/entries", (req, res) => {
     return res.status(400).json({ error: "Invalid date" });
   }
 
-  const entryId = id || crypto.randomUUID();
+  const entryId = id || crypto.randomUUID().toUpperCase();
 
   try {
     const entryNow = new Date().toISOString();

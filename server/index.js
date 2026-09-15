@@ -26,7 +26,7 @@ if (process.env.SENTRY_DSN) {
 }
 
 const app = express();
-const PORT = process.env.PORT || 3002;
+const PORT = Number(process.env.PORT) || 3002;
 
 // Behind nginx (single hop): trust the first proxy so express-rate-limit and
 // req.ip key on the real client IP from X-Forwarded-For, not the loopback

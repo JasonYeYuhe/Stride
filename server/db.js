@@ -4,6 +4,7 @@ const path = require("path");
 
 /** @typedef {{ name: string, type: string, notnull: number, dflt_value: string|null, pk: number }} PragmaColumn */
 
+const { canonicalizeIds } = require("./migrations/canonicalizeIds");
 const db = new Database(path.join(__dirname, "stride.db"));
 
 db.pragma("journal_mode = WAL");
@@ -162,6 +163,10 @@ const migrateIfNeeded = db.transaction(() => {
       deleted_at = REPLACE(deleted_at, ' ', 'T') || 'Z'
     WHERE deleted_at LIKE '%-%-% %:%:%' AND deleted_at NOT LIKE '%T%';
   `);
+
+  // Upper-case every stored id so server-generated (lower-case) ids match what the apps
+  // send. See migrations/canonicalizeIds.js — it needs this surrounding transaction.
+  canonicalizeIds(db);
 });
 migrateIfNeeded();
 
