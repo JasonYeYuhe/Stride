@@ -151,12 +151,48 @@ def attach_build(version_id, build_id):
             {"data": {"type": "builds", "id": build_id}})
 
 
+def submission_versions(sub_id):
+    """appStoreVersion ids in a review submission.
+
+    `include=appStoreVersion` is required: without it every item comes back with empty
+    relationships, and the old "is this version already in the submission?" test was
+    always false.
+    """
+    items = a.get(f"/reviewSubmissions/{sub_id}/items",
+                  params={"include": "appStoreVersion", "limit": 50})["data"]
+    return {(i.get("relationships", {}).get("appStoreVersion", {}).get("data") or {}).get("id")
+            for i in items} - {None}
+
+
 def submit(app_id, platform, version_id):
-    """reviewSubmissions is the current API; appStoreVersionSubmissions is retired."""
+    """Submit `version_id` for review. Returns True only if it is now submitted.
+
+    reviewSubmissions is the current API; appStoreVersionSubmissions is retired.
+
+    This used to take the first open submission it found and, if that one was already
+    WAITING_FOR_REVIEW or IN_REVIEW, print "nothing more to do" and return — without looking
+    at WHICH version it held. With 1.2.1 still in review, `finish 1.2.2` would have attached
+    the build, printed that line, exited 0, and never submitted 1.2.2.
+    """
     d = a.get("/reviewSubmissions", params={
         "filter[app]": app_id, "filter[platform]": platform,
         "filter[state]": "READY_FOR_REVIEW,WAITING_FOR_REVIEW,IN_REVIEW", "limit": 10})
-    sub = d["data"][0] if d["data"] else None
+    draft = None
+    for sub in d["data"]:
+        state = sub["attributes"]["state"]
+        held = submission_versions(sub["id"])
+        if state == "READY_FOR_REVIEW":
+            draft = sub
+        elif version_id in held:
+            print(f"  [{platform}] already submitted: submission {sub['id']} is {state}")
+            return True
+        else:
+            print(f"  [{platform}] NOT SUBMITTED: submission {sub['id']} is {state} with another "
+                  f"version ({', '.join(sorted(held)) or 'unknown'}). Wait for it to finish, or "
+                  f"remove it in App Store Connect, then run finish again.")
+            return False
+
+    sub = draft
     if sub is None:
         sub = a.post("/reviewSubmissions", {"data": {
             "type": "reviewSubmissions",
@@ -164,13 +200,7 @@ def submit(app_id, platform, version_id):
             "relationships": {"app": {"data": {"type": "apps", "id": app_id}}},
         }})["data"]
         print(f"  [{platform}] created review submission {sub['id']}")
-    state = sub["attributes"]["state"]
-    if state != "READY_FOR_REVIEW":
-        print(f"  [{platform}] submission {sub['id']} is {state} — nothing more to do")
-        return
-    items = a.get(f"/reviewSubmissions/{sub['id']}/items", params={"limit": 20})["data"]
-    if not any(i.get("relationships", {}).get("appStoreVersion", {}).get("data", {}).get("id") == version_id
-               for i in items):
+    if version_id not in submission_versions(sub["id"]):
         a.post("/reviewSubmissionItems", {"data": {
             "type": "reviewSubmissionItems",
             "relationships": {
@@ -181,6 +211,7 @@ def submit(app_id, platform, version_id):
     a.patch(f"/reviewSubmissions/{sub['id']}", {"data": {
         "type": "reviewSubmissions", "id": sub["id"], "attributes": {"submitted": True}}})
     print(f"  [{platform}] SUBMITTED for review")
+    return True
 
 
 def main():
@@ -209,10 +240,14 @@ def main():
     if cmd == "finish":
         if not build_number:
             print("finish needs a build number"); return 1
+        # Every platform that doesn't end up submitted is named here and makes the exit code
+        # non-zero. Each of these used to be a `continue` and the command still exited 0.
+        not_submitted = []
         for p in PLATFORMS:
             vid = versions(app_id, version_string).get(p, {}).get("id")
             if not vid:
-                print(f"  [{p}] no {version_string} version — run prepare first"); continue
+                print(f"  [{p}] no {version_string} version — run prepare first")
+                not_submitted.append(p); continue
             b = find_build(app_id, build_number, p)
             for _ in range(60):          # processing usually lands inside 15 min
                 if b and b["attributes"]["processingState"] == "VALID":
@@ -222,10 +257,15 @@ def main():
                 time.sleep(60)
                 b = find_build(app_id, build_number, p)
             else:
-                print(f"  [{p}] build {build_number} never became VALID — stopping"); continue
+                print(f"  [{p}] build {build_number} never became VALID — stopping")
+                not_submitted.append(p); continue
             attach_build(vid, b["id"])
             print(f"  [{p}] attached build {build_number}")
-            submit(app_id, p, vid)
+            if not submit(app_id, p, vid):
+                not_submitted.append(p)
+        if not_submitted:
+            print(f"FAILED: {version_string} was NOT submitted for {', '.join(not_submitted)}")
+            return 1
         return 0
 
     print(__doc__); return 1
