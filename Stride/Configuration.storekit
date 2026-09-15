@@ -1,7 +1,22 @@
 {
   "identifier" : "yyh.stride.habittracker.storekit",
-  "type" : "Default",
-  "version" : 2,
+  "products" : [
+    {
+      "displayPrice" : "19.99",
+      "familyShareable" : false,
+      "internalID" : "lifetime_pro",
+      "localizations" : [
+        {
+          "description" : "Every Pro feature, paid once",
+          "displayName" : "Stride Pro Lifetime",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "yyh.stride.habittracker.pro.lifetime",
+      "referenceName" : "Lifetime Pro",
+      "type" : "NonConsumable"
+    }
+  ],
   "subscriptionGroups" : [
     {
       "id" : "stride_pro",
@@ -70,5 +85,7 @@
         }
       ]
     }
-  ]
+  ],
+  "type" : "Default",
+  "version" : 2
 }
