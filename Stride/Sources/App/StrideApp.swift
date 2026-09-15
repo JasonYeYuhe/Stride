@@ -51,8 +51,14 @@ struct StrideApp: App {
                     await syncIfLoggedIn()
                     await StoreService.shared.loadProducts()
                 }
+                // Every SwiftData save in the app, not a list of call sites. Only check-ins used to
+                // reload the widget, so adding, deleting, archiving, renaming or reordering a habit —
+                // or a sync pulling in another device's check-ins — left it stale until its next
+                // scheduled refresh at midnight; a deleted habit stayed listed, and tapping it did
+                // nothing. A new save site can't forget this.
                 .onReceive(
                     NotificationCenter.default.publisher(for: .habitDataChanged)
+                        .merge(with: NotificationCenter.default.publisher(for: ModelContext.didSave))
                         .throttle(for: .seconds(2), scheduler: DispatchQueue.main, latest: true)
                 ) { _ in
                     WidgetCenter.shared.reloadAllTimelines()

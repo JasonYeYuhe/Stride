@@ -13,6 +13,9 @@ struct TodayView: View {
 
     @State private var showingAddHabit = false
     @State private var selectedDate = Date()
+    /// The day it was "today" when `selectedDate` was last checked; see `TodaySelection`.
+    @State private var selectionAnchor = Date()
+    @Environment(\.scenePhase) private var scenePhase
     @State private var collapsedGroups: Set<UUID> = []
 
     /// Habits split into ordered sections by group; falls back to a single flat
@@ -107,6 +110,19 @@ struct TodayView: View {
         .sheet(isPresented: $showingAddHabit) {
             AddHabitView()
         }
+        // Coming back to the app the next morning, and midnight passing while it is open.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { reanchorSelection() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged).receive(on: DispatchQueue.main)) { _ in
+            reanchorSelection()
+        }
+    }
+
+    private func reanchorSelection() {
+        let now = Date()
+        selectedDate = TodaySelection.reanchored(selected: selectedDate, shownOn: selectionAnchor, now: now)
+        selectionAnchor = now
     }
 
     private func isCollapsed(_ group: HabitGroup?) -> Bool {
