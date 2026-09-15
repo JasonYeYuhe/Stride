@@ -196,7 +196,7 @@ struct WeekStripView: View {
                         selectedDate = day
                     }
                 }
-                .accessibilityLabel("\(day.shortWeekday) \(day.dayNumber)\(isSelected ? ", selected" : "")")
+                .accessibilityLabel(isSelected ? "\(day.shortWeekday) \(day.dayNumber), selected" : "\(day.shortWeekday) \(day.dayNumber)")
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
         }
@@ -353,7 +353,9 @@ struct HabitRowView: View {
             Text("Add a note for today's check-in.")
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(habit.emoji) \(habit.name), \(isCompleted ? "completed" : "not completed")")
+        // A ternary nested inside the interpolation would be a plain String argument, never
+        // translated; each whole phrase has to be its own key.
+        .accessibilityLabel(isCompleted ? "\(habit.emoji) \(habit.name), completed" : "\(habit.emoji) \(habit.name), not completed")
         .accessibilityHint("Double tap to toggle completion")
     }
 
@@ -382,7 +384,9 @@ struct HabitRowView: View {
                     Image(systemName: "flame.fill")
                         .font(.caption2)
                         .foregroundStyle(.orange)
-                    Text("\(streak) \(habit.streakUnit) streak")
+                    // Not "\(streak) \(habit.streakUnit) streak": the unit would reach every
+                    // language as the English word.
+                    Text(habit.streakUnit == "week" ? "\(streak) week streak" : "\(streak) day streak")
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }

@@ -5,15 +5,24 @@ import SwiftData
 
 struct HabitTemplate: Identifiable {
     let id = UUID()
+    /// English, and the lookup key into Localizable.strings. Show and save `displayName`.
     let name: String
     let emoji: String
     let colorHex: String
     let category: String
+
+    /// The name in the app's language — also what the created habit is called, so a Japanese
+    /// user picking "Drink Water" gets a habit named in Japanese.
+    var displayName: String { String(localized: String.LocalizationValue(name)) }
 }
 
 // MARK: - Template Data
 
 enum HabitTemplateLibrary {
+    static func displayCategory(_ category: String) -> String {
+        String(localized: String.LocalizationValue(category))
+    }
+
     static let categories = [
         "Health & Fitness",
         "Learning",
@@ -73,8 +82,8 @@ struct HabitTemplatesView: View {
             templates = HabitTemplateLibrary.templates
         } else {
             templates = HabitTemplateLibrary.templates.filter {
-                $0.name.localizedCaseInsensitiveContains(searchText) ||
-                $0.category.localizedCaseInsensitiveContains(searchText)
+                $0.displayName.localizedCaseInsensitiveContains(searchText) ||
+                HabitTemplateLibrary.displayCategory($0.category).localizedCaseInsensitiveContains(searchText)
             }
         }
 
@@ -89,7 +98,7 @@ struct HabitTemplatesView: View {
         NavigationStack {
             List {
                 ForEach(sortedCategories, id: \.self) { category in
-                    Section(category) {
+                    Section(HabitTemplateLibrary.displayCategory(category)) {
                         ForEach(filteredTemplates[category] ?? []) { template in
                             templateRow(template)
                         }
@@ -123,7 +132,7 @@ struct HabitTemplatesView: View {
                     .font(.title2)
                     .frame(width: 36)
 
-                Text(template.name)
+                Text(template.displayName)
                     .font(.body.weight(.medium))
                     .foregroundStyle(.primary)
 
@@ -140,7 +149,7 @@ struct HabitTemplatesView: View {
 
     private func addHabit(from template: HabitTemplate) {
         let habit = Habit(
-            name: template.name,
+            name: template.displayName,
             emoji: template.emoji,
             colorHex: template.colorHex
         )

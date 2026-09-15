@@ -280,7 +280,7 @@ struct ProPaywallView: View {
                                 let isYearly = product.id.contains("yearly")
                                 PricingCard(
                                     title: isLifetime ? "Lifetime" : (isYearly ? "Yearly" : "Monthly"),
-                                    price: product.displayPrice + (isLifetime ? "" : (isYearly ? "/yr" : "/mo")),
+                                    price: product.displayPrice + (isLifetime ? "" : (isYearly ? String(localized: "/yr") : String(localized: "/mo"))),
                                     badge: isLifetime ? "BEST VALUE" : (isYearly ? "SAVE" : nil),
                                     subtitle: isLifetime ? "One-time purchase — yours forever" : (isYearly ? "Billed annually" : nil),
                                     highlighted: isLifetime
@@ -405,8 +405,8 @@ struct ProFeatureRow: View {
 struct PricingCard: View {
     let title: LocalizedStringKey
     let price: String
-    var badge: String? = nil
-    var subtitle: String? = nil
+    var badge: LocalizedStringKey? = nil
+    var subtitle: LocalizedStringKey? = nil
     var highlighted: Bool = false
     let action: () -> Void
 

@@ -115,6 +115,7 @@
 		C28A124422A05257CE3B4C2F /* SyncTimestamp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E260D0E53F2B5CF679443579 /* SyncTimestamp.swift */; };
 		C2DD4FB74CD7A13DDAD9B3A6 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2AC83A4314C26492BF0BAEC8 /* SettingsView.swift */; };
 		C469689F6F45748C336BAE46 /* DemoData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1194AFE4DBCEA8AD9DE1B32A /* DemoData.swift */; };
+		C4FF93C1EC314968F50768BF /* LocalizationCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46F51F44342B3269637FE386 /* LocalizationCatalogTests.swift */; };
 		C607A3CF091B31EF45DF0954 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 9BB01452FD4AD5A55E0153E0 /* Assets.xcassets */; };
 		C6A2CDBD665C9C2D0C2AD813 /* Habit.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21336DA7BBDF96DEA4D3407 /* Habit.swift */; };
 		C7CF4E1DDD006B7ADC7EE0DF /* HabitCheckIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADB968D6EC1637C4FCB0926B /* HabitCheckIn.swift */; };
@@ -202,6 +203,7 @@
 		3D9FD5D56D18C97078DAD4C5 /* HabitCheckInTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HabitCheckInTests.swift; sourceTree = "<group>"; };
 		42BDA8DAD54978C63D7BF2E8 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		447E56E91A805C7FB349BA2A /* StatsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatsView.swift; sourceTree = "<group>"; };
+		46F51F44342B3269637FE386 /* LocalizationCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalizationCatalogTests.swift; sourceTree = "<group>"; };
 		48E2B457B97506287B51D6F1 /* HabitTemplatesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HabitTemplatesView.swift; sourceTree = "<group>"; };
 		4941D1BB0D89A2006A52E455 /* StatsMathTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatsMathTests.swift; sourceTree = "<group>"; };
 		49586A76C3DA5DCA5F71B60D /* StrideWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrideWatchApp.swift; sourceTree = "<group>"; };
@@ -413,6 +415,7 @@
 				D288EEDE821222AD59C7BF9F /* FrequencyTests.swift */,
 				3D9FD5D56D18C97078DAD4C5 /* HabitCheckInTests.swift */,
 				CE98D2D441CF6A791EF47340 /* HabitTests.swift */,
+				46F51F44342B3269637FE386 /* LocalizationCatalogTests.swift */,
 				4941D1BB0D89A2006A52E455 /* StatsMathTests.swift */,
 				169185A02281694B56C07F52 /* SyncDeletionQueueTests.swift */,
 				B9523AC157C8D77E551424F5 /* SyncReconcileTests.swift */,
@@ -733,6 +736,7 @@
 				526A767FF73E75CF289F6D54 /* HabitCheckIn.swift in Sources */,
 				ED520E87C36BDD857F783F7F /* HabitCheckInTests.swift in Sources */,
 				0BFC1AB25F62D6A0FFCCD753 /* HabitTests.swift in Sources */,
+				C4FF93C1EC314968F50768BF /* LocalizationCatalogTests.swift in Sources */,
 				073EEADD57659E0F816B2F6C /* SentryBootstrap.swift in Sources */,
 				4B4ADE07E11E4960DE24489A /* SharedModelContainer.swift in Sources */,
 				011E75E8AEF33B393B65265D /* StatsMathTests.swift in Sources */,

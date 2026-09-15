@@ -37,14 +37,14 @@ struct CompleteHabitIntent: AppIntent {
         )
 
         guard let habit = try context.fetch(descriptor).first else {
-            return .result(value: "Could not find habit \"\(habitName)\".")
+            return .result(value: String(localized: "Could not find habit \"\(habitName)\"."))
         }
 
         // Used to append a new record whenever the habit was not yet complete, so a partially
         // logged count habit gained a second record for the same day. markDone adds to the
         // day's existing record and never un-checks anything.
         guard let result = HabitCheckIn.markDone(habit, on: Date(), in: context) else {
-            return .result(value: "\(habit.emoji) \(habit.name) is already completed today.")
+            return .result(value: String(localized: "\(habit.emoji) \(habit.name) is already completed today."))
         }
         try context.save()
 
@@ -53,9 +53,9 @@ struct CompleteHabitIntent: AppIntent {
 
         if habit.habitKind == .count && !result.isCompleted {
             let unit = habit.unit.map { " \($0)" } ?? ""
-            return .result(value: "Logged \(habit.emoji) \(habit.name): \(Self.amount(result.loggedValue)) of \(Self.amount(habit.targetValue))\(unit).")
+            return .result(value: String(localized: "Logged \(habit.emoji) \(habit.name): \(Self.amount(result.loggedValue)) of \(Self.amount(habit.targetValue))\(unit)."))
         }
-        return .result(value: "Completed \(habit.emoji) \(habit.name)!")
+        return .result(value: String(localized: "Completed \(habit.emoji) \(habit.name)!"))
     }
 
     private static func amount(_ value: Double) -> String {
@@ -83,13 +83,15 @@ struct CheckStreakIntent: AppIntent {
         )
 
         guard let habit = try context.fetch(descriptor).first else {
-            return .result(value: "Could not find habit \"\(habitName)\".")
+            return .result(value: String(localized: "Could not find habit \"\(habitName)\"."))
         }
 
         let streak = habit.currentStreak()
-        // A times-per-week habit's streak is in weeks; this always said "days".
-        let unit = habit.streakUnit == "week" ? (streak == 1 ? "week" : "weeks") : (streak == 1 ? "day" : "days")
-        return .result(value: "\(habit.emoji) \(habit.name): \(streak) \(unit) streak")
+        // A times-per-week habit's streak is in weeks; this always said "days". One key per unit,
+        // matching the Today screen, so the unit is translated rather than spliced in as English.
+        return .result(value: habit.streakUnit == "week"
+            ? String(localized: "\(habit.emoji) \(habit.name): \(streak) week streak")
+            : String(localized: "\(habit.emoji) \(habit.name): \(streak) day streak"))
     }
 }
 
@@ -108,12 +110,12 @@ struct ListHabitsIntent: AppIntent {
         let habits = try context.fetch(descriptor)
 
         if habits.isEmpty {
-            return .result(value: "No active habits yet.")
+            return .result(value: String(localized: "No active habits yet."))
         }
 
         let today = Calendar.current.startOfDay(for: Date())
         let lines = habits.sorted { $0.name < $1.name }.map { habit in
-            let status = habit.isCompletedOn(today) ? "done" : "not done"
+            let status = habit.isCompletedOn(today) ? String(localized: "done") : String(localized: "not done")
             return "\(habit.emoji) \(habit.name) — \(status)"
         }
 

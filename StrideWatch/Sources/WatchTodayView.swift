@@ -109,7 +109,7 @@ struct WatchHabitRow: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(habit.name), \(isCompleted ? "completed" : "not completed")")
+        .accessibilityLabel(isCompleted ? "\(habit.name), completed" : "\(habit.name), not completed")
         .accessibilityHint("Double tap to toggle completion")
     }
 }
