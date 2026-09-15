@@ -1,6 +1,7 @@
 import AppIntents
 import SwiftData
 import Foundation
+import WidgetKit
 
 // MARK: - Habit Name Provider
 
@@ -39,18 +40,26 @@ struct CompleteHabitIntent: AppIntent {
             return .result(value: "Could not find habit \"\(habitName)\".")
         }
 
-        let today = Calendar.current.startOfDay(for: Date())
-        if habit.isCompletedOn(today) {
+        // Used to append a new record whenever the habit was not yet complete, so a partially
+        // logged count habit gained a second record for the same day. markDone adds to the
+        // day's existing record and never un-checks anything.
+        guard let result = HabitCheckIn.markDone(habit, on: Date(), in: context) else {
             return .result(value: "\(habit.emoji) \(habit.name) is already completed today.")
         }
-
-        let record = HabitRecord(date: today)
-        habit.records.append(record)
         try context.save()
 
         NotificationCenter.default.post(name: .habitDataChanged, object: nil)
+        WidgetCenter.shared.reloadAllTimelines()
 
+        if habit.habitKind == .count && !result.isCompleted {
+            let unit = habit.unit.map { " \($0)" } ?? ""
+            return .result(value: "Logged \(habit.emoji) \(habit.name): \(Self.amount(result.loggedValue)) of \(Self.amount(habit.targetValue))\(unit).")
+        }
         return .result(value: "Completed \(habit.emoji) \(habit.name)!")
+    }
+
+    private static func amount(_ value: Double) -> String {
+        value == value.rounded() ? String(Int(value)) : String(format: "%.1f", value)
     }
 }
 

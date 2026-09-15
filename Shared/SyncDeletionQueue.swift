@@ -29,7 +29,8 @@ struct SyncDeletionQueue {
     static let habitsKey = "stride_deleted_habit_ids"
     static let entriesKey = "stride_deleted_entry_ids"
     static let groupsKey = "stride_deleted_group_ids"
-    /// Written by the widget and watch toggles into the app-group defaults.
+    /// Written by the widget and watch toggles into the app-group defaults. The value must not
+    /// change: ids queued under it by an older widget build still have to be read after upgrade.
     static let sharedEntriesKey = "stride_deleted_entry_ids_widget"
 
     let local: UserDefaults
@@ -45,6 +46,14 @@ struct SyncDeletionQueue {
     func trackHabit(_ id: String) { append(id, key: Self.habitsKey, in: local) }
     func trackEntry(_ id: String) { append(id, key: Self.entriesKey, in: local) }
     func trackGroup(_ id: String) { append(id, key: Self.groupsKey, in: local) }
+
+    /// For the widget and watch, which run in their own processes: queues into the app-group
+    /// defaults, where the app's next sync reads it through `pending()`. (Their own
+    /// `UserDefaults.standard` is a different store the app never sees.)
+    func trackSharedEntry(_ id: String) {
+        guard let shared else { return }
+        append(id, key: Self.sharedEntriesKey, in: shared)
+    }
 
     /// Everything queued, without removing anything.
     func pending() -> Batch {

@@ -422,13 +422,9 @@ struct HabitRowView: View {
     }
 
     private func toggleCompletion() {
-        if let existingRecord = habit.records.first(where: { HabitCalendar.record($0.date, isOnSameDayAs: date) }) {
-            SyncService.shared.trackDeletedEntry(existingRecord.id.uuidString)
-            modelContext.delete(existingRecord)
-            justCompleted = false
-        } else {
-            let record = HabitRecord(date: date)
-            habit.records.append(record)
+        // Shared with the widget, the watch and Siri — see HabitCheckIn.
+        let result = HabitCheckIn.tap(habit, on: date, in: modelContext)
+        if result.isCompleted {
             justCompleted = true
             AnalyticsService.shared.send("habitCompleted")
 
@@ -442,9 +438,13 @@ struct HabitRowView: View {
             let generator = UIImpactFeedbackGenerator(style: .medium)
             generator.impactOccurred()
             #endif
+        } else {
+            justCompleted = false
         }
         do {
             try modelContext.save()
+            // Queue the tombstone only once the deletion is actually saved.
+            if let id = result.deletedRecordID { SyncService.shared.trackDeletedEntry(id) }
         } catch {
             #if DEBUG
             print("Failed to save habit completion: \(error)")
@@ -468,15 +468,8 @@ struct HabitRowView: View {
     }
 
     private func incrementCount() {
-        if let record = habit.record(on: date) {
-            record.value += 1
-            record.touch()
-        } else {
-            let record = HabitRecord(date: date, value: 1)
-            habit.records.append(record)
-        }
-        let nowComplete = habit.isCompletedOn(date)
-        if nowComplete {
+        // A count tap adds one unit and never deletes — shared with the widget, watch and Siri.
+        if HabitCheckIn.tap(habit, on: date, in: modelContext).isCompleted {
             justCompleted = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 withAnimation(.easeOut(duration: 0.2)) { justCompleted = false }

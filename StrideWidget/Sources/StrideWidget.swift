@@ -74,35 +74,20 @@ struct ToggleHabitIntent: AppIntent {
             return .result()
         }
 
-        let today = Date()
-
-        var deletedEntryId: String?
-        if let existingRecord = habit.records.first(where: { HabitCalendar.record($0.date, isOnSameDayAs: today) }) {
-            deletedEntryId = existingRecord.id.uuidString
-            context.delete(existingRecord)
-        } else {
-            let record = HabitRecord(date: today)
-            habit.records.append(record)
-        }
+        // Was a yes/no toggle for every habit: on a count habit it DELETED the day's partial
+        // progress (6 of 8 glasses draws as an empty circle, so the tap was invited) and queued a
+        // tombstone that deleted it on every other device. HabitCheckIn branches on the kind.
+        let result = HabitCheckIn.tap(habit, on: Date(), in: context)
 
         // Persist first; only record the deletion tombstone for sync once the
         // save actually succeeded, so a failed save can't emit a tombstone for
         // a record that still exists.
         try context.save()
-        if let deletedEntryId {
-            Self.trackDeletedEntry(deletedEntryId)
+        if let deletedID = result.deletedRecordID {
+            SyncDeletionQueue.live.trackSharedEntry(deletedID)
         }
         WidgetCenter.shared.reloadAllTimelines()
         return .result()
-    }
-
-    /// Track a deleted entry ID in the shared app group UserDefaults for sync.
-    private static func trackDeletedEntry(_ id: String) {
-        let key = "stride_deleted_entry_ids_widget"
-        guard let defaults = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier) else { return }
-        var ids = defaults.stringArray(forKey: key) ?? []
-        ids.append(id)
-        defaults.set(ids, forKey: key)
     }
 }
 

@@ -83,9 +83,16 @@ final class SyncDeletionQueueTests: XCTestCase {
         XCTAssertNil(shared.object(forKey: SyncDeletionQueue.sharedEntriesKey))
     }
 
-    /// The widget and watch still write this key as a string literal in their own processes.
-    /// If the two drift apart, un-checking from the widget silently stops reaching the server.
-    func testSharedKeyMatchesTheLiteralTheWidgetAndWatchWrite() {
+    /// The key older widget and watch builds wrote as a literal. It must stay the same, or ids they
+    /// queued before an upgrade are never read and those un-checks never reach the server.
+    func testSharedKeyIsUnchangedFromEarlierBuilds() {
         XCTAssertEqual(SyncDeletionQueue.sharedEntriesKey, "stride_deleted_entry_ids_widget")
+    }
+
+    /// What the widget and watch now call from their own processes.
+    func testEntriesQueuedByAnExtensionAreSentByTheApp() {
+        queue.trackSharedEntry("W1")
+        XCTAssertEqual(queue.pending().entries, ["W1"])
+        XCTAssertNil(local.object(forKey: SyncDeletionQueue.entriesKey), "must not land in the app-only queue")
     }
 }
