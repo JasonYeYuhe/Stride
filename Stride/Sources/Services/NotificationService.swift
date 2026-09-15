@@ -172,18 +172,38 @@ final class NotificationService {
         center.removePendingNotificationRequests(withIdentifiers: [identifier])
     }
 
+    /// Runs at launch. Re-adds every reminder that should exist AND removes every habit reminder
+    /// that shouldn't.
+    ///
+    /// Reminders are repeating triggers that live in the system's notification store across
+    /// relaunches. This used to only add, never prune, so a reminder for a habit that was deleted
+    /// or archived fired every day forever — for a habit with no row left to open and switch it
+    /// off. Deleting or archiving in Settings now removes it directly, but a habit deleted or
+    /// archived on ANOTHER device arrives through sync (Shared/SyncReconciler), which cannot reach
+    /// this service; this prune is what cleans those up. Orphans also eat into iOS's 64-request
+    /// limit, silently displacing reminders that should fire.
     func rescheduleAllHabitReminders(modelContainer: ModelContainer) {
         let context = ModelContext(modelContainer)
+        let habits: [Habit]
         do {
             let descriptor = FetchDescriptor<Habit>(
                 predicate: #Predicate<Habit> { $0.reminderEnabled && !$0.isArchived }
             )
-            let habits = try context.fetch(descriptor)
-            for habit in habits {
-                scheduleHabitReminder(for: habit)
-            }
+            habits = try context.fetch(descriptor)
         } catch {
-            // silently fail
+            // Don't prune on a failed fetch: an empty "wanted" set would delete every reminder.
+            return
+        }
+        for habit in habits {
+            scheduleHabitReminder(for: habit)
+        }
+
+        let prefix = habitReminderPrefix
+        let wanted = Set(habits.map { prefix + $0.id.uuidString })
+        center.getPendingNotificationRequests { requests in
+            let orphans = requests.map(\.identifier).filter { $0.hasPrefix(prefix) && !wanted.contains($0) }
+            guard !orphans.isEmpty else { return }
+            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: orphans)
         }
     }
 

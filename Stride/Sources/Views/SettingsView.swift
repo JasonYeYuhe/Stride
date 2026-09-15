@@ -306,6 +306,8 @@ struct SettingsView: View {
                                         habit.touch()
                                         do {
                                             try modelContext.save()
+                                            // An archived habit's repeating reminder kept firing daily.
+                                            NotificationService.shared.removeHabitReminder(for: habit.id)
                                         } catch {
                                             habit.isArchived = false
                                             showSaveError = true
@@ -374,6 +376,8 @@ struct SettingsView: View {
                                         habit.touch()
                                         do {
                                             try modelContext.save()
+                                            // Restored habit: re-add its reminder (a no-op if it has none).
+                                            NotificationService.shared.scheduleHabitReminder(for: habit)
                                         } catch {
                                             habit.isArchived = true
                                             showSaveError = true
@@ -479,6 +483,7 @@ struct SettingsView: View {
                 }
                 Button("Delete", role: .destructive) {
                     if let habit = habitToDelete {
+                        let habitID = habit.id
                         SyncService.shared.trackDeletedHabit(habit.id.uuidString)
                         for record in habit.records {
                             SyncService.shared.trackDeletedEntry(record.id.uuidString)
@@ -487,6 +492,9 @@ struct SettingsView: View {
                         modelContext.delete(habit)
                         do {
                             try modelContext.save()
+                            // Its repeating reminder outlived it: "💪 Gym — Time to work on your
+                            // habit!" every morning, with no row left to open and turn it off.
+                            NotificationService.shared.removeHabitReminder(for: habitID)
                         } catch {
                             #if DEBUG
                             print("Failed to save after delete: \(error)")
