@@ -170,64 +170,6 @@ enum APIError: LocalizedError {
     }
 }
 
-// MARK: - Sync Models
+// Sync request/response models live in Shared/SyncModels.swift so the reconciliation
+// logic that consumes them (Shared/SyncReconciler.swift) is visible to StrideTests.
 
-struct SyncPushPayload: Encodable {
-    let habits: [SyncHabit]
-    let entries: [SyncEntry]
-    let groups: [SyncGroup]
-    let deletedHabitIds: [String]
-    let deletedEntryIds: [String]
-    let deletedGroupIds: [String]
-}
-
-struct SyncHabit: Codable {
-    let id: String
-    let name: String
-    let emoji: String
-    let colorHex: String
-    let isArchived: Bool
-    let sortOrder: Int
-    let reminderEnabled: Bool?
-    let reminderHour: Int?
-    let reminderMinute: Int?
-    let note: String?
-    // v2 fields (optional on decode so older server responses still parse)
-    let kind: String?
-    let targetValue: Double?
-    let unit: String?
-    let scheduleKind: String?
-    let timesPerWeek: Int?
-    let activeDaysMask: Int?
-    let groupId: String?
-    let createdAt: String
-    let updatedAt: String
-}
-
-struct SyncEntry: Codable {
-    let id: String
-    let habitId: String
-    let date: String
-    let note: String?
-    let value: Double?
-    let createdAt: String
-}
-
-struct SyncGroup: Codable {
-    let id: String
-    let name: String
-    let colorHex: String
-    let sortOrder: Double
-    let createdAt: String
-    let updatedAt: String
-}
-
-struct SyncPullResponse: Decodable {
-    let habits: [SyncHabit]
-    let entries: [SyncEntry]
-    let groups: [SyncGroup]?
-    let deletedHabitIds: [String]?
-    let deletedEntryIds: [String]?
-    let deletedGroupIds: [String]?
-    let serverTime: String
-}
