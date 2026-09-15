@@ -6,7 +6,15 @@ struct StatsView: View {
            sort: \Habit.sortOrder)
     private var habits: [Habit]
 
-    @State private var selectedHabit: Habit?
+    // An id, not a Habit. Holding the @Model object in @State kept it alive outside the @Query
+    // result set, and nothing cleared it when that habit was deleted — in Settings, or with no
+    // user action at all by a sync tombstone from another device. The next render then read
+    // properties of an invalidated model. Resolving the id against the live query can't do that.
+    @State private var selectedHabitID: UUID?
+
+    private var selectedHabit: Habit? {
+        habits.first { $0.id == selectedHabitID } ?? habits.first
+    }
     @State private var showingWeeklyReview = false
     @State private var showingPaywall = false
     private var store = StoreService.shared
@@ -44,7 +52,7 @@ struct StatsView: View {
                                 )
                                 .onTapGesture {
                                     withAnimation {
-                                        selectedHabit = habit
+                                        selectedHabitID = habit.id
                                     }
                                 }
                             }
@@ -52,7 +60,7 @@ struct StatsView: View {
                         .padding(.horizontal)
                     }
 
-                    if let habit = selectedHabit ?? habits.first {
+                    if let habit = selectedHabit {
                         VStack(spacing: 16) {
                             HabitDetailStatsCard(habit: habit)
                             if store.isPro {
@@ -89,11 +97,6 @@ struct StatsView: View {
         }
         .sheet(isPresented: $showingPaywall) {
             ProPaywallView()
-        }
-        .onAppear {
-            if selectedHabit == nil {
-                selectedHabit = habits.first
-            }
         }
     }
 }
