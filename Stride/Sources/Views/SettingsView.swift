@@ -586,8 +586,7 @@ struct SettingsView: View {
     }
 
     private func formatSyncTime(_ iso: String) -> String {
-        let formatter = ISO8601DateFormatter()
-        guard let date = formatter.date(from: iso) else { return iso }
+        guard let date = SyncTimestamp.parse(iso) else { return iso }
         let relative = RelativeDateTimeFormatter()
         relative.unitsStyle = .abbreviated
         return relative.localizedString(for: date, relativeTo: Date())

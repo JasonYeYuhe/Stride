@@ -33,8 +33,6 @@ enum SyncReconciler {
         UUID(uuidString: raw)?.uuidString ?? raw.uppercased()
     }
 
-    private static let iso8601 = ISO8601DateFormatter()
-
     // Day-only dates are UTC day-keys, matching the stored representation (HabitCalendar).
     private static let dateOnly: DateFormatter = HabitCalendar.dayStringFormatter
 
@@ -83,7 +81,7 @@ enum SyncReconciler {
                 local.groupId = remoteHabit.groupId.flatMap { UUID(uuidString: $0) }
                 // Adopt the server's timestamp so applying remote state doesn't
                 // make this habit look locally-modified and re-push as "newer".
-                local.updatedAt = iso8601.date(from: remoteHabit.updatedAt) ?? local.updatedAt
+                local.updatedAt = SyncTimestamp.parse(remoteHabit.updatedAt) ?? local.updatedAt
             } else {
                 let habit = Habit(name: remoteHabit.name, emoji: remoteHabit.emoji, colorHex: remoteHabit.colorHex)
                 habit.id = uuid
@@ -100,10 +98,10 @@ enum SyncReconciler {
                 habit.timesPerWeek = remoteHabit.timesPerWeek ?? 7
                 habit.activeDaysMask = remoteHabit.activeDaysMask ?? 127
                 habit.groupId = remoteHabit.groupId.flatMap { UUID(uuidString: $0) }
-                if let created = iso8601.date(from: remoteHabit.createdAt) {
+                if let created = SyncTimestamp.parse(remoteHabit.createdAt) {
                     habit.createdAt = created
                 }
-                habit.updatedAt = iso8601.date(from: remoteHabit.updatedAt) ?? habit.createdAt
+                habit.updatedAt = SyncTimestamp.parse(remoteHabit.updatedAt) ?? habit.createdAt
                 context.insert(habit)
                 // Register it: the same id appearing again in this response, in either
                 // case, must update this row rather than insert a second one.
@@ -133,15 +131,28 @@ enum SyncReconciler {
             guard !deletedEntrySet.contains(entryUUID.uuidString) else { continue }
             guard let habit = updatedMap[canonicalID(remoteEntry.habitId)] else { continue }
             guard let entryDate = dateOnly.date(from: remoteEntry.date) else { continue }
+            let remoteEdited = SyncTimestamp.parse(remoteEntry.updatedAt)
 
             if let existingRecord = habit.records.first(where: { HabitCalendar.utc.isDate($0.date, inSameDayAs: entryDate) }) {
                 // Align local ID to server ID so full-pull reconciliation won't delete it
                 existingRecord.id = entryUUID
+                // Edited here after this sync's push (a tap mid-sync, or a row fetched again
+                // through the cursor's overlap): the local value is the newer one, and it goes
+                // up with the next push. Compared at whole seconds, the wire's precision.
+                if let localEdited = existingRecord.updatedAt, let remoteEdited,
+                   localEdited.timeIntervalSince1970.rounded(.down) > remoteEdited.timeIntervalSince1970 {
+                    continue
+                }
                 existingRecord.note = remoteEntry.note
                 existingRecord.value = remoteEntry.value ?? 1
+                existingRecord.updatedAt = remoteEdited ?? existingRecord.updatedAt
             } else {
                 let record = HabitRecord(date: entryDate, note: remoteEntry.note, value: remoteEntry.value ?? 1)
                 record.id = entryUUID
+                // Keep the edit time it was downloaded with. Left at init's Date(), a check-in
+                // this device merely received would look freshly edited here and beat a genuinely
+                // newer edit still waiting to sync on another device.
+                record.updatedAt = remoteEdited
                 // entryDate is already a UTC day-key parsed from the server's
                 // yyyy-MM-dd; store it verbatim rather than re-deriving it from
                 // the local calendar (which would shift it in non-UTC zones).
@@ -177,12 +188,12 @@ enum SyncReconciler {
                 local.name = remoteGroup.name
                 local.colorHex = remoteGroup.colorHex
                 local.sortOrder = remoteGroup.sortOrder
-                local.updatedAt = iso8601.date(from: remoteGroup.updatedAt) ?? local.updatedAt
+                local.updatedAt = SyncTimestamp.parse(remoteGroup.updatedAt) ?? local.updatedAt
             } else {
                 let group = HabitGroup(name: remoteGroup.name, colorHex: remoteGroup.colorHex, sortOrder: remoteGroup.sortOrder)
                 group.id = uuid
-                if let created = iso8601.date(from: remoteGroup.createdAt) { group.createdAt = created }
-                group.updatedAt = iso8601.date(from: remoteGroup.updatedAt) ?? group.createdAt
+                if let created = SyncTimestamp.parse(remoteGroup.createdAt) { group.createdAt = created }
+                group.updatedAt = SyncTimestamp.parse(remoteGroup.updatedAt) ?? group.createdAt
                 context.insert(group)
                 groupMap[key] = group
             }

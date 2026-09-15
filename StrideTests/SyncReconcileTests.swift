@@ -44,8 +44,10 @@ final class SyncReconcileTests: XCTestCase {
                   createdAt: "2025-01-01T00:00:00Z", updatedAt: "2025-01-01T00:00:00Z")
     }
 
-    private func remoteEntry(_ id: String, habit: String, date: String, note: String? = nil) -> SyncEntry {
-        SyncEntry(id: id, habitId: habit, date: date, note: note, value: 1, createdAt: "\(date)T00:00:00Z")
+    private func remoteEntry(_ id: String, habit: String, date: String, note: String? = nil,
+                             value: Double = 1, updatedAt: String? = nil) -> SyncEntry {
+        SyncEntry(id: id, habitId: habit, date: date, note: note, value: value, createdAt: "\(date)T00:00:00Z",
+                  updatedAt: updatedAt)
     }
 
     private func pull(habits: [SyncHabit] = [], entries: [SyncEntry] = [], groups: [SyncGroup]? = nil,
@@ -258,5 +260,111 @@ final class SyncReconcileTests: XCTestCase {
             to: context, isFullPull: false)
 
         XCTAssertEqual(try habits().reduce(0) { $0 + $1.records.count }, 1)
+    }
+
+    // MARK: - Timestamps and last write wins (1.2.3)
+
+    private func date(_ iso: String) -> Date { SyncTimestamp.parse(iso)! }
+
+    /// The App Review demo account is seeded server-side, so every timestamp in it has
+    /// milliseconds. A default ISO8601DateFormatter returns nil for those, and the habit fell
+    /// back to createdAt = now — a year-old habit whose rate and Weekly Review started today.
+    func testServerStampedCreatedAtWithMillisecondsIsKept() throws {
+        let id = UUID().uuidString
+        var h = remoteHabit(id, name: "Read")
+        h = SyncHabit(id: h.id, name: h.name, emoji: h.emoji, colorHex: h.colorHex, isArchived: false, sortOrder: 0,
+                      reminderEnabled: nil, reminderHour: nil, reminderMinute: nil, note: nil, kind: nil,
+                      targetValue: nil, unit: nil, scheduleKind: nil, timesPerWeek: nil, activeDaysMask: nil,
+                      groupId: nil, createdAt: "2026-04-23T08:27:17.494Z", updatedAt: "2026-04-23T08:27:17.494Z")
+
+        try SyncReconciler.apply(pull(habits: [h]), to: context, isFullPull: true)
+
+        let habit = try XCTUnwrap(habits().first)
+        XCTAssertEqual(habit.createdAt.timeIntervalSince1970, date("2026-04-23T08:27:17.494Z").timeIntervalSince1970, accuracy: 0.001,
+                       "was Date(): the habit looked created today")
+        XCTAssertEqual(try XCTUnwrap(habit.updatedAt).timeIntervalSince1970, habit.createdAt.timeIntervalSince1970, accuracy: 0.001)
+    }
+
+    func testTimestampParsesBothWireForms() {
+        XCTAssertEqual(SyncTimestamp.parse("2026-09-15T17:33:18Z")?.timeIntervalSince1970, 1_789_493_598)
+        XCTAssertEqual(try XCTUnwrap(SyncTimestamp.parse("2026-09-15T17:33:18.500Z")).timeIntervalSince1970, 1_789_493_598.5, accuracy: 0.001)
+        XCTAssertNil(SyncTimestamp.parse("yesterday"))
+        XCTAssertNil(SyncTimestamp.parse(nil))
+        XCTAssertEqual(SyncTimestamp.string(from: Date(timeIntervalSince1970: 1_789_493_598.9)), "2026-09-15T17:33:18Z")
+    }
+
+    /// The cursor comes from the server's clock, a minute early, in the server's own format.
+    func testCursorIsTheServerTimeMinusTheOverlap() {
+        XCTAssertEqual(SyncCursor.next(afterServerTime: "2026-09-15T17:33:18.123Z"), "2026-09-15T17:32:18.123Z")
+        XCTAssertEqual(SyncCursor.next(afterServerTime: "2026-09-15T17:33:18Z"), "2026-09-15T17:32:18.000Z")
+        XCTAssertNil(SyncCursor.next(afterServerTime: ""))
+    }
+
+    /// A downloaded check-in keeps the edit time it came with, instead of looking edited now —
+    /// which would let it beat a genuinely newer edit still offline on another device.
+    func testDownloadedEntryKeepsItsEditTime() throws {
+        let habit = Habit(name: "Water")
+        context.insert(habit)
+        try context.save()
+
+        try SyncReconciler.apply(
+            pull(entries: [remoteEntry(UUID().uuidString, habit: habit.id.uuidString, date: "2026-09-10",
+                                       value: 8, updatedAt: "2026-09-10T18:00:00Z")]),
+            to: context, isFullPull: false)
+
+        let record = try XCTUnwrap(habits().first?.records.first)
+        XCTAssertEqual(record.value, 8)
+        XCTAssertEqual(record.updatedAt, date("2026-09-10T18:00:00Z"))
+    }
+
+    /// The server's value is newer: it replaces the local one, edit time included.
+    func testNewerRemoteValueReplacesTheLocalOne() throws {
+        let habit = Habit(name: "Water")
+        context.insert(habit)
+        let local = HabitRecord(date: dayKey(2026, 9, 10), value: 2)
+        local.updatedAt = date("2026-09-10T09:00:00Z")
+        habit.records.append(local)
+        try context.save()
+
+        try SyncReconciler.apply(
+            pull(entries: [remoteEntry(local.id.uuidString, habit: habit.id.uuidString, date: "2026-09-10",
+                                       value: 8, updatedAt: "2026-09-10T18:00:00Z")]),
+            to: context, isFullPull: false)
+
+        XCTAssertEqual(local.value, 8)
+        XCTAssertEqual(local.updatedAt, date("2026-09-10T18:00:00Z"))
+    }
+
+    /// Tapped again after this sync's push went out: the local value is newer than what the
+    /// pull brings back, so it stays (and goes up with the next push). The id still aligns.
+    func testLocalEditNewerThanThePulledValueIsKept() throws {
+        let habit = Habit(name: "Water")
+        context.insert(habit)
+        let local = HabitRecord(date: dayKey(2026, 9, 10), value: 5)
+        local.updatedAt = date("2026-09-10T20:00:00Z")
+        habit.records.append(local)
+        try context.save()
+        let serverID = UUID().uuidString
+
+        try SyncReconciler.apply(
+            pull(entries: [remoteEntry(serverID, habit: habit.id.uuidString, date: "2026-09-10",
+                                       value: 2, updatedAt: "2026-09-10T18:00:00Z")]),
+            to: context, isFullPull: false)
+
+        XCTAssertEqual(local.value, 5)
+        XCTAssertEqual(local.updatedAt, date("2026-09-10T20:00:00Z"))
+        XCTAssertEqual(local.id.uuidString, serverID)
+    }
+
+    /// The push carries the entry's edit time, so the server can keep the newer of two edits.
+    func testPushedEntryCarriesItsEditTime() throws {
+        let entry = SyncEntry(id: "A", habitId: "H", date: "2026-09-10", note: nil, value: 8,
+                              createdAt: "2026-09-10T00:00:00Z", updatedAt: "2026-09-10T18:00:00Z")
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(entry)) as? [String: Any])
+        XCTAssertEqual(json["updatedAt"] as? String, "2026-09-10T18:00:00Z")
+
+        let legacyServer = #"{"id":"A","habitId":"H","date":"2026-09-10","note":null,"value":1,"createdAt":"2026-09-10T00:00:00Z"}"#
+        XCTAssertNil(try JSONDecoder().decode(SyncEntry.self, from: Data(legacyServer.utf8)).updatedAt,
+                     "a pull from a server that doesn't send updatedAt still decodes")
     }
 }

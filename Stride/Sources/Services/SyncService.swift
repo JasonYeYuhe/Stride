@@ -9,15 +9,16 @@ final class SyncService {
     static let shared = SyncService()
 
     private(set) var isSyncing = false
+    /// When this device last synced, by its own clock — shown in Settings, and nothing else.
     private(set) var lastSyncTime: String?
     private(set) var syncError: String?
 
     private let lastSyncKey = "stride_last_sync_time"
-
-    private static let iso8601: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        return f
-    }()
+    /// The `?since` for the next pull (see `SyncCursor`). Deliberately a new key: until 1.2.3 the
+    /// cursor was `lastSyncTime`, a device-clock value that could have skipped rows, so the
+    /// first sync after updating finds no cursor and does one full pull, which brings back
+    /// anything the old cursor missed.
+    private let cursorKey = "stride_sync_cursor"
 
     // Day-only dates are serialized in UTC to match the stored day-key
     // representation (see HabitCalendar) — never the device's current zone,
@@ -53,9 +54,14 @@ final class SyncService {
 
         do {
             try await pushLocal(context: context, api: api)
-            try await pullRemote(context: context, api: api)
+            let serverTime = try await pullRemote(context: context, api: api)
 
-            let now = Self.iso8601.string(from: Date())
+            if let cursor = SyncCursor.next(afterServerTime: serverTime) {
+                UserDefaults.standard.set(cursor, forKey: cursorKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: cursorKey)   // full pull next time
+            }
+            let now = SyncTimestamp.string(from: Date())
             lastSyncTime = now
             UserDefaults.standard.set(now, forKey: lastSyncKey)
             AnalyticsService.shared.send("syncPerformed")
@@ -90,11 +96,11 @@ final class SyncService {
                 timesPerWeek: habit.timesPerWeek,
                 activeDaysMask: habit.activeDaysMask,
                 groupId: habit.groupId?.uuidString,
-                createdAt: Self.iso8601.string(from: habit.createdAt),
+                createdAt: SyncTimestamp.string(from: habit.createdAt),
                 // Truthful per-habit modification time (falls back to createdAt for
                 // legacy rows) so the server can resolve multi-device conflicts as
                 // last-write-wins instead of last-push-wins.
-                updatedAt: Self.iso8601.string(from: habit.updatedAt ?? habit.createdAt)
+                updatedAt: SyncTimestamp.string(from: habit.updatedAt ?? habit.createdAt)
             )
         }
 
@@ -106,7 +112,8 @@ final class SyncService {
                     date: Self.dateOnly.string(from: record.date),
                     note: record.note,
                     value: record.value,
-                    createdAt: Self.iso8601.string(from: record.date)
+                    createdAt: SyncTimestamp.string(from: record.date),
+                    updatedAt: SyncTimestamp.string(from: record.updatedAt ?? record.date)
                 )
             }
         }
@@ -118,8 +125,8 @@ final class SyncService {
                 name: group.name,
                 colorHex: group.colorHex,
                 sortOrder: group.sortOrder,
-                createdAt: Self.iso8601.string(from: group.createdAt),
-                updatedAt: Self.iso8601.string(from: group.updatedAt ?? group.createdAt)
+                createdAt: SyncTimestamp.string(from: group.createdAt),
+                updatedAt: SyncTimestamp.string(from: group.updatedAt ?? group.createdAt)
             )
         }
 
@@ -137,10 +144,21 @@ final class SyncService {
         queue.acknowledge(deleted)
     }
 
-    private func pullRemote(context: ModelContext, api: APIClient) async throws {
-        let response = try await api.pullChanges(since: lastSyncTime)
+    /// Forget the cursor and last-sync time, so the next account signed in on this device starts
+    /// with a full pull instead of an incremental one against the previous account's cursor.
+    func resetSyncState() {
+        UserDefaults.standard.removeObject(forKey: cursorKey)
+        UserDefaults.standard.removeObject(forKey: lastSyncKey)
+        lastSyncTime = nil
+    }
+
+    /// Returns the response's `serverTime`, from which the next cursor is taken.
+    private func pullRemote(context: ModelContext, api: APIClient) async throws -> String {
+        let cursor = UserDefaults.standard.string(forKey: cursorKey)
+        let response = try await api.pullChanges(since: cursor)
         // Reconciliation lives in Shared/SyncReconciler.swift so StrideTests exercises the
         // real code rather than a copy of it.
-        try SyncReconciler.apply(response, to: context, isFullPull: lastSyncTime == nil)
+        try SyncReconciler.apply(response, to: context, isFullPull: cursor == nil)
+        return response.serverTime
     }
 }

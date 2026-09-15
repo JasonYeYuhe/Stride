@@ -108,11 +108,13 @@ final class AuthService {
         }
         currentUser = nil
         KeychainHelper.delete(key: "stride_session_token")
+        SyncService.shared.resetSyncState()
     }
 
     func deleteAccount() async throws {
         try await APIClient.shared.deleteAccount()
         currentUser = nil
         KeychainHelper.delete(key: "stride_session_token")
+        SyncService.shared.resetSyncState()
     }
 }

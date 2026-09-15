@@ -51,6 +51,10 @@ struct SyncEntry: Codable {
     let note: String?
     let value: Double?
     let createdAt: String
+    /// When the value or note was last edited, on whichever device edited it. The server keeps
+    /// the newer edit rather than whichever device pushed last. Optional: servers before
+    /// 2026-09-15 don't send it.
+    var updatedAt: String? = nil
 }
 
 struct SyncGroup: Codable {
