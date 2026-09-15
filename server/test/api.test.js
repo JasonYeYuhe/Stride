@@ -4938,8 +4938,12 @@ describe("Sync pull ?since: strict > boundary — habit with updated_at === sinc
       },
     });
 
-    // Pull with since = exact updated_at value — strict > means this habit should NOT appear
-    const pull = await api("GET", "/v1/sync/pull", { token, query: { since: updatedAt } });
+    // Pull with since = the row's stored change time — strict > means this habit should NOT
+    // appear. That is the server's own clock, not the pushed updatedAt: the feed used to run
+    // on the device's edit time, which is how offline edits went missing (see "Two clocks").
+    const stored = db.prepare("SELECT updated_at FROM habits WHERE id = ?").get(habitId).updated_at;
+    assert.notEqual(stored, updatedAt, "the feed time is the server's, not the client's edit time");
+    const pull = await api("GET", "/v1/sync/pull", { token, query: { since: stored } });
     assert.equal(pull.status, 200);
     const found = pull.json.habits.find((h) => h.id === habitId);
     assert.equal(found, undefined, "habit with updated_at === since should not appear in incremental pull");
@@ -4997,7 +5001,8 @@ describe("Sync push: createdAt preserved on re-push (ON CONFLICT does not update
     const habit = pull.json.habits.find((h) => h.id === habitId);
     assert.ok(habit, "habit should exist in pull");
     assert.equal(habit.name, "Updated name", "name should be updated");
-    assert.equal(habit.createdAt, originalCreatedAt, "createdAt must not be overwritten by re-push");
+    // Whole seconds on the wire: shipped apps can't parse fractional seconds.
+    assert.equal(habit.createdAt, originalCreatedAt.replace(".000Z", "Z"), "createdAt must not be overwritten by re-push");
   });
 });
 
@@ -7715,5 +7720,137 @@ describe("Id canonicalisation: stored ids are upper case, like the apps'", () =>
     const r = await api("POST", "/v1/habits", { token, body: { name: "Generated" } });
     assert.equal(r.status, 201);
     assert.match(r.json.habit.id, /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REGRESSION: one timestamp column was doing two jobs (see "Two clocks" in routes/sync.js).
+//
+// - Entries had no last-write-wins guard, so a device pushing a stale count overwrote a
+//   newer one — every client pushes its full snapshot on every sync.
+// - Habits stored the device's edit time as the change-feed time, so an edit made offline
+//   and pushed later sorted before the cursor of devices that synced in between, and never
+//   reached them.
+// - Timestamps went out with milliseconds, which no shipped app can parse.
+// - A ?since without milliseconds sorted after rows written later in the same second.
+// ---------------------------------------------------------------------------
+describe("Sync: last write wins by edit time; the change feed runs on server time", () => {
+  let token, userId;
+  const uuid = () => crypto.randomUUID().toUpperCase();
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const H = uuid();
+  const habit = (over = {}) => ({
+    id: H, name: "Water", emoji: "\u{1F4A7}", colorHex: "#007AFF", isArchived: false, sortOrder: 0,
+    kind: "count", targetValue: 8, scheduleKind: "daily", timesPerWeek: 7, activeDaysMask: 127,
+    createdAt: "2026-09-01T00:00:00Z", updatedAt: "2026-09-01T00:00:00Z", ...over,
+  });
+  const entry = (id, date, value, updatedAt) => ({
+    id, habitId: H, date, value, createdAt: `${date}T00:00:00Z`, ...(updatedAt ? { updatedAt } : {}),
+  });
+  const push = (body) => api("POST", "/v1/sync/push", { token, body: {
+    habits: [], entries: [], groups: [], deletedHabitIds: [], deletedEntryIds: [], deletedGroupIds: [], ...body,
+  } });
+  const pull = async (since) => (await api("GET", "/v1/sync/pull", { token, query: since ? { since } : undefined })).json;
+
+  before(async () => {
+    const u = createTestUser();
+    userId = u.userId;
+    token = createTestSession(userId);
+    assert.equal((await push({ habits: [habit()] })).status, 200);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id IN (SELECT id FROM habits WHERE user_id = ?)").run(userId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("a device coming back online with an older count can't overwrite a newer one", async () => {
+    const id = uuid();
+    await push({ entries: [entry(id, "2026-09-10", 2, "2026-09-10T09:00:00Z")] });   // iPad, morning
+    await push({ entries: [entry(id, "2026-09-10", 8, "2026-09-10T18:00:00Z")] });   // phone, evening
+    const stale = await push({ entries: [entry(id, "2026-09-10", 2, "2026-09-10T09:00:00Z")] });  // iPad again
+    assert.equal(stale.status, 200);
+
+    const e = (await pull()).entries.find((x) => x.date === "2026-09-10");
+    assert.equal(e.value, 8, "the phone's later 8/8 must survive the iPad's stale 2/8");
+    assert.equal(e.updatedAt, "2026-09-10T18:00:00Z");
+  });
+
+  it("a newer edit from any device still wins", async () => {
+    const id = (await pull()).entries.find((x) => x.date === "2026-09-10").id;
+    await push({ entries: [entry(id, "2026-09-10", 9, "2026-09-10T19:00:00Z")] });
+    assert.equal((await pull()).entries.find((x) => x.date === "2026-09-10").value, 9);
+  });
+
+  it("apps before 1.2.3 send no entry updatedAt and keep last-push-wins", async () => {
+    const id = (await pull()).entries.find((x) => x.date === "2026-09-10").id;
+    await push({ entries: [entry(id, "2026-09-10", 3)] });
+    assert.equal((await pull()).entries.find((x) => x.date === "2026-09-10").value, 3);
+  });
+
+  it("an edit made offline and pushed later reaches a device that synced in between", async () => {
+    const cursor = (await pull()).serverTime;   // device B syncs now
+    await sleep(5);
+    // Device A renamed the habit and logged a day on Sept 2, offline, and only now pushes.
+    const offlineEntry = uuid();
+    await push({
+      habits: [habit({ name: "Water (renamed offline)", updatedAt: "2026-09-02T00:00:00Z" })],
+      entries: [entry(offlineEntry, "2026-09-02", 8, "2026-09-02T21:00:00Z")],
+    });
+
+    const inc = await pull(cursor);
+    assert.deepEqual(inc.habits.map((h) => h.name), ["Water (renamed offline)"],
+      "was []: the habit's feed time was Sept 2, before device B's cursor");
+    assert.ok(inc.entries.some((e) => e.id === offlineEntry));
+    assert.equal(inc.habits[0].updatedAt, "2026-09-02T00:00:00Z", "apps still receive the edit time, which is what they compare");
+  });
+
+  it("re-pushing an unchanged snapshot doesn't put the whole dataset back in the feed", async () => {
+    const snapshot = await pull();
+    await sleep(5);
+    assert.equal((await push({ habits: snapshot.habits, entries: snapshot.entries })).status, 200);
+
+    const inc = await pull(snapshot.serverTime);
+    assert.deepEqual(inc.habits, []);
+    assert.deepEqual(inc.entries, []);
+  });
+
+  it("a device holding a different id for the same day gets the server's id back", async () => {
+    const first = uuid(), second = uuid();
+    await push({ entries: [entry(first, "2026-09-11", 8, "2026-09-11T20:00:00Z")] });
+    const cursor = (await pull()).serverTime;
+    await sleep(5);
+    // Another device checked in that day too, earlier, under its own id.
+    await push({ entries: [entry(second, "2026-09-11", 1, "2026-09-11T08:00:00Z")] });
+
+    const e = (await pull(cursor)).entries.find((x) => x.date === "2026-09-11");
+    assert.ok(e, "the row must come back so that device can adopt the server's id");
+    assert.equal(e.id, first);
+    assert.equal(e.value, 8);
+  });
+
+  it("timestamps go out without fractional seconds, so shipped apps can parse them", async () => {
+    const made = await api("POST", "/v1/habits", { token, body: { name: "Stamped by the server" } });
+    assert.equal(made.status, 201);
+    const all = await pull();
+    const wholeSeconds = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+    for (const h of all.habits) {
+      assert.match(h.createdAt, wholeSeconds);
+      assert.match(h.updatedAt, wholeSeconds);
+    }
+    for (const e of all.entries) {
+      assert.match(e.createdAt, wholeSeconds);
+      assert.match(e.updatedAt, wholeSeconds);
+    }
+    assert.ok(all.habits.some((h) => h.id === made.json.habit.id));
+  });
+
+  it("a ?since without milliseconds still returns rows written later in that same second", async () => {
+    db.prepare("UPDATE habits SET updated_at = '2030-01-01T10:00:00.500Z' WHERE id = ?").run(H);
+    const inc = await pull("2030-01-01T10:00:00Z");
+    assert.ok(inc.habits.some((h) => h.id === H), "'…00Z' sorts after '…00.500Z' as a string");
   });
 });

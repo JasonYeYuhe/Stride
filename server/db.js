@@ -164,6 +164,17 @@ const migrateIfNeeded = db.transaction(() => {
     WHERE deleted_at LIKE '%-%-% %:%:%' AND deleted_at NOT LIKE '%T%';
   `);
 
+  // Edit time, kept apart from change time — see "Two clocks" in routes/sync.js. Backfilled
+  // from updated_at, which for habits and groups already WAS the device's edit time, and
+  // normalised to toISOString() format so string comparison orders it correctly.
+  for (const table of ["habits", "habit_entries", "habit_groups"]) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => /** @type {PragmaColumn} */ (c).name);
+    if (!cols.includes("client_updated_at")) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN client_updated_at TEXT`);
+      db.exec(`UPDATE ${table} SET client_updated_at = COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', updated_at), updated_at)`);
+    }
+  }
+
   // Upper-case every stored id so server-generated (lower-case) ids match what the apps
   // send. See migrations/canonicalizeIds.js — it needs this surrounding transaction.
   canonicalizeIds(db);

@@ -31,6 +31,51 @@ function field(obj, camelKey) {
   return v !== undefined ? v : obj[toSnake(camelKey)];
 }
 
+/*
+ * Two clocks per row.
+ *
+ * `client_updated_at` is when someone last EDITED the row, on their device. It decides
+ * conflicts: an older edit never overwrites a newer one.
+ * `updated_at` is when the row last CHANGED ON THIS SERVER. It is what `?since` filters on.
+ *
+ * They used to be one column, and each table got it wrong in a different direction:
+ * - habits and groups stored the device's edit time. A rename made offline on Monday and
+ *   pushed on Wednesday was stamped Monday, i.e. before the cursor of every device that
+ *   synced on Tuesday, so those devices never received it — not on the next sync, not ever.
+ * - entries stored only server time, so nothing could tell a newer check-in from an older
+ *   one and the last device to push won: an iPad coming back online with "Water 2/8" from the
+ *   morning overwrote the 8/8 logged on the phone that afternoon, and pulled 2 back to it.
+ *
+ * A row's `updated_at` moves only when the push actually changes it. Every client pushes a
+ * full snapshot on every sync, so bumping unchanged rows would put the whole dataset back
+ * into every other device's incremental pull.
+ */
+
+/** Normalise a client timestamp to this server's own format, or null if it isn't one.
+ * @param {unknown} v
+ * @returns {string|null} */
+function isoOrNull(v) {
+  if (typeof v !== "string" || v === "") return null;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+/**
+ * Timestamps go out at whole-second precision.
+ *
+ * Every shipped app parses them with a default ISO8601DateFormatter, which rejects
+ * fractional seconds and returns nil. Anything this process stamps has milliseconds —
+ * including the whole App Review demo account, seeded with toISOString() — and on nil the
+ * app fell back to Date(), so a freshly signed-in device thought every demo habit was
+ * created today: its 30-day rate, Weekly Review and trend chart all started from today.
+ * @param {string|null|undefined} v
+ */
+function wireTime(v) {
+  if (!v) return v;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? v : d.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
 
 // Sync-specific rate limit: 30 requests per minute per IP
 const syncLimiter = process.env.NODE_ENV === "test"
@@ -62,8 +107,8 @@ router.post("/push", (req, res) => {
                         reminder_enabled, reminder_hour, reminder_minute, note,
                         kind, target_value, unit, schedule_kind, times_per_week,
                         active_days_mask, group_id,
-                        created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        created_at, updated_at, client_updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       emoji = excluded.emoji,
@@ -81,30 +126,59 @@ router.post("/push", (req, res) => {
       times_per_week = excluded.times_per_week,
       active_days_mask = excluded.active_days_mask,
       group_id = excluded.group_id,
+      client_updated_at = excluded.client_updated_at,
       updated_at = excluded.updated_at
     WHERE habits.user_id = ?
-      AND excluded.updated_at >= habits.updated_at
+      AND excluded.client_updated_at >= COALESCE(habits.client_updated_at, habits.updated_at)
+      AND (habits.client_updated_at IS NOT excluded.client_updated_at
+        OR habits.name IS NOT excluded.name OR habits.emoji IS NOT excluded.emoji
+        OR habits.color_hex IS NOT excluded.color_hex OR habits.is_archived IS NOT excluded.is_archived
+        OR habits.sort_order IS NOT excluded.sort_order OR habits.note IS NOT excluded.note
+        OR habits.reminder_enabled IS NOT excluded.reminder_enabled
+        OR habits.reminder_hour IS NOT excluded.reminder_hour
+        OR habits.reminder_minute IS NOT excluded.reminder_minute
+        OR habits.kind IS NOT excluded.kind OR habits.target_value IS NOT excluded.target_value
+        OR habits.unit IS NOT excluded.unit OR habits.schedule_kind IS NOT excluded.schedule_kind
+        OR habits.times_per_week IS NOT excluded.times_per_week
+        OR habits.active_days_mask IS NOT excluded.active_days_mask
+        OR habits.group_id IS NOT excluded.group_id)
   `);
 
   const upsertEntry = db.prepare(`
-    INSERT INTO habit_entries (id, habit_id, date, note, value, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO habit_entries (id, habit_id, date, note, value, created_at, updated_at, client_updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(habit_id, date) DO UPDATE SET
       note = excluded.note,
       value = excluded.value,
+      client_updated_at = excluded.client_updated_at,
       updated_at = excluded.updated_at
+    WHERE excluded.client_updated_at >= COALESCE(habit_entries.client_updated_at, habit_entries.updated_at)
+      AND (habit_entries.client_updated_at IS NOT excluded.client_updated_at
+        OR habit_entries.note IS NOT excluded.note OR habit_entries.value IS NOT excluded.value)
   `);
 
+  // Two devices that each checked in on the same day hold different ids for one row; the
+  // server keeps the first. The other device only adopts the server's id when the row comes
+  // back in its pull, so when its push didn't change the row (older, or identical), move the
+  // row into the feed anyway. Once the ids agree this matches nothing.
+  const refeedMismatchedEntry = db.prepare(
+    "UPDATE habit_entries SET updated_at = ? WHERE habit_id = ? AND date = ? AND id <> ?"
+  );
+
   const upsertGroup = db.prepare(`
-    INSERT INTO habit_groups (id, user_id, name, color_hex, sort_order, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO habit_groups (id, user_id, name, color_hex, sort_order, created_at, updated_at, client_updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       color_hex = excluded.color_hex,
       sort_order = excluded.sort_order,
+      client_updated_at = excluded.client_updated_at,
       updated_at = excluded.updated_at
     WHERE habit_groups.user_id = ?
-      AND excluded.updated_at >= habit_groups.updated_at
+      AND excluded.client_updated_at >= COALESCE(habit_groups.client_updated_at, habit_groups.updated_at)
+      AND (habit_groups.client_updated_at IS NOT excluded.client_updated_at
+        OR habit_groups.name IS NOT excluded.name OR habit_groups.color_hex IS NOT excluded.color_hex
+        OR habit_groups.sort_order IS NOT excluded.sort_order)
   `);
 
   const deleteHabit = db.prepare("DELETE FROM habits WHERE id = ? AND user_id = ?");
@@ -163,7 +237,7 @@ router.post("/push", (req, res) => {
       if (!g.id || !g.name) continue;
       upsertGroup.run(
         g.id, userId, g.name, field(g, "colorHex") || "#34C759", field(g, "sortOrder") || 0,
-        field(g, "createdAt") || now, field(g, "updatedAt") || now,
+        field(g, "createdAt") || now, now, isoOrNull(field(g, "updatedAt")) || now,
         userId,
       );
     }
@@ -183,7 +257,7 @@ router.post("/push", (req, res) => {
         h.kind || "binary", field(h, "targetValue") ?? 1, h.unit ?? null,
         field(h, "scheduleKind") || "daily", field(h, "timesPerWeek") ?? 7, field(h, "activeDaysMask") ?? 127,
         groupId,
-        field(h, "createdAt") || new Date().toISOString(), field(h, "updatedAt") || new Date().toISOString(),
+        field(h, "createdAt") || now, now, isoOrNull(field(h, "updatedAt")) || now,
         userId,
       );
     }
@@ -196,7 +270,11 @@ router.post("/push", (req, res) => {
       // Verify the habit belongs to this user
       const habit = db.prepare("SELECT id FROM habits WHERE id = ? AND user_id = ?").get(entryHabitId, userId);
       if (habit) {
-        upsertEntry.run(e.id, entryHabitId, e.date, e.note ?? null, e.value ?? 1, field(e, "createdAt") || now, now);
+        // Clients before 1.2.3 send no entry updatedAt; stamping those `now` keeps their
+        // last-push-wins behaviour rather than letting them lose every conflict.
+        upsertEntry.run(e.id, entryHabitId, e.date, e.note ?? null, e.value ?? 1, field(e, "createdAt") || now, now,
+          isoOrNull(field(e, "updatedAt")) || now);
+        refeedMismatchedEntry.run(now, entryHabitId, e.date, e.id);
       }
     }
   });
@@ -209,13 +287,16 @@ router.post("/push", (req, res) => {
 // Optional: ?since=ISO8601 to get only changes after a timestamp
 router.get("/pull", (req, res) => {
   const userId = req.user.id;
-  const since = req.query.since;
+  // Compared as a string against stored toISOString() values, so bring it to that format
+  // first: "…:18Z" sorts AFTER "…:18.500Z" ('Z' > '.'), which silently dropped every row
+  // written later in the same second as the cursor.
+  const since = isoOrNull(req.query.since) ?? req.query.since;
 
   const HABIT_COLS = `id, name, emoji, color_hex, is_archived, sort_order,
               reminder_enabled, reminder_hour, reminder_minute, note,
               kind, target_value, unit, schedule_kind, times_per_week,
               active_days_mask, group_id,
-              created_at, updated_at`;
+              created_at, COALESCE(client_updated_at, updated_at) AS updated_at`;
 
   let habits, entries, groups, deletedHabitIds, deletedEntryIds, deletedGroupIds;
 
@@ -225,7 +306,7 @@ router.get("/pull", (req, res) => {
     ).all(userId, since);
 
     groups = db.prepare(
-      `SELECT id, name, color_hex, sort_order, created_at, updated_at
+      `SELECT id, name, color_hex, sort_order, created_at, COALESCE(client_updated_at, updated_at) AS updated_at
        FROM habit_groups WHERE user_id = ? AND updated_at > ?`,
     ).all(userId, since);
 
@@ -236,7 +317,8 @@ router.get("/pull", (req, res) => {
     if (habitIds.length > 0) {
       const placeholders = habitIds.map(() => "?").join(",");
       entries = db.prepare(
-        `SELECT id, habit_id, date, note, value, created_at FROM habit_entries WHERE habit_id IN (${placeholders}) AND updated_at > ?`,
+        `SELECT id, habit_id, date, note, value, created_at, COALESCE(client_updated_at, updated_at) AS updated_at
+         FROM habit_entries WHERE habit_id IN (${placeholders}) AND updated_at > ?`,
       ).all(...habitIds, since);
     } else {
       entries = [];
@@ -253,7 +335,7 @@ router.get("/pull", (req, res) => {
   } else {
     habits = db.prepare(`SELECT ${HABIT_COLS} FROM habits WHERE user_id = ?`).all(userId);
     groups = db.prepare(
-      `SELECT id, name, color_hex, sort_order, created_at, updated_at
+      `SELECT id, name, color_hex, sort_order, created_at, COALESCE(client_updated_at, updated_at) AS updated_at
        FROM habit_groups WHERE user_id = ?`,
     ).all(userId);
     const habitIds = habits.map((h) => /** @type {HabitRow} */ (h).id);
@@ -261,7 +343,8 @@ router.get("/pull", (req, res) => {
     if (habitIds.length > 0) {
       const placeholders = habitIds.map(() => "?").join(",");
       entries = db.prepare(
-        `SELECT id, habit_id, date, note, value, created_at FROM habit_entries WHERE habit_id IN (${placeholders})`,
+        `SELECT id, habit_id, date, note, value, created_at, COALESCE(client_updated_at, updated_at) AS updated_at
+         FROM habit_entries WHERE habit_id IN (${placeholders})`,
       ).all(...habitIds);
     } else {
       entries = [];
@@ -282,15 +365,15 @@ router.get("/pull", (req, res) => {
       kind: row.kind || "binary", targetValue: row.target_value, unit: row.unit || null,
       scheduleKind: row.schedule_kind || "daily", timesPerWeek: row.times_per_week,
       activeDaysMask: row.active_days_mask, groupId: row.group_id || null,
-      createdAt: row.created_at, updatedAt: row.updated_at,
+      createdAt: wireTime(row.created_at), updatedAt: wireTime(row.updated_at),
     }; }),
     entries: entries.map((e) => { const row = /** @type {EntryRow} */ (e); return {
       id: row.id, habitId: row.habit_id, date: row.date, note: row.note || null,
-      value: row.value, createdAt: row.created_at,
+      value: row.value, createdAt: wireTime(row.created_at), updatedAt: wireTime(row.updated_at),
     }; }),
     groups: groups.map((g) => { const row = /** @type {GroupRow} */ (g); return {
       id: row.id, name: row.name, colorHex: row.color_hex, sortOrder: row.sort_order,
-      createdAt: row.created_at, updatedAt: row.updated_at,
+      createdAt: wireTime(row.created_at), updatedAt: wireTime(row.updated_at),
     }; }),
     deletedHabitIds,
     deletedEntryIds,

@@ -144,7 +144,9 @@ router.put("/:id", (req, res) => {
       reminder_hour = COALESCE(?, reminder_hour),
       reminder_minute = COALESCE(?, reminder_minute),
       note = CASE WHEN ? THEN ? ELSE note END,
-      updated_at = ?
+      updated_at = ?,
+      -- This edit is newer than any device's; NULL makes sync fall back to updated_at.
+      client_updated_at = NULL
     WHERE id = ? AND user_id = ?
   `).run(
     name != null ? name.trim() : null,
