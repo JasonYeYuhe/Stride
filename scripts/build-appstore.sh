@@ -45,6 +45,29 @@ preflight_signing() {
 }
 preflight_signing
 
+# Preflight: has the INSTALLED Xcode's license been accepted?
+# Every Xcode update silently un-accepts it, and then every xcodebuild and xcrun call
+# dies with "You have not agreed to the Xcode license agreements" — the archive, the
+# export, even `xcrun dwarfdump`. Measured 2026-09-15: Xcode updated to 27.0 at 07:28
+# and nothing could build until the owner re-accepted. Accepting needs sudo, so this
+# is owner-only; the job here is to say so in the first second instead of mid-build.
+preflight_xcode_license() {
+    if ! xcodebuild -license check >/dev/null 2>&1; then
+        local xv; xv="$(defaults read /Applications/Xcode.app/Contents/Info CFBundleShortVersionString 2>/dev/null || echo '?')"
+        echo "  ✗ The Xcode ${xv} license has not been accepted (usually: Xcode was just updated)."
+        echo "    Run in a terminal:  sudo xcodebuild -license accept"
+        echo "    After a major Xcode update also run:  xcodebuild -runFirstLaunch"
+        echo "    Both need your password. No agent can do this for you."
+        exit 1
+    fi
+    echo "  ✓ Xcode license accepted"
+}
+preflight_xcode_license
+
+# Archives that archived fine but whose dSYMs did not make it to Sentry. Newline-separated
+# string rather than an array: /bin/bash on macOS is 3.2, where an empty array trips set -u.
+DSYM_FAILED=""
+
 # Regenerate Xcode project
 echo "  Regenerating Xcode project..."
 cd "$PROJECT_DIR" && xcodegen generate --quiet 2>/dev/null || xcodegen generate
@@ -87,6 +110,15 @@ build_ios() {
         CODE_SIGN_STYLE=Automatic
 
     echo "  ✓ Archive: $ARCHIVE"
+
+    # dSYMs: keep a permanent copy and upload to Sentry NOW, before anything else can
+    # delete this archive (this script rm -rf's build/appstore on its next run — which is
+    # exactly how 1.2.1's only dSYM was lost, leaving its one real crash unreadable).
+    # Deliberately non-fatal: a Sentry outage must not block a release, and the copy
+    # under build/dsyms/ lets the upload be retried. Failures are reported in the summary.
+    if ! "$SCRIPT_DIR/upload_dsyms.sh" "$ARCHIVE"; then
+        DSYM_FAILED="${DSYM_FAILED}${ARCHIVE}"$'\n'
+    fi
 
     echo "[2/3] Exporting for App Store..."
     cat > "$BUILD_DIR/ExportOptions-iOS.plist" << EOF
@@ -151,6 +183,15 @@ build_macos() {
         CODE_SIGN_STYLE=Automatic
 
     echo "  ✓ Archive: $ARCHIVE"
+
+    # dSYMs: keep a permanent copy and upload to Sentry NOW, before anything else can
+    # delete this archive (this script rm -rf's build/appstore on its next run — which is
+    # exactly how 1.2.1's only dSYM was lost, leaving its one real crash unreadable).
+    # Deliberately non-fatal: a Sentry outage must not block a release, and the copy
+    # under build/dsyms/ lets the upload be retried. Failures are reported in the summary.
+    if ! "$SCRIPT_DIR/upload_dsyms.sh" "$ARCHIVE"; then
+        DSYM_FAILED="${DSYM_FAILED}${ARCHIVE}"$'\n'
+    fi
 
     echo "[2/3] Exporting for App Store..."
     cat > "$BUILD_DIR/ExportOptions-macOS.plist" << EOF
@@ -262,5 +303,12 @@ ls -1 "$BUILD_DIR"/*.xcarchive 2>/dev/null | while read f; do echo "    $f"; don
 echo ""
 if [[ "$UPLOAD" == false ]]; then
     echo "  To upload: $0 $PLATFORM --upload"
+fi
+if [[ -n "$DSYM_FAILED" ]]; then
+    echo ""
+    echo "  ⚠️  dSYMs were NOT uploaded to Sentry for:"
+    printf '%s' "$DSYM_FAILED" | sed 's/^/      /'
+    echo "     Crashes from this build will be unsymbolicated until they are."
+    echo "     Local copies are under build/dsyms/ — see the retry command printed above."
 fi
 echo ""

@@ -100,9 +100,17 @@ it for the user to paste — so every logged token stayed valid until used or ex
   walk both offset signs.
 - **A target that is never built cannot fail to build.** Verify the product, not the
   project file: `ls Stride.app/PlugIns`.
-- **`build-appstore.sh` ends its export step with `|| true`**, so the failed 90360
-  upload still exited 0 and printed "Build Complete". Every artifact here was checked
-  directly rather than trusted from an exit code.
+- **A pipe swallows a failing script's exit code.** The failed 90360 upload *looked* like
+  it exited 0, and this record originally blamed the `|| true` on the export step for it.
+  **That diagnosis was wrong** (corrected 2026-09-15). The script did stop: `set -euo
+  pipefail` halted it at the failed upload — no "Upload complete", no "Build Complete",
+  and macOS never started. The 0 came from the command it was run with,
+  `build-appstore.sh all --upload | tail -60`, which reports `tail`'s status; the
+  `pipefail` inside the script does not reach the shell that launched it. `ship.sh` calls
+  the script unpiped under its own `pipefail`, so unattended releases were never exposed.
+  (The `|| true` is real but minor: it can hide a failed *export* step, after which the
+  upload step re-exports from the archive and fails loudly on its own.) Lesson: never read
+  a release script's outcome through a pipe — check `$?` unpiped, or the artifact itself.
 
 ## Also in this release
 
