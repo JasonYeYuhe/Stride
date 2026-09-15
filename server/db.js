@@ -164,6 +164,11 @@ const migrateIfNeeded = db.transaction(() => {
     WHERE deleted_at LIKE '%-%-% %:%:%' AND deleted_at NOT LIKE '%T%';
   `);
 
+  // seed-demo.js inserted entries without updated_at, and on a database upgraded from before
+  // that column existed it is nullable, so production's demo check-ins had none: invisible to
+  // every ?since pull, and (below) no edit time to compare against.
+  db.exec("UPDATE habit_entries SET updated_at = created_at WHERE updated_at IS NULL");
+
   // Edit time, kept apart from change time — see "Two clocks" in routes/sync.js. Backfilled
   // from updated_at, which for habits and groups already WAS the device's edit time, and
   // normalised to toISOString() format so string comparison orders it correctly.

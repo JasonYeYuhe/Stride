@@ -129,7 +129,7 @@ router.post("/push", (req, res) => {
       client_updated_at = excluded.client_updated_at,
       updated_at = excluded.updated_at
     WHERE habits.user_id = ?
-      AND excluded.client_updated_at >= COALESCE(habits.client_updated_at, habits.updated_at)
+      AND excluded.client_updated_at >= COALESCE(habits.client_updated_at, habits.updated_at, '')
       AND (habits.client_updated_at IS NOT excluded.client_updated_at
         OR habits.name IS NOT excluded.name OR habits.emoji IS NOT excluded.emoji
         OR habits.color_hex IS NOT excluded.color_hex OR habits.is_archived IS NOT excluded.is_archived
@@ -152,7 +152,7 @@ router.post("/push", (req, res) => {
       value = excluded.value,
       client_updated_at = excluded.client_updated_at,
       updated_at = excluded.updated_at
-    WHERE excluded.client_updated_at >= COALESCE(habit_entries.client_updated_at, habit_entries.updated_at)
+    WHERE excluded.client_updated_at >= COALESCE(habit_entries.client_updated_at, habit_entries.updated_at, '')
       AND (habit_entries.client_updated_at IS NOT excluded.client_updated_at
         OR habit_entries.note IS NOT excluded.note OR habit_entries.value IS NOT excluded.value)
   `);
@@ -175,7 +175,7 @@ router.post("/push", (req, res) => {
       client_updated_at = excluded.client_updated_at,
       updated_at = excluded.updated_at
     WHERE habit_groups.user_id = ?
-      AND excluded.client_updated_at >= COALESCE(habit_groups.client_updated_at, habit_groups.updated_at)
+      AND excluded.client_updated_at >= COALESCE(habit_groups.client_updated_at, habit_groups.updated_at, '')
       AND (habit_groups.client_updated_at IS NOT excluded.client_updated_at
         OR habit_groups.name IS NOT excluded.name OR habit_groups.color_hex IS NOT excluded.color_hex
         OR habit_groups.sort_order IS NOT excluded.sort_order)
@@ -317,7 +317,7 @@ router.get("/pull", (req, res) => {
     if (habitIds.length > 0) {
       const placeholders = habitIds.map(() => "?").join(",");
       entries = db.prepare(
-        `SELECT id, habit_id, date, note, value, created_at, COALESCE(client_updated_at, updated_at) AS updated_at
+        `SELECT id, habit_id, date, note, value, created_at, COALESCE(client_updated_at, updated_at, created_at) AS updated_at
          FROM habit_entries WHERE habit_id IN (${placeholders}) AND updated_at > ?`,
       ).all(...habitIds, since);
     } else {
@@ -343,7 +343,7 @@ router.get("/pull", (req, res) => {
     if (habitIds.length > 0) {
       const placeholders = habitIds.map(() => "?").join(",");
       entries = db.prepare(
-        `SELECT id, habit_id, date, note, value, created_at, COALESCE(client_updated_at, updated_at) AS updated_at
+        `SELECT id, habit_id, date, note, value, created_at, COALESCE(client_updated_at, updated_at, created_at) AS updated_at
          FROM habit_entries WHERE habit_id IN (${placeholders})`,
       ).all(...habitIds);
     } else {

@@ -97,8 +97,8 @@ const seed = db.transaction(() => {
       const dateStr = date.toISOString().split("T")[0];
       const entryId = crypto.randomUUID().toUpperCase();
       db.prepare(
-        "INSERT OR IGNORE INTO habit_entries (id, habit_id, date, created_at) VALUES (?, ?, ?, ?)"
-      ).run(entryId, habitIds[hi], dateStr, date.toISOString());
+        "INSERT OR IGNORE INTO habit_entries (id, habit_id, date, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
+      ).run(entryId, habitIds[hi], dateStr, date.toISOString(), date.toISOString());
       entryCount++;
     }
   }
