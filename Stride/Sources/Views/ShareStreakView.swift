@@ -10,7 +10,7 @@ struct ShareStreakView: View {
     private var last14Days: [Date] { Date.lastNDays(14) }
 
     private var shareText: String {
-        "\(habit.emoji) \(currentStreak) day streak on \(habit.name)! 🔥"
+        "\(habit.emoji) \(currentStreak) \(habit.streakUnit) streak on \(habit.name)! 🔥"
     }
 
     var body: some View {
@@ -67,7 +67,7 @@ struct ShareStreakView: View {
                 Text("\(currentStreak)")
                     .font(.system(size: 72, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
-                Text("day streak")
+                Text(habit.streakUnit == "week" ? "week streak" : "day streak")
                     .font(.title3.weight(.medium))
                     .foregroundStyle(.white.opacity(0.85))
             }

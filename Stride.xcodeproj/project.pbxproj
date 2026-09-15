@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		00135612370590CC16AF6393 /* SentryBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57E8AF7596BAD4790E235C6A /* SentryBootstrap.swift */; };
+		011E75E8AEF33B393B65265D /* StatsMathTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4941D1BB0D89A2006A52E455 /* StatsMathTests.swift */; };
 		02B02C365D766A86738F7090 /* Habit.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21336DA7BBDF96DEA4D3407 /* Habit.swift */; };
 		073EEADD57659E0F816B2F6C /* SentryBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57E8AF7596BAD4790E235C6A /* SentryBootstrap.swift */; };
 		0799250ECCF5C2CD02DB82AF /* WeeklyReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39DF81407676587A843D1904 /* WeeklyReviewView.swift */; };
@@ -191,6 +192,7 @@
 		42BDA8DAD54978C63D7BF2E8 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		447E56E91A805C7FB349BA2A /* StatsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatsView.swift; sourceTree = "<group>"; };
 		48E2B457B97506287B51D6F1 /* HabitTemplatesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HabitTemplatesView.swift; sourceTree = "<group>"; };
+		4941D1BB0D89A2006A52E455 /* StatsMathTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatsMathTests.swift; sourceTree = "<group>"; };
 		49586A76C3DA5DCA5F71B60D /* StrideWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrideWatchApp.swift; sourceTree = "<group>"; };
 		4BF44B6E74C40A2F7E664752 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		4EA67CF2EE47ECE75C3802D7 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -395,6 +397,7 @@
 				D288EEDE821222AD59C7BF9F /* FrequencyTests.swift */,
 				3D9FD5D56D18C97078DAD4C5 /* HabitCheckInTests.swift */,
 				CE98D2D441CF6A791EF47340 /* HabitTests.swift */,
+				4941D1BB0D89A2006A52E455 /* StatsMathTests.swift */,
 				169185A02281694B56C07F52 /* SyncDeletionQueueTests.swift */,
 				B9523AC157C8D77E551424F5 /* SyncReconcileTests.swift */,
 				2A84DF4E9961E98C9495F8DA /* TimezoneTests.swift */,
@@ -713,6 +716,7 @@
 				0BFC1AB25F62D6A0FFCCD753 /* HabitTests.swift in Sources */,
 				073EEADD57659E0F816B2F6C /* SentryBootstrap.swift in Sources */,
 				4B4ADE07E11E4960DE24489A /* SharedModelContainer.swift in Sources */,
+				011E75E8AEF33B393B65265D /* StatsMathTests.swift in Sources */,
 				4E67FE6293D1163559D59D72 /* SyncDeletionQueue.swift in Sources */,
 				D0CACD6F560F84E4BA377A09 /* SyncDeletionQueueTests.swift in Sources */,
 				335DC40C3A9DC261299B0731 /* SyncModels.swift in Sources */,

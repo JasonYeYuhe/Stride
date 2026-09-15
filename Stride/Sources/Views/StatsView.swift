@@ -109,8 +109,15 @@ struct OverallStatsCard: View {
         habits.filter { $0.isCompletedOn(Date()) }.count
     }
 
-    private var bestStreak: Int {
-        habits.map { $0.currentStreak() }.max() ?? 0
+    /// The longest streak across habits. This was the maximum CURRENT streak under a "Best Streak"
+    /// label, so the moment a long streak broke the tile dropped to 0 as if the record were erased.
+    /// Times-per-week habits count streaks in weeks, so they are only compared with each other.
+    private var bestStreak: (value: Int, inWeeks: Bool) {
+        let dayUnitHabits = habits.filter { $0.schedule != .timesPerWeek }
+        if dayUnitHabits.isEmpty {
+            return (habits.map { $0.bestStreak() }.max() ?? 0, true)
+        }
+        return (dayUnitHabits.map { $0.bestStreak() }.max() ?? 0, false)
     }
 
     private var avgCompletion: Double {
@@ -122,7 +129,7 @@ struct OverallStatsCard: View {
         HStack(spacing: 0) {
             StatItem(value: "\(todayCount)/\(habits.count)", label: "Today", icon: "checkmark.circle")
             Divider().frame(height: 40)
-            StatItem(value: "\(bestStreak)", label: "Best Streak", icon: "flame")
+            StatItem(value: "\(bestStreak.value)", label: bestStreak.inWeeks ? "Best Streak (weeks)" : "Best Streak", icon: "flame")
             Divider().frame(height: 40)
             StatItem(value: "\(Int(avgCompletion * 100))%", label: "30d Avg", icon: "chart.line.uptrend.xyaxis")
         }
@@ -226,7 +233,7 @@ struct HabitDetailStatsCard: View {
                     HStack(spacing: 4) {
                         Text("\(habit.bestStreak())")
                             .font(.title2.bold())
-                        Text("days")
+                        Text(habit.streakUnit == "week" ? "weeks" : "days")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

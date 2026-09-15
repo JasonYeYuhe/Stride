@@ -23,17 +23,12 @@ struct WeeklyReviewView: View {
         return (start, end)
     }
 
+    // Delegates to the model. The local version divided a raw count of records by elapsed calendar
+    // days, ignoring the schedule and count targets, so on a Sunday "Gym — Mon/Wed/Fri" done on all
+    // three days scored 43% and was tagged "Needs work", while "Water — 8 glasses" with one glass a
+    // day scored 100% and was crowned "Best".
     private func completionRate(for habit: Habit, in range: (start: Date, end: Date)) -> Double {
-        let days = calendar.dateComponents([.day], from: range.start, to: range.end).day! + 1
-        // Compare in day-key space: range bounds are local days, record dates are
-        // UTC-anchored day-keys (see HabitCalendar).
-        let startKey = HabitCalendar.dayKey(for: range.start)
-        let endKey = HabitCalendar.dayKey(for: range.end)
-        let completions = habit.records.filter { record in
-            let d = HabitCalendar.startOfKey(record.date)
-            return d >= startKey && d <= endKey
-        }.count
-        return days > 0 ? Double(completions) / Double(days) : 0
+        habit.completionRate(from: range.start, to: range.end)
     }
 
     private var overallRate: Double {

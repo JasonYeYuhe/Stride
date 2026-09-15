@@ -87,8 +87,9 @@ struct CheckStreakIntent: AppIntent {
         }
 
         let streak = habit.currentStreak()
-        let dayWord = streak == 1 ? "day" : "days"
-        return .result(value: "\(habit.emoji) \(habit.name): \(streak) \(dayWord) streak")
+        // A times-per-week habit's streak is in weeks; this always said "days".
+        let unit = habit.streakUnit == "week" ? (streak == 1 ? "week" : "weeks") : (streak == 1 ? "day" : "days")
+        return .result(value: "\(habit.emoji) \(habit.name): \(streak) \(unit) streak")
     }
 }
 

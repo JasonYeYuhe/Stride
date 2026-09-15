@@ -237,25 +237,59 @@ final class Habit {
         return streak
     }
 
+    /// Longest run ever, by the same rules as `currentStreak`: in weeks for a times-per-week
+    /// habit; otherwise in days, where a day the habit isn't scheduled neither counts nor breaks
+    /// the run. So it can never be smaller than the current streak shown beside it.
+    ///
+    /// It used to count only literally consecutive completed calendar days, ignoring both the
+    /// schedule and the week unit. A Mon/Wed/Fri habit never missed for six weeks read "Best Streak
+    /// 1" next to "Current Streak 18 days", and a 3-times-a-week habit had its best counted in days
+    /// while its current streak was in weeks.
     func bestStreak() -> Int {
+        if schedule == .timesPerWeek { return bestWeeklyStreak() }
+
         let calendar = HabitCalendar.utc
-        let sortedDates = completedDayKeys().sorted()
+        let completed = completedDayKeys()
+        guard let first = completed.min(), let last = completed.max() else { return 0 }
 
-        guard !sortedDates.isEmpty else { return 0 }
-
-        var best = 1
-        var current = 1
-
-        for i in 1..<sortedDates.count {
-            guard let expected = calendar.date(byAdding: .day, value: 1, to: sortedDates[i - 1]) else { continue }
-            if calendar.isDate(sortedDates[i], inSameDayAs: expected) {
-                current += 1
-                best = max(best, current)
-            } else if !calendar.isDate(sortedDates[i], inSameDayAs: sortedDates[i - 1]) {
-                current = 1
+        var best = 0
+        var run = 0
+        var day = first
+        while day <= last {
+            if isScheduled(on: day) {
+                if completed.contains(day) {
+                    run += 1
+                    best = max(best, run)
+                } else {
+                    run = 0
+                }
             }
+            guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
+            day = next
         }
+        return best
+    }
 
+    private func bestWeeklyStreak() -> Int {
+        let cal = HabitCalendar.utc
+        let completed = completedDayKeys()
+        guard let first = completed.min(), let last = completed.max() else { return 0 }
+        let target = max(1, timesPerWeek)
+
+        var best = 0
+        var run = 0
+        var week = weekStart(for: first)
+        let lastWeek = weekStart(for: last)
+        while week <= lastWeek {
+            if weeklyCompletions(weekStarting: week) >= target {
+                run += 1
+                best = max(best, run)
+            } else {
+                run = 0
+            }
+            guard let next = cal.date(byAdding: .day, value: 7, to: week) else { break }
+            week = next
+        }
         return best
     }
 
@@ -266,16 +300,27 @@ final class Habit {
         return completionRate(from: startDate, to: today)
     }
 
-    /// Completion rate over an inclusive date range. Denominator = scheduled
-    /// (expected) days, so rest days for specificDays habits don't drag it down.
-    /// Clamped to the habit's creation date.
-    func completionRate(from start: Date, to end: Date) -> Double {
+    /// Completion rate over an inclusive date range, clamped to the habit's creation date and to
+    /// `now` — a day that hasn't happened yet is never counted as missed.
+    ///
+    /// - Daily and specific days: completed scheduled days ÷ scheduled days, so rest days don't
+    ///   drag it down.
+    /// - Times per week: how much of each week's goal was met ÷ the goal. See `weeklyGoalRate`.
+    ///
+    /// The `now` clamp fixes the Pro 8-week trend, which passes each week's Sunday as the end —
+    /// including the current week's, which is in the future — so the days still to come were
+    /// scored as misses: a daily habit done every day showed its last bar at 14% on a Monday.
+    func completionRate(from start: Date, to end: Date, now: Date = Date()) -> Double {
         let calendar = HabitCalendar.utc
-        let endKey = HabitCalendar.dayKey(for: end)
+        let endKey = min(HabitCalendar.dayKey(for: end), HabitCalendar.dayKey(for: now))
         let startKey = HabitCalendar.dayKey(for: start)
         let creationDate = HabitCalendar.dayKey(for: createdAt)
         let effectiveStart = max(startKey, creationDate)
         guard effectiveStart <= endKey else { return 0 }
+
+        if schedule == .timesPerWeek {
+            return weeklyGoalRate(from: effectiveStart, to: endKey)
+        }
 
         var expectedDays = 0
         var day = effectiveStart
@@ -288,6 +333,38 @@ final class Habit {
 
         let completedDays = completedDayKeys().filter { $0 >= effectiveStart && $0 <= endKey && isScheduled(on: $0) }.count
         return Double(completedDays) / Double(expectedDays)
+    }
+
+    /// The rate for a times-per-week goal: for each Monday-anchored week the range touches, the
+    /// share of the goal that falls inside the range is expected, and the week's completions (up to
+    /// the end of the range) are credited against it, capped at that share.
+    ///
+    /// This habit used to be scored like a daily one — every day "scheduled" — so a goal of N days
+    /// a week could never exceed N/7: "Run, 3 times a week", done every single week, read 43%.
+    /// Completions are counted across the whole week rather than only the days inside the range
+    /// because the goal belongs to the week: three runs on Mon/Wed/Fri meet it even when the range
+    /// starts on that week's Saturday.
+    private func weeklyGoalRate(from startKey: Date, to endKey: Date) -> Double {
+        let cal = HabitCalendar.utc
+        let goal = Double(max(1, timesPerWeek))
+        let completed = completedDayKeys()
+
+        var earned = 0.0
+        var expected = 0.0
+        var week = weekStart(for: startKey)
+        while week <= endKey {
+            guard let weekEnd = cal.date(byAdding: .day, value: 6, to: week) else { break }
+            let first = max(week, startKey)
+            let last = min(weekEnd, endKey)
+            let daysInRange = (cal.dateComponents([.day], from: first, to: last).day ?? 0) + 1
+            let share = goal * Double(daysInRange) / 7
+            let done = Double(completed.filter { $0 >= week && $0 <= last }.count)
+            earned += min(done, share)
+            expected += share
+            guard let next = cal.date(byAdding: .day, value: 7, to: week) else { break }
+            week = next
+        }
+        return expected > 0 ? earned / expected : 0
     }
 
     func completionsPerWeekday() -> [Int: Int] {
