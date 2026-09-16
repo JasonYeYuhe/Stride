@@ -2,6 +2,7 @@ import SwiftUI
 
 struct OnboardingView: View {
     @State private var currentPage = 0
+    @AccessibilityFocusState private var focusedPage: Int?
     @Binding var isPresented: Bool
 
     private let pages: [OnboardingPage] = [
@@ -41,6 +42,8 @@ struct OnboardingView: View {
                             .frame(width: 8, height: 8)
                     }
                 }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Page \(currentPage + 1) of \(pages.count)")
                 .padding(.bottom, 16)
                 #else
                 macOSControls
@@ -62,18 +65,22 @@ struct OnboardingView: View {
             DragGesture(minimumDistance: 30)
                 .onEnded { value in
                     if value.translation.width < -30, currentPage < pages.count - 1 {
-                        withAnimation { currentPage += 1 }
+                        goToPage(currentPage + 1)
                     } else if value.translation.width > 30, currentPage > 0 {
-                        withAnimation { currentPage -= 1 }
+                        goToPage(currentPage - 1)
                     }
                 }
         )
         .accessibilityAction(.escape) { completeOnboarding() }
-        .accessibilityAction(named: "Next Page") {
-            if currentPage < pages.count - 1 { withAnimation { currentPage += 1 } }
-        }
-        .accessibilityAction(named: "Previous Page") {
-            if currentPage > 0 { withAnimation { currentPage -= 1 } }
+        // VoiceOver swallows the drag gesture above, so these rotor actions are the
+        // only way through onboarding; offer them only when they can actually move.
+        .accessibilityActions {
+            if currentPage < pages.count - 1 {
+                Button("Next") { goToPage(currentPage + 1) }
+            }
+            if currentPage > 0 {
+                Button("Back") { goToPage(currentPage - 1) }
+            }
         }
         #else
         .frame(minWidth: 500, minHeight: 450)
@@ -87,21 +94,29 @@ struct OnboardingView: View {
         VStack(spacing: 24) {
             Spacer()
 
-            Image(systemName: page.symbol)
-                .font(.system(size: 72))
-                .foregroundStyle(.green)
-                .symbolRenderingMode(.hierarchical)
+            // Same spacing as the enclosing VStack, so wrapping these three for
+            // VoiceOver leaves the rendered layout unchanged.
+            VStack(spacing: 24) {
+                Image(systemName: page.symbol)
+                    .font(.system(size: 72))
+                    .foregroundStyle(.green)
+                    .symbolRenderingMode(.hierarchical)
+                    .accessibilityHidden(true)
 
-            Text(page.title)
-                .font(.largeTitle)
-                .fontWeight(.bold)
-                .multilineTextAlignment(.center)
+                Text(page.title)
+                    .font(.largeTitle)
+                    .fontWeight(.bold)
+                    .multilineTextAlignment(.center)
 
-            Text(page.subtitle)
-                .font(.title3)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 40)
+                Text(page.subtitle)
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 40)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isHeader)
+            .accessibilityFocused($focusedPage, equals: currentPage)
 
             Spacer()
 
@@ -138,6 +153,10 @@ struct OnboardingView: View {
                         .frame(width: 8, height: 8)
                 }
             }
+            // Labelled here rather than after .overlay, which would swallow the
+            // Back/Next buttons below into this one element.
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Page \(currentPage + 1) of \(pages.count)")
             .frame(maxWidth: .infinity)
 
             // Navigation buttons overlay on the right
@@ -145,12 +164,12 @@ struct OnboardingView: View {
                 HStack(spacing: 12) {
                     if currentPage > 0 {
                         Button("Back") {
-                            withAnimation { currentPage -= 1 }
+                            goToPage(currentPage - 1)
                         }
                     }
                     if currentPage < pages.count - 1 {
                         Button("Next") {
-                            withAnimation { currentPage += 1 }
+                            goToPage(currentPage + 1)
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(.green)
@@ -163,6 +182,14 @@ struct OnboardingView: View {
     #endif
 
     // MARK: - Actions
+
+    private func goToPage(_ index: Int) {
+        withAnimation { currentPage = index }
+        // The page element keeps its identity across the change, so VoiceOver
+        // re-reads it only when focus genuinely moves onto it: clear, then re-set.
+        focusedPage = nil
+        Task { @MainActor in focusedPage = index }
+    }
 
     private func completeOnboarding() {
         UserDefaults.standard.set(true, forKey: "stride_onboarding_completed")
@@ -177,8 +204,8 @@ struct OnboardingView: View {
 
 private struct OnboardingPage {
     let symbol: String
-    let title: String
-    let subtitle: String
+    let title: LocalizedStringKey
+    let subtitle: LocalizedStringKey
 }
 
 #Preview {

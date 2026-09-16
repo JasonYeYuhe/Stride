@@ -13,8 +13,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.9"
-    MARKETING_VERSION: "1.2.2"
-    CURRENT_PROJECT_VERSION: 16
+    MARKETING_VERSION: "1.2.3"
+    CURRENT_PROJECT_VERSION: 17
     DEVELOPMENT_TEAM: KHMK6Q3L3K
     CODE_SIGN_STYLE: Automatic
 
@@ -98,7 +98,11 @@ targets:
 
   StrideTests:
     type: bundle.unit-test
-    platform: iOS
+    # macOS too, so CI can run the suite without an iOS simulator runtime (GitHub's runners
+    # don't have one that matches the SDK — see ci.yml). The target is host-less and compiles
+    # only StrideTests/ + Shared/, which already builds for macOS as part of StrideMac.
+    platform: auto
+    supportedDestinations: [iOS, macOS]
     sources:
       - StrideTests
       - Shared
@@ -185,6 +189,16 @@ schemes:
         - StrideTests
     archive:
       config: Release
+  # Tests only, no app: lets `xcodebuild test -scheme StrideTests -destination platform=macOS`
+  # run where the Stride scheme can't (its app target is iOS-only).
+  StrideTests:
+    build:
+      targets:
+        StrideTests: [test]
+    test:
+      config: Debug
+      targets:
+        - StrideTests
   StrideMac:
     build:
       targets:

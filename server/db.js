@@ -4,6 +4,7 @@ const path = require("path");
 
 /** @typedef {{ name: string, type: string, notnull: number, dflt_value: string|null, pk: number }} PragmaColumn */
 
+const { canonicalizeIds } = require("./migrations/canonicalizeIds");
 const db = new Database(path.join(__dirname, "stride.db"));
 
 db.pragma("journal_mode = WAL");
@@ -162,6 +163,26 @@ const migrateIfNeeded = db.transaction(() => {
       deleted_at = REPLACE(deleted_at, ' ', 'T') || 'Z'
     WHERE deleted_at LIKE '%-%-% %:%:%' AND deleted_at NOT LIKE '%T%';
   `);
+
+  // seed-demo.js inserted entries without updated_at, and on a database upgraded from before
+  // that column existed it is nullable, so production's demo check-ins had none: invisible to
+  // every ?since pull, and (below) no edit time to compare against.
+  db.exec("UPDATE habit_entries SET updated_at = created_at WHERE updated_at IS NULL");
+
+  // Edit time, kept apart from change time — see "Two clocks" in routes/sync.js. Backfilled
+  // from updated_at, which for habits and groups already WAS the device's edit time, and
+  // normalised to toISOString() format so string comparison orders it correctly.
+  for (const table of ["habits", "habit_entries", "habit_groups"]) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => /** @type {PragmaColumn} */ (c).name);
+    if (!cols.includes("client_updated_at")) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN client_updated_at TEXT`);
+      db.exec(`UPDATE ${table} SET client_updated_at = COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', updated_at), updated_at)`);
+    }
+  }
+
+  // Upper-case every stored id so server-generated (lower-case) ids match what the apps
+  // send. See migrations/canonicalizeIds.js — it needs this surrounding transaction.
+  canonicalizeIds(db);
 });
 migrateIfNeeded();
 

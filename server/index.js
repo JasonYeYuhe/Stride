@@ -14,6 +14,7 @@ const helmet = /** @type {any} */ (require("helmet"));
 const { rateLimit } = require("express-rate-limit");
 const Sentry = require("@sentry/node");
 const { requestLogger } = require("./logger");
+const origins = require("./origins");
 const db = require("./db");
 
 // Error tracking — only active when a DSN is configured (so tests/dev stay quiet).
@@ -25,8 +26,10 @@ if (process.env.SENTRY_DSN) {
   });
 }
 
+origins.warnIfUnset();
+
 const app = express();
-const PORT = process.env.PORT || 3002;
+const PORT = Number(process.env.PORT) || 3002;
 
 // Behind nginx (single hop): trust the first proxy so express-rate-limit and
 // req.ip key on the real client IP from X-Forwarded-For, not the loopback
@@ -63,7 +66,7 @@ if (process.env.NODE_ENV !== "test") {
 }
 
 const allowedOrigins = new Set([
-  process.env.FRONTEND_ORIGIN || "https://stride.colorarchive.me",
+  origins.frontendOrigin,
   ...(process.env.NODE_ENV !== "production"
     ? ["http://localhost:3000", "http://127.0.0.1:3000"]
     : []),

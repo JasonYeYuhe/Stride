@@ -6,7 +6,15 @@ struct StatsView: View {
            sort: \Habit.sortOrder)
     private var habits: [Habit]
 
-    @State private var selectedHabit: Habit?
+    // An id, not a Habit. Holding the @Model object in @State kept it alive outside the @Query
+    // result set, and nothing cleared it when that habit was deleted — in Settings, or with no
+    // user action at all by a sync tombstone from another device. The next render then read
+    // properties of an invalidated model. Resolving the id against the live query can't do that.
+    @State private var selectedHabitID: UUID?
+
+    private var selectedHabit: Habit? {
+        habits.first { $0.id == selectedHabitID } ?? habits.first
+    }
     @State private var showingWeeklyReview = false
     @State private var showingPaywall = false
     private var store = StoreService.shared
@@ -22,6 +30,7 @@ struct StatsView: View {
                     Image(systemName: "chart.bar")
                         .font(.system(size: 50))
                         .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
                     Text("No habits yet")
                         .font(.title3)
                         .foregroundStyle(.secondary)
@@ -44,7 +53,7 @@ struct StatsView: View {
                                 )
                                 .onTapGesture {
                                     withAnimation {
-                                        selectedHabit = habit
+                                        selectedHabitID = habit.id
                                     }
                                 }
                             }
@@ -52,7 +61,7 @@ struct StatsView: View {
                         .padding(.horizontal)
                     }
 
-                    if let habit = selectedHabit ?? habits.first {
+                    if let habit = selectedHabit {
                         VStack(spacing: 16) {
                             HabitDetailStatsCard(habit: habit)
                             if store.isPro {
@@ -82,6 +91,7 @@ struct StatsView: View {
                 } label: {
                     Image(systemName: "calendar.badge.clock")
                 }
+                .accessibilityLabel("Weekly Review")
             }
         }
         .sheet(isPresented: $showingWeeklyReview) {
@@ -89,11 +99,6 @@ struct StatsView: View {
         }
         .sheet(isPresented: $showingPaywall) {
             ProPaywallView()
-        }
-        .onAppear {
-            if selectedHabit == nil {
-                selectedHabit = habits.first
-            }
         }
     }
 }
@@ -106,8 +111,15 @@ struct OverallStatsCard: View {
         habits.filter { $0.isCompletedOn(Date()) }.count
     }
 
-    private var bestStreak: Int {
-        habits.map { $0.currentStreak() }.max() ?? 0
+    /// The longest streak across habits. This was the maximum CURRENT streak under a "Best Streak"
+    /// label, so the moment a long streak broke the tile dropped to 0 as if the record were erased.
+    /// Times-per-week habits count streaks in weeks, so they are only compared with each other.
+    private var bestStreak: (value: Int, inWeeks: Bool) {
+        let dayUnitHabits = habits.filter { $0.schedule != .timesPerWeek }
+        if dayUnitHabits.isEmpty {
+            return (habits.map { $0.bestStreak() }.max() ?? 0, true)
+        }
+        return (dayUnitHabits.map { $0.bestStreak() }.max() ?? 0, false)
     }
 
     private var avgCompletion: Double {
@@ -117,11 +129,13 @@ struct OverallStatsCard: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            StatItem(value: "\(todayCount)/\(habits.count)", label: "Today", icon: "checkmark.circle")
+            StatItem(value: "\(todayCount)/\(habits.count)", label: "Today", icon: "checkmark.circle",
+                     a11yValue: "\(todayCount) of \(habits.count) habits completed")
             Divider().frame(height: 40)
-            StatItem(value: "\(bestStreak)", label: "Best Streak", icon: "flame")
+            StatItem(value: "\(bestStreak.value)", label: bestStreak.inWeeks ? "Best Streak (weeks)" : "Best Streak", icon: "flame")
             Divider().frame(height: 40)
-            StatItem(value: "\(Int(avgCompletion * 100))%", label: "30d Avg", icon: "chart.line.uptrend.xyaxis")
+            StatItem(value: "\(Int(avgCompletion * 100))%", label: "30d Avg", icon: "chart.line.uptrend.xyaxis",
+                     a11yLabel: "30-day average")
         }
         .padding()
         .background(
@@ -135,12 +149,17 @@ struct StatItem: View {
     let value: String
     let label: LocalizedStringKey
     let icon: String
+    /// Spoken instead of the visible ones where the glyph form doesn't survive being read aloud:
+    /// "30d Avg" becomes "thirty d avg", and "3/5" becomes "three fifths".
+    var a11yLabel: LocalizedStringKey?
+    var a11yValue: LocalizedStringKey?
 
     var body: some View {
         VStack(spacing: 6) {
             Image(systemName: icon)
                 .font(.caption)
                 .foregroundStyle(.green)
+                .accessibilityHidden(true)
             Text(verbatim: value)
                 .font(.title3.bold())
             Text(label)
@@ -148,7 +167,9 @@ struct StatItem: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(a11yLabel ?? label)
+        .accessibilityValue(a11yValue.map { Text($0) } ?? Text(verbatim: value))
     }
 }
 
@@ -173,8 +194,11 @@ struct HabitChip: View {
             Capsule()
                 .stroke(isSelected ? habit.color : .clear, lineWidth: 1.5)
         )
-        .accessibilityLabel("\(habit.name)\(isSelected ? ", selected" : "")")
-        .accessibilityAddTraits(isSelected ? .isSelected : .isButton)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(isSelected ? "\(habit.name), selected" : "\(habit.name)")
+        // The chip stays actionable when selected, so .isSelected has to be added to .isButton
+        // rather than replace it — otherwise it reads as a static status label.
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
     }
 }
 
@@ -215,6 +239,7 @@ struct HabitDetailStatsCard: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                .accessibilityElement(children: .combine)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Best Streak")
@@ -223,11 +248,12 @@ struct HabitDetailStatsCard: View {
                     HStack(spacing: 4) {
                         Text("\(habit.bestStreak())")
                             .font(.title2.bold())
-                        Text("days")
+                        Text(habit.streakUnit == "week" ? "weeks" : "days")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
+                .accessibilityElement(children: .combine)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("30-Day Rate")
@@ -236,6 +262,7 @@ struct HabitDetailStatsCard: View {
                     Text("\(Int(habit.completionRate() * 100))%")
                         .font(.title2.bold())
                 }
+                .accessibilityElement(children: .combine)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Total")
@@ -244,6 +271,7 @@ struct HabitDetailStatsCard: View {
                     Text("\(habit.records.count)")
                         .font(.title2.bold())
                 }
+                .accessibilityElement(children: .combine)
 
                 Spacer()
             }
@@ -271,6 +299,7 @@ struct ProLockedCard: View {
                 Image(systemName: "crown.fill")
                     .font(.title2)
                     .foregroundStyle(.yellow)
+                    .accessibilityHidden(true)
                 Text(title)
                     .font(.headline)
                 Text(message)
@@ -302,6 +331,9 @@ struct TrendCard: View {
     private struct WeekPoint: Identifiable {
         let id = UUID()
         let label: String
+        /// Spoken instead of `label`: the visible "M/d" is a fixed field order VoiceOver reads
+        /// as "nine slash eight".
+        let spokenDate: String
         let rate: Double
     }
 
@@ -316,10 +348,18 @@ struct TrendCard: View {
         fmt.dateFormat = "M/d"
         fmt.timeZone = TimeZone(identifier: "UTC")
 
+        // Same instants as `fmt`, so the spoken date has to stay UTC-anchored too.
+        var spokenFmt = Date.FormatStyle.dateTime.month().day()
+        spokenFmt.timeZone = utc.timeZone
+
         return (0..<weekCount).reversed().compactMap { back in
             guard let start = utc.date(byAdding: .day, value: -7 * back, to: thisWeekStart),
                   let end = utc.date(byAdding: .day, value: 6, to: start) else { return nil }
-            return WeekPoint(label: fmt.string(from: start), rate: habit.completionRate(from: start, to: end))
+            return WeekPoint(
+                label: fmt.string(from: start),
+                spokenDate: start.formatted(spokenFmt),
+                rate: habit.completionRate(from: start, to: end)
+            )
         }
     }
 
@@ -327,6 +367,7 @@ struct TrendCard: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("8-Week Trend")
                 .font(.headline)
+                .accessibilityAddTraits(.isHeader)
 
             HStack(alignment: .bottom, spacing: 6) {
                 ForEach(points) { point in
@@ -343,6 +384,10 @@ struct TrendCard: View {
                             .lineLimit(1)
                     }
                     .frame(maxWidth: .infinity)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Week of \(point.spokenDate)")
+                    // The bar's own label truncates; rounding here would speak a different number.
+                    .accessibilityValue(Text(verbatim: "\(Int(point.rate * 100))%"))
                 }
             }
             .frame(height: 110)
@@ -357,9 +402,11 @@ struct InsightsCard: View {
     let habit: Habit
     private let utc = HabitCalendar.utc
 
-    private var insights: [(icon: String, text: String)] {
-        var out: [(String, String)] = []
-        let symbols = Calendar.current.weekdaySymbols // index 0 = Sunday
+    // LocalizedStringKey, not String: a String reaches Text() as verbatim content, so these rows
+    // rendered in English in every language. Each phrase is built whole so it is one key.
+    private var insights: [(icon: String, text: LocalizedStringKey)] {
+        var out: [(String, LocalizedStringKey)] = []
+        let symbols = appCalendar.weekdaySymbols // index 0 = Sunday
         let counts = habit.completionsPerWeekday()    // keys 1...7
 
         if let best = counts.max(by: { $0.value < $1.value }), best.value > 0 {
@@ -382,10 +429,13 @@ struct InsightsCard: View {
             let thisRate = habit.completionRate(from: thisStart, to: todayKey)
             let lastRate = habit.completionRate(from: lastStart, to: lastEnd)
             if lastRate > 0 || thisRate > 0 {
+                // Formatted outside the key so the key carries no literal "%" to escape.
+                let was = "\(Int(lastRate*100))%"
+                let now = "\(Int(thisRate*100))%"
                 if thisRate >= lastRate {
-                    out.append(("arrow.up.right", "Up vs last week (\(Int(lastRate*100))% → \(Int(thisRate*100))%)"))
+                    out.append(("arrow.up.right", "Up vs last week (\(was) → \(now))"))
                 } else {
-                    out.append(("arrow.down.right", "Down vs last week (\(Int(lastRate*100))% → \(Int(thisRate*100))%)"))
+                    out.append(("arrow.down.right", "Down vs last week (\(was) → \(now))"))
                 }
             }
         }
@@ -405,12 +455,14 @@ struct InsightsCard: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Insights")
                     .font(.headline)
+                    .accessibilityAddTraits(.isHeader)
                 ForEach(items.indices, id: \.self) { i in
                     HStack(spacing: 8) {
                         Image(systemName: items[i].icon)
                             .font(.caption)
                             .foregroundStyle(habit.color)
                             .frame(width: 18)
+                            .accessibilityHidden(true)
                         Text(items[i].text)
                             .font(.subheadline)
                     }
@@ -426,17 +478,19 @@ struct InsightsCard: View {
 // MARK: - Weekly Bar Chart
 struct WeeklyBarChart: View {
     let habit: Habit
-    private let calendar = Calendar.current
-
-    private var weekdayData: [(symbol: String, count: Int, maxCount: Int)] {
+    private var weekdayData: [(symbol: String, fullSymbol: String, count: Int, maxCount: Int)] {
         let counts = habit.completionsPerWeekday()
         let maxCount = counts.values.max() ?? 1
+        let calendar = appCalendar
         let symbols = calendar.shortWeekdaySymbols
+        // The abbreviations are for the axis only — VoiceOver mangles "Mon"/"Tue".
+        let fullSymbols = calendar.weekdaySymbols
 
         return (1...7).map { weekday in
             let index = weekday - 1
             return (
                 symbol: symbols[index],
+                fullSymbol: fullSymbols[index],
                 count: counts[weekday] ?? 0,
                 maxCount: maxCount
             )
@@ -447,6 +501,7 @@ struct WeeklyBarChart: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("By Weekday")
                 .font(.headline)
+                .accessibilityAddTraits(.isHeader)
 
             HStack(alignment: .bottom, spacing: 8) {
                 ForEach(weekdayData, id: \.symbol) { data in
@@ -468,6 +523,9 @@ struct WeeklyBarChart: View {
                             .foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(data.fullSymbol)
+                    .accessibilityValue("\(data.count) check-ins")
                 }
             }
             .frame(height: 110)
@@ -484,7 +542,7 @@ struct WeeklyBarChart: View {
 struct HeatmapView: View {
     let habit: Habit
     private let weeks = 12
-    private let calendar = Calendar.current
+    private var calendar: Calendar { appCalendar }
 
     private var days: [Date] {
         Date.lastNDays(weeks * 7)
@@ -512,8 +570,11 @@ struct HeatmapView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Activity")
                 .font(.headline)
+                .accessibilityAddTraits(.isHeader)
 
             HStack(alignment: .top, spacing: 3) {
+                // Row labels that only mean anything through visual alignment with the grid;
+                // each cell names its own weekday instead.
                 VStack(alignment: .trailing, spacing: 3) {
                     ForEach(0..<7, id: \.self) { i in
                         let symbols = calendar.veryShortWeekdaySymbols
@@ -524,6 +585,7 @@ struct HeatmapView: View {
                             .frame(width: 14, height: 14)
                     }
                 }
+                .accessibilityHidden(true)
 
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 3) {
@@ -531,10 +593,14 @@ struct HeatmapView: View {
                             VStack(spacing: 3) {
                                 ForEach(weekColumns[weekIndex], id: \.self) { day in
                                     let completed = habit.isCompletedOn(day)
+                                    // `monthYear` is a hard-coded "MMMM yyyy", so cells announced
+                                    // "September 2026 16" — English field order, the year on all 84
+                                    // cells, and never the weekday the columns are organised by.
+                                    let dateLabel = day.formatted(.dateTime.weekday(.wide).month().day())
                                     RoundedRectangle(cornerRadius: 2)
                                         .fill(completed ? habit.color : Color.gray.opacity(0.15))
                                         .frame(width: 14, height: 14)
-                                        .accessibilityLabel("\(day.monthYear) \(day.dayNumber), \(completed ? "completed" : "not completed")")
+                                        .accessibilityLabel(completed ? "\(dateLabel), completed" : "\(dateLabel), not completed")
                                 }
                                 if weekColumns[weekIndex].count < 7 {
                                     ForEach(0..<(7 - weekColumns[weekIndex].count), id: \.self) { _ in
@@ -562,6 +628,8 @@ struct HeatmapView: View {
                     .font(.system(size: 9))
                     .foregroundStyle(.secondary)
             }
+            // A colour ramp legend; every cell states completed / not completed outright.
+            .accessibilityHidden(true)
         }
         .padding()
         .background(

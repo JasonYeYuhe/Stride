@@ -40,11 +40,14 @@ struct ContentView: View {
             // iPad: Sidebar layout
             NavigationSplitView {
                 VStack(spacing: 0) {
+                    // The element type must be spelled out: without it the titles infer as
+                    // String, which picks Label's StringProtocol overload and renders the
+                    // raw key instead of the translation.
                     ForEach([
                         (0, "Today", "checkmark.circle.fill"),
                         (1, "Statistics", "chart.bar.fill"),
                         (2, "Settings", "gear")
-                    ], id: \.0) { item in
+                    ] as [(Int, LocalizedStringKey, String)], id: \.0) { item in
                         Button {
                             selectedTab = item.0
                         } label: {
@@ -56,6 +59,7 @@ struct ContentView: View {
                                 .foregroundStyle(selectedTab == item.0 ? .green : .primary)
                         }
                         .buttonStyle(.plain)
+                        .accessibilityAddTraits(selectedTab == item.0 ? .isSelected : [])
                     }
                     Spacer()
                 }

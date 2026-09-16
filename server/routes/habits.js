@@ -71,7 +71,8 @@ router.post("/", (req, res) => {
     }
   }
 
-  const habitId = id || crypto.randomUUID();
+  // Generated ids are upper case, like the apps' (migrations/canonicalizeIds.js).
+  const habitId = id || crypto.randomUUID().toUpperCase();
   const maxOrder = /** @type {{ next: number }} */ (db.prepare(
     "SELECT COALESCE(MAX(sort_order), -1) + 1 as next FROM habits WHERE user_id = ?",
   ).get(req.user.id));
@@ -143,7 +144,9 @@ router.put("/:id", (req, res) => {
       reminder_hour = COALESCE(?, reminder_hour),
       reminder_minute = COALESCE(?, reminder_minute),
       note = CASE WHEN ? THEN ? ELSE note END,
-      updated_at = ?
+      updated_at = ?,
+      -- This edit is newer than any device's; NULL makes sync fall back to updated_at.
+      client_updated_at = NULL
     WHERE id = ? AND user_id = ?
   `).run(
     name != null ? name.trim() : null,
@@ -199,7 +202,7 @@ router.post("/:id/entries", (req, res) => {
     return res.status(400).json({ error: "Invalid date" });
   }
 
-  const entryId = id || crypto.randomUUID();
+  const entryId = id || crypto.randomUUID().toUpperCase();
 
   try {
     const entryNow = new Date().toISOString();

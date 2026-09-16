@@ -59,7 +59,8 @@ const seed = db.transaction(() => {
 
   const habitIds = [];
   for (const h of habits) {
-    const id = crypto.randomUUID();
+    // Upper case, like every id the apps send — see migrations/canonicalizeIds.js.
+    const id = crypto.randomUUID().toUpperCase();
     const createdAt = new Date(now.getTime() - 45 * 24 * 60 * 60 * 1000).toISOString(); // created 45 days ago
     db.prepare(`
       INSERT INTO habits (id, user_id, name, emoji, color_hex, sort_order, created_at, updated_at)
@@ -94,10 +95,10 @@ const seed = db.transaction(() => {
       const date = new Date(now);
       date.setDate(date.getDate() - (29 - day)); // day 0 = 29 days ago, day 29 = today
       const dateStr = date.toISOString().split("T")[0];
-      const entryId = crypto.randomUUID();
+      const entryId = crypto.randomUUID().toUpperCase();
       db.prepare(
-        "INSERT OR IGNORE INTO habit_entries (id, habit_id, date, created_at) VALUES (?, ?, ?, ?)"
-      ).run(entryId, habitIds[hi], dateStr, date.toISOString());
+        "INSERT OR IGNORE INTO habit_entries (id, habit_id, date, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
+      ).run(entryId, habitIds[hi], dateStr, date.toISOString(), date.toISOString());
       entryCount++;
     }
   }

@@ -4938,8 +4938,12 @@ describe("Sync pull ?since: strict > boundary — habit with updated_at === sinc
       },
     });
 
-    // Pull with since = exact updated_at value — strict > means this habit should NOT appear
-    const pull = await api("GET", "/v1/sync/pull", { token, query: { since: updatedAt } });
+    // Pull with since = the row's stored change time — strict > means this habit should NOT
+    // appear. That is the server's own clock, not the pushed updatedAt: the feed used to run
+    // on the device's edit time, which is how offline edits went missing (see "Two clocks").
+    const stored = db.prepare("SELECT updated_at FROM habits WHERE id = ?").get(habitId).updated_at;
+    assert.notEqual(stored, updatedAt, "the feed time is the server's, not the client's edit time");
+    const pull = await api("GET", "/v1/sync/pull", { token, query: { since: stored } });
     assert.equal(pull.status, 200);
     const found = pull.json.habits.find((h) => h.id === habitId);
     assert.equal(found, undefined, "habit with updated_at === since should not appear in incremental pull");
@@ -4997,7 +5001,8 @@ describe("Sync push: createdAt preserved on re-push (ON CONFLICT does not update
     const habit = pull.json.habits.find((h) => h.id === habitId);
     assert.ok(habit, "habit should exist in pull");
     assert.equal(habit.name, "Updated name", "name should be updated");
-    assert.equal(habit.createdAt, originalCreatedAt, "createdAt must not be overwritten by re-push");
+    // Whole seconds on the wire: shipped apps can't parse fractional seconds.
+    assert.equal(habit.createdAt, originalCreatedAt.replace(".000Z", "Z"), "createdAt must not be overwritten by re-push");
   });
 });
 
@@ -7598,5 +7603,293 @@ describe("Sync body limit: a large full-snapshot push is accepted", () => {
   it("still caps every other route, so the unauthenticated endpoints stay protected", async () => {
     const r = await api("POST", "/v1/auth/request-link", { body: { email: "x".repeat(20000) + "@y.com" } });
     assert.equal(r.status, 413, "non-sync routes must keep the 10kb limit");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REGRESSION: server-generated ids were lower case, the apps' are upper case.
+//
+// crypto.randomUUID() is lower case; Swift's UUID.uuidString is upper case; the id
+// columns compare with BINARY collation. The App Review demo account (seeded here)
+// therefore had lower-case ids that shipped clients matched against nothing, and a
+// client that normalised them would push them back upper case and get every habit
+// and check-in inserted twice. migrations/canonicalizeIds.js upper-cases stored ids
+// at startup; these tests run it against rows written the way seed-demo.js used to.
+// ---------------------------------------------------------------------------
+describe("Id canonicalisation: stored ids are upper case, like the apps'", () => {
+  const { canonicalizeIds } = require("../migrations/canonicalizeIds");
+  let fk, token, userId;
+  const lower = () => crypto.randomUUID().toLowerCase();
+  const groupId = lower(), habitId = lower(), entryA = lower(), entryB = lower(), goneEntry = lower();
+
+  before(() => {
+    // Own connection with foreign keys on, as db.js has, so a re-key that orphans an
+    // entry fails here the way it would in production.
+    fk = new Database(DB_PATH);
+    fk.pragma("foreign_keys = ON");
+    const u = createTestUser();
+    userId = u.userId;
+    token = createTestSession(userId);
+
+    fk.prepare("INSERT INTO habit_groups (id, user_id, name) VALUES (?, ?, 'Morning')").run(groupId, userId);
+    fk.prepare("INSERT INTO habits (id, user_id, name, group_id) VALUES (?, ?, 'Read', ?)").run(habitId, userId, groupId);
+    fk.prepare("INSERT INTO habit_entries (id, habit_id, date, created_at, updated_at) VALUES (?, ?, '2026-09-01', '2026-09-01T08:00:00.000Z', '2026-09-01T08:00:00.000Z')").run(entryA, habitId);
+    fk.prepare("INSERT INTO habit_entries (id, habit_id, date, created_at, updated_at) VALUES (?, ?, '2026-09-02', '2026-09-02T08:00:00.000Z', '2026-09-02T08:00:00.000Z')").run(entryB, habitId);
+    fk.prepare("INSERT INTO deletion_tombstones (user_id, entity_type, entity_id, deleted_at) VALUES (?, 'entry', ?, '2026-09-03T08:00:00.000Z')").run(userId, goneEntry);
+  });
+
+  after(() => {
+    fk.prepare("DELETE FROM habit_entries WHERE habit_id IN (SELECT id FROM habits WHERE user_id = ?)").run(userId);
+    fk.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    fk.prepare("DELETE FROM habit_groups WHERE user_id = ?").run(userId);
+    fk.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    fk.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    fk.prepare("DELETE FROM users WHERE id = ?").run(userId);
+    fk.close();
+  });
+
+  it("refuses to run outside a transaction", () => {
+    assert.throws(() => canonicalizeIds(fk), /inside a transaction/);
+  });
+
+  it("upper-cases every id and keeps the check-ins attached to their habit", () => {
+    const result = fk.transaction(() => canonicalizeIds(fk))();
+    assert.equal(result.changed, true, `expected a re-key, got ${JSON.stringify(result)}`);
+
+    const habit = fk.prepare("SELECT id, group_id FROM habits WHERE user_id = ?").get(userId);
+    assert.equal(habit.id, habitId.toUpperCase());
+    assert.equal(habit.group_id, groupId.toUpperCase());
+    assert.equal(fk.prepare("SELECT id FROM habit_groups WHERE user_id = ?").get(userId).id, groupId.toUpperCase());
+
+    const entries = fk.prepare("SELECT id, habit_id FROM habit_entries WHERE habit_id = ? ORDER BY date").all(habitId.toUpperCase());
+    assert.deepEqual(entries.map((e) => e.id), [entryA.toUpperCase(), entryB.toUpperCase()]);
+
+    const tomb = fk.prepare("SELECT entity_id FROM deletion_tombstones WHERE user_id = ?").get(userId);
+    assert.equal(tomb.entity_id, goneEntry.toUpperCase());
+
+    assert.deepEqual(fk.pragma("foreign_key_check"), [], "no entry may be left pointing at the old habit id");
+  });
+
+  it("is idempotent", () => {
+    const again = fk.transaction(() => canonicalizeIds(fk))();
+    assert.deepEqual(again, { lowercase: 0, twins: 0, changed: false });
+  });
+
+  it("an app pushing the same habit and check-ins back updates them rather than duplicating", async () => {
+    const H = habitId.toUpperCase();
+    const body = {
+      habits: [{ id: H, name: "Read", emoji: "\u{1F4D6}", colorHex: "#34C759", isArchived: false, sortOrder: 0,
+        kind: "binary", targetValue: 1, scheduleKind: "daily", timesPerWeek: 7, activeDaysMask: 127,
+        groupId: groupId.toUpperCase(), createdAt: "2026-09-01T00:00:00.000Z", updatedAt: "2026-09-10T00:00:00.000Z" }],
+      entries: [
+        { id: entryA.toUpperCase(), habitId: H, date: "2026-09-01", value: 1, createdAt: "2026-09-01T08:00:00.000Z" },
+        { id: entryB.toUpperCase(), habitId: H, date: "2026-09-02", value: 1, createdAt: "2026-09-02T08:00:00.000Z" },
+      ],
+      groups: [{ id: groupId.toUpperCase(), name: "Morning", sortOrder: 0,
+        createdAt: "2026-09-01T00:00:00.000Z", updatedAt: "2026-09-10T00:00:00.000Z" }],
+      deletedHabitIds: [], deletedEntryIds: [], deletedGroupIds: [],
+    };
+    const push = await api("POST", "/v1/sync/push", { token, body });
+    assert.equal(push.status, 200);
+
+    assert.equal(fk.prepare("SELECT count(*) AS n FROM habits WHERE user_id = ?").get(userId).n, 1);
+    assert.equal(fk.prepare("SELECT count(*) AS n FROM habit_groups WHERE user_id = ?").get(userId).n, 1);
+    assert.equal(fk.prepare("SELECT count(*) AS n FROM habit_entries WHERE habit_id = ?").get(H).n, 2);
+
+    const pull = await api("GET", "/v1/sync/pull", { token });
+    assert.deepEqual(pull.json.habits.map((h) => h.id), [H]);
+    assert.ok(pull.json.entries.every((e) => e.habitId === H && e.id === e.id.toUpperCase()));
+  });
+
+  it("changes nothing when a lower-case id already has an upper-case twin", () => {
+    const twin = lower();
+    fk.prepare("INSERT INTO habits (id, user_id, name) VALUES (?, ?, 'Twin lower')").run(twin, userId);
+    fk.prepare("INSERT INTO habits (id, user_id, name) VALUES (?, ?, 'Twin upper')").run(twin.toUpperCase(), userId);
+    try {
+      const result = fk.transaction(() => canonicalizeIds(fk))();
+      assert.equal(result.changed, false);
+      assert.ok(result.twins >= 1);
+      assert.equal(fk.prepare("SELECT count(*) AS n FROM habits WHERE id IN (?, ?)").get(twin, twin.toUpperCase()).n, 2,
+        "both rows must survive untouched; startup must never throw or merge");
+    } finally {
+      fk.prepare("DELETE FROM habits WHERE id IN (?, ?)").run(twin, twin.toUpperCase());
+    }
+  });
+
+  it("the REST create route now generates upper-case ids", async () => {
+    const r = await api("POST", "/v1/habits", { token, body: { name: "Generated" } });
+    assert.equal(r.status, 201);
+    assert.match(r.json.habit.id, /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REGRESSION: one timestamp column was doing two jobs (see "Two clocks" in routes/sync.js).
+//
+// - Entries had no last-write-wins guard, so a device pushing a stale count overwrote a
+//   newer one — every client pushes its full snapshot on every sync.
+// - Habits stored the device's edit time as the change-feed time, so an edit made offline
+//   and pushed later sorted before the cursor of devices that synced in between, and never
+//   reached them.
+// - Timestamps went out with milliseconds, which no shipped app can parse.
+// - A ?since without milliseconds sorted after rows written later in the same second.
+// ---------------------------------------------------------------------------
+describe("Sync: last write wins by edit time; the change feed runs on server time", () => {
+  let token, userId;
+  const uuid = () => crypto.randomUUID().toUpperCase();
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const H = uuid();
+  const habit = (over = {}) => ({
+    id: H, name: "Water", emoji: "\u{1F4A7}", colorHex: "#007AFF", isArchived: false, sortOrder: 0,
+    kind: "count", targetValue: 8, scheduleKind: "daily", timesPerWeek: 7, activeDaysMask: 127,
+    createdAt: "2026-09-01T00:00:00Z", updatedAt: "2026-09-01T00:00:00Z", ...over,
+  });
+  const entry = (id, date, value, updatedAt) => ({
+    id, habitId: H, date, value, createdAt: `${date}T00:00:00Z`, ...(updatedAt ? { updatedAt } : {}),
+  });
+  const push = (body) => api("POST", "/v1/sync/push", { token, body: {
+    habits: [], entries: [], groups: [], deletedHabitIds: [], deletedEntryIds: [], deletedGroupIds: [], ...body,
+  } });
+  const pull = async (since) => (await api("GET", "/v1/sync/pull", { token, query: since ? { since } : undefined })).json;
+
+  before(async () => {
+    const u = createTestUser();
+    userId = u.userId;
+    token = createTestSession(userId);
+    assert.equal((await push({ habits: [habit()] })).status, 200);
+  });
+
+  after(() => {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id IN (SELECT id FROM habits WHERE user_id = ?)").run(userId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  it("a device coming back online with an older count can't overwrite a newer one", async () => {
+    const id = uuid();
+    await push({ entries: [entry(id, "2026-09-10", 2, "2026-09-10T09:00:00Z")] });   // iPad, morning
+    await push({ entries: [entry(id, "2026-09-10", 8, "2026-09-10T18:00:00Z")] });   // phone, evening
+    const stale = await push({ entries: [entry(id, "2026-09-10", 2, "2026-09-10T09:00:00Z")] });  // iPad again
+    assert.equal(stale.status, 200);
+
+    const e = (await pull()).entries.find((x) => x.date === "2026-09-10");
+    assert.equal(e.value, 8, "the phone's later 8/8 must survive the iPad's stale 2/8");
+    assert.equal(e.updatedAt, "2026-09-10T18:00:00Z");
+  });
+
+  it("a newer edit from any device still wins", async () => {
+    const id = (await pull()).entries.find((x) => x.date === "2026-09-10").id;
+    await push({ entries: [entry(id, "2026-09-10", 9, "2026-09-10T19:00:00Z")] });
+    assert.equal((await pull()).entries.find((x) => x.date === "2026-09-10").value, 9);
+  });
+
+  it("apps before 1.2.3 send no entry updatedAt and keep last-push-wins", async () => {
+    const id = (await pull()).entries.find((x) => x.date === "2026-09-10").id;
+    await push({ entries: [entry(id, "2026-09-10", 3)] });
+    assert.equal((await pull()).entries.find((x) => x.date === "2026-09-10").value, 3);
+  });
+
+  it("an edit made offline and pushed later reaches a device that synced in between", async () => {
+    const cursor = (await pull()).serverTime;   // device B syncs now
+    await sleep(5);
+    // Device A renamed the habit and logged a day on Sept 2, offline, and only now pushes.
+    const offlineEntry = uuid();
+    await push({
+      habits: [habit({ name: "Water (renamed offline)", updatedAt: "2026-09-02T00:00:00Z" })],
+      entries: [entry(offlineEntry, "2026-09-02", 8, "2026-09-02T21:00:00Z")],
+    });
+
+    const inc = await pull(cursor);
+    assert.deepEqual(inc.habits.map((h) => h.name), ["Water (renamed offline)"],
+      "was []: the habit's feed time was Sept 2, before device B's cursor");
+    assert.ok(inc.entries.some((e) => e.id === offlineEntry));
+    assert.equal(inc.habits[0].updatedAt, "2026-09-02T00:00:00Z", "apps still receive the edit time, which is what they compare");
+  });
+
+  it("re-pushing an unchanged snapshot doesn't put the whole dataset back in the feed", async () => {
+    const snapshot = await pull();
+    await sleep(5);
+    assert.equal((await push({ habits: snapshot.habits, entries: snapshot.entries })).status, 200);
+
+    const inc = await pull(snapshot.serverTime);
+    assert.deepEqual(inc.habits, []);
+    assert.deepEqual(inc.entries, []);
+  });
+
+  it("a device holding a different id for the same day gets the server's id back", async () => {
+    const first = uuid(), second = uuid();
+    await push({ entries: [entry(first, "2026-09-11", 8, "2026-09-11T20:00:00Z")] });
+    const cursor = (await pull()).serverTime;
+    await sleep(5);
+    // Another device checked in that day too, earlier, under its own id.
+    await push({ entries: [entry(second, "2026-09-11", 1, "2026-09-11T08:00:00Z")] });
+
+    const e = (await pull(cursor)).entries.find((x) => x.date === "2026-09-11");
+    assert.ok(e, "the row must come back so that device can adopt the server's id");
+    assert.equal(e.id, first);
+    assert.equal(e.value, 8);
+  });
+
+  it("timestamps go out without fractional seconds, so shipped apps can parse them", async () => {
+    const made = await api("POST", "/v1/habits", { token, body: { name: "Stamped by the server" } });
+    assert.equal(made.status, 201);
+    const all = await pull();
+    const wholeSeconds = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+    for (const h of all.habits) {
+      assert.match(h.createdAt, wholeSeconds);
+      assert.match(h.updatedAt, wholeSeconds);
+    }
+    for (const e of all.entries) {
+      assert.match(e.createdAt, wholeSeconds);
+      assert.match(e.updatedAt, wholeSeconds);
+    }
+    assert.ok(all.habits.some((h) => h.id === made.json.habit.id));
+  });
+
+  it("a ?since without milliseconds still returns rows written later in that same second", async () => {
+    db.prepare("UPDATE habits SET updated_at = '2030-01-01T10:00:00.500Z' WHERE id = ?").run(H);
+    const inc = await pull("2030-01-01T10:00:00Z");
+    assert.ok(inc.habits.some((h) => h.id === H), "'…00Z' sorts after '…00.500Z' as a string");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REGRESSION: the magic-link email pointed at a host that does not exist.
+//
+// FRONTEND_ORIGIN defaulted to https://stride.colorarchive.me, which has no DNS record —
+// the only A record is stride-api. /login (which shows the token for copy-paste, and does
+// not consume it) is served by THIS process, so a user following a dead link had no way to
+// finish signing in: the app asks for a token they can never see. Production sets the
+// variable correctly; the default is the trap.
+// ---------------------------------------------------------------------------
+describe("Magic-link emails point at a host this server actually serves", () => {
+  const origins = require("../origins");
+
+  it("the default origin is the API host, not the host with no DNS record", () => {
+    assert.equal(origins.DEFAULT_ORIGIN, "https://stride-api.colorarchive.me");
+    assert.ok(!origins.DEFAULT_ORIGIN.includes("//stride.colorarchive.me"));
+  });
+
+  it("the emailed link is /login on the configured origin, with the token escaped", () => {
+    const url = new URL(origins.loginUrl("a b/c?d=e"));
+    assert.equal(url.origin, new URL(origins.frontendOrigin).origin);
+    assert.equal(url.pathname, "/login");
+    assert.equal(url.searchParams.get("token"), "a b/c?d=e");
+  });
+
+  it("that path is served by this process, so the link resolves to a real page", async () => {
+    const res = await fetch(`${BASE}/login?token=probe-token`);
+    assert.equal(res.status, 200);
+    assert.match(await res.text(), /probe-token/, "the page shows the token to copy");
+  });
+
+  it("CORS and the email link read the same origin, so they cannot drift apart", () => {
+    const index = require("node:fs").readFileSync(path.join(__dirname, "..", "index.js"), "utf8");
+    const auth = require("node:fs").readFileSync(path.join(__dirname, "..", "routes", "auth.js"), "utf8");
+    assert.match(index, /origins\.frontendOrigin/);
+    assert.match(auth, /origins\.loginUrl\(/);
+    assert.ok(!/stride\.colorarchive\.me/.test(index + auth), "no hardcoded origin left");
   });
 });

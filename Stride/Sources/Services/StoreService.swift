@@ -1,5 +1,8 @@
 import StoreKit
 import SwiftUI
+#if canImport(Sentry)
+import Sentry
+#endif
 
 /// Product identifiers for Stride Pro subscription.
 enum StrideProduct: String, CaseIterable {
@@ -12,6 +15,22 @@ enum StrideProduct: String, CaseIterable {
         case .monthlyPro: return "Monthly"
         case .yearlyPro: return "Yearly"
         case .lifetimePro: return "Lifetime"
+        }
+    }
+}
+
+/// Errors the paywall shows to the user.
+enum StoreError: LocalizedError {
+    /// The App Store returned the purchase, but its signed transaction failed verification on
+    /// this device (clock skew, a signature problem — or, rarely, tampering).
+    case failedVerification(underlying: Error)
+
+    var errorDescription: String? {
+        switch self {
+        case .failedVerification:
+            // errorDescription is a nonisolated protocol requirement, so this one cannot go
+            // through appLocalized (main-actor). System language rather than the in-app picker.
+            return String(localized: "Stride couldn't verify this purchase on your device. If you were charged, tap Restore Purchases — restoring never charges you again.")
         }
     }
 }
@@ -98,14 +117,19 @@ final class StoreService {
         let result = try await product.purchase()
 
         switch result {
-        case .success(let verification):
-            let transaction = checkVerified(verification)
-            if let transaction {
-                await transaction.finish()
-                await refreshPurchasedProducts()
-                return true
-            }
-            return false
+        case .success(.verified(let transaction)):
+            await transaction.finish()
+            await refreshPurchasedProducts()
+            return true
+
+        case .success(.unverified(_, let verificationError)):
+            // Used to `return false` here, which the paywall treats as a quiet cancel: no alert,
+            // no dismissal, "Processing…" just vanished — for a purchase the App Store completed.
+            // Apple's guidance is not to grant or finish an unverified transaction, and we
+            // don't: left unfinished, StoreKit redelivers it, and it is granted if it verifies
+            // then. But the user has to be told, and we have to find out.
+            Self.report(verificationError, where: "purchase")
+            throw StoreError.failedVerification(underlying: verificationError)
 
         case .userCancelled:
             return false
@@ -136,7 +160,11 @@ final class StoreService {
             }
         }
 
-        purchasedProductIDs = purchased
+        // This now also runs on every foreground / app activation, so don't invalidate every
+        // view that reads isPro when nothing changed.
+        if purchased != purchasedProductIDs {
+            purchasedProductIDs = purchased
+        }
     }
 
     // MARK: - Transaction Listener
@@ -154,11 +182,26 @@ final class StoreService {
 
     private func checkVerified(_ result: VerificationResult<StoreKit.Transaction>) -> StoreKit.Transaction? {
         switch result {
-        case .unverified:
+        case .unverified(let transaction, let verificationError):
+            // Still not granted, still not finished — but no longer invisible. An unverified
+            // entitlement or update is exactly the failure a paying user would report as "I
+            // bought it and it's still locked", and until now nothing recorded it.
+            Self.report(verificationError, where: "verify \(transaction.productID)")
             return nil
         case .verified(let transaction):
             return transaction
         }
+    }
+
+    private nonisolated static func report(_ error: Error, where context: String) {
+        #if canImport(Sentry)
+        _ = SentrySDK.capture(error: error) { scope in
+            scope.setTag(value: context, key: "storekit.step")
+        }
+        #endif
+        #if DEBUG
+        print("[StoreKit] unverified transaction (\(context)): \(error)")
+        #endif
     }
 }
 
@@ -181,6 +224,7 @@ struct ProPaywallView: View {
                         Image(systemName: "crown.fill")
                             .font(.system(size: 56))
                             .foregroundStyle(.yellow.gradient)
+                            .accessibilityHidden(true)
 
                         Text("Stride Pro")
                             .font(.largeTitle.bold())
@@ -239,7 +283,7 @@ struct ProPaywallView: View {
                                 let isYearly = product.id.contains("yearly")
                                 PricingCard(
                                     title: isLifetime ? "Lifetime" : (isYearly ? "Yearly" : "Monthly"),
-                                    price: product.displayPrice + (isLifetime ? "" : (isYearly ? "/yr" : "/mo")),
+                                    price: product.displayPrice + (isLifetime ? "" : (isYearly ? appLocalized("/yr") : appLocalized("/mo"))),
                                     badge: isLifetime ? "BEST VALUE" : (isYearly ? "SAVE" : nil),
                                     subtitle: isLifetime ? "One-time purchase — yours forever" : (isYearly ? "Billed annually" : nil),
                                     highlighted: isLifetime
@@ -293,6 +337,11 @@ struct ProPaywallView: View {
             .task {
                 await store.loadProducts()
                 await store.refreshPurchasedProducts()
+            }
+            // A Lifetime owner can land here from a feature that was still locked on a cold
+            // start; once the entitlement read comes back, stop selling them what they own.
+            .onChange(of: store.isPro) { _, isPro in
+                if isPro { dismiss() }
             }
             .alert("Purchase Error", isPresented: $showError) {
                 Button("OK", role: .cancel) {}
@@ -353,14 +402,16 @@ struct ProFeatureRow: View {
                     .foregroundStyle(.secondary)
             }
         }
+        // The icon is decorative; the two lines are one feature.
+        .accessibilityElement(children: .combine)
     }
 }
 
 struct PricingCard: View {
     let title: LocalizedStringKey
     let price: String
-    var badge: String? = nil
-    var subtitle: String? = nil
+    var badge: LocalizedStringKey? = nil
+    var subtitle: LocalizedStringKey? = nil
     var highlighted: Bool = false
     let action: () -> Void
 
@@ -390,6 +441,7 @@ struct PricingCard: View {
                 Text(price)
                     .font(.title3.bold())
             }
+            .accessibilityElement(children: .combine)
             .padding()
             .background(
                 RoundedRectangle(cornerRadius: 14)

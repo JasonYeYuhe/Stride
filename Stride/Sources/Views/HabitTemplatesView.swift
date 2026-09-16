@@ -5,15 +5,26 @@ import SwiftData
 
 struct HabitTemplate: Identifiable {
     let id = UUID()
+    /// English, and the lookup key into Localizable.strings. Show and save `displayName`.
     let name: String
     let emoji: String
     let colorHex: String
     let category: String
+
+    /// The name in the app's language — also what the created habit is called, so a Japanese
+    /// user picking "Drink Water" gets a habit named in Japanese.
+    @MainActor
+    var displayName: String { appLocalized(String.LocalizationValue(name)) }
 }
 
 // MARK: - Template Data
 
 enum HabitTemplateLibrary {
+    @MainActor
+    static func displayCategory(_ category: String) -> String {
+        appLocalized(String.LocalizationValue(category))
+    }
+
     static let categories = [
         "Health & Fitness",
         "Learning",
@@ -67,14 +78,18 @@ struct HabitTemplatesView: View {
 
     @State private var searchText = ""
 
+    /// 36 at the default text size; grows with the emoji so large Dynamic Type sizes don't
+    /// truncate it to an ellipsis.
+    @ScaledMetric(relativeTo: .title2) private var emojiWidth: CGFloat = 36
+
     private var filteredTemplates: [String: [HabitTemplate]] {
         let templates: [HabitTemplate]
         if searchText.isEmpty {
             templates = HabitTemplateLibrary.templates
         } else {
             templates = HabitTemplateLibrary.templates.filter {
-                $0.name.localizedCaseInsensitiveContains(searchText) ||
-                $0.category.localizedCaseInsensitiveContains(searchText)
+                $0.displayName.localizedCaseInsensitiveContains(searchText) ||
+                HabitTemplateLibrary.displayCategory($0.category).localizedCaseInsensitiveContains(searchText)
             }
         }
 
@@ -89,7 +104,7 @@ struct HabitTemplatesView: View {
         NavigationStack {
             List {
                 ForEach(sortedCategories, id: \.self) { category in
-                    Section(category) {
+                    Section(HabitTemplateLibrary.displayCategory(category)) {
                         ForEach(filteredTemplates[category] ?? []) { template in
                             templateRow(template)
                         }
@@ -121,9 +136,9 @@ struct HabitTemplatesView: View {
             HStack(spacing: 12) {
                 Text(template.emoji)
                     .font(.title2)
-                    .frame(width: 36)
+                    .frame(width: emojiWidth)
 
-                Text(template.name)
+                Text(template.displayName)
                     .font(.body.weight(.medium))
                     .foregroundStyle(.primary)
 
@@ -136,11 +151,14 @@ struct HabitTemplatesView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // Overriding the label drops the merged children, so VoiceOver stops leading every row
+        // with the emoji's Unicode name and the trailing plus glyph.
+        .accessibilityLabel("Add \(template.displayName)")
     }
 
     private func addHabit(from template: HabitTemplate) {
         let habit = Habit(
-            name: template.name,
+            name: template.displayName,
             emoji: template.emoji,
             colorHex: template.colorHex
         )

@@ -35,6 +35,35 @@ jobs:
   # macOS build covers the shared Swift code; rotation automation's local build
   # (Xcode with proper simulators) catches iOS-specific issues.
 
+  # The Swift unit tests had never run in CI: only the server suite and a macOS compile did,
+  # so a regression like the 1.2.1 day-key bug (TimezoneTests existed for exactly that) could
+  # land green. StrideTests also builds for macOS, which avoids the simulator problem above.
+  swift-tests:
+    name: Swift Tests (macOS)
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.app/Contents/Developer
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Run StrideTests
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -scheme StrideTests \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee test.log
+          # xcodebuild can exit 0 having run nothing (see project.yml). Require real tests.
+          grep -E "Executed [1-9][0-9]* tests, with 0 failures" test.log
+
   macos-build:
     name: macOS Build
     runs-on: macos-15

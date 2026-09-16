@@ -9,12 +9,24 @@ import time
 import requests
 import os
 
+from dotenv import load_dotenv
+
 # --- Config (same as appstore_metadata.py) ---
-API_KEY_ID = "DMMFP6XTXX"
-API_ISSUER = "c5671c11-49ec-47d9-bd38-5e3c1a249416"
-API_KEY_PATH = os.path.expanduser(
-    "~/Library/Mobile Documents/com~apple~CloudDocs/Downloads/AuthKey_DMMFP6XTXX.p8"
-)
+# Credentials come from scripts/.env (gitignored), the same file asc_api.py reads. They used
+# to be hardcoded here — key id, issuer id, and a .p8 path inside iCloud Drive's Downloads
+# folder, i.e. synced to Apple's servers and every signed-in device. The ids alone can't
+# authenticate, but they are half of a credential and they contradict the convention the rest
+# of the repo follows.
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+try:
+    API_KEY_ID = os.environ["ASC_API_KEY_ID"]
+    API_ISSUER = os.environ["ASC_ISSUER_ID"]
+    API_KEY_PATH = os.path.expanduser(os.environ["ASC_KEY_PATH"])
+except KeyError as missing:
+    raise SystemExit(
+        f"{missing} is not set. Put ASC_API_KEY_ID, ASC_ISSUER_ID and ASC_KEY_PATH in "
+        "scripts/.env (see scripts/asc_api.py)."
+    )
 APP_ID = "6761262334"
 BASE_URL = "https://api.appstoreconnect.apple.com/v1"
 

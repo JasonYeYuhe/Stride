@@ -17,6 +17,10 @@ struct StrideApp: App {
         if CommandLine.arguments.contains("-demo") {
             DemoData.populate(container: modelContainer)
         }
+        // Instantiate StoreService now so its Transaction.updates listener is running before any
+        // network work. It used to be created lazily, and on macOS the default Today tab never
+        // touches it, so the listener waited until the launch sync had finished.
+        _ = StoreService.shared
     }
 
     var body: some Scene {
@@ -35,18 +39,26 @@ struct StrideApp: App {
             ContentView()
                 .environment(\.locale, languageManager.locale ?? .current)
                 .task {
+                    // Entitlements FIRST. Transaction.currentEntitlements is a local read that works
+                    // offline and returns in milliseconds. It used to be the last of four awaits,
+                    // behind notifications, the sync (up to 10 s waiting for session restore, then
+                    // network with default timeouts) and product loading (up to 30 s of retries),
+                    // so on a poor connection a Lifetime owner saw Pro locked — "Upgrade to Pro"
+                    // in Settings, the paywall instead of Weekly Review — for most of a minute.
+                    await StoreService.shared.refreshPurchasedProducts()
                     AnalyticsService.shared.send("appLaunched")
                     await setupNotifications()
                     await syncIfLoggedIn()
                     await StoreService.shared.loadProducts()
-                    // Read existing entitlements on every cold launch so isPro reflects
-                    // prior purchases (incl. the lifetime non-consumable) before any view
-                    // appears. Without this, a paying user lands on Today/Stats with Pro
-                    // features locked until they happen to open Settings or the paywall.
-                    await StoreService.shared.refreshPurchasedProducts()
                 }
+                // Every SwiftData save in the app, not a list of call sites. Only check-ins used to
+                // reload the widget, so adding, deleting, archiving, renaming or reordering a habit —
+                // or a sync pulling in another device's check-ins — left it stale until its next
+                // scheduled refresh at midnight; a deleted habit stayed listed, and tapping it did
+                // nothing. A new save site can't forget this.
                 .onReceive(
                     NotificationCenter.default.publisher(for: .habitDataChanged)
+                        .merge(with: NotificationCenter.default.publisher(for: ModelContext.didSave))
                         .throttle(for: .seconds(2), scheduler: DispatchQueue.main, latest: true)
                 ) { _ in
                     WidgetCenter.shared.reloadAllTimelines()
@@ -60,12 +72,22 @@ struct StrideApp: App {
                 )) { _ in
                     Task { @MainActor in
                         NotificationService.shared.updateBadge(modelContainer: modelContainer)
+                        // A subscription can lapse, renew or be refunded while backgrounded;
+                        // nothing else re-reads entitlements after launch.
+                        await StoreService.shared.refreshPurchasedProducts()
                         await syncIfLoggedIn()
                     }
                 }
                 #else
                 .sheet(isPresented: $showOnboarding) {
                     OnboardingView(isPresented: $showOnboarding)
+                }
+                // A Mac app can stay open for days; re-read entitlements when it comes forward so
+                // a lapsed or renewed subscription is reflected without a relaunch.
+                .onReceive(NotificationCenter.default.publisher(
+                    for: NSApplication.didBecomeActiveNotification
+                )) { _ in
+                    Task { @MainActor in await StoreService.shared.refreshPurchasedProducts() }
                 }
                 #endif
         }

@@ -58,6 +58,7 @@ struct SettingsView: View {
                                 RoundedRectangle(cornerRadius: 10)
                                     .fill(Color.green.opacity(0.15))
                             )
+                            .accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Stride")
                                 .font(.headline)
@@ -67,6 +68,7 @@ struct SettingsView: View {
                         }
                     }
                     .padding(.vertical, 4)
+                    .accessibilityElement(children: .combine)
                 }
 
                 // Stride Pro
@@ -79,6 +81,7 @@ struct SettingsView: View {
                                 Image(systemName: "crown.fill")
                                     .font(.title2)
                                     .foregroundStyle(.yellow)
+                                    .accessibilityHidden(true)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text("Upgrade to Pro")
                                         .font(.headline)
@@ -91,6 +94,7 @@ struct SettingsView: View {
                                 Image(systemName: "chevron.right")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+                                    .accessibilityHidden(true)
                             }
                             .padding(.vertical, 4)
                         }
@@ -108,6 +112,7 @@ struct SettingsView: View {
                             Image(systemName: "crown.fill")
                                 .font(.title2)
                                 .foregroundStyle(.yellow)
+                                .accessibilityHidden(true)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Stride Pro")
                                     .font(.headline)
@@ -117,6 +122,7 @@ struct SettingsView: View {
                             }
                         }
                         .padding(.vertical, 4)
+                        .accessibilityElement(children: .combine)
                     }
                 }
 
@@ -127,6 +133,7 @@ struct SettingsView: View {
                             Image(systemName: "person.crop.circle.fill")
                                 .font(.title2)
                                 .foregroundStyle(.green)
+                                .accessibilityHidden(true)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(auth.userEmail ?? "")
                                     .font(.subheadline)
@@ -135,6 +142,7 @@ struct SettingsView: View {
                                     .foregroundStyle(.green)
                             }
                         }
+                        .accessibilityElement(children: .combine)
 
                         Button {
                             Task {
@@ -155,6 +163,8 @@ struct SettingsView: View {
                             }
                         }
                         .disabled(sync.isSyncing)
+                        .accessibilityLabel("Sync Now")
+                        .accessibilityValue(syncAccessibilityValue)
 
                         Button(role: .destructive) {
                             Task { await auth.logout() }
@@ -175,6 +185,7 @@ struct SettingsView: View {
                             }
                         }
                         .disabled(isDeletingAccount)
+                        .accessibilityValue(isDeletingAccount ? Text("Processing...") : Text(verbatim: ""))
                     } else {
                         Button {
                             showingLogin = true
@@ -183,6 +194,7 @@ struct SettingsView: View {
                                 Image(systemName: "person.crop.circle.badge.plus")
                                     .font(.title2)
                                     .foregroundStyle(.green)
+                                    .accessibilityHidden(true)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text("Sign In")
                                         .font(.headline)
@@ -195,6 +207,7 @@ struct SettingsView: View {
                                 Image(systemName: "chevron.right")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+                                    .accessibilityHidden(true)
                             }
                             .padding(.vertical, 4)
                         }
@@ -207,6 +220,8 @@ struct SettingsView: View {
                         Text(error)
                             .font(.caption)
                             .foregroundStyle(.red)
+                            // Red text is the only thing marking this as a failure.
+                            .accessibilityLabel("Sync error: \(error)")
                     }
                 }
 
@@ -255,6 +270,7 @@ struct SettingsView: View {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .foregroundStyle(.orange)
                                 .font(.caption)
+                                .accessibilityHidden(true)
                             Text("Notifications are disabled. Go to Settings → Stride to enable.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -281,17 +297,23 @@ struct SettingsView: View {
                                     Text("\(habit.records.count) check-ins")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
-                                    if habit.currentStreak() > 0 {
+                                    let streak = habit.currentStreak()
+                                    if streak > 0 {
                                         HStack(spacing: 2) {
                                             Image(systemName: "flame.fill")
                                                 .font(.system(size: 9))
-                                            Text("\(habit.currentStreak())d")
+                                            Text(habit.streakUnit == "week" ? "\(streak)w" : "\(streak)d")
                                                 .font(.caption2)
                                         }
                                         .foregroundStyle(.orange)
+                                        .accessibilityElement(children: .ignore)
+                                        .accessibilityLabel(habit.streakUnit == "week"
+                                            ? "\(streak) week streak"
+                                            : "\(streak) day streak")
                                     }
                                 }
                             }
+                            .accessibilityElement(children: .combine)
                             .swipeActions(edge: .trailing) {
                                 Button(role: .destructive) {
                                     habitToDelete = habit
@@ -306,6 +328,8 @@ struct SettingsView: View {
                                         habit.touch()
                                         do {
                                             try modelContext.save()
+                                            // An archived habit's repeating reminder kept firing daily.
+                                            NotificationService.shared.removeHabitReminder(for: habit.id)
                                         } catch {
                                             habit.isArchived = false
                                             showSaveError = true
@@ -335,19 +359,23 @@ struct SettingsView: View {
                 if !allGroups.isEmpty {
                     Section("Groups") {
                         ForEach(allGroups) { group in
+                            let memberCount = allHabits.filter { $0.groupId == group.id && !$0.isArchived }.count
                             HStack {
                                 Circle().fill(group.color).frame(width: 10, height: 10)
                                 Text(group.name)
                                 Spacer()
-                                Text("\(allHabits.filter { $0.groupId == group.id && !$0.isArchived }.count)")
+                                Text("\(memberCount)")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                             .contentShape(Rectangle())
-                            .onTapGesture {
-                                groupToRename = group
-                                groupNameText = group.name
-                            }
+                            .onTapGesture { beginRename(group) }
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("\(group.name), \(memberCount) habits")
+                            .accessibilityAddTraits(.isButton)
+                            // An assistive-technology activation does not go through onTapGesture,
+                            // so the rename has to be offered as an explicit action too.
+                            .accessibilityAction { beginRename(group) }
                             .swipeActions(edge: .trailing) {
                                 Button(role: .destructive) {
                                     deleteGroup(group)
@@ -374,6 +402,8 @@ struct SettingsView: View {
                                         habit.touch()
                                         do {
                                             try modelContext.save()
+                                            // Restored habit: re-add its reminder (a no-op if it has none).
+                                            NotificationService.shared.scheduleHabitReminder(for: habit)
                                         } catch {
                                             habit.isArchived = true
                                             showSaveError = true
@@ -383,6 +413,8 @@ struct SettingsView: View {
                                 .font(.caption)
                                 .buttonStyle(.bordered)
                                 .tint(.green)
+                                // Every archived row has a "Restore" button; the rotor needs them apart.
+                                .accessibilityLabel("Restore \(habit.name)")
                             }
                             .swipeActions(edge: .trailing) {
                                 Button(role: .destructive) {
@@ -453,7 +485,7 @@ struct SettingsView: View {
                         Text("iOS")
                         #endif
                     }
-                    LabeledContent("Data Storage", value: auth.isLoggedIn ? String(localized: "Synced") : String(localized: "On Device"))
+                    LabeledContent("Data Storage", value: auth.isLoggedIn ? appLocalized("Synced") : appLocalized("On Device"))
                     Toggle(isOn: Binding(
                         get: { AnalyticsService.shared.isEnabled },
                         set: { AnalyticsService.shared.isEnabled = $0 }
@@ -479,6 +511,7 @@ struct SettingsView: View {
                 }
                 Button("Delete", role: .destructive) {
                     if let habit = habitToDelete {
+                        let habitID = habit.id
                         SyncService.shared.trackDeletedHabit(habit.id.uuidString)
                         for record in habit.records {
                             SyncService.shared.trackDeletedEntry(record.id.uuidString)
@@ -487,6 +520,9 @@ struct SettingsView: View {
                         modelContext.delete(habit)
                         do {
                             try modelContext.save()
+                            // Its repeating reminder outlived it: "💪 Gym — Time to work on your
+                            // habit!" every morning, with no row left to open and turn it off.
+                            NotificationService.shared.removeHabitReminder(for: habitID)
                         } catch {
                             #if DEBUG
                             print("Failed to save after delete: \(error)")
@@ -569,6 +605,11 @@ struct SettingsView: View {
                     if status == .denied {
                         notificationDenied = true
                         reminderEnabled = false
+                        // Flipping the toggle back is silent to VoiceOver, and the footer that
+                        // explains why is several elements further down the section.
+                        AccessibilityNotification.Announcement(
+                            appLocalized("Notifications are disabled. Go to Settings → Stride to enable.")
+                        ).post()
                     }
                 }
             }
@@ -577,9 +618,15 @@ struct SettingsView: View {
         }
     }
 
+    // Each branch is a whole phrase so it stays one localization key, not a %@ argument.
+    private var syncAccessibilityValue: Text {
+        if sync.isSyncing { return Text("Syncing") }
+        guard let lastSync = sync.lastSyncTime else { return Text(verbatim: "") }
+        return Text("Last synced \(formatSyncTime(lastSync))")
+    }
+
     private func formatSyncTime(_ iso: String) -> String {
-        let formatter = ISO8601DateFormatter()
-        guard let date = formatter.date(from: iso) else { return iso }
+        guard let date = SyncTimestamp.parse(iso) else { return iso }
         let relative = RelativeDateTimeFormatter()
         relative.unitsStyle = .abbreviated
         return relative.localizedString(for: date, relativeTo: Date())
@@ -593,6 +640,11 @@ struct SettingsView: View {
             deleteAccountError = error.localizedDescription
         }
         isDeletingAccount = false
+    }
+
+    private func beginRename(_ group: HabitGroup) {
+        groupToRename = group
+        groupNameText = group.name
     }
 
     private func renameGroup() {
