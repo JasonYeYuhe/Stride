@@ -9,11 +9,19 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 PROJECT="$PROJECT_DIR/Stride.xcodeproj"
 BUILD_DIR="$PROJECT_DIR/build/appstore"
 
-# App Store Connect credentials
-API_KEY_ID="DMMFP6XTXX"
-API_ISSUER="c5671c11-49ec-47d9-bd38-5e3c1a249416"
-API_KEY_PATH="$HOME/Library/Mobile Documents/com~apple~CloudDocs/Downloads/AuthKey_${API_KEY_ID}.p8"
-TEAM_ID="KHMK6Q3L3K"
+# App Store Connect credentials — from scripts/.env (gitignored), as asc_api.py reads them.
+# They used to be hardcoded here, with the .p8 path pointing inside iCloud Drive's Downloads
+# folder; see the note in appstore_metadata.py.
+if [[ -f "$SCRIPT_DIR/.env" ]]; then
+    set -a; source "$SCRIPT_DIR/.env"; set +a
+fi
+: "${ASC_API_KEY_ID:?set ASC_API_KEY_ID in scripts/.env}"
+: "${ASC_ISSUER_ID:?set ASC_ISSUER_ID in scripts/.env}"
+: "${ASC_KEY_PATH:?set ASC_KEY_PATH in scripts/.env}"
+API_KEY_ID="$ASC_API_KEY_ID"
+API_ISSUER="$ASC_ISSUER_ID"
+API_KEY_PATH="${ASC_KEY_PATH/#\~/$HOME}"
+TEAM_ID="${ASC_TEAM_ID:-KHMK6Q3L3K}"
 
 # Parse arguments
 PLATFORM="${1:-all}"
