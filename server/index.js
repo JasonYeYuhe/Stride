@@ -14,6 +14,7 @@ const helmet = /** @type {any} */ (require("helmet"));
 const { rateLimit } = require("express-rate-limit");
 const Sentry = require("@sentry/node");
 const { requestLogger } = require("./logger");
+const origins = require("./origins");
 const db = require("./db");
 
 // Error tracking — only active when a DSN is configured (so tests/dev stay quiet).
@@ -24,6 +25,8 @@ if (process.env.SENTRY_DSN) {
     tracesSampleRate: Number(process.env.SENTRY_TRACES_SAMPLE_RATE ?? 0.1),
   });
 }
+
+origins.warnIfUnset();
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3002;
@@ -63,7 +66,7 @@ if (process.env.NODE_ENV !== "test") {
 }
 
 const allowedOrigins = new Set([
-  process.env.FRONTEND_ORIGIN || "https://stride.colorarchive.me",
+  origins.frontendOrigin,
   ...(process.env.NODE_ENV !== "production"
     ? ["http://localhost:3000", "http://127.0.0.1:3000"]
     : []),

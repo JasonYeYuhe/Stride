@@ -18,8 +18,8 @@ const {
   setSessionCookie,
 } = require("../auth");
 const { sendMagicLinkEmail } = require("../email");
+const origins = require("../origins");
 
-const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "https://stride.colorarchive.me";
 
 // Strict rate limit for magic link requests: 3 per 15 minutes per IP
 const magicLinkLimiter = rateLimit({
@@ -49,7 +49,7 @@ router.post("/request-link", magicLinkLimiter, async (req, res) => {
 
   try {
     const { token } = createMagicLinkToken(email);
-    const loginUrl = `${FRONTEND_ORIGIN}/login?token=${encodeURIComponent(token)}`;
+    const loginUrl = origins.loginUrl(token);
     await sendMagicLinkEmail(email, {
       loginUrl,
       expiresInMinutes: Math.round(MAGIC_LINK_TTL_MS / 60000),

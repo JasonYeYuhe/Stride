@@ -7854,3 +7854,42 @@ describe("Sync: last write wins by edit time; the change feed runs on server tim
     assert.ok(inc.habits.some((h) => h.id === H), "'…00Z' sorts after '…00.500Z' as a string");
   });
 });
+
+// ---------------------------------------------------------------------------
+// REGRESSION: the magic-link email pointed at a host that does not exist.
+//
+// FRONTEND_ORIGIN defaulted to https://stride.colorarchive.me, which has no DNS record —
+// the only A record is stride-api. /login (which shows the token for copy-paste, and does
+// not consume it) is served by THIS process, so a user following a dead link had no way to
+// finish signing in: the app asks for a token they can never see. Production sets the
+// variable correctly; the default is the trap.
+// ---------------------------------------------------------------------------
+describe("Magic-link emails point at a host this server actually serves", () => {
+  const origins = require("../origins");
+
+  it("the default origin is the API host, not the host with no DNS record", () => {
+    assert.equal(origins.DEFAULT_ORIGIN, "https://stride-api.colorarchive.me");
+    assert.ok(!origins.DEFAULT_ORIGIN.includes("//stride.colorarchive.me"));
+  });
+
+  it("the emailed link is /login on the configured origin, with the token escaped", () => {
+    const url = new URL(origins.loginUrl("a b/c?d=e"));
+    assert.equal(url.origin, new URL(origins.frontendOrigin).origin);
+    assert.equal(url.pathname, "/login");
+    assert.equal(url.searchParams.get("token"), "a b/c?d=e");
+  });
+
+  it("that path is served by this process, so the link resolves to a real page", async () => {
+    const res = await fetch(`${BASE}/login?token=probe-token`);
+    assert.equal(res.status, 200);
+    assert.match(await res.text(), /probe-token/, "the page shows the token to copy");
+  });
+
+  it("CORS and the email link read the same origin, so they cannot drift apart", () => {
+    const index = require("node:fs").readFileSync(path.join(__dirname, "..", "index.js"), "utf8");
+    const auth = require("node:fs").readFileSync(path.join(__dirname, "..", "routes", "auth.js"), "utf8");
+    assert.match(index, /origins\.frontendOrigin/);
+    assert.match(auth, /origins\.loginUrl\(/);
+    assert.ok(!/stride\.colorarchive\.me/.test(index + auth), "no hardcoded origin left");
+  });
+});
