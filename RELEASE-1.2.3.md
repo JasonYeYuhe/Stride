@@ -89,7 +89,32 @@ allowlist, emailed link), and warns at startup when it is unset in production.
 | Entry edit times on the wire; cursor from the server's clock minus 60 s; timestamps with milliseconds parse | `777b64c` |
 | Today re-anchors to the new day; the widget reloads on every `ModelContext.didSave` | `5bb8b73` |
 | 175 UI strings translated into es/ja/ko/zh-Hans/zh-Hant, plus the code that could never have been translated | `6ede75c` |
-| VoiceOver pass across every view | see "Accessibility" below |
+| VoiceOver pass across every view, and the in-app language picker reaching String(localized:) | `3093199` |
+
+### Accessibility, and the bug the reviewers found under it
+
+Twelve agents audited one view each, edited it, and had the diff reviewed by an independent
+skeptic. That pass is in `3093199`; the finding that mattered most was not an accessibility
+defect at all:
+
+**The in-app language picker never reached `String(localized:)`.** It only sets
+`.environment(\.locale)`, which SwiftUI applies to `LocalizedStringKey` — `String(localized:)`
+reads the system language, and nothing writes `AppleLanguages`, so the "Restart the app for the
+change to fully take effect" note did not help either. Running the app in Japanese on an English
+device drew a Japanese screen under an English "Today" title. `LanguageManager.bundle` +
+`appLocalized` / `appCalendar` now resolve strings and weekday names through the picked
+language; Siri replies and the widget deliberately stay on the system language.
+
+The VoiceOver work itself: a count habit's row announced "not completed, double tap to toggle
+completion" while its increment button was swallowed by `.combine`; the day picker read
+hardcoded English weekday names over duplicate single letters; Settings, Weekly Review, Login,
+Templates, Onboarding, the widget and the watch had no annotations at all; and the Stats
+Insights rows were `String`, so `Text` rendered them verbatim English in every language.
+
+Triaged OUT of the agents' diffs, as behaviour changes wearing accessibility clothes:
+`.textContentType(.oneTimeCode)` on a token that never arrives by SMS, a hint restating the
+footer under it, and a stepper value repeating its own label. Two streak badges that drew "12d"
+while speaking "12 week streak" now draw "12w".
 
 ### Localization, and why the export tool could not be trusted
 
@@ -152,8 +177,24 @@ content the app uploads; the ASC App Privacy questionnaire was updated on 2026-0
 - Japanese launched on a simulator to confirm onboarding and Today actually render
   translated.
 
-## Before this ships again
+## The demo account
 
-Re-seed the demo account: its check-ins are generated relative to seed time, and by
-2026-09-16 they ran 2026-05-09 … 06-07, so a reviewer signing in sees zero streaks and
-0% rates on every habit.
+Re-seeded 2026-09-16 (its check-ins are generated relative to seed time, and they had run
+2026-05-09 … 06-07 — a reviewer would have seen zero streaks and 0% rates). The login token is
+unchanged. Verified end-to-end by compiling the SHIPPING reconciler against the live account
+and printing what a reviewer's device computes:
+
+```
+pulled: 6 habits, 133 entries → after reconcile: 6 habits
+  Drink 8 Glasses  records=24 streak= 4 best= 5 rate=80%  created=2026-08-02
+  Journal          records=25 streak=11 best=11 rate=83%  created=2026-08-02
+  Meditate         records=19 streak= 2 best= 3 rate=63%  created=2026-08-02
+  Morning Run      records=23 streak= 5 best= 5 rate=76%  created=2026-08-02
+  Practice Guitar  records=15 streak= 2 best= 2 rate=50%  created=2026-08-02
+  Read 30 Minutes  records=27 streak= 3 best=11 rate=90%  created=2026-08-02
+habits with no history: 0 | zero current streak: 0 | zero 30-day rate: 0
+```
+
+`created=2026-08-02` rather than today is the millisecond-timestamp fix showing end to end: on
+1.2.2 every one of these habits would have been dated today, with a 30-day rate computed from a
+single day. Re-seed again if review slips by more than a few weeks.
