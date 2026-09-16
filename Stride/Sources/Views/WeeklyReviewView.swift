@@ -73,6 +73,8 @@ struct WeeklyReviewView: View {
                             }
                         }
                         .frame(width: 120, height: 120)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("This week, \(Int(overallRate * 100)) percent complete")
 
                         let diff = overallRate - lastWeekOverallRate
                         if abs(diff) > 0.01 {
@@ -83,6 +85,11 @@ struct WeeklyReviewView: View {
                                     .font(.caption)
                             }
                             .foregroundStyle(diff > 0 ? .green : .orange)
+                            .accessibilityElement(children: .ignore)
+                            // Direction lives in the arrow glyph and the tint; neither reaches VoiceOver.
+                            .accessibilityLabel(diff > 0
+                                ? "Up \(Int(abs(diff) * 100)) percent vs last week"
+                                : "Down \(Int(abs(diff) * 100)) percent vs last week")
                         }
                     }
                     .padding(.top)
@@ -92,6 +99,7 @@ struct WeeklyReviewView: View {
                         Text("Habit Breakdown")
                             .font(.headline)
                             .padding(.horizontal)
+                            .accessibilityAddTraits(.isHeader)
 
                         ForEach(habits) { habit in
                             let rate = completionRate(for: habit, in: weekRange)
@@ -122,6 +130,8 @@ struct WeeklyReviewView: View {
                                     .frame(width: 40, alignment: .trailing)
                             }
                             .padding(.horizontal)
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("\(habit.emoji) \(habit.name), \(Int(rate * 100)) percent")
                         }
                     }
 
@@ -131,11 +141,13 @@ struct WeeklyReviewView: View {
                             Text("Highlights")
                                 .font(.headline)
                                 .padding(.horizontal)
+                                .accessibilityAddTraits(.isHeader)
 
                             if let best = bestHabit {
                                 HStack(spacing: 10) {
                                     Image(systemName: "star.fill")
                                         .foregroundStyle(.yellow)
+                                        .accessibilityHidden(true)
                                     Text("Best: \(best.emoji) \(best.name)")
                                         .font(.subheadline)
                                 }
@@ -146,6 +158,7 @@ struct WeeklyReviewView: View {
                                 HStack(spacing: 10) {
                                     Image(systemName: "arrow.up.heart.fill")
                                         .foregroundStyle(.orange)
+                                        .accessibilityHidden(true)
                                     Text("Needs work: \(worst.emoji) \(worst.name)")
                                         .font(.subheadline)
                                 }

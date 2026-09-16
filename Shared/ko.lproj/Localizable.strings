@@ -333,3 +333,32 @@
 "Completed %@ %@!" = "%@ %@ 완료!";
 "%@ %@: %lld day streak" = "%@ %@: %lld일 연속";
 "%@ %@: %lld week streak" = "%@ %@: %lld주 연속";
+
+/* VoiceOver and accessibility strings (1.2.3). */
+"Collapsed" = "접힘";
+"Expanded" = "펼침";
+"Double tap to add one" = "두 번 탭하여 1 추가";
+"%@ of %@" = "%@ / %@";
+"%lld %@" = "%lld %@";
+"%lldw" = "%lld주";
+"Syncing" = "동기화 중";
+"Last synced %@" = "마지막 동기화: %@";
+"Sync error: %@" = "동기화 오류: %@";
+"Restore %@" = "%@ 복원";
+"In progress" = "진행 중";
+"Error: %@" = "오류: %@";
+"Add %@" = "%@ 추가";
+"Page %lld of %lld" = "%lld / %lld 페이지";
+"Week of %@" = "%@ 주";
+"30-day average" = "30일 평균";
+"Strongest on %@" = "가장 잘한 요일: %@";
+"Toughest on %@" = "가장 어려운 요일: %@";
+"Up vs last week (%@ → %@)" = "지난주보다 상승 (%@ → %@)";
+"Down vs last week (%@ → %@)" = "지난주보다 하락 (%@ → %@)";
+"This week, %lld percent complete" = "이번 주 %lld퍼센트 완료";
+"%@ %@, %lld percent" = "%@ %@, %lld퍼센트";
+"Up %lld percent vs last week" = "지난주보다 %lld퍼센트 상승";
+"Down %lld percent vs last week" = "지난주보다 %lld퍼센트 하락";
+"%@, %lld day streak, best streak %lld, 30-day rate %lld percent, %lld of the last 14 days completed" = "%@, %lld일 연속, 최고 연속 %lld, 30일 달성률 %lld퍼센트, 최근 14일 중 %lld일 완료";
+"%@, %lld week streak, best streak %lld, 30-day rate %lld percent, %lld of the last 14 days completed" = "%@, %lld주 연속, 최고 연속 %lld, 30일 달성률 %lld퍼센트, 최근 14일 중 %lld일 완료";
+"%lld more habits" = "습관 %lld개 더";

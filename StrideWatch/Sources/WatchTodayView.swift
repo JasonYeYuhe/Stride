@@ -25,9 +25,15 @@ struct WatchTodayView: View {
                             progress: habits.isEmpty ? 0 : Double(completedCount) / Double(habits.count)
                         )
                         .frame(width: 36, height: 36)
-                        .accessibilityLabel("\(completedCount) of \(habits.count) habits completed")
                     }
                     .listRowBackground(Color.clear)
+                    // The ring hides itself, so a label on it had no element to attach to and
+                    // VoiceOver read the bare "3/5" — "three slash five", counting nothing.
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(completedCount) of \(habits.count) habits completed")
+                    // Otherwise "0 of 0 habits completed" is the first stop in a fresh app,
+                    // ahead of the one row that says anything.
+                    .accessibilityHidden(habits.isEmpty)
                 }
 
                 Section {
@@ -78,6 +84,47 @@ struct WatchHabitRow: View {
         habit.currentStreak()
     }
 
+    private var isCountHabit: Bool {
+        habit.habitKind == .count
+    }
+
+    /// "6 of 8 glasses" — spelled out, because VoiceOver reads "6/8" as a date or a fraction.
+    /// TodayView's copy lives in an iOS-only file, so the watch keeps its own.
+    private var spokenCount: String {
+        let logged = Self.numberFormat(habit.loggedValue(on: Date()))
+        let target = Self.numberFormat(habit.targetValue)
+        let progress = String(localized: "\(logged) of \(target)")
+        guard let unit = habit.unit, !unit.isEmpty else { return progress }
+        return "\(progress) \(unit)"
+    }
+
+    private static func numberFormat(_ value: Double) -> String {
+        value == value.rounded() ? String(Int(value)) : String(format: "%.1f", value)
+    }
+
+    /// The row still has to say whether the day is done — a count habit is complete once it
+    /// reaches its target — so the state stays in the label for both kinds. What the tap does
+    /// differs, and that belongs in the hint.
+    private var spokenLabel: Text {
+        isCompleted ? Text("\(habit.name), completed") : Text("\(habit.name), not completed")
+    }
+
+    /// The explicit label replaces everything `.combine` merged, so the streak badge — and a count
+    /// habit's progress, which this row never draws at all — is announced only from here. Being the
+    /// value, it is also re-spoken on each tap: the only feedback a count habit has.
+    private var spokenDetail: String {
+        var parts: [String] = []
+        if isCountHabit { parts.append(spokenCount) }
+        if streak > 0 {
+            // Not "\(streak) \(habit.streakUnit) streak": the unit would reach every language
+            // as the English word.
+            parts.append(habit.streakUnit == "week"
+                ? String(localized: "\(streak) week streak")
+                : String(localized: "\(streak) day streak"))
+        }
+        return parts.joined(separator: ", ")
+    }
+
     var body: some View {
         Button(action: onToggle) {
             HStack(spacing: 8) {
@@ -93,7 +140,7 @@ struct WatchHabitRow: View {
                             Image(systemName: "flame.fill")
                                 .font(.caption2)
                                 .foregroundStyle(.orange)
-                            Text("\(streak)d")
+                            Text(habit.streakUnit == "week" ? "\(streak)w" : "\(streak)d")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
@@ -109,8 +156,10 @@ struct WatchHabitRow: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(isCompleted ? "\(habit.name), completed" : "\(habit.name), not completed")
-        .accessibilityHint("Double tap to toggle completion")
+        .accessibilityLabel(spokenLabel)
+        .accessibilityValue(spokenDetail)
+        // A count tap adds one unit and never clears the day; only a binary tap toggles.
+        .accessibilityHint(isCountHabit ? Text("Double tap to add one") : Text("Double tap to toggle completion"))
     }
 }
 

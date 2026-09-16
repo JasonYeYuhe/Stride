@@ -101,7 +101,7 @@ final class NotificationService {
         center.removePendingNotificationRequests(withIdentifiers: [eveningIdentifier])
 
         let content = UNMutableNotificationContent()
-        content.title = String(localized: "Stride Reminder 🏃")
+        content.title = appLocalized("Stride Reminder 🏃")
         content.body = randomEveningMessage()
         content.sound = .default
         content.interruptionLevel = .timeSensitive
@@ -124,7 +124,7 @@ final class NotificationService {
         center.removePendingNotificationRequests(withIdentifiers: [morningIdentifier])
 
         let content = UNMutableNotificationContent()
-        content.title = String(localized: "Good Morning! ☀️")
+        content.title = appLocalized("Good Morning! ☀️")
         content.body = randomMorningMessage()
         content.sound = .default
 
@@ -154,7 +154,7 @@ final class NotificationService {
 
         let content = UNMutableNotificationContent()
         content.title = "\(habit.emoji) \(habit.name)"
-        content.body = String(localized: "Time to work on your habit!")
+        content.body = appLocalized("Time to work on your habit!")
         content.sound = .default
 
         var dateComponents = DateComponents()
@@ -233,25 +233,25 @@ final class NotificationService {
 
     private func randomEveningMessage() -> String {
         let messages = [
-            String(localized: "Don't break the chain! Check in on your habits before bed."),
-            String(localized: "A few minutes now, a better you tomorrow. Open Stride!"),
-            String(localized: "Have you completed all your habits today?"),
-            String(localized: "Your streak is counting on you! Time to check in."),
-            String(localized: "Small steps, big changes. Don't forget your habits!"),
-            String(localized: "End the day strong — mark your progress in Stride."),
-            String(localized: "Consistency is key. How did you do today?"),
-            String(localized: "Your future self will thank you. Check your habits!"),
+            appLocalized("Don't break the chain! Check in on your habits before bed."),
+            appLocalized("A few minutes now, a better you tomorrow. Open Stride!"),
+            appLocalized("Have you completed all your habits today?"),
+            appLocalized("Your streak is counting on you! Time to check in."),
+            appLocalized("Small steps, big changes. Don't forget your habits!"),
+            appLocalized("End the day strong — mark your progress in Stride."),
+            appLocalized("Consistency is key. How did you do today?"),
+            appLocalized("Your future self will thank you. Check your habits!"),
         ]
         return messages.randomElement() ?? messages[0]
     }
 
     private func randomMorningMessage() -> String {
         let messages = [
-            String(localized: "New day, new opportunities! Your habits are waiting."),
-            String(localized: "Rise and shine! Let's make today count."),
-            String(localized: "A fresh start — what will you accomplish today?"),
-            String(localized: "Good morning! Time to build those healthy habits."),
-            String(localized: "Today is full of potential. Start with your habits!"),
+            appLocalized("New day, new opportunities! Your habits are waiting."),
+            appLocalized("Rise and shine! Let's make today count."),
+            appLocalized("A fresh start — what will you accomplish today?"),
+            appLocalized("Good morning! Time to build those healthy habits."),
+            appLocalized("Today is full of potential. Start with your habits!"),
         ]
         return messages.randomElement() ?? messages[0]
     }

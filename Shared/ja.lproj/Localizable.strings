@@ -333,3 +333,32 @@
 "Completed %@ %@!" = "%@ %@ を完了しました！";
 "%@ %@: %lld day streak" = "%@ %@：%lld日連続";
 "%@ %@: %lld week streak" = "%@ %@：%lld週連続";
+
+/* VoiceOver and accessibility strings (1.2.3). */
+"Collapsed" = "折りたたみ中";
+"Expanded" = "展開中";
+"Double tap to add one" = "ダブルタップで1つ追加";
+"%@ of %@" = "%@ / %@";
+"%lld %@" = "%lld %@";
+"%lldw" = "%lld週";
+"Syncing" = "同期中";
+"Last synced %@" = "最終同期：%@";
+"Sync error: %@" = "同期エラー：%@";
+"Restore %@" = "%@を復元";
+"In progress" = "処理中";
+"Error: %@" = "エラー：%@";
+"Add %@" = "%@を追加";
+"Page %lld of %lld" = "%lld / %lldページ";
+"Week of %@" = "%@の週";
+"30-day average" = "30日平均";
+"Strongest on %@" = "最も強い曜日：%@";
+"Toughest on %@" = "最も苦手な曜日：%@";
+"Up vs last week (%@ → %@)" = "先週より上昇（%@ → %@）";
+"Down vs last week (%@ → %@)" = "先週より低下（%@ → %@）";
+"This week, %lld percent complete" = "今週は%lldパーセント達成";
+"%@ %@, %lld percent" = "%@ %@、%lldパーセント";
+"Up %lld percent vs last week" = "先週より%lldパーセント上昇";
+"Down %lld percent vs last week" = "先週より%lldパーセント低下";
+"%@, %lld day streak, best streak %lld, 30-day rate %lld percent, %lld of the last 14 days completed" = "%@、%lld日連続、最長記録%lld、30日達成率%lldパーセント、直近14日のうち%lld日完了";
+"%@, %lld week streak, best streak %lld, 30-day rate %lld percent, %lld of the last 14 days completed" = "%@、%lld週連続、最長記録%lld、30日達成率%lldパーセント、直近14日のうち%lld日完了";
+"%lld more habits" = "他%lld件の習慣";

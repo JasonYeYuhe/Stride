@@ -24,6 +24,7 @@ struct LoginView: View {
                 Image(systemName: step == .checkInbox ? "envelope.open.fill" : "person.crop.circle.fill")
                     .font(.system(size: 56))
                     .foregroundStyle(.green)
+                    .accessibilityHidden(true)
 
                 switch step {
                 case .email:
@@ -39,6 +40,9 @@ struct LoginView: View {
                         .font(.caption)
                         .foregroundStyle(.red)
                         .multilineTextAlignment(.center)
+                        // Red text is the only cue that this is an error, and VoiceOver
+                        // does not convey color.
+                        .accessibilityLabel(Text("Error: \(error)"))
                 }
 
                 Spacer()
@@ -53,6 +57,15 @@ struct LoginView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
+            }
+            // Each step replaces the whole panel, which destroys the subtree holding
+            // VoiceOver focus: without these the user hears nothing at all.
+            .onChange(of: step) { _, newStep in
+                AccessibilityNotification.Announcement(Self.announcement(for: newStep)).post()
+            }
+            .onChange(of: auth.error) { _, newError in
+                guard let newError else { return }
+                AccessibilityNotification.Announcement(appLocalized("Error: \(newError)")).post()
             }
         }
     }
@@ -90,6 +103,10 @@ struct LoginView: View {
             .buttonStyle(.borderedProminent)
             .tint(.green)
             .disabled(email.isEmpty || auth.isLoading)
+            // While loading, the label is a bare ProgressView, so this is the button's
+            // only name rather than a restatement of a visible one.
+            .accessibilityLabel(Text("Send Login Link"))
+            .accessibilityValue(auth.isLoading ? Text("In progress") : Text(verbatim: ""))
 
             Button("I have a login token") {
                 step = .enterCode
@@ -103,6 +120,7 @@ struct LoginView: View {
         VStack(spacing: 16) {
             Text("Check your email")
                 .font(.title3.bold())
+                .accessibilityAddTraits(.isHeader)
 
             Text("We sent a login link to **\(email)**.\n\nClick the link in the email, or paste the token below.")
                 .font(.subheadline)
@@ -130,6 +148,8 @@ struct LoginView: View {
             .buttonStyle(.borderedProminent)
             .tint(.green)
             .disabled(verificationToken.isEmpty || auth.isLoading)
+            .accessibilityLabel(Text("Verify"))
+            .accessibilityValue(auth.isLoading ? Text("In progress") : Text(verbatim: ""))
 
             Button("Use a different email") {
                 step = .email
@@ -144,6 +164,7 @@ struct LoginView: View {
         VStack(spacing: 16) {
             Text("Enter Login Token")
                 .font(.title3.bold())
+                .accessibilityAddTraits(.isHeader)
 
             Text("Paste the token from your login email.")
                 .font(.subheadline)
@@ -171,12 +192,24 @@ struct LoginView: View {
             .buttonStyle(.borderedProminent)
             .tint(.green)
             .disabled(verificationToken.isEmpty || auth.isLoading)
+            .accessibilityLabel(Text("Log In"))
+            .accessibilityValue(auth.isLoading ? Text("In progress") : Text(verbatim: ""))
 
             Button("Send me a login link instead") {
                 step = .email
             }
             .font(.caption)
             .foregroundStyle(.secondary)
+        }
+    }
+
+    /// `Announcement` takes a verbatim String, so each phrase is localized here as a
+    /// whole key rather than interpolated at the call site.
+    private static func announcement(for step: LoginStep) -> String {
+        switch step {
+        case .email: appLocalized("Log In")
+        case .checkInbox: appLocalized("Check your email")
+        case .enterCode: appLocalized("Enter Login Token")
         }
     }
 

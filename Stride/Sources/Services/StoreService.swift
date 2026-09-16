@@ -28,6 +28,8 @@ enum StoreError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .failedVerification:
+            // errorDescription is a nonisolated protocol requirement, so this one cannot go
+            // through appLocalized (main-actor). System language rather than the in-app picker.
             return String(localized: "Stride couldn't verify this purchase on your device. If you were charged, tap Restore Purchases — restoring never charges you again.")
         }
     }
@@ -222,6 +224,7 @@ struct ProPaywallView: View {
                         Image(systemName: "crown.fill")
                             .font(.system(size: 56))
                             .foregroundStyle(.yellow.gradient)
+                            .accessibilityHidden(true)
 
                         Text("Stride Pro")
                             .font(.largeTitle.bold())
@@ -280,7 +283,7 @@ struct ProPaywallView: View {
                                 let isYearly = product.id.contains("yearly")
                                 PricingCard(
                                     title: isLifetime ? "Lifetime" : (isYearly ? "Yearly" : "Monthly"),
-                                    price: product.displayPrice + (isLifetime ? "" : (isYearly ? String(localized: "/yr") : String(localized: "/mo"))),
+                                    price: product.displayPrice + (isLifetime ? "" : (isYearly ? appLocalized("/yr") : appLocalized("/mo"))),
                                     badge: isLifetime ? "BEST VALUE" : (isYearly ? "SAVE" : nil),
                                     subtitle: isLifetime ? "One-time purchase — yours forever" : (isYearly ? "Billed annually" : nil),
                                     highlighted: isLifetime
@@ -399,6 +402,8 @@ struct ProFeatureRow: View {
                     .foregroundStyle(.secondary)
             }
         }
+        // The icon is decorative; the two lines are one feature.
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -436,6 +441,7 @@ struct PricingCard: View {
                 Text(price)
                     .font(.title3.bold())
             }
+            .accessibilityElement(children: .combine)
             .padding()
             .background(
                 RoundedRectangle(cornerRadius: 14)

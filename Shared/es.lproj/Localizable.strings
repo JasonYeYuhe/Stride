@@ -333,3 +333,32 @@
 "Completed %@ %@!" = "¡%@ %@ completado!";
 "%@ %@: %lld day streak" = "%@ %@: racha de %lld días";
 "%@ %@: %lld week streak" = "%@ %@: racha de %lld semanas";
+
+/* VoiceOver and accessibility strings (1.2.3). */
+"Collapsed" = "Contraído";
+"Expanded" = "Expandido";
+"Double tap to add one" = "Toca dos veces para sumar uno";
+"%@ of %@" = "%@ de %@";
+"%lld %@" = "%lld %@";
+"%lldw" = "%lld sem";
+"Syncing" = "Sincronizando";
+"Last synced %@" = "Última sincronización: %@";
+"Sync error: %@" = "Error de sincronización: %@";
+"Restore %@" = "Restaurar %@";
+"In progress" = "En curso";
+"Error: %@" = "Error: %@";
+"Add %@" = "Añadir %@";
+"Page %lld of %lld" = "Página %lld de %lld";
+"Week of %@" = "Semana del %@";
+"30-day average" = "Media de 30 días";
+"Strongest on %@" = "Tu mejor día: %@";
+"Toughest on %@" = "Tu día más difícil: %@";
+"Up vs last week (%@ → %@)" = "Subiste respecto a la semana pasada (%@ → %@)";
+"Down vs last week (%@ → %@)" = "Bajaste respecto a la semana pasada (%@ → %@)";
+"This week, %lld percent complete" = "Esta semana, %lld por ciento completado";
+"%@ %@, %lld percent" = "%@ %@, %lld por ciento";
+"Up %lld percent vs last week" = "%lld por ciento más que la semana pasada";
+"Down %lld percent vs last week" = "%lld por ciento menos que la semana pasada";
+"%@, %lld day streak, best streak %lld, 30-day rate %lld percent, %lld of the last 14 days completed" = "%@, racha de %lld días, mejor racha %lld, tasa de 30 días %lld por ciento, %lld de los últimos 14 días completados";
+"%@, %lld week streak, best streak %lld, 30-day rate %lld percent, %lld of the last 14 days completed" = "%@, racha de %lld semanas, mejor racha %lld, tasa de 30 días %lld por ciento, %lld de los últimos 14 días completados";
+"%lld more habits" = "%lld hábitos más";

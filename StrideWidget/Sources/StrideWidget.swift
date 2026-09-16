@@ -35,7 +35,10 @@ struct HabitEntry: TimelineEntry {
 }
 
 struct HabitSnapshot: Identifiable {
-    let id = UUID()
+    // A fresh UUID per construction gave every ForEach row a new identity on each timeline
+    // reload, so an in-widget toggle dropped VoiceOver focus back to the top of the widget
+    // instead of re-reading the row that just changed.
+    var id: String { habitId }
     let habitId: String
     let name: String
     let emoji: String
@@ -180,6 +183,10 @@ struct SmallWidgetView: View {
                 }
             }
             .frame(width: 70, height: 70)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(entry.completedCount) of \(entry.totalCount) habits completed")
+            // "0 of 0 habits completed" is nonsense; the status line below already says it.
+            .accessibilityHidden(entry.totalCount == 0)
 
             Text(smallStatusText)
                 .font(.caption2.weight(.medium))
@@ -222,6 +229,10 @@ struct MediumWidgetView: View {
                     .foregroundStyle(.secondary)
             }
             .frame(width: 72)
+            .accessibilityElement(children: .ignore)
+            // Each whole phrase is its own key: a ternary inside the interpolation would
+            // collapse to a plain %@ argument and never be translated.
+            .accessibilityLabel(entry.totalCount == 0 ? "No habits yet" : "\(entry.completedCount) of \(entry.totalCount) habits completed, \(Int(entry.progress * 100)) percent")
 
             // Right: Interactive habit list
             VStack(alignment: .leading, spacing: 4) {
@@ -245,12 +256,17 @@ struct MediumWidgetView: View {
                         }
                     }
                     .buttonStyle(.plain)
+                    // The completion state lives only in the icon's shape and colour, so
+                    // without this VoiceOver never says whether the habit is already done.
+                    .accessibilityLabel(habit.isCompleted ? "\(habit.name), completed" : "\(habit.name), not completed")
+                    .accessibilityHint("Double tap to toggle completion")
                 }
 
                 if entry.habits.count > 4 {
                     Text("+\(entry.habits.count - 4) more")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                        .accessibilityLabel("\(entry.habits.count - 4) more habits")
                 }
 
                 if entry.habits.isEmpty {
@@ -276,6 +292,7 @@ struct LockScreenCircularView: View {
                 .font(.system(.body, design: .rounded).bold())
         }
         .gaugeStyle(.accessoryCircular)
+        .accessibilityLabel(entry.totalCount == 0 ? "No habits yet" : "\(entry.completedCount) of \(entry.totalCount) habits completed")
         .containerBackground(.fill.tertiary, for: .widget)
     }
 }
@@ -288,9 +305,13 @@ struct LockScreenInlineView: View {
         if entry.totalCount == 0 {
             Text("Stride: No habits yet")
         } else if entry.completedCount == entry.totalCount {
+            // Spoken form only: the leading emoji reads as its symbol name and "2/3" as
+            // "2 slash 3", both noise on an accessory whose whole point is one short phrase.
             Text("🔥 All \(entry.totalCount) habits done!")
+                .accessibilityLabel("\(entry.completedCount) of \(entry.totalCount) habits completed")
         } else {
             Text("🏃 \(entry.completedCount)/\(entry.totalCount) habits done")
+                .accessibilityLabel("\(entry.completedCount) of \(entry.totalCount) habits completed")
         }
     }
 }
@@ -324,6 +345,12 @@ struct LockScreenRectangularView: View {
                 }
             }
         }
+        // Nothing here is interactive, so one summary beats swiping through eight fragments
+        // ("Stride", "2 slash 3", then every emoji and name as its own stop).
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(entry.totalCount == 0 ? "No habits yet" : "\(entry.completedCount) of \(entry.totalCount) habits completed")
+        // .ignore would otherwise drop the habits this accessory lists.
+        .accessibilityValue(Text(verbatim: entry.habits.prefix(3).map(\.name).joined(separator: ", ")))
         .containerBackground(.fill.tertiary, for: .widget)
     }
 }

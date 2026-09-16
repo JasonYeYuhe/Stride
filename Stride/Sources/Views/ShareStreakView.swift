@@ -9,8 +9,12 @@ struct ShareStreakView: View {
     private var completionRate: Int { Int(habit.completionRate() * 100) }
     private var last14Days: [Date] { Date.lastNDays(14) }
 
+    // SharePreview reads this aloud and the receiving app keeps it, so it has to be translated.
+    // One key per unit, matching the Siri shortcut, rather than splicing in English streakUnit.
     private var shareText: String {
-        "\(habit.emoji) \(currentStreak) \(habit.streakUnit) streak on \(habit.name)! 🔥"
+        habit.streakUnit == "week"
+            ? appLocalized("\(habit.emoji) \(habit.name): \(currentStreak) week streak")
+            : appLocalized("\(habit.emoji) \(habit.name): \(currentStreak) day streak")
     }
 
     var body: some View {
@@ -129,6 +133,23 @@ struct ShareStreakView: View {
                     )
                 )
         )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(cardAccessibilityLabel)
+    }
+
+    // The card is one graphic, but VoiceOver otherwise walks it as eight stops with each number
+    // split from its caption. The 14 history dots are bare Circles carrying no text at all, so
+    // they are summarised as a count here rather than as 14 extra swipes.
+    //
+    // One whole sentence per streak unit, as a LocalizedStringKey: a label assembled from
+    // String(localized:) fragments cannot be reordered by a translator, and String(localized:)
+    // reads the SYSTEM language while everything drawn here follows the in-app language picker
+    // (\.environment(\.locale)) — the card would speak one language and show another.
+    private var cardAccessibilityLabel: LocalizedStringKey {
+        let recent = last14Days.filter { habit.isCompletedOn($0) }.count
+        return habit.streakUnit == "week"
+            ? "\(habit.name), \(currentStreak) week streak, best streak \(bestStreak), 30-day rate \(completionRate) percent, \(recent) of the last 14 days completed"
+            : "\(habit.name), \(currentStreak) day streak, best streak \(bestStreak), 30-day rate \(completionRate) percent, \(recent) of the last 14 days completed"
     }
 
     // MARK: - Image Rendering

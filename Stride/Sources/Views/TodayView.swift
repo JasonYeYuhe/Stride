@@ -35,9 +35,9 @@ struct TodayView: View {
 
     private var dateTitle: String {
         if Calendar.current.isDateInToday(selectedDate) {
-            return String(localized: "Today")
+            return appLocalized("Today")
         } else if Calendar.current.isDateInYesterday(selectedDate) {
-            return String(localized: "Yesterday")
+            return appLocalized("Yesterday")
         } else {
             let formatter = DateFormatter()
             formatter.dateStyle = .medium
@@ -105,6 +105,7 @@ struct TodayView: View {
                     Image(systemName: "plus.circle.fill")
                         .font(.title2)
                 }
+                .accessibilityLabel("New Habit")
             }
         }
         .sheet(isPresented: $showingAddHabit) {
@@ -132,9 +133,9 @@ struct TodayView: View {
 
     @ViewBuilder
     private func groupHeader(for group: HabitGroup?, count: Int) -> some View {
-        let title = group?.name ?? String(localized: "Ungrouped")
+        let title = group?.name ?? appLocalized("Ungrouped")
         let collapsed = isCollapsed(group)
-        Button {
+        let header = Button {
             guard let id = group?.id else { return }
             withAnimation(.easeInOut(duration: 0.2)) {
                 if collapsedGroups.contains(id) { collapsedGroups.remove(id) }
@@ -163,6 +164,20 @@ struct TodayView: View {
         .buttonStyle(.plain)
         .disabled(group == nil)
         .accessibilityLabel("\(title), \(count) habits")
+        .accessibilityAddTraits(.isHeader)
+
+        if group == nil {
+            // The Ungrouped header is a section title, not a control. Removing .isButton from a
+            // real Button is not reliable — the trait is intrinsic — so the button is replaced
+            // by a plain element here instead of being annotated into one.
+            header
+                .accessibilityRemoveTraits(.isButton)
+                .accessibilityRespondsToUserInteraction(false)
+        } else {
+            // The chevron is the only sign of the collapsed state, so nothing tells VoiceOver
+            // what the double tap did without a value that changes with it.
+            header.accessibilityValue(collapsed ? "Collapsed" : "Expanded")
+        }
     }
 }
 
@@ -196,8 +211,16 @@ struct WeekStripView: View {
                         selectedDate = day
                     }
                 }
+                // Without this the labels below land on both Texts, so the strip reads as
+                // fourteen stops of duplicated static text instead of seven day buttons.
+                .accessibilityElement(children: .combine)
                 .accessibilityLabel(isSelected ? "\(day.shortWeekday) \(day.dayNumber), selected" : "\(day.shortWeekday) \(day.dayNumber)")
-                .accessibilityAddTraits(isSelected ? .isSelected : [])
+                .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+                // .onTapGesture is not forwarded as the combined element's activation, so
+                // without this the cell announces "button" and double-tap does nothing.
+                .accessibilityAction {
+                    withAnimation(.easeInOut(duration: 0.2)) { selectedDate = day }
+                }
             }
         }
     }
@@ -246,6 +269,9 @@ struct ProgressSummaryCard: View {
         )
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(completed) of \(total) habits completed, \(Int(progress * 100)) percent")
+        // `.ignore` drops the motivation line; as the value it stays out of the label and is
+        // re-announced when the count changes.
+        .accessibilityValue(motivationMessage)
     }
 
     private var motivationMessage: LocalizedStringKey {
@@ -279,6 +305,23 @@ struct HabitRowView: View {
     }
 
     var body: some View {
+        // The adjustable action brings the adjustable trait with it, so it has to stay off
+        // binary rows — VoiceOver would otherwise offer to adjust a value they do not have.
+        if habit.habitKind == .count {
+            rowContent
+                .accessibilityAdjustableAction { direction in
+                    switch direction {
+                    case .increment: withAnimation { incrementCount() }
+                    case .decrement: withAnimation { decrementCount() }
+                    @unknown default: break
+                    }
+                }
+        } else {
+            rowContent
+        }
+    }
+
+    private var rowContent: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 14) {
                 Text(habit.emoji)
@@ -355,8 +398,67 @@ struct HabitRowView: View {
         .accessibilityElement(children: .combine)
         // A ternary nested inside the interpolation would be a plain String argument, never
         // translated; each whole phrase has to be its own key.
-        .accessibilityLabel(isCompleted ? "\(habit.emoji) \(habit.name), completed" : "\(habit.emoji) \(habit.name), not completed")
-        .accessibilityHint("Double tap to toggle completion")
+        // The emoji is decorative and is already drawn above — its CLDR name ("droplet") would
+        // be spoken before every habit in the list.
+        .accessibilityLabel(isCompleted ? "\(habit.name), completed" : "\(habit.name), not completed")
+        // The label overrides everything `.combine` merged, so the rest of the row has to be
+        // rebuilt here or it is never announced.
+        .accessibilityValue(spokenDetail)
+        // On a count habit the combined element activates the increment button, not a toggle.
+        .accessibilityHint(habit.habitKind == .count ? "Double tap to add one" : "Double tap to toggle completion")
+        // Whether SwiftUI republishes `.contextMenu` items as custom actions varies by platform
+        // and version, and this row also overrides its children with `.combine`. These are the
+        // actions VoiceOver is guaranteed to get; the cost if the menu does publish its own is a
+        // duplicated rotor entry, against an unreachable Reset / Subtract 1 if it does not.
+        .accessibilityActions {
+            Button("Edit Habit") { showingEdit = true }
+            if habit.habitKind == .count {
+                Button("Add 1") { withAnimation { incrementCount() } }
+                if habit.loggedValue(on: date) > 0 {
+                    Button("Subtract 1") { withAnimation { decrementCount() } }
+                    Button("Reset") { withAnimation { resetCount() } }
+                }
+            }
+            if isCompleted {
+                Button(todayRecord?.note != nil ? "Edit Note" : "Add Note") {
+                    noteText = todayRecord?.note ?? ""
+                    showingNote = true
+                }
+            }
+        }
+    }
+
+    /// Everything the row draws besides its name and completion state, in the order it is drawn.
+    ///
+    /// A count row re-speaks this on every increment (it is the adjustable value), so the note —
+    /// the one unbounded part — is left to the binary rows, where nothing re-reads it.
+    private var spokenDetail: String {
+        var parts: [String] = []
+        if habit.habitKind == .count { parts.append(spokenCount) }
+        if !habit.isScheduled(on: date) {
+            parts.append(appLocalized("Rest day"))
+        } else if habit.schedule == .timesPerWeek {
+            parts.append(appLocalized("\(habit.weeklyCompletions(containing: date))/\(habit.timesPerWeek) this week"))
+        }
+        let streak = habit.currentStreak(from: date)
+        if streak > 0 {
+            parts.append(habit.streakUnit == "week"
+                ? appLocalized("\(streak) week streak")
+                : appLocalized("\(streak) day streak"))
+        }
+        if habit.habitKind != .count, let note = todayRecord?.note, !note.isEmpty {
+            parts.append(note)
+        }
+        return parts.joined(separator: ", ")
+    }
+
+    /// `countLabel` spelled out: VoiceOver reads "3/8" as a date or a fraction.
+    private var spokenCount: String {
+        let logged = Self.numberFormat(habit.loggedValue(on: date))
+        let target = Self.numberFormat(habit.targetValue)
+        let progress = appLocalized("\(logged) of \(target)")
+        guard let unit = habit.unit, !unit.isEmpty else { return progress }
+        return "\(progress) \(unit)"
     }
 
     @ViewBuilder
@@ -544,9 +646,11 @@ struct EmptyStateView: View {
             Image(systemName: "leaf.fill")
                 .font(.system(size: 60))
                 .foregroundStyle(.green.opacity(0.6))
+                .accessibilityHidden(true)
 
             Text("Start Your Journey")
                 .font(.title2.bold())
+                .accessibilityAddTraits(.isHeader)
 
             Text("Add your first habit and begin\nbuilding better routines.")
                 .font(.body)

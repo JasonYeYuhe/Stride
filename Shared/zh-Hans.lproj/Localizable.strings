@@ -333,3 +333,32 @@
 "Completed %@ %@!" = "已完成 %@ %@！";
 "%@ %@: %lld day streak" = "%@ %@：连续 %lld 天";
 "%@ %@: %lld week streak" = "%@ %@：连续 %lld 周";
+
+/* VoiceOver and accessibility strings (1.2.3). */
+"Collapsed" = "已折叠";
+"Expanded" = "已展开";
+"Double tap to add one" = "轻点两下加 1";
+"%@ of %@" = "%@ / %@";
+"%lld %@" = "%lld %@";
+"%lldw" = "%lld周";
+"Syncing" = "同步中";
+"Last synced %@" = "上次同步：%@";
+"Sync error: %@" = "同步错误：%@";
+"Restore %@" = "恢复%@";
+"In progress" = "进行中";
+"Error: %@" = "错误：%@";
+"Add %@" = "添加%@";
+"Page %lld of %lld" = "第 %lld 页，共 %lld 页";
+"Week of %@" = "%@ 当周";
+"30-day average" = "30 日平均";
+"Strongest on %@" = "表现最好：%@";
+"Toughest on %@" = "最难坚持：%@";
+"Up vs last week (%@ → %@)" = "较上周上升（%@ → %@）";
+"Down vs last week (%@ → %@)" = "较上周下降（%@ → %@）";
+"This week, %lld percent complete" = "本周完成百分之 %lld";
+"%@ %@, %lld percent" = "%@ %@，百分之 %lld";
+"Up %lld percent vs last week" = "较上周上升百分之 %lld";
+"Down %lld percent vs last week" = "较上周下降百分之 %lld";
+"%@, %lld day streak, best streak %lld, 30-day rate %lld percent, %lld of the last 14 days completed" = "%@，连续 %lld 天，最佳连续 %lld，30 日完成率百分之 %lld，最近 14 天完成 %lld 天";
+"%@, %lld week streak, best streak %lld, 30-day rate %lld percent, %lld of the last 14 days completed" = "%@，连续 %lld 周，最佳连续 %lld，30 日完成率百分之 %lld，最近 14 天完成 %lld 天";
+"%lld more habits" = "还有 %lld 个习惯";

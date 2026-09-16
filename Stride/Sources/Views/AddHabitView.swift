@@ -29,10 +29,21 @@ struct AddHabitView: View {
     @State private var showingPaywall = false
     private var store: StoreService { StoreService.shared }
 
-    /// Weekday symbols starting Sunday, matching the activeDays index.
-    private let weekdaySymbols = ["S", "M", "T", "W", "T", "F", "S"]
-
     private var isEditing: Bool { editingHabit != nil }
+
+    /// The ternary is hoisted out of the interpolation on purpose: nested inside one it would
+    /// collapse into a single "%lld%@" key, which no catalog can translate. The bare number is
+    /// verbatim — "%lld" is not a phrase anyone translates.
+    private var dailyGoalText: Text {
+        unit.isEmpty ? Text(verbatim: "\(targetValue)") : Text("\(targetValue) \(unit)")
+    }
+
+
+    /// Hoisted for the same reason: a String-typed ternary inside `Text(_:)` picks the verbatim
+    /// overload, so the placeholder would stay English in every language.
+    private var previewNameText: Text {
+        name.isEmpty ? Text("Your Habit") : Text(name)
+    }
 
     var body: some View {
         NavigationStack {
@@ -67,10 +78,12 @@ struct AddHabitView: View {
                             HStack {
                                 Text("Daily goal")
                                 Spacer()
-                                Text("\(targetValue)\(unit.isEmpty ? "" : " \(unit)")")
+                                dailyGoalText
                                     .foregroundStyle(.secondary)
                             }
                         }
+                        .accessibilityLabel("Daily goal")
+                        .accessibilityValue(dailyGoalText)
                         TextField("Unit (e.g. glasses, min, km)", text: $unit)
                             #if os(macOS)
                             .textFieldStyle(.plain)
@@ -93,20 +106,26 @@ struct AddHabitView: View {
                 Section("Icon") {
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 8), spacing: 12) {
                         ForEach(HabitEmoji.all, id: \.self) { emoji in
-                            Text(emoji)
-                                .font(.title2)
-                                .frame(width: 40, height: 40)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 10)
-                                        .fill(selectedEmoji == emoji ? Color.green.opacity(0.2) : Color.clear)
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 10)
-                                        .stroke(selectedEmoji == emoji ? Color.green : Color.clear, lineWidth: 2)
-                                )
-                                .onTapGesture {
-                                    selectedEmoji = emoji
-                                }
+                            Button {
+                                selectedEmoji = emoji
+                            } label: {
+                                Text(emoji)
+                                    .font(.title2)
+                                    .frame(width: 40, height: 40)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .fill(selectedEmoji == emoji ? Color.green.opacity(0.2) : Color.clear)
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .stroke(selectedEmoji == emoji ? Color.green : Color.clear, lineWidth: 2)
+                                    )
+                                    .frame(minHeight: 44)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            // No label: the emoji is the label, and VoiceOver speaks its localized name.
+                            .accessibilityAddTraits(selectedEmoji == emoji ? [.isButton, .isSelected] : .isButton)
                         }
                     }
                     .padding(.vertical, 4)
@@ -115,20 +134,28 @@ struct AddHabitView: View {
                 Section("Color") {
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 8), spacing: 12) {
                         ForEach(HabitColor.all) { color in
-                            Circle()
-                                .fill(color.color)
-                                .frame(width: 32, height: 32)
-                                .overlay(
-                                    Circle()
-                                        .stroke(Color.white, lineWidth: selectedColor.hex == color.hex ? 3 : 0)
-                                        .shadow(radius: 2)
-                                )
-                                .scaleEffect(selectedColor.hex == color.hex ? 1.15 : 1.0)
-                                .onTapGesture {
-                                    withAnimation(.easeInOut(duration: 0.15)) {
-                                        selectedColor = color
-                                    }
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.15)) {
+                                    selectedColor = color
                                 }
+                            } label: {
+                                Circle()
+                                    .fill(color.color)
+                                    .frame(width: 32, height: 32)
+                                    .overlay(
+                                        Circle()
+                                            .stroke(Color.white, lineWidth: selectedColor.hex == color.hex ? 3 : 0)
+                                            .shadow(radius: 2)
+                                    )
+                                    .scaleEffect(selectedColor.hex == color.hex ? 1.15 : 1.0)
+                                    // Height only: eight flexible columns leave ~33pt each on a phone,
+                                    // so a 44pt minWidth would overflow the row.
+                                    .frame(minHeight: 44)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(appLocalized(String.LocalizationValue(color.name)))
+                            .accessibilityAddTraits(selectedColor.hex == color.hex ? [.isButton, .isSelected] : .isButton)
                         }
                     }
                     .padding(.vertical, 4)
@@ -138,15 +165,18 @@ struct AddHabitView: View {
                     HStack(spacing: 14) {
                         Text(selectedEmoji)
                             .font(.title2)
-                        Text(name.isEmpty ? "Your Habit" : name)
+                        previewNameText
                             .font(.body.weight(.medium))
                             .foregroundStyle(name.isEmpty ? .secondary : .primary)
                         Spacer()
+                        // Part of the mock-up row, not a state: it must not imply the habit is done.
                         Image(systemName: "checkmark.circle.fill")
                             .font(.title)
                             .foregroundStyle(selectedColor.color)
+                            .accessibilityHidden(true)
                     }
                     .padding(.vertical, 4)
+                    .accessibilityElement(children: .combine)
                 } header: {
                     Text("Preview")
                 }
@@ -284,7 +314,7 @@ struct AddHabitView: View {
 
             if schedule == .specificDays {
                 HStack(spacing: 6) {
-                    ForEach(0..<7, id: \.self) { day in
+                    ForEach(orderedDays, id: \.self) { day in
                         weekdayToggle(day)
                     }
                 }
@@ -297,6 +327,9 @@ struct AddHabitView: View {
                         Text("\(timesPerWeek)× per week").foregroundStyle(.secondary)
                     }
                 }
+                // "Goal" also titles the daily-target stepper above; by voice they are identical.
+                .accessibilityLabel("Times per week")
+                .accessibilityValue(Text(verbatim: "\(timesPerWeek)"))
             }
         } header: {
             Text("Frequency")
@@ -309,12 +342,18 @@ struct AddHabitView: View {
         }
     }
 
+    /// Presentation order only; `activeDays`, `mask(from:)` and `daySet(from:)` stay 0 = Sunday.
+    private var orderedDays: [Int] {
+        let first = Calendar.current.firstWeekday - 1
+        return (0..<7).map { (first + $0) % 7 }
+    }
+
     private func weekdayToggle(_ day: Int) -> some View {
         let on = activeDays.contains(day)
         return Button {
             if on { activeDays.remove(day) } else { activeDays.insert(day) }
         } label: {
-            Text(weekdaySymbols[day])
+            Text(appCalendar.veryShortWeekdaySymbols[day])
                 .font(.caption.weight(.semibold))
                 .frame(maxWidth: .infinity, minHeight: 34)
                 .background(
@@ -326,9 +365,14 @@ struct AddHabitView: View {
                         .stroke(on ? Color.green : Color.clear, lineWidth: 1.5)
                 )
                 .foregroundStyle(on ? Color.green : Color.secondary)
+                // The pill still looks 34pt tall; only the tap area reaches the 44pt minimum.
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(Self.weekdayName(day))
+        // Calendar's symbols are localized already (index 0 = Sunday) — these must not
+        // become string literals, which would be read in English by a localized voice.
+        .accessibilityLabel(appCalendar.weekdaySymbols[day])
         .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
     }
 
@@ -357,6 +401,7 @@ struct AddHabitView: View {
                         Image(systemName: "crown.fill")
                             .font(.caption)
                             .foregroundStyle(.yellow)
+                            .accessibilityHidden(true)
                     }
                 }
             }
@@ -384,10 +429,6 @@ struct AddHabitView: View {
 
     private static func daySet(from mask: Int) -> Set<Int> {
         Set((0..<7).filter { mask & (1 << $0) != 0 })
-    }
-
-    private static func weekdayName(_ index: Int) -> String {
-        ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][index]
     }
 
     private func updateHabit() {
