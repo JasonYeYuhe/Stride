@@ -577,8 +577,10 @@ All six items found after `0a59bf3` are closed in the completion round:
 - [x] Provisioning: automatic signing (`-allowProvisioningUpdates`) enabled Associated Domains
   on its own — no portal step. Both exports: Distribution-signed, no `get-task-allow`,
   `applinks:stride-api.colorarchive.me` (`verify_archive.sh --exported`).
-- [x] Re-run StrideTests, hosted tests and the default-size sweep on the merged tree (the hosted
-  suite passed 53/0 on the combined working tree before the commit); CI green; `check_demo_account.sh` green.
+- [x] Tests on the committed tree: CI ran StrideTests (macOS) and the hosted suite on `60394a1`,
+  green; `check_demo_account.sh` green on the 1.3.0 code. The default-size sweep
+  (`build/review/1.3.0/`) ran on the working tree just before the completion commit — the
+  only later client change is `SentryBootstrap`, which draws nothing.
 - [x] Version: 1.3.0 (18), `60394a1`; CI green on that commit (Apple job on Xcode 27, 4m40s).
 - [x] `scripts/push_metadata.py 1.3.0`: the six descriptions now say small, medium and large (and
   extra large on iPad), with the tap-to-check claim extended to large. The Spanish description
