@@ -2,8 +2,9 @@
 
 App ID `6761262334`, bundle `yyh.stride.habittracker`. **In progress**: M0 (server, CI, ops)
 is done and the server half is live. The 1.3.0 client (DEV-PLAN-1.3.md M1) is built — `0a59bf3`
-plus a completion round (below) — and not submitted: the device checks, the provisioning for
-associated domains, the server's `invalid_value` deploy and the release mechanics are open
+plus the completion round `3fed14b` — and **build 18 is uploaded for iOS and macOS**, with the
+1.3.0 version records, What's New and descriptions in App Store Connect (2026-09-27). **Not
+submitted**: the device checks, the privacy-page publication and the owner's go are open
 ([TODO](#todo--before-130-is-submitted-m1)).
 
 1.2.3 (build 17) has been `READY_FOR_SALE` on iOS and macOS since 2026-09-17. This release
@@ -191,7 +192,7 @@ Branch `release/1.3.0`, built 2026-09-27 as eight parallel pieces (plurals and c
 Dynamic Type, reminders, the large widget, backup/restore/erase, one-tap sign-in, Settings and
 the small items, the accessibility sweep), then reviewed adversarially and put through two fix
 passes. No schema change: every model is as 1.2.3 left it. Commits: `0a59bf3` (the client),
-then the [completion round](#completion-round) (this round; hash: _orchestrator_), which closed
+then the [completion round](#completion-round) (`3fed14b`, with the server half in `55c8c72`), which closed
 what a completeness review of `0a59bf3` found still open.
 
 ### Plurals, and the English catalog that did not exist
@@ -327,7 +328,7 @@ launch. A grant now schedules every reminder-on habit in the store.
 ### Completion round
 
 A completeness review of `0a59bf3` against the plan listed what was still open; this round
-closed it (commit: _orchestrator_).
+closed it (commit: `3fed14b`).
 
 #### Numbers from sync that cannot crash the app
 
@@ -362,8 +363,10 @@ closed it (commit: _orchestrator_).
   device. Server suite 375 → 394 (19 bound tests, both casings, raw `1e999`, and a legacy
   headerless snapshot with one bad habit and one bad entry that applies the rest).
   [server/DEPLOY.md](server/DEPLOY.md)'s contract section lists the reason, what a 1.3.1
-  client does with it (quarantine), and a pre-deploy audit SQL — 0 rows on the local database;
-  **production not yet checked, and this server change is not deployed** (TODO below).
+  client does with it (quarantine), and a pre-deploy audit SQL. **Deployed 2026-09-27**
+  (`55c8c72`): production audit 0 / 0 / 0, rehearsal 20/20 (the demo account's 176 real
+  entries pushed back 1.2.3-shaped, nothing skipped), and a live push of `value: 1e19` on a
+  real demo habit answered `invalid_value` with nothing stored.
 - **`AuthService.loginWithSessionToken` removed**, with its one test. No app code ever called
   it (`git log -S`); it came with `f27321a` for a web-login redirect that was never built, and
   it would have stored a token straight from a URL if anyone wired it. Sign-in from a link goes
@@ -543,14 +546,14 @@ All six items found after `0a59bf3` are closed in the completion round:
   Other User Content (linked, app functionality) and Crash Data / Other Diagnostic Data (not
   linked) — the same as `Stride/PrivacyInfo.xcprivacy`.
 
-### Server (`invalid_value`, not yet deployed)
+### Server (`invalid_value`) — deployed 2026-09-27
 
-- [ ] Before the rsync: the audit SQL in DEPLOY.md's contract section against the production
+- [x] Before the rsync: the audit SQL in DEPLOY.md's contract section against the production
   backup — all three counts (entry, habit, group) 0. It checks the whole-number fields for
   fractions too, and `habit_groups` (an `inf` group `sortOrder` is served as `null` and fails
   every app's pull decode). A non-zero count is an account whose ≤ 1.2.3 devices can already
   crash or fail to pull; push can no longer change that row, so repair it by hand.
-- [ ] `scripts/rehearse_server.sh`: its "1.2.3-shaped snapshot of the real account → 200,
+- [x] `scripts/rehearse_server.sh`: its "1.2.3-shaped snapshot of the real account → 200,
   nothing skipped" check now also proves the demo account holds no out-of-bounds row; a FAIL
   with `invalid_value` means the demo data or `seed-demo.js` writes one. (Optional: a
   rehearsal check that pushes `targetValue: 1e19` and expects `invalid_value` with 200.)
@@ -571,17 +574,21 @@ All six items found after `0a59bf3` are closed in the completion round:
 
 ### Release mechanics
 
-- [ ] Provisioning: the App ID needs the Associated Domains capability and both App Store
-  profiles regenerated; the first archive runs with `-allowProvisioningUpdates`. Then
-  `verify_archive.sh --exported` asserts the entitlement.
-- [ ] Re-run StrideTests, hosted tests and the default-size sweep on the merged tree (the hosted
+- [x] Provisioning: automatic signing (`-allowProvisioningUpdates`) enabled Associated Domains
+  on its own — no portal step. Both exports: Distribution-signed, no `get-task-allow`,
+  `applinks:stride-api.colorarchive.me` (`verify_archive.sh --exported`).
+- [x] Re-run StrideTests, hosted tests and the default-size sweep on the merged tree (the hosted
   suite passed 53/0 on the combined working tree before the commit); CI green; `check_demo_account.sh` green.
-- [ ] Version: `project.yml` is still 1.2.3 / 17 — bump before the archive.
-- [ ] `scripts/push_metadata.py`: the six descriptions now say small, medium and large (and
+- [x] Version: 1.3.0 (18), `60394a1`; CI green on that commit (Apple job on Xcode 27, 4m40s).
+- [x] `scripts/push_metadata.py 1.3.0`: the six descriptions now say small, medium and large (and
   extra large on iPad), with the tap-to-check claim extended to large. The Spanish description
   is 3,989 of 4,000 characters.
-- [ ] `scripts/release.py prepare 1.3.0` (What's New is in `WHATS_NEW_BY_VERSION`), archive,
-  `finish`. The sign-in line in What's New assumes the device check above passes; if the link
+- [x] `scripts/release.py prepare 1.3.0` — both version records `PREPARE_FOR_SUBMISSION`, What's
+  New in six locales; `build-appstore.sh all --upload` — build 18 uploaded on both platforms
+  (iOS `VALID` in TestFlight the same evening).
+- [ ] **`scripts/release.py finish 1.3.0 18` — only with the owner's go**, after the device checks.
+  ⚠️ `push_metadata.py` used to submit for review as a side effect (and cancel any waiting
+  submission); since `d66d200` it only pushes metadata, so `finish` is the one submitting step. The sign-in line in What's New assumes the device check above passes; if the link
   does not open the app in Mail, drop that bullet before `prepare`.
 - [ ] Screenshots: only if the store set should show the large widget; the default-size app
   screens did not change.
