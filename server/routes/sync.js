@@ -111,6 +111,9 @@ function wireTime(v) {
  *                                 once the habit lands
  *               unknown_habit     an entry whose habit this server does not have at all (e.g.
  *                                 the habit's own chunk has not landed yet) — retry
+ *               invalid_value     a number no app can produce: not finite, out of range, or a
+ *                                 fraction where an app sends a whole number (PUSH_BOUNDS below)
+ *                                 — never applies as sent; quarantine it, do not retry
  *             The two not_owned reasons are what "keep this device's habits and add them to
  *             this account" hits: those ids are the previous account's rows, so acknowledging
  *             them would lose the data the user chose to keep — they need new ids.
@@ -134,6 +137,74 @@ function wireTime(v) {
  * and one tombstone INSERT; the 5 MB body limit bounds them, as it always has.
  */
 const ROW_LIMITS = Object.freeze({ habits: 500, entries: 5000, groups: 200 });
+
+/*
+ * What a pushed number must be, or the row is skipped as `invalid_value`.
+ *
+ * Until 1.3.0 the server stored whatever arrived, and handed it to every other device on the
+ * account. Every shipped app (<= 1.2.3) formats a count with `String(Int(value))` and reads a
+ * target with `Int(targetValue)`, and `Int(Double)` traps on infinity or past 9.2e18: one
+ * check-in of `1e19` — or `1e999`, which JSON.parse turns into Infinity — made Today trap on
+ * every launch, on every device signed into the account. And they decode `sortOrder`,
+ * `reminderHour`, `reminderMinute`, `timesPerWeek` and `activeDaysMask` as Swift `Int`, so a
+ * `2.5` or a `1e19` there fails the decode of the whole pull: that account never syncs again.
+ * 1.3.0 stops trapping (Shared/SafeNumber.swift), but 1.2.3 is what most people run, so the
+ * server must stop carrying these rows.
+ *
+ * The bounds are what the apps themselves write, with room, so no well-behaved push changes:
+ *   value, targetValue  finite within ±1e9. A tap adds 1 and the target stepper stops at 1,000;
+ *                       ±1e9 is exactly DataBackup.checkAmount, what a 1.3.0 restore accepts, so
+ *                       nothing a restore brings back is refused here. Negative is allowed: no
+ *                       app writes one (a count at 1 is deleted, not decremented), but none traps
+ *                       on one either — `String(Int(-3))` is fine, a negative ring trim draws
+ *                       nothing, a target <= 0 is guarded in Habit.progress. Refusing it (the
+ *                       first cut did, min 0) cost a restored habit: the push skipped it, its
+ *                       entries read skipped_habit, and the next full pull, lacking them, made
+ *                       SyncReconciler delete the habit and its check-ins on that device.
+ *   sortOrder (habit)   a whole number within ±1e15 — pushed as `Int(sortOrder)`; the default is
+ *                       the creation time in epoch seconds (~1.8e9), a reorder writes index×1000.
+ *                       ±1e15 is DataBackup.maxSortOrder.
+ *   sortOrder (group)   finite within ±1e15 — a Double in the apps (max + 1).
+ *   reminderHour 0…23, reminderMinute 0…59 — a DatePicker's; timesPerWeek 1…7 — the stepper's;
+ *   activeDaysMask 0…127 — seven weekday bits. All whole numbers.
+ * An absent or null field is not checked: it takes the column default, as it always has (apps
+ * before `kind` existed send no target at all). A string or boolean where a number belongs is
+ * invalid — no app sends one, and SQLite would have stored it as text.
+ */
+const MAX_AMOUNT = 1e9;
+const MAX_SORT_ORDER = 1e15;
+/** @typedef {{ min: number, max: number, whole?: boolean }} Bound */
+const PUSH_BOUNDS = Object.freeze({
+  habits: /** @type {Record<string, Bound>} */ ({
+    sortOrder: { min: -MAX_SORT_ORDER, max: MAX_SORT_ORDER, whole: true },
+    targetValue: { min: -MAX_AMOUNT, max: MAX_AMOUNT },
+    reminderHour: { min: 0, max: 23, whole: true },
+    reminderMinute: { min: 0, max: 59, whole: true },
+    timesPerWeek: { min: 1, max: 7, whole: true },
+    activeDaysMask: { min: 0, max: 127, whole: true },
+  }),
+  entries: /** @type {Record<string, Bound>} */ ({ value: { min: -MAX_AMOUNT, max: MAX_AMOUNT } }),
+  groups: /** @type {Record<string, Bound>} */ ({ sortOrder: { min: -MAX_SORT_ORDER, max: MAX_SORT_ORDER } }),
+});
+
+/**
+ * A row's bounded numbers, each read once in either casing (field() counts a snake_case read,
+ * so reading twice would double the count), or null if any is out of bounds.
+ * @param {any} row @param {Record<string, Bound>} bounds
+ * @returns {Record<string, unknown> | null}
+ */
+function boundedNumbers(row, bounds) {
+  /** @type {Record<string, unknown>} */
+  const out = {};
+  for (const [key, b] of Object.entries(bounds)) {
+    const v = field(row, key);
+    out[key] = v;
+    if (v === undefined || v === null) continue;
+    if (typeof v !== "number" || !Number.isFinite(v) || v < b.min || v > b.max) return null;
+    if (b.whole && !Number.isInteger(v)) return null;
+  }
+  return out;
+}
 
 /** Every array a push may carry, in either casing (see field()). */
 const PUSH_ARRAYS = /** @type {const} */ ([
@@ -450,9 +521,11 @@ router.post("/push", (req, res) => {
       if (!id) { noId++; continue; }
       if (blockedGroups.has(id)) { skip("groups", id, "tombstoned"); continue; }
       if (!g.name) { skip("groups", id, "missing_field"); continue; }
+      const num = boundedNumbers(g, PUSH_BOUNDS.groups);
+      if (!num) { skip("groups", id, "invalid_value"); continue; }
       try {
         const r = upsertGroup.run(
-          id, userId, g.name, field(g, "colorHex") || "#34C759", field(g, "sortOrder") || 0,
+          id, userId, g.name, field(g, "colorHex") || "#34C759", num.sortOrder || 0,
           field(g, "createdAt") || now, now, isoOrNull(field(g, "updatedAt")) || now,
           userId,
         );
@@ -474,17 +547,19 @@ router.post("/push", (req, res) => {
       if (h.kind === undefined) metrics.count("habit_without_kind");
       if (blockedHabits.has(id)) { skip("habits", id, "tombstoned"); continue; }
       if (!h.name) { skip("habits", id, "missing_field"); continue; }
+      const num = boundedNumbers(h, PUSH_BOUNDS.habits);
+      if (!num) { skip("habits", id, "invalid_value"); continue; }
       // Drop a stale group reference (group deleted on another device)
       const rawGroupId = field(h, "groupId");
       const groupId = rawGroupId && !blockedGroups.has(rawGroupId) ? rawGroupId : null;
       try {
         const r = upsertHabit.run(
           id, userId, h.name, h.emoji || "⭐", field(h, "colorHex") || "#34C759",
-          field(h, "isArchived") ? 1 : 0, field(h, "sortOrder") || 0,
-          field(h, "reminderEnabled") ? 1 : 0, field(h, "reminderHour") ?? 20, field(h, "reminderMinute") ?? 0,
+          field(h, "isArchived") ? 1 : 0, num.sortOrder || 0,
+          field(h, "reminderEnabled") ? 1 : 0, num.reminderHour ?? 20, num.reminderMinute ?? 0,
           h.note ?? null,
-          h.kind || "binary", field(h, "targetValue") ?? 1, h.unit ?? null,
-          field(h, "scheduleKind") || "daily", field(h, "timesPerWeek") ?? 7, field(h, "activeDaysMask") ?? 127,
+          h.kind || "binary", num.targetValue ?? 1, h.unit ?? null,
+          field(h, "scheduleKind") || "daily", num.timesPerWeek ?? 7, num.activeDaysMask ?? 127,
           groupId,
           field(h, "createdAt") || now, now, isoOrNull(field(h, "updatedAt")) || now,
           userId,
@@ -520,10 +595,13 @@ router.post("/push", (req, res) => {
         skip("entries", id, reason);
         continue;
       }
+      // After the habit checks: an entry of a deleted habit is dropped, whatever its value.
+      const num = boundedNumbers(e, PUSH_BOUNDS.entries);
+      if (!num) { skip("entries", id, "invalid_value"); continue; }
       try {
         // Clients before 1.2.3 send no entry updatedAt; stamping those `now` keeps their
         // last-push-wins behaviour rather than letting them lose every conflict.
-        const r = upsertEntry.run(id, entryHabitId, e.date, e.note ?? null, e.value ?? 1,
+        const r = upsertEntry.run(id, entryHabitId, e.date, e.note ?? null, num.value ?? 1,
           field(e, "createdAt") || now, now, isoOrNull(field(e, "updatedAt")) || now);
         // A row this upsert changed already carries updated_at = now.
         if (r.changes === 0) refeedMismatchedEntry.run(now, entryHabitId, e.date, id);

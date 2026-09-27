@@ -301,9 +301,50 @@ global 429, 413) are unchanged.
 
 Skipped rows are reported, never silently dropped: `skippedReasons` names why (`tombstoned`,
 `tombstoned_habit`, `missing_field`, `row_error`, `not_owned`, `not_owned_habit`,
-`skipped_habit`, `unknown_habit`). A shipped app ignores all of it — it decodes only `ok` and
-re-sends everything next time — so the field is additive. It matters from 1.3.1, when apps
-send only what changed and a silently dropped row would be a row that never syncs.
+`skipped_habit`, `unknown_habit`, `invalid_value`). A shipped app ignores all of it — it decodes
+only `ok` and re-sends everything next time — so the field is additive. It matters from 1.3.1,
+when apps send only what changed and a silently dropped row would be a row that never syncs.
+
+`invalid_value` (1.3.0 server) is a row with a number no app can produce, which the server used
+to store and hand to every device on the account: every app up to 1.2.3 traps on `Int(value)`
+at infinity or past 9.2e18 (Today crashed on every launch), and fails the decode of the whole
+pull on a fractional or huge Int field. Bounds, in `routes/sync.js` `PUSH_BOUNDS`: entry `value`
+and habit `targetValue` finite within ±1e9 — exactly what a 1.3.0 restore accepts
+(`DataBackup.maxAmount`, negatives included), so nothing a restore brings back is refused;
+habit `sortOrder` a whole number within ±1e15; group `sortOrder` finite within ±1e15;
+`reminderHour` 0…23, `reminderMinute` 0…59, `timesPerWeek` 1…7, `activeDaysMask` 0…127, all
+whole. Negatives are kept on purpose: no app writes one, but none traps on one either
+(`String(Int(-3))` is fine, a negative ring draws nothing, a target ≤ 0 is guarded), whereas
+refusing one would cost a restored habit — its entries come back `skipped_habit`, the next full
+pull lacks it, and the reconciler deletes it and its check-ins on that device. Absent or `null` still means the column default. Still a 200 — one bad row
+never fails a push, for any client. **What a 1.3.1 client does with it (M2): quarantine** — keep
+the row locally, stop re-sending it, do not count it as delivered, and send it again only once
+the user edits it (a new `updatedAt`); mark it in the sync diagnostics. Entries of a quarantined
+*new* habit come back `skipped_habit`; hold them with their habit rather than retrying them.
+
+Rows already stored before this check are still served on pull (pull is not filtered: a
+≤ 1.2.3 app deletes whatever a full pull lacks). Before deploying, count them on the backup:
+
+```sql
+SELECT 'entry', COUNT(*) FROM habit_entries WHERE typeof(value) NOT IN ('integer','real') OR abs(value) > 1e9
+UNION ALL SELECT 'habit', COUNT(*) FROM habits WHERE typeof(target_value) NOT IN ('integer','real')
+  OR abs(target_value) > 1e9 OR sort_order <> CAST(sort_order AS INTEGER) OR abs(sort_order) > 1e15
+  OR reminder_hour NOT BETWEEN 0 AND 23 OR reminder_hour <> CAST(reminder_hour AS INTEGER)
+  OR reminder_minute NOT BETWEEN 0 AND 59 OR reminder_minute <> CAST(reminder_minute AS INTEGER)
+  OR times_per_week NOT BETWEEN 1 AND 7 OR times_per_week <> CAST(times_per_week AS INTEGER)
+  OR active_days_mask NOT BETWEEN 0 AND 127 OR active_days_mask <> CAST(active_days_mask AS INTEGER)
+UNION ALL SELECT 'group', COUNT(*) FROM habit_groups WHERE typeof(sort_order) NOT IN ('integer','real')
+  OR abs(sort_order) > 1e15;
+```
+
+All three should be 0. A non-zero count is an account whose ≤ 1.2.3 devices can already crash or
+fail to pull. The whole-number checks are not redundant with the ranges: an `INTEGER` column
+keeps a pushed `2.5` as REAL, it passes `BETWEEN`, and every app decodes that field as a Swift
+`Int`, so one such row fails the whole pull. The `group` line is there because group
+`sortOrder` was stored unchecked (`field(g,'sortOrder') || 0`, and Infinity is truthy): a
+stored `inf` is served as `null`, and every app decodes a group's `sortOrder` as a
+non-optional `Double` — the same whole-pull failure. Pushes can no longer change such a row
+(any re-send of it reads `invalid_value`), so it stays until it is repaired by hand.
 
 The request log line carries what an operator needs to answer "what did that device send":
 `client=<header or ->`, and for sync `user=… in=… applied=… skipped=… reasons=…` or
