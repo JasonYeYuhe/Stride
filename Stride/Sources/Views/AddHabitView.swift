@@ -27,6 +27,10 @@ struct AddHabitView: View {
     @State private var showingNewGroup = false
     @State private var newGroupName = ""
     @State private var showingPaywall = false
+    /// Notifications are off for Stride, so a reminder switched on here would never fire.
+    @State private var notificationsDenied = false
+    /// Save is awaiting the permission prompt; a second tap must not insert the habit twice.
+    @State private var isSaving = false
     private var store: StoreService { StoreService.shared }
 
     private var isEditing: Bool { editingHabit != nil }
@@ -197,10 +201,28 @@ struct AddHabitView: View {
                 } header: {
                     Text("Reminder")
                 } footer: {
-                    if reminderEnabled {
+                    // The same footer Settings shows for the Daily Reminder: inline, never an
+                    // alert — the system prompt the user just answered was interruption enough.
+                    if reminderEnabled && notificationsDenied {
+                        HStack(spacing: 4) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                                .font(.caption)
+                                .accessibilityHidden(true)
+                            Text("Notifications are disabled. Go to Settings → Stride to enable.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if reminderEnabled {
                         Text("You'll receive a daily reminder for this habit.")
                     }
                 }
+            }
+            // Reads the status only — it never prompts. Asking is Save's job, so switching the
+            // toggle on and off again cannot raise the system prompt by itself.
+            .task(id: reminderEnabled) {
+                guard reminderEnabled else { return }
+                notificationsDenied = await NotificationService.shared.checkPermission() == .denied
             }
             .navigationTitle(isEditing ? "Edit Habit" : "New Habit")
             #if os(iOS)
@@ -212,9 +234,9 @@ struct AddHabitView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
-                        isEditing ? updateHabit() : createHabit()
+                        Task { await save() }
                     }
-                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSaving)
                     .bold()
                 }
             }
@@ -267,7 +289,38 @@ struct AddHabitView: View {
         selectedGroupId = group.id
     }
 
-    private func createHabit() {
+    /// Permission is settled before anything is saved or dismissed: on a fresh install the system
+    /// prompt appears over this sheet, and the sheet waits for the answer. A "Don't Allow" given
+    /// just now keeps the sheet open once, with the footer saying why the reminder won't fire;
+    /// nothing is saved yet, so the next Save (reminder on or off) cannot insert a duplicate.
+    /// When the footer was already showing, the user has seen it and Save goes straight through.
+    private func save() async {
+        guard !isSaving else { return }
+        isSaving = true
+        defer { isSaving = false }
+
+        if reminderEnabled && !notificationsDenied {
+            // Given the store, so an "Allow" here also schedules the reminder-on habits that
+            // are already in it (sync, restore, saved while undecided) — not only this one.
+            if await NotificationService.shared.ensureReminderPermission(
+                schedulingExistingIn: modelContext.container
+            ) == .denied {
+                notificationsDenied = true
+                // The footer is at the bottom of a long form; VoiceOver would not reach it.
+                AccessibilityNotification.Announcement(
+                    appLocalized("Notifications are disabled. Go to Settings → Stride to enable.")
+                ).post()
+                return
+            }
+        }
+        if isEditing {
+            await updateHabit()
+        } else {
+            await createHabit()
+        }
+    }
+
+    private func createHabit() async {
         let habit = Habit(
             name: name.trimmingCharacters(in: .whitespacesAndNewlines),
             emoji: selectedEmoji,
@@ -284,9 +337,8 @@ struct AddHabitView: View {
         do {
             try modelContext.save()
             if reminderEnabled {
-                NotificationService.shared.scheduleHabitReminder(for: habit)
+                await NotificationService.shared.enableHabitReminder(for: habit)
             }
-            AnalyticsService.shared.send("habitCreated")
 
             #if os(iOS)
             let generator = UINotificationFeedbackGenerator()
@@ -431,7 +483,7 @@ struct AddHabitView: View {
         Set((0..<7).filter { mask & (1 << $0) != 0 })
     }
 
-    private func updateHabit() {
+    private func updateHabit() async {
         guard let habit = editingHabit else { return }
         habit.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         habit.emoji = selectedEmoji
@@ -447,11 +499,10 @@ struct AddHabitView: View {
         do {
             try modelContext.save()
             if reminderEnabled {
-                NotificationService.shared.scheduleHabitReminder(for: habit)
+                await NotificationService.shared.enableHabitReminder(for: habit)
             } else {
                 NotificationService.shared.removeHabitReminder(for: habit.id)
             }
-            AnalyticsService.shared.send("habitEdited")
             dismiss()
         } catch {
             showSaveError = true

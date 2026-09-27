@@ -1,0 +1,365 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+  Plural forms (M1, 1.3.0). A key that is here must NOT also be in Localizable.strings: when
+  both have it this file wins at runtime (LocalizationCatalogTests proves it), so a copy there
+  would be dead text that drifts. en and es choose between one/other; ja, ko, zh-Hans and
+  zh-Hant have a single form and are here so every language has the same keys. Keep the six
+  files in step. Runtime keys follow Int -> %lld, String -> %@ (RELEASE-1.2.3.md).
+-->
+<dict>
+	<key>%lld day streak</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@days@</string>
+		<key>days</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld day streak</string>
+			<key>other</key>
+			<string>%lld day streak</string>
+		</dict>
+	</dict>
+	<key>%lld week streak</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@weeks@</string>
+		<key>weeks</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld week streak</string>
+			<key>other</key>
+			<string>%lld week streak</string>
+		</dict>
+	</dict>
+	<key>%lld check-ins</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@checkIns@</string>
+		<key>checkIns</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld check-in</string>
+			<key>other</key>
+			<string>%lld check-ins</string>
+		</dict>
+	</dict>
+	<key>%lld remaining</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@remaining@</string>
+		<key>remaining</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld remaining</string>
+			<key>other</key>
+			<string>%lld remaining</string>
+		</dict>
+	</dict>
+	<key>%lld more habits</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@habits@</string>
+		<key>habits</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld more habit</string>
+			<key>other</key>
+			<string>%lld more habits</string>
+		</dict>
+	</dict>
+	<key>%lld of %lld habits completed</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%1$lld of %2$#@habits@</string>
+		<key>habits</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld habit completed</string>
+			<key>other</key>
+			<string>%lld habits completed</string>
+		</dict>
+	</dict>
+	<key>%lld of %lld habits completed, %lld percent</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%1$lld of %2$#@habits@, %3$lld percent</string>
+		<key>habits</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld habit completed</string>
+			<key>other</key>
+			<string>%lld habits completed</string>
+		</dict>
+	</dict>
+	<key>🔥 All %lld habits done!</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>🔥 %#@habits@</string>
+		<key>habits</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld habit done!</string>
+			<key>other</key>
+			<string>All %lld habits done!</string>
+		</dict>
+	</dict>
+	<key>🏃 %lld/%lld habits done</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>🏃 %1$lld/%2$#@habits@</string>
+		<key>habits</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld habit done</string>
+			<key>other</key>
+			<string>%lld habits done</string>
+		</dict>
+	</dict>
+	<key>%@, %lld habits</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%1$@, %2$#@habits@</string>
+		<key>habits</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld habit</string>
+			<key>other</key>
+			<string>%lld habits</string>
+		</dict>
+	</dict>
+	<key>%@ %@: %lld day streak</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%1$@ %2$@: %3$#@days@</string>
+		<key>days</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld day streak</string>
+			<key>other</key>
+			<string>%lld day streak</string>
+		</dict>
+	</dict>
+	<key>%@ %@: %lld week streak</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%1$@ %2$@: %3$#@weeks@</string>
+		<key>weeks</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld week streak</string>
+			<key>other</key>
+			<string>%lld week streak</string>
+		</dict>
+	</dict>
+	<key>Active Habits (%lld)</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>Active Habits (%#@count@)</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld</string>
+			<key>other</key>
+			<string>%lld</string>
+		</dict>
+	</dict>
+	<key>Archived (%lld)</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>Archived (%#@count@)</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld</string>
+			<key>other</key>
+			<string>%lld</string>
+		</dict>
+	</dict>
+	<key>%@, %lld day streak, best streak %lld, 30-day rate %lld percent, %lld of the last 14 days completed</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%1$@, %2$#@days@, best streak %3$lld, 30-day rate %4$lld percent, %5$lld of the last 14 days completed</string>
+		<key>days</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld day streak</string>
+			<key>other</key>
+			<string>%lld day streak</string>
+		</dict>
+	</dict>
+	<key>%@, %lld week streak, best streak %lld, 30-day rate %lld percent, %lld of the last 14 days completed</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%1$@, %2$#@weeks@, best streak %3$lld, 30-day rate %4$lld percent, %5$lld of the last 14 days completed</string>
+		<key>weeks</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld week streak</string>
+			<key>other</key>
+			<string>%lld week streak</string>
+		</dict>
+	</dict>
+	<key>%lld habits</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@habits@</string>
+		<key>habits</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld habit</string>
+			<key>other</key>
+			<string>%lld habits</string>
+		</dict>
+	</dict>
+	<key>%lld groups</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@groups@</string>
+		<key>groups</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld group</string>
+			<key>other</key>
+			<string>%lld groups</string>
+		</dict>
+	</dict>
+	<key>days (unit after %lld)</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@unit@</string>
+		<key>unit</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>day</string>
+			<key>other</key>
+			<string>days</string>
+		</dict>
+	</dict>
+	<key>weeks (unit after %lld)</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@unit@</string>
+		<key>unit</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>week</string>
+			<key>other</key>
+			<string>weeks</string>
+		</dict>
+	</dict>
+	<key>day streak (label under %lld)</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@unit@</string>
+		<key>unit</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>day streak</string>
+			<key>other</key>
+			<string>day streak</string>
+		</dict>
+	</dict>
+	<key>week streak (label under %lld)</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@unit@</string>
+		<key>unit</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>week streak</string>
+			<key>other</key>
+			<string>week streak</string>
+		</dict>
+	</dict>
+</dict>
+</plist>

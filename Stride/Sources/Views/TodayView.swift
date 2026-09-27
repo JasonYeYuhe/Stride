@@ -185,22 +185,51 @@ struct TodayView: View {
 struct WeekStripView: View {
     @Binding var selectedDate: Date
     private let days = Date.lastNDays(7)
+    @Environment(\.dynamicTypeSize) private var typeSize
 
+    /// Seven equal cells get about 46 pt each. From the first accessibility size "21" in
+    /// .callout.bold no longer fits one and wrapped a digit per line ("2" over "1"), and "Mon"
+    /// became "M" over "on". There the strip scrolls instead, opening on today at the trailing
+    /// end, and each cell is as wide as its text.
     var body: some View {
-        HStack(spacing: 8) {
+        if typeSize.isAccessibilitySize {
+            ScrollView(.horizontal) {
+                strip(scrolling: true)
+            }
+            .defaultScrollAnchor(.trailing)
+        } else {
+            strip(scrolling: false)
+        }
+    }
+
+    /// Names from `appCalendar`, not `Date.shortWeekday` (Shared/DateHelpers.swift): that builds a
+    /// `DateFormatter` with no locale, so the strip drew and spoke "Mon Tue Wed" at the top of a
+    /// Japanese-picked Today on an English device. `shortWeekdaySymbols` is the same "EEE" form.
+    private func weekdayName(_ day: Date, in calendar: Calendar) -> String {
+        calendar.shortWeekdaySymbols[calendar.component(.weekday, from: day) - 1]
+    }
+
+    private func strip(scrolling: Bool) -> some View {
+        let calendar = appCalendar
+        return HStack(spacing: 8) {
             ForEach(days, id: \.self) { day in
                 let isSelected = Calendar.current.isDate(day, inSameDayAs: selectedDate)
+                let weekday = weekdayName(day, in: calendar)
+                let dayNumber = String(calendar.component(.day, from: day))
 
                 VStack(spacing: 4) {
-                    Text(day.shortWeekday)
+                    Text(weekday)
                         .font(.caption2)
                         .foregroundStyle(isSelected ? .white : .secondary)
 
-                    Text(day.dayNumber)
+                    Text(dayNumber)
                         .font(.callout.bold())
                         .foregroundStyle(isSelected ? .white : .primary)
                 }
                 .frame(maxWidth: .infinity)
+                // A scroll view proposes no width, so the cell would hug its text; this keeps
+                // the selected day's green pill around it.
+                .padding(.horizontal, scrolling ? 12 : 0)
                 .padding(.vertical, 10)
                 .background(
                     RoundedRectangle(cornerRadius: 12)
@@ -214,7 +243,7 @@ struct WeekStripView: View {
                 // Without this the labels below land on both Texts, so the strip reads as
                 // fourteen stops of duplicated static text instead of seven day buttons.
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel(isSelected ? "\(day.shortWeekday) \(day.dayNumber), selected" : "\(day.shortWeekday) \(day.dayNumber)")
+                .accessibilityLabel(isSelected ? "\(weekday) \(dayNumber), selected" : "\(weekday) \(dayNumber)")
                 .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
                 // .onTapGesture is not forwarded as the combined element's activation, so
                 // without this the cell announces "button" and double-tap does nothing.
@@ -230,6 +259,7 @@ struct WeekStripView: View {
 struct ProgressSummaryCard: View {
     let completed: Int
     let total: Int
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     private var progress: Double {
         guard total > 0 else { return 0 }
@@ -237,7 +267,12 @@ struct ProgressSummaryCard: View {
     }
 
     var body: some View {
-        HStack {
+        // At accessibility sizes the ring goes under the text: beside it, it leaves "completed"
+        // too little width at .headline and the word breaks mid-way.
+        let layout = typeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+            : AnyLayout(HStackLayout())
+        layout {
             VStack(alignment: .leading, spacing: 4) {
                 Text("\(completed)/\(total) completed")
                     .font(.headline)
@@ -246,22 +281,16 @@ struct ProgressSummaryCard: View {
                     .foregroundStyle(.secondary)
             }
 
-            Spacer()
-
-            ZStack {
-                Circle()
-                    .stroke(Color.green.opacity(0.2), lineWidth: 6)
-                Circle()
-                    .trim(from: 0, to: progress)
-                    .stroke(Color.green, style: StrokeStyle(lineWidth: 6, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                    .animation(.easeInOut(duration: 0.4), value: progress)
-
-                Text("\(Int(progress * 100))%")
-                    .font(.caption.bold())
+            if !typeSize.isAccessibilitySize {
+                Spacer()
             }
-            .frame(width: 50, height: 50)
+
+            ProgressRing(progress: progress)
+                // The ring grows with its label (see ProgressRing); past .accessibility1 it
+                // would only be a larger circle around the same information.
+                .dynamicTypeSize(...DynamicTypeSize.accessibility1)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
         .background(
             RoundedRectangle(cornerRadius: 16)
@@ -282,6 +311,31 @@ struct ProgressSummaryCard: View {
         case 0.01..<0.5: return "Good start! Keep it up!"
         default: return "Let's get started!"
         }
+    }
+}
+
+/// The completion ring of ProgressSummaryCard. It was a fixed 50 pt around a `.caption` label,
+/// so from the first accessibility size "100%" truncated to "1…". The diameter now scales with
+/// the same text style as the label, so the label fits at every size it fits at the default
+/// (50 pt exactly there). Its own view so the cap applied by the card reaches the metric.
+private struct ProgressRing: View {
+    let progress: Double
+    @ScaledMetric(relativeTo: .caption) private var diameter: CGFloat = 50
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(Color.green.opacity(0.2), lineWidth: 6)
+            Circle()
+                .trim(from: 0, to: progress)
+                .stroke(Color.green, style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .animation(.easeInOut(duration: 0.4), value: progress)
+
+            Text("\(Int(progress * 100))%")
+                .font(.caption.bold())
+        }
+        .frame(width: diameter, height: diameter)
     }
 }
 
@@ -548,7 +602,6 @@ struct HabitRowView: View {
         let result = HabitCheckIn.tap(habit, on: date, in: modelContext)
         if result.isCompleted {
             justCompleted = true
-            AnalyticsService.shared.send("habitCompleted")
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 withAnimation(.easeOut(duration: 0.2)) {
@@ -597,7 +650,6 @@ struct HabitRowView: View {
                 withAnimation(.easeOut(duration: 0.2)) { justCompleted = false }
             }
         }
-        AnalyticsService.shared.send("habitCompleted")
         #if os(iOS)
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         #endif
@@ -644,9 +696,11 @@ struct EmptyStateView: View {
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "leaf.fill")
-                .font(.system(size: 60))
+                .scaledSystemFont(size: 60, relativeTo: .largeTitle)
                 .foregroundStyle(.green.opacity(0.6))
                 .accessibilityHidden(true)
+                // Decoration: uncapped it pushes the "Add Habit" button below the fold.
+                .dynamicTypeSize(...DynamicTypeSize.accessibility2)
 
             Text("Start Your Journey")
                 .font(.title2.bold())

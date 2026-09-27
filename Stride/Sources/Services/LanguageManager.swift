@@ -37,7 +37,6 @@ final class LanguageManager {
     var selectedLanguage: AppLanguage {
         didSet {
             UserDefaults.standard.set(selectedLanguage.rawValue, forKey: key)
-            AnalyticsService.shared.send("languageChanged", metadata: ["language": selectedLanguage.rawValue])
         }
     }
 
@@ -55,11 +54,55 @@ final class LanguageManager {
     /// relaunching does not help either. Running the app in Japanese on an English device
     /// therefore drew a Japanese screen under an English "Today" title. Anything that has to
     /// produce a plain `String` goes through `appLocalized` below.
+    ///
+    /// Until 1.3.0 there was no en.lproj (English is the key), so picking English fell through to
+    /// `.main` — which resolves in the SYSTEM language: English picked on a Japanese device still
+    /// got Japanese from `appLocalized`. Shared/en.lproj now exists (it holds the English plural
+    /// rules), so English resolves here like every other language. `String(localized:bundle:)`
+    /// reads the lproj's Localizable.stringsdict as well — but it picks the plural FORM with its
+    /// `locale:` argument, not with the bundle's language; see `stringLocale`.
     var bundle: Bundle {
         guard let code = locale?.identifier,
               let path = Bundle.main.path(forResource: code, ofType: "lproj"),
               let localized = Bundle(path: path) else { return .main }
         return localized
+    }
+
+    /// The locale `appLocalized` resolves with: it chooses the stringsdict plural form and formats
+    /// the interpolated numbers.
+    ///
+    /// `String(localized:bundle:)` defaults this to `.current`, and Foundation takes the plural
+    /// category from THAT locale, whatever language the bundle is in. Japanese, Chinese and Korean
+    /// only have "other", so English or Spanish picked in the app on such a device read "1 habits"
+    /// and "Racha de 1 días" in every `appLocalized` string (restore preview, VoiceOver streak
+    /// phrase, share text) while the SwiftUI `Text` beside them was right. The M1 tests passed only
+    /// because the test Mac is en_US, and English and Spanish share one/other.
+    ///
+    /// - A picked language: that language's locale, the one SwiftUI already gets through
+    ///   `.environment(\.locale)`, so a number formats the same in `Text` and `appLocalized`.
+    /// - `.system`: the device locale while the app runs in the device language (no change). When
+    ///   Stride has no localization for it (French, Russian…) the app falls back to English, and the
+    ///   plural rule must be English too — French puts 0 in "one" ("0 habit"), Russian 21 ("21
+    ///   habit"). The region is kept (en_FR), so numbers still format the French way.
+    ///
+    /// Not covered here: SwiftUI `Text` and the widget use `Locale.current` for that fallback case.
+    /// If the OS hands the app fr_FR rather than en_FR there, they show "0 habit" (a scratch
+    /// probe with fr_FR shows it; a French device was not tried). Changing the root
+    /// `.environment(\.locale)` would also switch their dates to English month names, which is a
+    /// product decision, not a fix. It needs a device language Stride does not ship AND a count
+    /// of 0 (French, Portuguese) or 21, 31… (Russian, Polish).
+    var stringLocale: Locale {
+        if let locale { return locale }
+        return Self.locale(forLocalization: Bundle.main.preferredLocalizations.first ?? "en", device: .current)
+    }
+
+    /// `device` when it already speaks `localization`, else `localization` in the device's region.
+    /// Separate from `stringLocale` so a test can hand in any device locale.
+    nonisolated static func locale(forLocalization localization: String, device: Locale) -> Locale {
+        let resolved = localization == "Base" ? "en" : localization
+        guard Locale.Language(identifier: resolved).languageCode != device.language.languageCode else { return device }
+        guard let region = device.region?.identifier else { return Locale(identifier: resolved) }
+        return Locale(identifier: "\(resolved)_\(region)")
     }
 
     private init() {
@@ -74,7 +117,17 @@ final class LanguageManager {
 /// resolves those through the environment locale on its own.
 @MainActor
 func appLocalized(_ value: String.LocalizationValue) -> String {
-    String(localized: value, bundle: LanguageManager.shared.bundle)
+    let manager = LanguageManager.shared
+    return String(localized: value, bundle: manager.bundle, locale: manager.stringLocale)
+}
+
+/// The locale behind the in-app language picker, for date formatting that produces a plain
+/// `String` (`Date.formatted`, `DateFormatter`). A `FormatStyle` without `.locale(_:)` formats in
+/// the SYSTEM language, so a Japanese-picked app spoke "Monday, September 21" inside a Japanese
+/// VoiceOver sentence.
+@MainActor
+var appLocale: Locale {
+    LanguageManager.shared.locale ?? .current
 }
 
 /// A calendar whose weekday and month NAMES follow the in-app language picker. The week still

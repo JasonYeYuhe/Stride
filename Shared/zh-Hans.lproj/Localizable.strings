@@ -17,7 +17,6 @@
 "Halfway done! Nice!" = "完成一半！不错！";
 "Good start! Keep it up!" = "好的开始！继续保持！";
 "Let's get started!" = "开始吧！";
-"%lld day streak" = "连续 %lld 天";
 "Start Your Journey" = "开始你的旅程";
 "Add your first habit and begin\nbuilding better routines." = "添加你的第一个习惯，\n开始建立更好的日常。";
 "Add First Habit" = "添加第一个习惯";
@@ -39,7 +38,6 @@
 "Best Streak" = "最佳连续";
 "30d Avg" = "30日均值";
 "Current Streak" = "当前连续";
-"days" = "天";
 "30-Day Rate" = "30日完成率";
 "Total" = "总计";
 "By Weekday" = "按星期";
@@ -66,11 +64,8 @@
 "Reminders" = "提醒";
 "Notifications are disabled. Go to Settings → Stride to enable." = "通知已关闭。请前往设置 → Stride 开启。";
 "You'll receive a reminder to check your habits at the time above." = "你将在上面设定的时间收到习惯提醒。";
-"Active Habits (%lld)" = "活跃习惯 (%lld)";
-"%lld check-ins" = "%lld 次打卡";
 "Delete" = "删除";
 "Archive" = "归档";
-"Archived (%lld)" = "已归档 (%lld)";
 "Restore" = "恢复";
 "About" = "关于";
 "Version" = "版本";
@@ -115,7 +110,6 @@
 "Yearly" = "年付";
 "Monthly" = "月付";
 "BEST VALUE" = "最超值";
-"Save 44%" = "节省 44%";
 "Restore Purchases" = "恢复购买";
 "Payment will be charged to your Apple ID account. Subscription automatically renews unless cancelled at least 24 hours before the end of the current period." = "付款将从你的 Apple ID 账户扣除。订阅将自动续订，除非在当前周期结束前至少 24 小时取消。";
 "Terms" = "条款";
@@ -144,12 +138,9 @@
 /* Widget */
 "of %lld" = "/ %lld";
 "All done! 🎉" = "全部完成！🎉";
-"%lld remaining" = "还剩 %lld 个";
 "+%lld more" = "还有 %lld 个";
 "Tap to add habits" = "点击添加习惯";
 "Stride: No habits yet" = "Stride：还没有习惯";
-"🔥 All %lld habits done!" = "🔥 %lld 个习惯全部完成！";
-"🏃 %lld/%lld habits done" = "🏃 已完成 %lld/%lld 个习惯";
 "Stride Habits" = "Stride 习惯";
 "Track your daily habit progress at a glance." = "一目了然地追踪每日习惯进度。";
 
@@ -168,9 +159,7 @@
 "Add a note for today's check-in." = "为今天的打卡添加备注。";
 "Rest day" = "休息日";
 "%lld/%lld this week" = "本周 %lld/%lld";
-"%lld week streak" = "连续 %lld 周";
 "Ungrouped" = "未分组";
-"%@, %lld habits" = "%@，%lld 个习惯";
 "Add one to %@" = "为%@加 1";
 "Mark %@ complete" = "将%@标记为完成";
 "Mark %@ incomplete" = "将%@标记为未完成";
@@ -180,8 +169,6 @@
 "%@, completed" = "%@，已完成";
 "%@, not completed" = "%@，未完成";
 "%@, selected" = "%@，已选中";
-"%lld of %lld habits completed" = "已完成 %lld/%lld 个习惯";
-"%lld of %lld habits completed, %lld percent" = "已完成 %lld/%lld 个习惯，百分之 %lld";
 "Double tap to toggle completion" = "轻点两下切换完成状态";
 "Browse Templates" = "浏览模板";
 "Edit Habit" = "编辑习惯";
@@ -274,15 +261,12 @@
 "Best: %@ %@" = "最佳：%@ %@";
 "Needs work: %@ %@" = "待加强：%@ %@";
 "Done" = "完成";
-"day streak" = "天连续";
-"week streak" = "周连续";
 "best streak" = "最佳连续";
 "30-day rate" = "30日完成率";
 "last 14 days" = "最近 14 天";
 "Habit Groups" = "习惯分组";
 "Organize habits into collapsible groups" = "将习惯整理到可折叠的分组中";
 "Lifetime" = "终身";
-"SAVE" = "优惠";
 "Billed annually" = "按年付费";
 "One-time purchase — yours forever" = "一次购买，永久拥有";
 "/mo" = "/月";
@@ -312,7 +296,6 @@
 "Stride Habits Export" = "Stride 习惯导出";
 "CSV export of all habits" = "所有习惯的 CSV 导出";
 "JSON export of all habits" = "所有习惯的 JSON 导出";
-"Share Anonymous Analytics" = "共享匿名分析数据";
 "Legal" = "法律信息";
 "%lldd" = "%lld天";
 "Complete a Habit" = "完成一个习惯";
@@ -331,8 +314,6 @@
 "%@ %@ is already completed today." = "%@ %@ 今天已经完成了。";
 "Logged %@ %@: %@ of %@%@." = "已记录 %@ %@：%@ / %@%@";
 "Completed %@ %@!" = "已完成 %@ %@！";
-"%@ %@: %lld day streak" = "%@ %@：连续 %lld 天";
-"%@ %@: %lld week streak" = "%@ %@：连续 %lld 周";
 
 /* VoiceOver and accessibility strings (1.2.3). */
 "Collapsed" = "已折叠";
@@ -359,6 +340,46 @@
 "%@ %@, %lld percent" = "%@ %@，百分之 %lld";
 "Up %lld percent vs last week" = "较上周上升百分之 %lld";
 "Down %lld percent vs last week" = "较上周下降百分之 %lld";
-"%@, %lld day streak, best streak %lld, 30-day rate %lld percent, %lld of the last 14 days completed" = "%@，连续 %lld 天，最佳连续 %lld，30 日完成率百分之 %lld，最近 14 天完成 %lld 天";
-"%@, %lld week streak, best streak %lld, 30-day rate %lld percent, %lld of the last 14 days completed" = "%@，连续 %lld 周，最佳连续 %lld，30 日完成率百分之 %lld，最近 14 天完成 %lld 天";
-"%lld more habits" = "还有 %lld 个习惯";
+
+/* ------------------------------------------------------------
+   Added in 1.3.0. Plural keys (streaks, check-ins, habit counts, the Stats
+   streak unit) moved to Localizable.stringsdict in this folder.
+   ------------------------------------------------------------ */
+
+/* Settings > Export Data: backup and restore */
+"Restore from Backup…" = "从备份恢复…";
+"Restore from Backup?" = "从备份恢复？";
+"Choose a JSON backup exported from Stride 1.3 or later." = "选择由 Stride 1.3 或更高版本导出的 JSON 备份。";
+"Export as JSON saves a complete backup, which can be restored on a device with no habits." = "“导出为 JSON”会保存完整备份，可在没有习惯的设备上恢复。";
+"Stride couldn't read this file." = "Stride 无法读取此文件。";
+"Backup restored." = "已恢复备份。";
+"This file is too large to restore." = "此文件过大，无法恢复。";
+"This file isn't a Stride backup." = "此文件不是 Stride 备份。";
+"This file was exported by an older version of Stride and doesn't contain everything needed to restore. Export a new backup from Stride 1.3 or later." = "此文件由旧版 Stride 导出，缺少恢复所需的完整信息。请使用 Stride 1.3 或更高版本导出新的备份。";
+"This backup was made by a newer version of Stride. Update the app to restore it." = "此备份由较新版本的 Stride 创建。请更新应用后再恢复。";
+"This backup is damaged and can't be restored." = "此备份已损坏，无法恢复。";
+"Restore works only when there are no habits on this device. Erase local data first, then restore." = "只有在此设备上没有任何习惯时才能恢复。请先抹掉本地数据，再进行恢复。";
+"Erase Local Data…" = "抹掉本地数据…";
+"Erase Local Data?" = "抹掉本地数据？";
+"Erase" = "抹掉";
+"Removes every habit, check-in and group from this device only, and signs you out. Your account's data on the server is not affected: sign in again to download it." = "仅从此设备移除所有习惯、打卡和分组，并退出登录。服务器上的账户数据不受影响：重新登录即可下载。";
+"Removes every habit, check-in and group from this device. Export a backup first if you want to keep them." = "移除此设备上的所有习惯、打卡和分组。如需保留，请先导出备份。";
+"Stride syncs one last time, signs you out, then deletes every habit, check-in and group on this device. Your account's data on the server is not touched: sign in again to download it." = "Stride 会最后同步一次并退出登录，然后删除此设备上的所有习惯、打卡和分组。服务器上的账户数据不会改动：重新登录即可下载。";
+"Every habit, check-in and group on this device will be deleted. This cannot be undone." = "此设备上的所有习惯、打卡和分组都将被删除。此操作无法撤销。";
+"Couldn't sync, so nothing was erased. Check your connection and try again, or log out first to erase without syncing." = "无法同步，因此没有抹掉任何内容。请检查网络连接后重试，或先退出登录，即可不同步直接抹掉。";
+
+/* Paywall */
+"SAVE %lld%%" = "节省 %lld%%";
+
+/* Sync and sign-in errors (APIClient.displayMessage) */
+"Sync is paused for maintenance. Your data is safe on this device and will sync when the pause ends." = "同步因维护而暂停。你的数据安全地保存在此设备上，暂停结束后会自动同步。";
+"Too many sync requests. Please try again in a few minutes." = "同步请求过多，请几分钟后再试。";
+"Request failed" = "请求失败";
+"Please log in again" = "请重新登录";
+"Invalid server response" = "服务器响应无效";
+
+/* Siri & Shortcuts: AppShortcut short titles (the tiles in the Shortcuts app). They had no entry
+   in any catalog until the source scan learned `shortTitle:`. */
+"Complete Habit" = "完成习惯";
+"Check Streak" = "查看连续记录";
+"List Habits" = "列出习惯";

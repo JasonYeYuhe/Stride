@@ -17,7 +17,6 @@
 "Halfway done! Nice!" = "半分完了！いいね！";
 "Good start! Keep it up!" = "良いスタート！続けよう！";
 "Let's get started!" = "始めましょう！";
-"%lld day streak" = "%lld日連続";
 "Start Your Journey" = "旅を始めよう";
 "Add your first habit and begin\nbuilding better routines." = "最初の習慣を追加して、\nより良いルーティンを作りましょう。";
 "Add First Habit" = "最初の習慣を追加";
@@ -39,7 +38,6 @@
 "Best Streak" = "最長記録";
 "30d Avg" = "30日平均";
 "Current Streak" = "現在の記録";
-"days" = "日";
 "30-Day Rate" = "30日達成率";
 "Total" = "合計";
 "By Weekday" = "曜日別";
@@ -66,11 +64,8 @@
 "Reminders" = "リマインダー";
 "Notifications are disabled. Go to Settings → Stride to enable." = "通知が無効です。設定 → Stride で有効にしてください。";
 "You'll receive a reminder to check your habits at the time above." = "上記の時間に習慣確認のリマインダーが届きます。";
-"Active Habits (%lld)" = "アクティブな習慣 (%lld)";
-"%lld check-ins" = "%lld回チェックイン";
 "Delete" = "削除";
 "Archive" = "アーカイブ";
-"Archived (%lld)" = "アーカイブ済み (%lld)";
 "Restore" = "復元";
 "About" = "について";
 "Version" = "バージョン";
@@ -115,7 +110,6 @@
 "Yearly" = "年額";
 "Monthly" = "月額";
 "BEST VALUE" = "おすすめ";
-"Save 44%" = "44%お得";
 "Restore Purchases" = "購入を復元";
 "Payment will be charged to your Apple ID account. Subscription automatically renews unless cancelled at least 24 hours before the end of the current period." = "お支払いはApple IDアカウントに請求されます。現在の期間終了の24時間前までにキャンセルしない限り、自動的に更新されます。";
 "Terms" = "利用規約";
@@ -144,12 +138,9 @@
 /* Widget */
 "of %lld" = "/ %lld";
 "All done! 🎉" = "全部完了！🎉";
-"%lld remaining" = "あと%lld個";
 "+%lld more" = "他%lld個";
 "Tap to add habits" = "タップして習慣を追加";
 "Stride: No habits yet" = "Stride：まだ習慣がありません";
-"🔥 All %lld habits done!" = "🔥 %lld個の習慣すべて完了！";
-"🏃 %lld/%lld habits done" = "🏃 %lld/%lld個の習慣完了";
 "Stride Habits" = "Stride 習慣";
 "Track your daily habit progress at a glance." = "毎日の習慣の進捗を一目で確認。";
 
@@ -168,9 +159,7 @@
 "Add a note for today's check-in." = "今日のチェックインにメモを追加します。";
 "Rest day" = "休息日";
 "%lld/%lld this week" = "今週 %lld/%lld";
-"%lld week streak" = "%lld週連続";
 "Ungrouped" = "グループなし";
-"%@, %lld habits" = "%@、%lld件の習慣";
 "Add one to %@" = "%@に1つ追加";
 "Mark %@ complete" = "%@を完了にする";
 "Mark %@ incomplete" = "%@を未完了にする";
@@ -180,8 +169,6 @@
 "%@, completed" = "%@、完了";
 "%@, not completed" = "%@、未完了";
 "%@, selected" = "%@、選択中";
-"%lld of %lld habits completed" = "%lld/%lld件の習慣を完了";
-"%lld of %lld habits completed, %lld percent" = "%lld/%lld件の習慣を完了、%lldパーセント";
 "Double tap to toggle completion" = "ダブルタップで完了を切り替え";
 "Browse Templates" = "テンプレートを見る";
 "Edit Habit" = "習慣を編集";
@@ -274,15 +261,12 @@
 "Best: %@ %@" = "ベスト：%@ %@";
 "Needs work: %@ %@" = "要改善：%@ %@";
 "Done" = "完了";
-"day streak" = "日連続";
-"week streak" = "週連続";
 "best streak" = "最長記録";
 "30-day rate" = "30日達成率";
 "last 14 days" = "直近14日";
 "Habit Groups" = "習慣グループ";
 "Organize habits into collapsible groups" = "習慣を折りたたみ可能なグループに整理";
 "Lifetime" = "買い切り";
-"SAVE" = "お得";
 "Billed annually" = "年払い";
 "One-time purchase — yours forever" = "一度の購入でずっと使えます";
 "/mo" = "/月";
@@ -312,7 +296,6 @@
 "Stride Habits Export" = "Stride 習慣データ";
 "CSV export of all habits" = "すべての習慣の CSV データ";
 "JSON export of all habits" = "すべての習慣の JSON データ";
-"Share Anonymous Analytics" = "匿名の分析データを共有";
 "Legal" = "法的情報";
 "%lldd" = "%lld日";
 "Complete a Habit" = "習慣を完了";
@@ -331,8 +314,6 @@
 "%@ %@ is already completed today." = "%@ %@ は今日すでに完了しています。";
 "Logged %@ %@: %@ of %@%@." = "%@ %@ を記録しました：%@ / %@%@";
 "Completed %@ %@!" = "%@ %@ を完了しました！";
-"%@ %@: %lld day streak" = "%@ %@：%lld日連続";
-"%@ %@: %lld week streak" = "%@ %@：%lld週連続";
 
 /* VoiceOver and accessibility strings (1.2.3). */
 "Collapsed" = "折りたたみ中";
@@ -359,6 +340,46 @@
 "%@ %@, %lld percent" = "%@ %@、%lldパーセント";
 "Up %lld percent vs last week" = "先週より%lldパーセント上昇";
 "Down %lld percent vs last week" = "先週より%lldパーセント低下";
-"%@, %lld day streak, best streak %lld, 30-day rate %lld percent, %lld of the last 14 days completed" = "%@、%lld日連続、最長記録%lld、30日達成率%lldパーセント、直近14日のうち%lld日完了";
-"%@, %lld week streak, best streak %lld, 30-day rate %lld percent, %lld of the last 14 days completed" = "%@、%lld週連続、最長記録%lld、30日達成率%lldパーセント、直近14日のうち%lld日完了";
-"%lld more habits" = "他%lld件の習慣";
+
+/* ------------------------------------------------------------
+   Added in 1.3.0. Plural keys (streaks, check-ins, habit counts, the Stats
+   streak unit) moved to Localizable.stringsdict in this folder.
+   ------------------------------------------------------------ */
+
+/* Settings > Export Data: backup and restore */
+"Restore from Backup…" = "バックアップから復元…";
+"Restore from Backup?" = "バックアップから復元しますか？";
+"Choose a JSON backup exported from Stride 1.3 or later." = "Stride 1.3 以降で書き出した JSON バックアップを選んでください。";
+"Export as JSON saves a complete backup, which can be restored on a device with no habits." = "「JSON で書き出す」は完全なバックアップを保存します。習慣がないデバイスで復元できます。";
+"Stride couldn't read this file." = "Stride はこのファイルを読み込めませんでした。";
+"Backup restored." = "バックアップを復元しました。";
+"This file is too large to restore." = "このファイルは大きすぎるため復元できません。";
+"This file isn't a Stride backup." = "このファイルは Stride のバックアップではありません。";
+"This file was exported by an older version of Stride and doesn't contain everything needed to restore. Export a new backup from Stride 1.3 or later." = "このファイルは以前のバージョンの Stride で書き出されたもので、復元に必要な情報がすべては含まれていません。Stride 1.3 以降で新しいバックアップを書き出してください。";
+"This backup was made by a newer version of Stride. Update the app to restore it." = "このバックアップは新しいバージョンの Stride で作成されました。復元するにはアプリをアップデートしてください。";
+"This backup is damaged and can't be restored." = "このバックアップは破損しているため復元できません。";
+"Restore works only when there are no habits on this device. Erase local data first, then restore." = "復元できるのは、このデバイスに習慣がないときだけです。先にローカルデータを消去してから復元してください。";
+"Erase Local Data…" = "ローカルデータを消去…";
+"Erase Local Data?" = "ローカルデータを消去しますか？";
+"Erase" = "消去";
+"Removes every habit, check-in and group from this device only, and signs you out. Your account's data on the server is not affected: sign in again to download it." = "このデバイスからのみ、すべての習慣・チェックイン・グループを削除してログアウトします。サーバー上のアカウントのデータには影響しません。再度ログインするとダウンロードされます。";
+"Removes every habit, check-in and group from this device. Export a backup first if you want to keep them." = "このデバイスのすべての習慣・チェックイン・グループを削除します。残したい場合は、先にバックアップを書き出してください。";
+"Stride syncs one last time, signs you out, then deletes every habit, check-in and group on this device. Your account's data on the server is not touched: sign in again to download it." = "Stride は最後にもう一度同期してからログアウトし、このデバイスのすべての習慣・チェックイン・グループを削除します。サーバー上のアカウントのデータはそのまま残ります。再度ログインするとダウンロードされます。";
+"Every habit, check-in and group on this device will be deleted. This cannot be undone." = "このデバイスのすべての習慣・チェックイン・グループが削除されます。この操作は取り消せません。";
+"Couldn't sync, so nothing was erased. Check your connection and try again, or log out first to erase without syncing." = "同期できなかったため、何も消去していません。接続を確認してもう一度お試しいただくか、先にログアウトすると同期せずに消去できます。";
+
+/* Paywall */
+"SAVE %lld%%" = "%lld%%お得";
+
+/* Sync and sign-in errors (APIClient.displayMessage) */
+"Sync is paused for maintenance. Your data is safe on this device and will sync when the pause ends." = "メンテナンスのため同期を一時停止しています。データはこのデバイスに安全に保存されており、再開後に同期されます。";
+"Too many sync requests. Please try again in a few minutes." = "同期のリクエストが多すぎます。数分後にもう一度お試しください。";
+"Request failed" = "リクエストに失敗しました";
+"Please log in again" = "もう一度ログインしてください";
+"Invalid server response" = "サーバーの応答が無効です";
+
+/* Siri & Shortcuts: AppShortcut short titles (the tiles in the Shortcuts app). They had no entry
+   in any catalog until the source scan learned `shortTitle:`. */
+"Complete Habit" = "習慣を完了";
+"Check Streak" = "連続記録を確認";
+"List Habits" = "習慣を一覧表示";

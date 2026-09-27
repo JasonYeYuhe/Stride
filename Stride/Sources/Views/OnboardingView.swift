@@ -193,7 +193,6 @@ struct OnboardingView: View {
 
     private func completeOnboarding() {
         UserDefaults.standard.set(true, forKey: "stride_onboarding_completed")
-        AnalyticsService.shared.send("onboardingCompleted")
         withAnimation {
             isPresented = false
         }

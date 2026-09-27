@@ -3,6 +3,12 @@ import SwiftUI
 struct ShareStreakView: View {
     let habit: Habit
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
+
+    /// Rendered once, in `.task`. It was a computed property read twice in `body` — the
+    /// ShareLink item and its preview — so every render of this sheet ran ImageRenderer twice
+    /// over the whole card, at 2x.
+    @State private var renderedImage: Image?
 
     private var currentStreak: Int { habit.currentStreak() }
     private var bestStreak: Int { habit.bestStreak() }
@@ -23,17 +29,21 @@ struct ShareStreakView: View {
                 streakCard
                     .padding(.horizontal)
 
-                ShareLink(
-                    item: renderedImage,
-                    preview: SharePreview(shareText, image: renderedImage)
-                ) {
-                    Label("Share Streak", systemImage: "square.and.arrow.up")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                        .background(habit.color)
-                        .foregroundStyle(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                Group {
+                    if let renderedImage {
+                        ShareLink(
+                            item: renderedImage,
+                            preview: SharePreview(shareText, image: renderedImage)
+                        ) {
+                            shareButtonLabel
+                        }
+                    } else {
+                        // The first frame, before .task has rendered the image: same size and
+                        // place, so the button does not jump when it becomes live.
+                        shareButtonLabel
+                            .opacity(0.5)
+                            .accessibilityHidden(true)
+                    }
                 }
                 .padding(.horizontal)
 
@@ -50,7 +60,20 @@ struct ShareStreakView: View {
                     Button("Done") { dismiss() }
                 }
             }
+            .task {
+                renderedImage = renderImage()
+            }
         }
+    }
+
+    private var shareButtonLabel: some View {
+        Label("Share Streak", systemImage: "square.and.arrow.up")
+            .font(.headline)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background(habit.color)
+            .foregroundStyle(.white)
+            .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 
     // MARK: - Streak Card
@@ -71,7 +94,9 @@ struct ShareStreakView: View {
                 Text("\(currentStreak)")
                     .font(.system(size: 72, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
-                Text(habit.streakUnit == "week" ? "week streak" : "day streak")
+                // The number above is its own Text, so this is the unit alone — but it carries
+                // the count, or plural rules cannot apply: Spanish drew "1" over "días de racha".
+                Text(habit.streakUnit == "week" ? "week streak (label under \(currentStreak))" : "day streak (label under \(currentStreak))")
                     .font(.title3.weight(.medium))
                     .foregroundStyle(.white.opacity(0.85))
             }
@@ -155,11 +180,15 @@ struct ShareStreakView: View {
     // MARK: - Image Rendering
 
     @MainActor
-    private var renderedImage: Image {
+    private func renderImage() -> Image {
         let cardView = streakCard
             .padding(20)
             .frame(width: 380)
             .background(Color.black)
+            // ImageRenderer draws its content outside this view hierarchy, so the in-app
+            // language (`.environment(\.locale)` on the window) has to be handed over, or the
+            // captions in the shared picture follow the device language instead of the sheet.
+            .environment(\.locale, locale)
 
         let renderer = ImageRenderer(content: cardView)
         renderer.scale = 2

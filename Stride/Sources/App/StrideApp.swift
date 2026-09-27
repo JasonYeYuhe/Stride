@@ -46,7 +46,6 @@ struct StrideApp: App {
                     // so on a poor connection a Lifetime owner saw Pro locked — "Upgrade to Pro"
                     // in Settings, the paywall instead of Weekly Review — for most of a minute.
                     await StoreService.shared.refreshPurchasedProducts()
-                    AnalyticsService.shared.send("appLaunched")
                     await setupNotifications()
                     await syncIfLoggedIn()
                     await StoreService.shared.loadProducts()
@@ -63,6 +62,22 @@ struct StrideApp: App {
                 ) { _ in
                     WidgetCenter.shared.reloadAllTimelines()
                 }
+                // One-tap sign-in: the magic link in the email is a universal link
+                // (`https://stride-api.colorarchive.me/login?token=…`, the associated-domains
+                // entitlement + the server's AASA file). Which modifier receives it depends on the
+                // platform and launch path — macOS delivers universal links as a browsing-web
+                // user activity, which `.onOpenURL` never sees — so both are wired, and
+                // AuthService ignores a second delivery of the same tap. Links that fail to
+                // open the app (Gmail's link proxy, in-app mail browsers) land on the /login
+                // page with the token to paste, as before.
+                .onOpenURL { url in handleLoginLink(url) }
+                .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+                    guard let url = activity.webpageURL else { return }
+                    handleLoginLink(url)
+                }
+                // Deliver links to the window that is already open. Without this, macOS opens a
+                // second main window for every incoming URL (WindowGroup's default).
+                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
                 #if os(iOS)
                 .fullScreenCover(isPresented: $showOnboarding) {
                     OnboardingView(isPresented: $showOnboarding)
@@ -104,6 +119,18 @@ struct StrideApp: App {
         guard AuthService.shared.isLoggedIn else { return }
         let context = modelContainer.mainContext
         await SyncService.shared.sync(context: context)
+    }
+
+    /// Signs in from a login link when signed out, then syncs — the same sync SettingsView runs
+    /// when `isLoggedIn` turns true, needed here because Settings may not be on screen (or, on
+    /// macOS, open at all). SyncService ignores the second of two overlapping syncs. The login
+    /// sheet, if it is open waiting for a pasted token, closes itself on the sign-in.
+    @MainActor
+    private func handleLoginLink(_ url: URL) {
+        Task { @MainActor in
+            guard await AuthService.shared.handleLoginLink(url) == .signedIn else { return }
+            await SyncService.shared.sync(context: modelContainer.mainContext)
+        }
     }
 
     @MainActor
