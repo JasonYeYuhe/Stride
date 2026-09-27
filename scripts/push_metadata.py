@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
-"""Cancel review, push all localized metadata, and resubmit for review."""
+"""Push the localized store metadata in metadata/<locale>/ to one App Store version.
+
+    scripts/push_metadata.py 1.3.0                  # description, keywords, promo text
+    scripts/push_metadata.py 1.3.0 --app-info       # ...and the app name / subtitle
+    scripts/push_metadata.py 1.3.0 --cancel-review  # pull a version out of review first
+
+It never submits. Submitting is scripts/release.py finish <version> <build>, which checks
+that the submission actually holds the version (release.py header). This script used to
+cancel any submission waiting for review and then submit every editable version itself —
+through appStoreVersionSubmissions, the endpoint Apple replaced with reviewSubmissions — so
+running it "to push the description", as the release routine says to, would also have
+submitted the version for review. Metadata and submission are now separate steps.
+"""
 
 import os
 import sys
@@ -231,62 +243,58 @@ def push_app_info(app_id):
     print("  App info push complete.")
 
 
-def submit_for_review(version_id):
-    post("/appStoreVersionSubmissions", {
-        "data": {
-            "type": "appStoreVersionSubmissions",
-            "relationships": {
-                "appStoreVersion": {
-                    "data": {"type": "appStoreVersions", "id": version_id}
-                }
-            }
-        }
-    })
-    print("  Submitted for review!")
-
-
 def main():
-    app_id = find_app()
-    versions = get_versions(app_id)
+    args = sys.argv[1:]
+    flags = {a for a in args if a.startswith("--")}
+    positional = [a for a in args if not a.startswith("--")]
+    unknown = flags - {"--app-info", "--cancel-review"}
+    if len(positional) != 1 or unknown:
+        print(__doc__)
+        sys.exit(2)
+    target = positional[0]
 
+    app_id = find_app()
+    versions = [v for v in get_versions(app_id) if v["attributes"]["versionString"] == target]
     if not versions:
-        print("No versions found.")
+        print(f"No version {target} in PREPARE_FOR_SUBMISSION / review / sale. "
+              f"Create it first: scripts/release.py prepare {target}")
         sys.exit(1)
 
+    pushed = 0
     for v in versions:
         state = v["attributes"]["appStoreState"]
-        vstring = v["attributes"]["versionString"]
         platform = v["attributes"].get("platform", "unknown")
         vid = v["id"]
-        print(f"\nVersion {vstring} ({platform}): {state} [ID: {vid}]")
+        print(f"\nVersion {target} ({platform}): {state} [ID: {vid}]")
 
         if state in ("WAITING_FOR_REVIEW", "IN_REVIEW"):
+            if "--cancel-review" not in flags:
+                print("  In review, so not editable. Re-run with --cancel-review to pull it out of "
+                      "review first (then submit again with release.py finish).")
+                continue
             print("  Attempting to cancel submission...")
             try:
                 cancel_submission(vid)
-                # Wait a moment for state to update
                 time.sleep(2)
             except Exception as e:
-                print(f"  Failed to cancel: {e}")
-                print("  Skipping this version (may be IN_REVIEW and uncancellable).")
+                print(f"  Failed to cancel: {e} — skipping (IN_REVIEW may be uncancellable).")
                 continue
 
-        # Re-fetch to confirm state
-        updated = get(f"/appStoreVersions/{vid}")
-        new_state = updated["data"]["attributes"]["appStoreState"]
+        new_state = get(f"/appStoreVersions/{vid}")["data"]["attributes"]["appStoreState"]
         print(f"  Current state: {new_state}")
-
-        if new_state == "PREPARE_FOR_SUBMISSION":
-            print("  Pushing version metadata...")
-            push_metadata(vid)
+        if new_state != "PREPARE_FOR_SUBMISSION":
+            print(f"  Not editable ({new_state}), skipping.")
+            continue
+        print("  Pushing version metadata...")
+        push_metadata(vid)
+        if "--app-info" in flags:
             print("  Pushing app name & subtitle...")
             push_app_info(app_id)
-            print("  Submitting for review...")
-            submit_for_review(vid)
-        elif new_state == "READY_FOR_SALE":
-            print("  Already live, skipping.")
-        else:
-            print(f"  Unexpected state {new_state}, skipping.")
+        pushed += 1
+
+    print(f"\nPushed metadata to {pushed} version record(s) of {target}. Nothing was submitted; "
+          f"submit with: scripts/release.py finish {target} <build>")
+    sys.exit(0 if pushed else 1)
 
 
 if __name__ == "__main__":
