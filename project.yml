@@ -76,7 +76,7 @@ targets:
       # sell it. The dependency used to point the other way (extension -> app,
       # embed: false), which builds fine and ships nothing.
       - target: StrideWidgetExtension
-        embed: true
+        embed: false
 
   StrideMac:
     type: application

@@ -59,7 +59,6 @@
 		54DAA879E1B97F04BC575DE9 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = A6A05080F09126E507CF8705 /* Localizable.strings */; };
 		5B3E4FFD82BD0082781E1A4C /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 1CBC6DC599819FA1CA98CCBE /* Localizable.strings */; };
 		5E5B009C1F090EB65FAD41A7 /* SyncReconciler.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB59FC2420F0C656244B3006 /* SyncReconciler.swift */; };
-		5F91276ED5FCCCDAFB65152D /* StrideWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E29D464DF830B44A56221444 /* StrideWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		604566D2DFC1EC1A45B00DEA /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B0FADDB35158E7A8EFD42A6 /* OnboardingView.swift */; };
 		6123E563B249D4808E83390C /* AddHabitView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14E65DB3F54110A255BF1E2C /* AddHabitView.swift */; };
 		627D3480A5F7B40B2AD5D353 /* TimezoneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A84DF4E9961E98C9495F8DA /* TimezoneTests.swift */; };
@@ -162,20 +161,6 @@
 			remoteInfo = StrideWidgetExtension;
 		};
 /* End PBXContainerItemProxy section */
-
-/* Begin PBXCopyFilesBuildPhase section */
-		549B5D5A474DE7266FC7B0F4 /* Embed Foundation Extensions */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = "";
-			dstSubfolderSpec = 13;
-			files = (
-				5F91276ED5FCCCDAFB65152D /* StrideWidgetExtension.appex in Embed Foundation Extensions */,
-			);
-			name = "Embed Foundation Extensions";
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		008553DEE398C78EDD4151D3 /* AuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthService.swift; sourceTree = "<group>"; };
@@ -454,7 +439,6 @@
 				7E6A3FC499D44183A5FC311D /* Sources */,
 				DC0F954FF0D539A730AD05D1 /* Resources */,
 				4074C35C2C40CD6B8619C080 /* Frameworks */,
-				549B5D5A474DE7266FC7B0F4 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
