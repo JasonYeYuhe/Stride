@@ -1,0 +1,24 @@
+# Stride's lines in ROOT's crontab on the Azure VM (172.207.80.109). Host zone: Etc/UTC.
+#
+# ⚠️ This is a FRAGMENT, not a crontab. Root's crontab also holds ColorArchive's seven jobs
+# (backups, Azure sync, digests, backup-health). `sudo crontab ops/crontab.stride` would
+# REPLACE them all. Merge by hand with `sudo crontab -e`, or see DEPLOY.md "Scheduled jobs".
+#
+# Order matters: the backup runs first; the demo top-up writes after it (so last night's
+# backup is also the pre-top-up restore point); the drill restores the backup written 40
+# minutes earlier. restore-drill.js carries BOTH times — the backup's (BACKUP_AT: it fails
+# when tonight's file is missing, which is how a failed backup.sh reaches Sentry) and its
+# own (MONITOR_CONFIG, the Sentry cron monitor's schedule) — change them together.
+#
+# Logs append to /root/backups (created by backup.sh, next to the files they describe);
+# one or two lines per run, so no rotation is needed. Node is /usr/bin/node (v20).
+
+# Tier-1 backup + integrity check (unchanged time; this line already exists on the host)
+30 3 * * * /root/stride-server/backup.sh >> /root/backups/stride-backup.log 2>&1
+
+# App Review demo account: add today's check-ins. Daily, not weekly — streaks read 0 two
+# days after the last check-in, which is what check_demo_account.sh calls STALE (exit 3).
+50 3 * * * /usr/bin/node /root/stride-server/ops/demo-topup.js >> /root/backups/stride-demo-topup.log 2>&1
+
+# Restore drill: newest nightly backup → temp copy → integrity/FK check, row counts, age.
+10 4 * * * /usr/bin/node /root/stride-server/ops/restore-drill.js >> /root/backups/stride-restore-drill.log 2>&1
