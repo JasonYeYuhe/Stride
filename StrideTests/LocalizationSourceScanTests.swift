@@ -159,6 +159,15 @@ final class LocalizationSourceScanTests: XCTestCase {
         XCTAssertEqual(nested.first?.nestedLiterals, [#""completed""#, #""not completed""#])
     }
 
+    /// The ternary branches are found past commas and braces nested in the condition. A comma
+    /// inside `f(a, b)` used to end the scan, so neither "A" nor "B" was ever looked up.
+    func testTernaryAfterNestedCommasIsScanned() {
+        XCTAssertEqual(Self.keys(in: #"Text(f(a, b) ? "A" : "B")"#), ["A", "B"])
+        XCTAssertEqual(Self.keys(in: #"Text(xs.contains(where: { $0.isOn }) ? "A" : "B")"#), ["A", "B"])
+        // A top-level comma still ends it: the second argument is not the key.
+        XCTAssertEqual(Self.keys(in: #"Text(title, tableName: flag ? "A" : "B")"#), [])
+    }
+
     // MARK: - Catalog
 
     private static func japaneseKeys() throws -> Set<String> {
@@ -250,7 +259,12 @@ final class LocalizationSourceScanTests: XCTestCase {
             case ")", "]":
                 if depth == 0 { return [] }
                 depth -= 1; i += 1
-            case ",", "{", "}" where depth == 0: return []
+            // Only at depth 0 does a comma or brace end the first argument. Written as
+            // `case ",", "{", "}" where depth == 0` the guard bound to "}" alone, so the comma in
+            // `Text(f(a, b) ? "A" : "B")` ended the scan and both keys went unchecked.
+            case ",", "{", "}":
+                if depth == 0 { return [] }
+                i += 1
             case "\"":
                 guard parseLiteral(c, &i) != nil else { return [] }
             case "?" where depth == 0 && i + 1 < c.count && (c[i + 1] == " " || c[i + 1] == "\""):

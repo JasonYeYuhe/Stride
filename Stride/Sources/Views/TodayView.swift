@@ -508,8 +508,8 @@ struct HabitRowView: View {
 
     /// `countLabel` spelled out: VoiceOver reads "3/8" as a date or a fraction.
     private var spokenCount: String {
-        let logged = Self.numberFormat(habit.loggedValue(on: date))
-        let target = Self.numberFormat(habit.targetValue)
+        let logged = SafeNumber.amount(habit.loggedValue(on: date))
+        let target = SafeNumber.amount(habit.targetValue)
         let progress = appLocalized("\(logged) of \(target)")
         guard let unit = habit.unit, !unit.isEmpty else { return progress }
         return "\(progress) \(unit)"
@@ -580,7 +580,7 @@ struct HabitRowView: View {
             Circle()
                 .stroke(habit.color.opacity(0.2), lineWidth: 4)
             Circle()
-                .trim(from: 0, to: habit.progress(on: date))
+                .trim(from: 0, to: SafeNumber.unitInterval(habit.progress(on: date)))
                 .stroke(habit.color, style: StrokeStyle(lineWidth: 4, lineCap: .round))
                 .rotationEffect(.degrees(-90))
             if isCompleted {
@@ -588,7 +588,7 @@ struct HabitRowView: View {
                     .font(.caption.bold())
                     .foregroundStyle(habit.color)
             } else {
-                Text(Self.numberFormat(habit.loggedValue(on: date)))
+                Text(SafeNumber.amount(habit.loggedValue(on: date)))
                     .font(.caption.bold())
                     .foregroundStyle(.primary)
             }
@@ -631,15 +631,13 @@ struct HabitRowView: View {
 
     // MARK: - Count habit logging
 
+    /// Through `SafeNumber`, never `Int(_:)`: a synced amount can be anything, and a trap here
+    /// took down Today on every launch.
     private var countLabel: String {
-        let logged = Self.numberFormat(habit.loggedValue(on: date))
-        let target = Self.numberFormat(habit.targetValue)
+        let logged = SafeNumber.amount(habit.loggedValue(on: date))
+        let target = SafeNumber.amount(habit.targetValue)
         let unit = habit.unit.map { " \($0)" } ?? ""
         return "\(logged)/\(target)\(unit)"
-    }
-
-    static func numberFormat(_ value: Double) -> String {
-        value == value.rounded() ? String(Int(value)) : String(format: "%.1f", value)
     }
 
     private func incrementCount() {

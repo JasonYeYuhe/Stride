@@ -67,20 +67,6 @@ final class AuthServiceTests: XCTestCase {
         XCTAssertEqual(syncResets, 1)
     }
 
-    /// The deep-link path takes a token from a URL — anything can open a URL. Only a plausible
-    /// token may reach the Keychain.
-    func testMalformedDeepLinkTokenIsNeverStored() {
-        let auth = makeAuth()
-
-        auth.loginWithSessionToken("abc def")
-        auth.loginWithSessionToken("<script>")
-        auth.loginWithSessionToken(String(repeating: "a", count: 513))
-        auth.loginWithSessionToken("   ")
-
-        XCTAssertNil(tokens.read())
-        XCTAssertTrue(server.requests.isEmpty, "nothing to check a session with")
-    }
-
     // MARK: - One-tap sign-in (the universal link)
 
     private static let linkToken = "3f2b8c1e9a7d4c05b6e1f0a2d3c4b5a69788f1e2d3c4b5a6978801a2b3c4d5e6"

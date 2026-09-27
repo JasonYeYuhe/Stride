@@ -14,28 +14,36 @@
 #             global notes; the hosted tests hold "iPhone 17 Pro"). An existing simulator is
 #             always reused: this never creates, erases or clones one.
 #   --app     skip the build and install this .app instead — e.g. one built from another
-#             checkout, to capture a before/after pair from the same script.
+#             checkout, to capture a before/after pair from the same script. It must be a
+#             Debug build: `-demo` and `-paywall` are compiled out of Release.
 #   Anything else is passed to xcodebuild (the package-cache flags, typically).
 #
 # What it does: builds Stride (Debug, its own derived data) unless --app is given; boots the
 # simulator if it is not booted; sets the content size, light appearance and a fixed 9:41
 # status bar (so two runs diff cleanly); launches with `-demo -tab <n>` for Today, Stats and
 # Settings and with `-demo -paywall` for the paywall; captures each with `simctl io screenshot`.
+# Stats is captured five times: the top, then scrolled to Insights, the 8-week trend, By Weekday
+# and the Activity heatmap with the DEBUG-only `-statsScrollTo <anchor>` (StatsView).
 # The simulator's previous content size, appearance, status bar and boot state are ALWAYS put
 # back (trap), because the same device takes the App Store screenshots — a sweep that died
 # half-way used to leave it at the largest text size, and the next screenshot run would have
 # uploaded that.
 #
 # Known limits (read before trusting a "looks fine"):
-#   - A screenshot is the first screen only, and `simctl` has no touch input to scroll with.
-#     At accessibility-XXXL most of what the 1.3.0 Dynamic Type work changes is below the fold:
-#     the Stats weekday chart and heatmap, the Settings habit rows, the paywall price cards
-#     (the 2026-09-27 baseline needed two to three screens of scrolling for each). Review those
-#     by scrolling the booted simulator; the PNGs here prove the top of each screen only.
+#   - `simctl` has no touch input to scroll with, so a screen is captured below the fold only
+#     where the app scrolls itself on launch: Stats, via `-statsScrollTo`. The first version of
+#     this script took the top of each screen only, and at accessibility-XXXL that proved
+#     nothing about the charts 1.3.0 made scale — they start two screens down (the 2026-09-27
+#     baseline needed two to three screens of scrolling). Still top-only: Today's lower rows,
+#     the Settings habit rows and the paywall price cards; review those by scrolling the booted
+#     simulator.
+#   - Insights and the 8-week trend are Pro-only. On a simulator with no purchase (the normal
+#     case) 02_stats_insights and 02_stats_trend both show the "Advanced Analytics" locked card.
 #   - The paywall's prices come from whatever StoreKit answers `simctl launch` (not Xcode's
 #     scheme configuration). On 2026-09-27 they loaded; if they do not, the PNG shows the
 #     spinner where the price cards go — raise STRIDE_A11Y_SETTLE or review them in Xcode.
-#   - `-demo` REPLACES the app's data on that simulator with the demo set (DemoData.populate).
+#   - `-demo` REPLACES the app's data on that simulator with the demo set (DemoData.populate:
+#     habits, check-ins AND groups — a leftover group once drew a header into the default set).
 #
 # Environment:
 #   STRIDE_A11Y_DERIVED_DATA  derived data for the build (default build/a11y/DerivedData)
@@ -181,6 +189,10 @@ capture() {
 }
 capture 01_today.png    -tab 0
 capture 02_stats.png    -tab 1
+capture 02_stats_insights.png -tab 1 -statsScrollTo insights
+capture 02_stats_trend.png    -tab 1 -statsScrollTo trend
+capture 02_stats_weekday.png  -tab 1 -statsScrollTo weekday
+capture 02_stats_heatmap.png  -tab 1 -statsScrollTo heatmap
 capture 03_settings.png -tab 2
 capture 04_paywall.png  -tab 0 -paywall
 

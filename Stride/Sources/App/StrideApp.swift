@@ -14,9 +14,17 @@ struct StrideApp: App {
         // Re-anchor legacy local-midnight records to UTC day-keys before any
         // streak math or sync runs (idempotent — see SharedModelContainer).
         SharedModelContainer.migrateRecordDayKeysIfNeeded(modelContainer)
+        #if DEBUG
+        // DEBUG-only, like `-paywall`: populate() erases the store (habits, check-ins, groups)
+        // without queueing tombstones, and this file is compiled into StrideMac too, where
+        // `open -a Stride --args -demo` reaches a Release build. There it wiped a real store,
+        // and on a signed-in account the next push spread the demo set to every device. Every
+        // caller (a11y_sweep.sh) builds Debug.
         if CommandLine.arguments.contains("-demo") {
-            DemoData.populate(container: modelContainer)
+            // `-demoScenario plurals|weekly` picks the plural acceptance data set.
+            DemoData.populate(container: modelContainer, scenario: .fromLaunchArguments())
         }
+        #endif
         // Instantiate StoreService now so its Transaction.updates listener is running before any
         // network work. It used to be created lazily, and on macOS the default Today tab never
         // touches it, so the listener waited until the launch sync had finished.

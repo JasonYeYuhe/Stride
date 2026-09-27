@@ -22,9 +22,12 @@ struct LoginView: View {
 
                 // Icon
                 Image(systemName: step == .checkInbox ? "envelope.open.fill" : "person.crop.circle.fill")
-                    .font(.system(size: 56))
+                    .scaledSystemFont(size: 56, relativeTo: .largeTitle)
                     .foregroundStyle(.green)
                     .accessibilityHidden(true)
+                    // Decoration: past .accessibility2 it only pushes the email field and its
+                    // button further down a panel that does not scroll.
+                    .dynamicTypeSize(...DynamicTypeSize.accessibility2)
 
                 switch step {
                 case .email:

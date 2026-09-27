@@ -397,7 +397,7 @@ struct HabitRowView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(habit.isCompleted ? "\(habit.name), completed" : "\(habit.name), not completed")
-            .accessibilityValue(streakPhrase)
+            .accessibilityValue(countValue)
             .accessibilityHint("Double tap to add one")
         } else {
             Toggle(isOn: habit.isCompleted, intent: ToggleHabitIntent(habitId: habit.habitId)) {
@@ -405,6 +405,19 @@ struct HabitRowView: View {
             }
             .toggleStyle(HabitRowToggleStyle(habit: habit, font: font, showsStreak: showsStreak, streakPhrase: streakPhrase))
         }
+    }
+
+    /// A count habit part-way to its goal draws a partial ring around the check mark
+    /// (`HabitCheckMark`), but VoiceOver only said "not completed" — 6 of 8 glasses sounded the
+    /// same as none. The rate is system-formatted ("75%"), so it needs no catalog key and follows
+    /// the system language like the rest of the widget. The row holds no logged/target numbers
+    /// (`WidgetTimelinePlan.Row` keeps only the fraction), so the percentage is what can be said.
+    private var countValue: Text {
+        guard !habit.isCompleted, habit.progress > 0 else { return streakPhrase }
+        // Rounded down: 999 of 1000 must not be read out as "100%, not completed".
+        let percent = Text(habit.progress, format: .percent.precision(.fractionLength(0)).rounded(rule: .down))
+        guard showsStreak, habit.streak > 0 else { return percent }
+        return percent + Text(verbatim: ", ") + streakPhrase
     }
 
     /// Spoken only where the streak is drawn. Whole-phrase keys per unit (RELEASE-1.2.3.md:

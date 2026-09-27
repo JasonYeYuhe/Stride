@@ -247,7 +247,11 @@ struct AddHabitView: View {
                     reminderEnabled = habit.reminderEnabled
                     reminderTime = habit.reminderTimeDate
                     kind = habit.habitKind
-                    targetValue = max(1, Int(habit.targetValue))
+                    // Not `max(1, Int(habit.targetValue))`: that trapped on a synced 1e19 or
+                    // infinity, the moment the sheet opened. The ceiling is the restore bound, so
+                    // a target past the stepper's 1,000 (from an older client or a backup) is
+                    // kept as it was when the sheet is saved.
+                    targetValue = SafeNumber.wholeNumber(habit.targetValue, in: 1...Int(DataBackup.maxAmount))
                     unit = habit.unit ?? ""
                     schedule = habit.schedule
                     timesPerWeek = max(1, habit.timesPerWeek)

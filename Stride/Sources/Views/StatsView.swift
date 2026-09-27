@@ -20,8 +20,42 @@ struct StatsView: View {
     private var store = StoreService.shared
 
     var body: some View {
+        #if DEBUG
+        ScrollViewReader { proxy in
+            statsContent
+                .task { await scrollToLaunchAnchor(proxy) }
+        }
+        #else
         statsContent
+        #endif
     }
+
+    #if DEBUG
+    @State private var didScrollToLaunchAnchor = false
+
+    /// `-statsScrollTo detail|insights|trend|weekday|heatmap` scrolls to that card once, on launch,
+    /// so scripts/a11y_sweep.sh can capture what sits below the fold. `simctl` has no touch input,
+    /// and at accessibility-XXXL the charts this release made scale (acceptance (4)) start two
+    /// screens down — the first sweep's PNGs proved the top of the screen only. DEBUG-only for the
+    /// same reason as ContentView's `-paywall`, and it draws nothing: the anchors are `.id`s that
+    /// a release build never compiles.
+    ///
+    /// Insights and the trend are Pro-only. Without Pro both anchors land on the locked card that
+    /// replaces them, so a sweep on a simulator with no purchase shows that card twice.
+    private func scrollToLaunchAnchor(_ proxy: ScrollViewProxy) async {
+        let arguments = CommandLine.arguments
+        guard !didScrollToLaunchAnchor,
+              let idx = arguments.firstIndex(of: "-statsScrollTo"), idx + 1 < arguments.count
+        else { return }
+        didScrollToLaunchAnchor = true
+        var anchor = arguments[idx + 1]
+        if !store.isPro, anchor == "insights" || anchor == "trend" { anchor = "analytics" }
+        // After the first layout pass (and the @Query's first fetch): a scrollTo issued before
+        // the target has a frame does nothing, silently.
+        try? await Task.sleep(for: .milliseconds(500))
+        proxy.scrollTo(anchor, anchor: .top)
+    }
+    #endif
 
     private var statsContent: some View {
         ScrollView {
@@ -67,17 +101,23 @@ struct StatsView: View {
                     if let habit = selectedHabit {
                         VStack(spacing: 16) {
                             HabitDetailStatsCard(habit: habit)
+                                .statsLaunchAnchor("detail")
                             if store.isPro {
                                 InsightsCard(habit: habit)
+                                    .statsLaunchAnchor("insights")
                                 TrendCard(habit: habit)
+                                    .statsLaunchAnchor("trend")
                             } else {
                                 ProLockedCard(
                                     title: "Advanced Analytics",
                                     message: "8-week trends, insights & weekly review"
                                 ) { showingPaywall = true }
+                                .statsLaunchAnchor("analytics")
                             }
                             WeeklyBarChart(habit: habit)
+                                .statsLaunchAnchor("weekday")
                             HeatmapView(habit: habit)
+                                .statsLaunchAnchor("heatmap")
                         }
                         .padding(.horizontal)
                     }
@@ -107,6 +147,19 @@ struct StatsView: View {
         .sheet(isPresented: $showingPaywall) {
             ProPaywallView()
         }
+    }
+}
+
+private extension View {
+    /// A scroll target for `-statsScrollTo` (see StatsView.scrollToLaunchAnchor). Release builds
+    /// return the view untouched, so the anchor cannot change identity or layout there.
+    @ViewBuilder
+    func statsLaunchAnchor(_ name: String) -> some View {
+        #if DEBUG
+        id(name)
+        #else
+        self
+        #endif
     }
 }
 

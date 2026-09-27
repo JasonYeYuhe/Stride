@@ -134,6 +134,24 @@ Release and App Store:
   `submit_build.py` — one-off ASC jobs from earlier releases, kept for reference; read one
   before running it.
 - `screenshots.sh`, `generate_screenshots.swift` — App Store screenshots.
+- `a11y_sweep.sh [--size <content size>|default] [--app <Stride.app>]` — the Dynamic Type
+  review artefact: every tab, Stats scrolled to each chart, and the paywall, as PNGs in
+  `build/a11y/<size>/`. The size defaults to `accessibility-extra-extra-extra-large`;
+  `--size default` (`large`) is the layout check against a previous set before store
+  screenshots — they must match up to sub-pixel text. It runs on iPhone 17 Pro Max (the
+  screenshot device) under a per-device mutex, never creates a simulator, and puts content
+  size, appearance, status bar and boot state back even when it fails. `--help` has the rest.
+
+Launch arguments the sweep and screenshot runs use — all but `-tab` exist only in DEBUG
+builds, so a store build cannot open a sheet or change its data without a tap:
+
+| Argument | Effect |
+|---|---|
+| `-demo` | **replaces** the store with the demo set (habits, check-ins and groups) |
+| `-demoScenario plurals\|weekly` | with `-demo`: one habit with one check-in today, or one 3-a-week habit with 4- and 5-week streaks — the plural acceptance data |
+| `-tab <0…n>` | opens on that tab (0 Today, 1 Stats, 2 Settings) |
+| `-statsScrollTo detail\|insights\|trend\|weekday\|heatmap` | Stats scrolls to that card once, after launch |
+| `-paywall` | opens the Pro paywall |
 
 ASC scripts read `ASC_API_KEY_ID`, `ASC_ISSUER_ID` and `ASC_KEY_PATH` from `scripts/.env`
 (gitignored); the key itself never lives in the repo.
@@ -162,3 +180,13 @@ Server and ops: `rehearse_server.sh` (deploy rehearsal on a copy of production, 
 
 Signing needs an unlocked login keychain; `ship.sh` probes it first and says so in a second
 rather than failing twenty minutes into an archive.
+
+**One-tap sign-in needs the release signing to carry associated domains.** From 1.3.0 both
+apps' entitlements claim `applinks:stride-api.colorarchive.me`, so the emailed login link opens
+the app signed in (the server serves the AASA file). The App ID needs the Associated Domains
+capability and the App Store profiles regenerated after it is enabled — otherwise the export
+cannot be signed with the entitlement — and `verify_archive.sh --exported` checks the
+entitlement on the signed export. Test it only with a Release or TestFlight build (Debug talks
+to `localhost:3002`), in Apple Mail; Gmail and in-app browsers never open universal links,
+which is why `/login` keeps its copy-paste page. Apple's CDN can take hours to fetch the AASA
+after an install.

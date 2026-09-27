@@ -64,6 +64,20 @@ enum SentryBootstrap {
             options.attachViewHierarchy = false
             #endif
             options.sendDefaultPii = false
+            // The SDK's defaults send more than crash reports, and docs/privacy.html promises
+            // crash reports only (2026-09-27 review of sentry-cocoa 8.58.3's SentryOptions.m):
+            // every 5xx from the sync server became its own event, every report carried a
+            // breadcrumb per request (URL, status, and the pull's `since` cursor as
+            // http.query) — `beforeSend` clears `event.request`, not breadcrumbs — and
+            // view-controller and tap breadcrumbs recorded which screens were opened.
+            // Session tracking stays on: it is the crash-free-rate denominator, holds no
+            // content, and the privacy page discloses it.
+            options.enableCaptureFailedRequests = false
+            options.enableNetworkBreadcrumbs = false
+            options.enableAutoBreadcrumbTracking = false
+            // Tracing is off (tracesSampleRate 0), but the SDK would still add sentry-trace /
+            // baggage headers to every URLSession request; nothing reads them.
+            options.tracePropagationTargets = []
             options.beforeSend = { event in
                 event.request = nil                 // strip URLs / headers / bodies
                 return event

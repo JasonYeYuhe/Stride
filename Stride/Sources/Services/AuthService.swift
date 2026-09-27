@@ -199,24 +199,11 @@ final class AuthService {
     @ObservationIgnored private var isHandlingLoginLink = false
     private static let logger = Logger(subsystem: "yyh.stride.habittracker", category: "Auth")
 
-    /// Called from deep link handler when web login page redirects back with session token
-    func loginWithSessionToken(_ token: String) {
-        // Basic format validation: must be non-empty alphanumeric/hex token
-        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty,
-              trimmed.count <= 512,
-              trimmed.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") })
-        else { return }
-
-        tokenStore.save(trimmed)
-        Task {
-            await checkSession()
-            // Clear invalid token if session check failed
-            if currentUser == nil {
-                tokenStore.delete()
-            }
-        }
-    }
+    // `loginWithSessionToken(_:)` is gone (1.3.0). It stored a session token taken straight from
+    // a URL — anything can open a URL — for a web-login redirect that was never built: no app
+    // code in the git history ever called it, only a test. Sign-in from a link is
+    // `handleLoginLink`, which verifies a one-time magic-link token with the server and stores
+    // only the session the server returns, never what the URL carries.
 
     func logout() async {
         do {
