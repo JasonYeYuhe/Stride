@@ -9,6 +9,8 @@ const db = require("./db");
 const SESSION_COOKIE = "stride_session";
 const MAGIC_LINK_TTL_MS = 1000 * 60 * 30; // 30 min
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
+// A Bearer session with less than this left is extended to a fresh SESSION_TTL_MS on use.
+const SESSION_REFRESH_WINDOW_MS = 1000 * 60 * 60 * 24 * 15; // 15 days
 
 function now() {
   return Date.now();
@@ -140,6 +142,27 @@ function getSessionUser(req) {
   return { id: session.user_id, email: session.email, tier: session.tier, created_at: session.created_at };
 }
 
+/*
+ * Sliding sessions (Bearer only — the apps). A session used to die 30 days after sign-in no
+ * matter how often it was used: the app found out only when a sync came back 401, and all
+ * the user saw was a red Settings footer while their check-ins silently stopped syncing.
+ * Now any authenticated request made with less than 15 days left moves the expiry to 30
+ * days from now, so a session in regular use never expires, and one unused for 30 days
+ * still does.
+ *
+ * This is the hottest authenticated path, so the write is rare by construction: after an
+ * extension the session has 30 days left and is not written again for ~15 days. The
+ * `expires_at < ?` guard makes the UPDATE a no-op for every request that raced the first
+ * one to it, so concurrent requests cannot extend it twice.
+ */
+const extendSession = db.prepare("UPDATE sessions SET expires_at = ? WHERE id = ? AND expires_at < ?");
+
+/** @param {SessionRecord} session @param {number} nowMs */
+function slideSession(session, nowMs) {
+  if (session.expires_at - nowMs >= SESSION_REFRESH_WINDOW_MS) return;
+  extendSession.run(nowMs + SESSION_TTL_MS, session.session_id, nowMs + SESSION_REFRESH_WINDOW_MS);
+}
+
 // For mobile app: auth via Bearer token instead of cookie
 function getSessionUserFromHeader(req) {
   const authHeader = req.headers.authorization;
@@ -154,12 +177,14 @@ function getSessionUserFromHeader(req) {
       WHERE sessions.token_hash = ?
     `).get(tokenHash));
 
-    if (!session || session.expires_at < now()) {
+    const nowMs = now();
+    if (!session || session.expires_at < nowMs) {
       if (session) {
         db.prepare("DELETE FROM sessions WHERE id = ?").run(session.session_id);
       }
       return null;
     }
+    slideSession(session, nowMs);
 
     return { id: session.user_id, email: session.email, tier: session.tier, created_at: session.created_at };
   }
@@ -189,8 +214,21 @@ function clearSessionCookie(res) {
   res.setHeader("Set-Cookie", buildClearCookie());
 }
 
-function requireUser(req, res, next) {
+/**
+ * Look the session up without refusing the request: sets req.user when there is a valid one.
+ * For a router that needs to know "signed in or not" before requireUser answers 401 — sync
+ * limits requests without a session per IP (lib/rateLimits.js). requireUser then reuses the
+ * result instead of looking the session up (and sliding it) a second time.
+ */
+function attachSessionUser(req, res, next) {
   const user = getSessionUserFromHeader(req) || getSessionUser(req);
+  if (user) req.user = user;
+  req.sessionChecked = true;
+  return next();
+}
+
+function requireUser(req, res, next) {
+  const user = req.user ?? (req.sessionChecked ? null : getSessionUserFromHeader(req) || getSessionUser(req));
   if (!user) return res.status(401).json({ error: "Unauthorized" });
   req.user = user;
   return next();
@@ -218,6 +256,7 @@ module.exports = {
   clearSessionCookie,
   clearSession,
   deleteUserAccount,
+  attachSessionUser,
   requireUser,
   getOrCreateUser,
   MAGIC_LINK_TTL_MS,

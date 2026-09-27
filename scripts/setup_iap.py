@@ -28,9 +28,6 @@ SUBSCRIPTIONS = [
         "period": "ONE_MONTH",
         "group_level": 1,
         "price_usd": "2.99",
-        "intro_price_usd": "0.99",
-        "intro_period": "ONE_MONTH",
-        "intro_periods": 1,
         "localizations": {
             "en_US": {"name": "Stride Pro Monthly", "description": "Full access billed monthly"},
             "zh_Hans": {"name": "Stride Pro 月度", "description": "按月订阅，解锁全部功能"},
@@ -46,9 +43,6 @@ SUBSCRIPTIONS = [
         "period": "ONE_YEAR",
         "group_level": 1,
         "price_usd": "19.99",
-        "intro_price_usd": "9.99",
-        "intro_period": "ONE_YEAR",
-        "intro_periods": 1,
         "localizations": {
             "en_US": {"name": "Stride Pro Yearly", "description": "Full access billed yearly - save 44%"},
             "zh_Hans": {"name": "Stride Pro 年度", "description": "按年订阅，节省44%"},
@@ -307,76 +301,12 @@ def set_subscription_price(sub_id, target_price_usd):
     print(f"  ✓ Price set to ${target_price_usd}")
 
 
-# ── Step 5: Set Introductory Offers ──────────────────────────────────
-
-def set_intro_offer(sub_id, sub_def):
-    """Set introductory offer for a subscription."""
-    # Check existing offers
-    existing = get(f"/subscriptions/{sub_id}/introductoryOffers", params={"limit": 5})
-    if existing.get("data"):
-        print(f"  Introductory offer already configured")
-        return
-
-    # Get price points for the intro price
-    price_points = get(
-        f"/subscriptions/{sub_id}/pricePoints",
-        params={
-            "filter[territory]": "USA",
-            "limit": 200,
-        }
-    )
-
-    target = float(sub_def["intro_price_usd"])
-    matched_point = None
-    for pp in price_points.get("data", []):
-        pp_price = float(pp["attributes"].get("customerPrice", "0"))
-        if abs(pp_price - target) < 0.01:
-            matched_point = pp
-            break
-
-    if not matched_point:
-        print(f"  ⚠ Could not find price point for intro price ${sub_def['intro_price_usd']}")
-        return
-
-    # Map period strings
-    period_map = {
-        "ONE_MONTH": "ONE_MONTH",
-        "ONE_YEAR": "ONE_YEAR",
-    }
-
-    try:
-        # Get all territories for the offer
-        territories = get(
-            f"/subscriptionPricePoints/{matched_point['id']}/territory"
-        )
-        territory_id = territories["data"]["id"]
-
-        post("/subscriptionIntroductoryOffers", {
-            "data": {
-                "type": "subscriptionIntroductoryOffers",
-                "attributes": {
-                    "duration": sub_def["intro_period"],
-                    "numberOfPeriods": sub_def["intro_periods"],
-                    "offerMode": "PAY_AS_YOU_GO",
-                    "startDate": None,
-                    "endDate": None,
-                },
-                "relationships": {
-                    "subscription": {
-                        "data": {"type": "subscriptions", "id": sub_id}
-                    },
-                    "subscriptionPricePoint": {
-                        "data": {"type": "subscriptionPricePoints", "id": matched_point["id"]}
-                    },
-                    "territory": {
-                        "data": {"type": "territories", "id": territory_id}
-                    }
-                }
-            }
-        })
-        print(f"  ✓ Introductory offer set: ${sub_def['intro_price_usd']}")
-    except Exception as e:
-        print(f"  ⚠ Could not set intro offer: {e}")
+# ── Step 5: (no introductory offers) ─────────────────────────────────
+# This script used to create $0.99-first-month / $9.99-first-year pay-as-you-go intro
+# offers. App Store Connect has none (checked 2026-09-26) and the paywall shows only
+# `displayPrice`, so an offer created by re-running this would be charged without being
+# disclosed (Guideline 3.1.2). Configuration.storekit dropped its copies at the same time.
+# If intro offers are ever wanted, the paywall must disclose them first.
 
 
 # ── Step 6: Submit IAPs for Review ───────────────────────────────────
@@ -448,7 +378,7 @@ def main():
     group_id = get_or_create_subscription_group()
     add_group_localizations(group_id)
 
-    # Step 2-5: Create and configure each subscription
+    # Step 2-4: Create and configure each subscription
     sub_ids = []
     for sub_def in SUBSCRIPTIONS:
         print(f"\n── Setting up: {sub_def['reference_name']} ──")
@@ -462,8 +392,6 @@ def main():
         print("  Setting pricing...")
         set_subscription_price(sub_id, sub_def["price_usd"])
 
-        print("  Setting introductory offer...")
-        set_intro_offer(sub_id, sub_def)
 
     # Step 6: Submit IAPs for review
     print("\n── Step 6: Submit IAPs for Review ──")

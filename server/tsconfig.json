@@ -18,6 +18,8 @@
     "*.d.ts",
     "*.js",
     "routes/**/*.js",
+    "lib/**/*.js",
+    "ops/**/*.js",
     "auth.js",
     "db.js",
     "logger.js",

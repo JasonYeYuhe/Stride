@@ -36,13 +36,7 @@
           "familyShareable" : false,
           "groupNumber" : 1,
           "internalID" : "monthly_pro",
-          "introductoryOffer" : {
-            "displayPrice" : "0.99",
-            "internalID" : "monthly_intro",
-            "numberOfPeriods" : 1,
-            "paymentMode" : "payAsYouGo",
-            "subscriptionPeriod" : "P1M"
-          },
+          "introductoryOffer" : null,
           "localizations" : [
             {
               "description" : "Full access billed monthly",
@@ -63,13 +57,7 @@
           "familyShareable" : false,
           "groupNumber" : 1,
           "internalID" : "yearly_pro",
-          "introductoryOffer" : {
-            "displayPrice" : "9.99",
-            "internalID" : "yearly_intro",
-            "numberOfPeriods" : 1,
-            "paymentMode" : "payAsYouGo",
-            "subscriptionPeriod" : "P1Y"
-          },
+          "introductoryOffer" : null,
           "localizations" : [
             {
               "description" : "Full access billed yearly - save 44%",

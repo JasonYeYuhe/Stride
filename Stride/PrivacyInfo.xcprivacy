@@ -83,12 +83,19 @@
 	</array>
 	<key>NSPrivacyAccessedAPITypes</key>
 	<array>
+		<!-- CA92.1: the app's own UserDefaults.standard (settings, sync cursor, the local
+		     deletion queue). 1C8F.1: the App Group suite "group.yyh.stride.habittracker",
+		     shared with the widget — the day-key migration flag (SharedModelContainer),
+		     NotificationService's defaults, and the widget's deletion queue that
+		     SyncDeletionQueue.pending() drains. Through 1.2.3 only CA92.1 was declared, which
+		     does not cover defaults shared across an App Group. -->
 		<dict>
 			<key>NSPrivacyAccessedAPIType</key>
 			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
 			<key>NSPrivacyAccessedAPITypeReasons</key>
 			<array>
 				<string>CA92.1</string>
+				<string>1C8F.1</string>
 			</array>
 		</dict>
 	</array>

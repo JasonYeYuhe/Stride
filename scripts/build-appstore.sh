@@ -119,6 +119,15 @@ build_ios() {
 
     echo "  ✓ Archive: $ARCHIVE"
 
+    # Gate: inspect the archive that is about to ship — widget embedded, privacy manifests,
+    # CFBundleDisplayName, Sentry actually live. Before the dSYM upload and the export, so a bad
+    # archive stops here and nothing of it leaves the Mac. (The signature, and with it the
+    # associated domains, is checked on the export: see export_and_verify.)
+    if ! "$SCRIPT_DIR/verify_archive.sh" "$ARCHIVE" ios; then
+        echo "  ✗ verify_archive.sh rejected $ARCHIVE — not exporting or uploading."
+        exit 1
+    fi
+
     # dSYMs: keep a permanent copy and upload to Sentry NOW, before anything else can
     # delete this archive (this script rm -rf's build/appstore on its next run — which is
     # exactly how 1.2.1's only dSYM was lost, leaving its one real crash unreadable).
@@ -146,24 +155,8 @@ build_ios() {
 </plist>
 EOF
 
-    xcodebuild -exportArchive \
-        -archivePath "$ARCHIVE" \
-        -exportOptionsPlist "$BUILD_DIR/ExportOptions-iOS.plist" \
-        -exportPath "$EXPORT" \
-        -allowProvisioningUpdates \
-        -authenticationKeyPath "$API_KEY_PATH" \
-        -authenticationKeyID "$API_KEY_ID" \
-        -authenticationKeyIssuerID "$API_ISSUER" \
-        -quiet 2>&1 || true
-
-    echo "  ✓ Export: $EXPORT"
-
-    if [[ "$UPLOAD" == true ]]; then
-        echo "[3/3] Uploading iOS to App Store Connect..."
-        upload_to_appstore "$ARCHIVE" "ios"
-    else
-        echo "[3/3] Skipping upload (use --upload to enable)"
-    fi
+    export_and_verify "$ARCHIVE" "$BUILD_DIR/ExportOptions-iOS.plist" "$EXPORT" ios
+    queue_upload "$ARCHIVE" ios
     echo ""
 }
 
@@ -192,6 +185,12 @@ build_macos() {
 
     echo "  ✓ Archive: $ARCHIVE"
 
+    # Same gate as build_ios (no widget on macOS; the rest applies).
+    if ! "$SCRIPT_DIR/verify_archive.sh" "$ARCHIVE" macos; then
+        echo "  ✗ verify_archive.sh rejected $ARCHIVE — not exporting or uploading."
+        exit 1
+    fi
+
     # dSYMs: keep a permanent copy and upload to Sentry NOW, before anything else can
     # delete this archive (this script rm -rf's build/appstore on its next run — which is
     # exactly how 1.2.1's only dSYM was lost, leaving its one real crash unreadable).
@@ -219,25 +218,53 @@ build_macos() {
 </plist>
 EOF
 
-    xcodebuild -exportArchive \
-        -archivePath "$ARCHIVE" \
-        -exportOptionsPlist "$BUILD_DIR/ExportOptions-macOS.plist" \
-        -exportPath "$EXPORT" \
+    export_and_verify "$ARCHIVE" "$BUILD_DIR/ExportOptions-macOS.plist" "$EXPORT" macos
+    queue_upload "$ARCHIVE" macos
+    echo ""
+}
+
+# Export, then check the signature of what was exported (scripts/verify_archive.sh --exported).
+# The archive is signed with the DEVELOPMENT identity; only the export carries the Apple
+# Distribution signature and App Store profile that the upload will, so anything the profile
+# decides (associated domains, from M1) can only be checked here. The upload re-exports with
+# the same method and signing style, so this export stands for it.
+#
+# The export used to end in `-quiet 2>&1 || true`: a failed export printed nothing and the
+# script carried on to upload. Now that the gate reads the export, a failed one stops here.
+export_and_verify() {
+    local archive="$1" options="$2" export_dir="$3" platform="$4"
+    if ! xcodebuild -exportArchive \
+        -archivePath "$archive" \
+        -exportOptionsPlist "$options" \
+        -exportPath "$export_dir" \
         -allowProvisioningUpdates \
         -authenticationKeyPath "$API_KEY_PATH" \
         -authenticationKeyID "$API_KEY_ID" \
         -authenticationKeyIssuerID "$API_ISSUER" \
-        -quiet 2>&1 || true
+        -quiet; then
+        echo "  ✗ Export of $archive failed — not uploading."
+        exit 1
+    fi
+    echo "  ✓ Export: $export_dir"
+    if ! "$SCRIPT_DIR/verify_archive.sh" --exported "$export_dir" "$platform"; then
+        echo "  ✗ verify_archive.sh rejected the $platform export — not uploading."
+        exit 1
+    fi
+}
 
-    echo "  ✓ Export: $EXPORT"
-
+# Uploads wait until EVERY requested platform has archived, exported and passed both gates.
+# `all --upload` used to upload iOS before macOS had even archived, so a macOS-only gate failure
+# left iOS build N in App Store Connect and macOS nowhere — and a rerun with the same N then died
+# re-uploading iOS ("build number already used") before reaching macOS. Newline-separated
+# "<archive>|<platform>" entries, for the same bash 3.2 reason as DSYM_FAILED.
+UPLOAD_QUEUE=""
+queue_upload() {
     if [[ "$UPLOAD" == true ]]; then
-        echo "[3/3] Uploading macOS to App Store Connect..."
-        upload_to_appstore "$ARCHIVE" "macos"
+        echo "[3/3] $2 upload queued until every platform has passed its gates"
+        UPLOAD_QUEUE="${UPLOAD_QUEUE}$1|$2"$'\n'
     else
         echo "[3/3] Skipping upload (use --upload to enable)"
     fi
-    echo ""
 }
 
 # --- Upload function ---
@@ -300,6 +327,15 @@ case "$PLATFORM" in
         exit 1
         ;;
 esac
+
+# --- Upload (only now: every archive and export above passed verify_archive.sh) ---
+if [[ -n "$UPLOAD_QUEUE" ]]; then
+    while IFS='|' read -r queued_archive queued_platform; do
+        [[ -z "$queued_archive" ]] && continue
+        echo "Uploading $queued_platform to App Store Connect..."
+        upload_to_appstore "$queued_archive" "$queued_platform"
+    done <<< "$UPLOAD_QUEUE"
+fi
 
 # --- Summary ---
 echo "================================================"

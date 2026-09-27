@@ -17,15 +17,13 @@
 		0BCB42855A864432CD689F89 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = FB281642FC1DF1EAB3330F7B /* Localizable.strings */; };
 		0BFC1AB25F62D6A0FFCCD753 /* HabitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE98D2D441CF6A791EF47340 /* HabitTests.swift */; };
 		0C3B373A668885EDC6B7ADF8 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = FB281642FC1DF1EAB3330F7B /* Localizable.strings */; };
+		0D9C4736613CA40ECD51900B /* SyncServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 427FCAD80BF804BF1BCC5B3D /* SyncServiceTests.swift */; };
 		11C607454755349976A5700A /* AuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 008553DEE398C78EDD4151D3 /* AuthService.swift */; };
 		1317FE3A0A50E0C1407CD500 /* StrideApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FC15AE17382421CAEBA98D6 /* StrideApp.swift */; };
-		1517A3B040DA1C518C9CAACD /* Habit.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21336DA7BBDF96DEA4D3407 /* Habit.swift */; };
+		13B2134CFB1BA48CBBA87A8D /* NotificationServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F54DD53A85952D6DB6D05AC /* NotificationServiceTests.swift */; };
 		15D85CF787E031787CA032E3 /* SyncTimestamp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E260D0E53F2B5CF679443579 /* SyncTimestamp.swift */; };
-		18683DB24253D224F5B25774 /* SyncReconciler.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB59FC2420F0C656244B3006 /* SyncReconciler.swift */; };
-		19B0044FD16B58517166F348 /* SyncDeletionQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A03A0804A4B45B28F362FA2 /* SyncDeletionQueue.swift */; };
 		1A1FB104E19E15DE6C7501B1 /* StatsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 447E56E91A805C7FB349BA2A /* StatsView.swift */; };
 		1A62B0E20D86EE9F19E4CE49 /* SyncDeletionQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A03A0804A4B45B28F362FA2 /* SyncDeletionQueue.swift */; };
-		1A6D24E3DB8D037F2F7404F6 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 776A18644AC5D53D8278287F /* Localizable.strings */; };
 		1DA5B013F50AD53315F88C6C /* SharedModelContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14E5DE1DF2EA723656AA788 /* SharedModelContainer.swift */; };
 		1FD2814865691FFA84686D59 /* TodaySelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = B313C2E4B793E21CAB587186 /* TodaySelection.swift */; };
 		226F0DF94B5F90F3DF97FB04 /* SyncReconciler.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB59FC2420F0C656244B3006 /* SyncReconciler.swift */; };
@@ -40,25 +38,22 @@
 		335DC40C3A9DC261299B0731 /* SyncModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A7D0B848E52AD9CC10A1FD5 /* SyncModels.swift */; };
 		33D27613CD55C86DEA389EB5 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = F8C043D145E16EA12884687F /* Localizable.strings */; };
 		373597125ADE10F7547F22D6 /* SyncReconciler.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB59FC2420F0C656244B3006 /* SyncReconciler.swift */; };
-		374114CAC590D39258CFA884 /* WatchTodayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCFCA3C10C208273A66FAB02 /* WatchTodayView.swift */; };
 		37DA601844A282396C1AA2E1 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 1CBC6DC599819FA1CA98CCBE /* Localizable.strings */; };
-		3B3FCE2757E1D0F6744F977A /* ColorExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCBB84E54BC0EC63FD063F7B /* ColorExtension.swift */; };
 		3D038F4D40A1494A7D907F53 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5E1940DEB8CA019D623342D /* NotificationService.swift */; };
 		3D4513C5627A0DDF068BC7E5 /* ColorExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCBB84E54BC0EC63FD063F7B /* ColorExtension.swift */; };
 		3F1602DB1DBCF25ACC793170 /* SyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECCD9EE875CF123954D288D2 /* SyncService.swift */; };
 		3F4DCA683F4EDD609F3826D1 /* StrideShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DE60126995C3E877AF2E464 /* StrideShortcuts.swift */; };
 		4358BCA0F99C69F7EA15F530 /* SyncReconciler.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB59FC2420F0C656244B3006 /* SyncReconciler.swift */; };
-		43D1EAA477394361526C2D3A /* DemoData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1194AFE4DBCEA8AD9DE1B32A /* DemoData.swift */; };
 		47AF12A69E10A517210658DA /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E15BB82DDC222DE65A084E /* KeychainHelper.swift */; };
 		47B9B48865AD8666665DDA25 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5E1940DEB8CA019D623342D /* NotificationService.swift */; };
 		47F7CF4C1C8C31303323B131 /* HabitCheckIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADB968D6EC1637C4FCB0926B /* HabitCheckIn.swift */; };
 		49320565D1FB566EFE9766E8 /* TodayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE8B83FBCDEE947B0A5A87D6 /* TodayView.swift */; };
 		49C03632C093D6EFDBFA04D2 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 1CBC6DC599819FA1CA98CCBE /* Localizable.strings */; };
 		4B4ADE07E11E4960DE24489A /* SharedModelContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14E5DE1DF2EA723656AA788 /* SharedModelContainer.swift */; };
+		4BF29878BAB3689496013E81 /* StubServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB8F005CB15B0E4B6D7A17EC /* StubServer.swift */; };
 		4E67FE6293D1163559D59D72 /* SyncDeletionQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A03A0804A4B45B28F362FA2 /* SyncDeletionQueue.swift */; };
 		4F6BA6C896EF31AB6AA7E4E8 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 1CBC6DC599819FA1CA98CCBE /* Localizable.strings */; };
 		506E02DF9EBD85184338CA43 /* SyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECCD9EE875CF123954D288D2 /* SyncService.swift */; };
-		5089C72CCDBC69F7A29DDE9B /* DateHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4D33C9D974E05236A60E17E /* DateHelpers.swift */; };
 		51F8069FE3FAA8ABDE0E0F04 /* SyncDeletionQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A03A0804A4B45B28F362FA2 /* SyncDeletionQueue.swift */; };
 		526A767FF73E75CF289F6D54 /* HabitCheckIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADB968D6EC1637C4FCB0926B /* HabitCheckIn.swift */; };
 		54DAA879E1B97F04BC575DE9 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = A6A05080F09126E507CF8705 /* Localizable.strings */; };
@@ -76,6 +71,8 @@
 		6CD4DEC332A724F10DB9F838 /* WeeklyReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39DF81407676587A843D1904 /* WeeklyReviewView.swift */; };
 		70954D5ED5B7BA8549DE5E30 /* AddHabitView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14E65DB3F54110A255BF1E2C /* AddHabitView.swift */; };
 		73383C7B63CFDE419C1B9D96 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 307E5C9F58DC7639E88B77A5 /* PrivacyInfo.xcprivacy */; };
+		76B09623CC3377BD5E943645 /* StoreServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 852A60877722860C48D934FE /* StoreServiceTests.swift */; };
+		78CE5838D6D4BF11DB7E8A03 /* AuthServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87EBFD93F5E7421D2855B6A1 /* AuthServiceTests.swift */; };
 		7A3AE93A7D4CC234FAD8B2C8 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = FB281642FC1DF1EAB3330F7B /* Localizable.strings */; };
 		7DF7C28E249055546FCA174D /* SyncModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A7D0B848E52AD9CC10A1FD5 /* SyncModels.swift */; };
 		7E06AB3A36842FDB5C5943DB /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E15BB82DDC222DE65A084E /* KeychainHelper.swift */; };
@@ -85,12 +82,10 @@
 		81770B24F87695AF0D69F601 /* TodaySelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = B313C2E4B793E21CAB587186 /* TodaySelection.swift */; };
 		82B5B4C06A7A5C2C183D5493 /* TodaySelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F68EEC8043BEB50CDD518E5 /* TodaySelectionTests.swift */; };
 		843732B78DE16A0C43D2BED3 /* ShareStreakView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AD5CC02C52CBD646618317B /* ShareStreakView.swift */; };
-		8475CA4EB2EDB635484E4FF6 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 1CBC6DC599819FA1CA98CCBE /* Localizable.strings */; };
 		87071C9CC1567F399F89A1AF /* SyncTimestamp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E260D0E53F2B5CF679443579 /* SyncTimestamp.swift */; };
 		887B596D493E137A7FE7741F /* ColorExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCBB84E54BC0EC63FD063F7B /* ColorExtension.swift */; };
 		89B330D9B49659D69E86974C /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BF44B6E74C40A2F7E664752 /* ContentView.swift */; };
 		89F8FBB3F8C3D34C195C5457 /* DateHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4D33C9D974E05236A60E17E /* DateHelpers.swift */; };
-		8B435A413D9BD001170112D6 /* SharedModelContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14E5DE1DF2EA723656AA788 /* SharedModelContainer.swift */; };
 		8BCAFA64DEFDBDE435A02539 /* HabitCheckIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADB968D6EC1637C4FCB0926B /* HabitCheckIn.swift */; };
 		8C2BC8E0234FD97251CB131D /* TodayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE8B83FBCDEE947B0A5A87D6 /* TodayView.swift */; };
 		920226718B3C4CA29FCA2468 /* DemoData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1194AFE4DBCEA8AD9DE1B32A /* DemoData.swift */; };
@@ -99,18 +94,14 @@
 		9A4B31E7D7DC806CA68A0C1A /* SyncDeletionQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A03A0804A4B45B28F362FA2 /* SyncDeletionQueue.swift */; };
 		9C2FB522F0E45486E8EE568E /* LanguageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = F79BAF64C83FFB1147F14CE5 /* LanguageManager.swift */; };
 		A20337D9BCFEFE5B29C78296 /* ColorExtensionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DA2E26F53AB0CCF80DEBF10 /* ColorExtensionTests.swift */; };
-		A2DFCB784B3F7755F2B09579 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AF81B412777D7CB8E6C609B6 /* Assets.xcassets */; };
 		A2F2C5CFAF2614FC34797FEF /* ColorExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCBB84E54BC0EC63FD063F7B /* ColorExtension.swift */; };
 		A6266CABCA7362DE8F9A29A8 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 776A18644AC5D53D8278287F /* Localizable.strings */; };
-		A66A13E6D9D55FB08CE8B2AA /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = A6A05080F09126E507CF8705 /* Localizable.strings */; };
 		A92356E0D7DDAEC33623769F /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = F8C043D145E16EA12884687F /* Localizable.strings */; };
 		A947D36A4BFD9421CF26A007 /* LanguageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = F79BAF64C83FFB1147F14CE5 /* LanguageManager.swift */; };
 		AA79D7EAAAE9D47C30294A1B /* FrequencyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D288EEDE821222AD59C7BF9F /* FrequencyTests.swift */; };
-		B12D4A9971BB8AE40BBEF325 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = F8C043D145E16EA12884687F /* Localizable.strings */; };
 		B293372E0A9CEAE724495138 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 846D324A474DC86FFFE7DCA4 /* LoginView.swift */; };
-		B509C79C0FB6D18E05392005 /* TodaySelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = B313C2E4B793E21CAB587186 /* TodaySelection.swift */; };
+		B6D2B17025AAA69F85FD5EC9 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B0D5810A6BF8BE28038A3ECA /* PrivacyInfo.xcprivacy */; };
 		B7BA77E96701BE19AB918640 /* AnalyticsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1E21F6759556BEEF5CD1C12 /* AnalyticsService.swift */; };
-		BAEAFD94A47887241F3CAE2E /* SyncTimestamp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E260D0E53F2B5CF679443579 /* SyncTimestamp.swift */; };
 		C0085D040686264A4F70D3A3 /* AuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 008553DEE398C78EDD4151D3 /* AuthService.swift */; };
 		C28A124422A05257CE3B4C2F /* SyncTimestamp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E260D0E53F2B5CF679443579 /* SyncTimestamp.swift */; };
 		C2DD4FB74CD7A13DDAD9B3A6 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2AC83A4314C26492BF0BAEC8 /* SettingsView.swift */; };
@@ -118,11 +109,9 @@
 		C4FF93C1EC314968F50768BF /* LocalizationCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46F51F44342B3269637FE386 /* LocalizationCatalogTests.swift */; };
 		C607A3CF091B31EF45DF0954 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 9BB01452FD4AD5A55E0153E0 /* Assets.xcassets */; };
 		C6A2CDBD665C9C2D0C2AD813 /* Habit.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21336DA7BBDF96DEA4D3407 /* Habit.swift */; };
-		C7CF4E1DDD006B7ADC7EE0DF /* HabitCheckIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADB968D6EC1637C4FCB0926B /* HabitCheckIn.swift */; };
 		C8A9F0ACC43746A1D4D12AE0 /* SharedModelContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14E5DE1DF2EA723656AA788 /* SharedModelContainer.swift */; };
 		CB17AAC833E1FAFD90CDF92A /* StrideWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F7762020997DD0185475C26 /* StrideWidget.swift */; };
 		CCB78F6B90D5EB4178299BBE /* HabitCheckIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADB968D6EC1637C4FCB0926B /* HabitCheckIn.swift */; };
-		CD9F3318F98F7351B2148C5A /* SyncModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A7D0B848E52AD9CC10A1FD5 /* SyncModels.swift */; };
 		D0CACD6F560F84E4BA377A09 /* SyncDeletionQueueTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 169185A02281694B56C07F52 /* SyncDeletionQueueTests.swift */; };
 		D2F9EBB9B68B1A8B955F6F20 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B0FADDB35158E7A8EFD42A6 /* OnboardingView.swift */; };
 		D623F92517714132BBFAED51 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42BDA8DAD54978C63D7BF2E8 /* APIClient.swift */; };
@@ -142,11 +131,10 @@
 		E6553FC77D1634915D27A1EA /* Sentry in Frameworks */ = {isa = PBXBuildFile; productRef = 39783EF6BB5C62A3753E1A18 /* Sentry */; };
 		E80374CF29F99521E9AC8745 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 776A18644AC5D53D8278287F /* Localizable.strings */; };
 		E83F02CD837080DFA6C5CE7F /* Habit.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21336DA7BBDF96DEA4D3407 /* Habit.swift */; };
+		EAA63FA049BB304EFA9175B9 /* APIClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8391C8D32C72F9BA4984888 /* APIClientTests.swift */; };
 		ED520E87C36BDD857F783F7F /* HabitCheckInTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D9FD5D56D18C97078DAD4C5 /* HabitCheckInTests.swift */; };
 		EEF6FE01548ACB8A3B38D37D /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 307E5C9F58DC7639E88B77A5 /* PrivacyInfo.xcprivacy */; };
 		F3495E3D18F1F4A12EE7AFE9 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = A6A05080F09126E507CF8705 /* Localizable.strings */; };
-		F471C3D5398D75E05154F3C7 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = FB281642FC1DF1EAB3330F7B /* Localizable.strings */; };
-		F4DE49FD25EFB640024BF7CC /* StrideWatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49586A76C3DA5DCA5F71B60D /* StrideWatchApp.swift */; };
 		F52B050835F9DB2330C1B00A /* SharedModelContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14E5DE1DF2EA723656AA788 /* SharedModelContainer.swift */; };
 		F880E064D20BEAA7D82515D9 /* SyncReconcileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9523AC157C8D77E551424F5 /* SyncReconcileTests.swift */; };
 		F8E631103B145331AD1AC986 /* CountHabitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F8FF4E330322A974AB7AE18 /* CountHabitTests.swift */; };
@@ -159,6 +147,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		9B8ECFB2E79803E39E99C08C /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 8F35F31970CD66C0431CF4BC /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 11C6639D99F991501FFBAE5F;
+			remoteInfo = Stride;
+		};
 		A1BCD2A542BAFD199C203BED /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 8F35F31970CD66C0431CF4BC /* Project object */;
@@ -190,7 +185,6 @@
 		1194AFE4DBCEA8AD9DE1B32A /* DemoData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoData.swift; sourceTree = "<group>"; };
 		14E65DB3F54110A255BF1E2C /* AddHabitView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddHabitView.swift; sourceTree = "<group>"; };
 		169185A02281694B56C07F52 /* SyncDeletionQueueTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncDeletionQueueTests.swift; sourceTree = "<group>"; };
-		1706C0B4E08F1EAA14C993BA /* StrideWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = StrideWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A03A0804A4B45B28F362FA2 /* SyncDeletionQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncDeletionQueue.swift; sourceTree = "<group>"; };
 		1CBC6DC599819FA1CA98CCBE /* Localizable.strings */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = Localizable.strings; path = "zh-Hant.lproj/Localizable.strings"; sourceTree = "<group>"; };
 		1F8FF4E330322A974AB7AE18 /* CountHabitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CountHabitTests.swift; sourceTree = "<group>"; };
@@ -201,12 +195,13 @@
 		307E5C9F58DC7639E88B77A5 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		39DF81407676587A843D1904 /* WeeklyReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeeklyReviewView.swift; sourceTree = "<group>"; };
 		3D9FD5D56D18C97078DAD4C5 /* HabitCheckInTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HabitCheckInTests.swift; sourceTree = "<group>"; };
+		3F54DD53A85952D6DB6D05AC /* NotificationServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationServiceTests.swift; sourceTree = "<group>"; };
+		427FCAD80BF804BF1BCC5B3D /* SyncServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncServiceTests.swift; sourceTree = "<group>"; };
 		42BDA8DAD54978C63D7BF2E8 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		447E56E91A805C7FB349BA2A /* StatsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatsView.swift; sourceTree = "<group>"; };
 		46F51F44342B3269637FE386 /* LocalizationCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalizationCatalogTests.swift; sourceTree = "<group>"; };
 		48E2B457B97506287B51D6F1 /* HabitTemplatesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HabitTemplatesView.swift; sourceTree = "<group>"; };
 		4941D1BB0D89A2006A52E455 /* StatsMathTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatsMathTests.swift; sourceTree = "<group>"; };
-		49586A76C3DA5DCA5F71B60D /* StrideWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrideWatchApp.swift; sourceTree = "<group>"; };
 		4BF44B6E74C40A2F7E664752 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		4EA67CF2EE47ECE75C3802D7 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		5771B2205EFDB2CB243D6658 /* Stride.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Stride.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -218,6 +213,8 @@
 		7AD5CC02C52CBD646618317B /* ShareStreakView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareStreakView.swift; sourceTree = "<group>"; };
 		7DE60126995C3E877AF2E464 /* StrideShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrideShortcuts.swift; sourceTree = "<group>"; };
 		846D324A474DC86FFFE7DCA4 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
+		852A60877722860C48D934FE /* StoreServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreServiceTests.swift; sourceTree = "<group>"; };
+		87EBFD93F5E7421D2855B6A1 /* AuthServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthServiceTests.swift; sourceTree = "<group>"; };
 		8F7762020997DD0185475C26 /* StrideWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrideWidget.swift; sourceTree = "<group>"; };
 		9BB01452FD4AD5A55E0153E0 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A14E5DE1DF2EA723656AA788 /* SharedModelContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedModelContainer.swift; sourceTree = "<group>"; };
@@ -226,12 +223,12 @@
 		A4D33C9D974E05236A60E17E /* DateHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DateHelpers.swift; sourceTree = "<group>"; };
 		A6A05080F09126E507CF8705 /* Localizable.strings */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = Localizable.strings; path = es.lproj/Localizable.strings; sourceTree = "<group>"; };
 		ADB968D6EC1637C4FCB0926B /* HabitCheckIn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HabitCheckIn.swift; sourceTree = "<group>"; };
-		AF81B412777D7CB8E6C609B6 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		B0D5810A6BF8BE28038A3ECA /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		B313C2E4B793E21CAB587186 /* TodaySelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodaySelection.swift; sourceTree = "<group>"; };
 		B9523AC157C8D77E551424F5 /* SyncReconcileTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncReconcileTests.swift; sourceTree = "<group>"; };
 		BD0C3325816F805915823CCF /* DataExportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataExportService.swift; sourceTree = "<group>"; };
+		C470E04D5C990B37D021DAE7 /* StrideAppTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = StrideAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C5E1940DEB8CA019D623342D /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
-		CCFCA3C10C208273A66FAB02 /* WatchTodayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchTodayView.swift; sourceTree = "<group>"; };
 		CE98D2D441CF6A791EF47340 /* HabitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HabitTests.swift; sourceTree = "<group>"; };
 		D21336DA7BBDF96DEA4D3407 /* Habit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Habit.swift; sourceTree = "<group>"; };
 		D288EEDE821222AD59C7BF9F /* FrequencyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FrequencyTests.swift; sourceTree = "<group>"; };
@@ -240,9 +237,11 @@
 		E29D464DF830B44A56221444 /* StrideWidgetExtension.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = StrideWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		E7C6CB942A40E1B2BCC2061C /* StrideTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = StrideTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		EB59FC2420F0C656244B3006 /* SyncReconciler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncReconciler.swift; sourceTree = "<group>"; };
+		EB8F005CB15B0E4B6D7A17EC /* StubServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StubServer.swift; sourceTree = "<group>"; };
 		ECCD9EE875CF123954D288D2 /* SyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncService.swift; sourceTree = "<group>"; };
 		EE8B83FBCDEE947B0A5A87D6 /* TodayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodayView.swift; sourceTree = "<group>"; };
 		F79BAF64C83FFB1147F14CE5 /* LanguageManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LanguageManager.swift; sourceTree = "<group>"; };
+		F8391C8D32C72F9BA4984888 /* APIClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClientTests.swift; sourceTree = "<group>"; };
 		F8C043D145E16EA12884687F /* Localizable.strings */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = Localizable.strings; path = ja.lproj/Localizable.strings; sourceTree = "<group>"; };
 		FB281642FC1DF1EAB3330F7B /* Localizable.strings */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = Localizable.strings; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -271,9 +270,9 @@
 			isa = PBXGroup;
 			children = (
 				5771B2205EFDB2CB243D6658 /* Stride.app */,
+				C470E04D5C990B37D021DAE7 /* StrideAppTests.xctest */,
 				087B83A743EB0D6A9DD29F50 /* StrideMac.app */,
 				E7C6CB942A40E1B2BCC2061C /* StrideTests.xctest */,
-				1706C0B4E08F1EAA14C993BA /* StrideWatch.app */,
 				E29D464DF830B44A56221444 /* StrideWidgetExtension.appex */,
 			);
 			name = Products;
@@ -287,32 +286,15 @@
 			path = Intents;
 			sourceTree = "<group>";
 		};
-		43332ADCBE256AD39A98AD0A /* Sources */ = {
-			isa = PBXGroup;
-			children = (
-				8F7762020997DD0185475C26 /* StrideWidget.swift */,
-			);
-			name = Sources;
-			path = StrideWidget/Sources;
-			sourceTree = "<group>";
-		};
-		601F1F1E50A13CD4C41875D3 /* Models */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			path = Models;
-			sourceTree = "<group>";
-		};
 		7861F0F7BEAD8B1E151AE6CD = {
 			isa = PBXGroup;
 			children = (
 				BBCE82D32739E4A7A8CAC260 /* Shared */,
 				8820F1A69949D7F928BE28BB /* Sources */,
 				8C9108FFB3C81E9FB7F5457D /* Sources */,
-				43332ADCBE256AD39A98AD0A /* Sources */,
 				F9C57FCE91B6EE219802156A /* Stride */,
+				FE47D5BA4D4F80A5175BE2A2 /* StrideAppTests */,
 				CD0F1E1CDEF1208B88573BE0 /* StrideTests */,
-				E7ACC5880D4277CB4E7CC0B4 /* StrideWatch */,
 				AEA94EB6BD07E7034D457BF2 /* StrideWidget */,
 				0463BF9A3F8E446B44A2BD77 /* Products */,
 			);
@@ -323,7 +305,6 @@
 			children = (
 				E8E48196EDAD4569875BA9D8 /* App */,
 				3E99C63353101CB83A4E3827 /* Intents */,
-				601F1F1E50A13CD4C41875D3 /* Models */,
 				9C4C245CCBA6D6076619860E /* Services */,
 				B7A1514777561998540AFC6D /* Views */,
 			);
@@ -334,11 +315,10 @@
 		8C9108FFB3C81E9FB7F5457D /* Sources */ = {
 			isa = PBXGroup;
 			children = (
-				49586A76C3DA5DCA5F71B60D /* StrideWatchApp.swift */,
-				CCFCA3C10C208273A66FAB02 /* WatchTodayView.swift */,
+				8F7762020997DD0185475C26 /* StrideWidget.swift */,
 			);
 			name = Sources;
-			path = StrideWatch/Sources;
+			path = StrideWidget/Sources;
 			sourceTree = "<group>";
 		};
 		9C4C245CCBA6D6076619860E /* Services */ = {
@@ -361,6 +341,7 @@
 			isa = PBXGroup;
 			children = (
 				4EA67CF2EE47ECE75C3802D7 /* Assets.xcassets */,
+				B0D5810A6BF8BE28038A3ECA /* PrivacyInfo.xcprivacy */,
 			);
 			path = StrideWidget;
 			sourceTree = "<group>";
@@ -425,12 +406,12 @@
 			path = StrideTests;
 			sourceTree = "<group>";
 		};
-		E7ACC5880D4277CB4E7CC0B4 /* StrideWatch */ = {
+		E278EF11D674B08B606BA96F /* Support */ = {
 			isa = PBXGroup;
 			children = (
-				AF81B412777D7CB8E6C609B6 /* Assets.xcassets */,
+				EB8F005CB15B0E4B6D7A17EC /* StubServer.swift */,
 			);
-			path = StrideWatch;
+			path = Support;
 			sourceTree = "<group>";
 		};
 		E8E48196EDAD4569875BA9D8 /* App */ = {
@@ -448,6 +429,19 @@
 				307E5C9F58DC7639E88B77A5 /* PrivacyInfo.xcprivacy */,
 			);
 			path = Stride;
+			sourceTree = "<group>";
+		};
+		FE47D5BA4D4F80A5175BE2A2 /* StrideAppTests */ = {
+			isa = PBXGroup;
+			children = (
+				F8391C8D32C72F9BA4984888 /* APIClientTests.swift */,
+				87EBFD93F5E7421D2855B6A1 /* AuthServiceTests.swift */,
+				3F54DD53A85952D6DB6D05AC /* NotificationServiceTests.swift */,
+				852A60877722860C48D934FE /* StoreServiceTests.swift */,
+				427FCAD80BF804BF1BCC5B3D /* SyncServiceTests.swift */,
+				E278EF11D674B08B606BA96F /* Support */,
+			);
+			path = StrideAppTests;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -493,6 +487,24 @@
 			productReference = E7C6CB942A40E1B2BCC2061C /* StrideTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		421C23CCCEE469D9B226EB37 /* StrideAppTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DFFD5F51FD72DDFF70DDC779 /* Build configuration list for PBXNativeTarget "StrideAppTests" */;
+			buildPhases = (
+				F60B839D20CEE218CB81E537 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E53C2A35840019D5C2F4F47F /* PBXTargetDependency */,
+			);
+			name = StrideAppTests;
+			packageProductDependencies = (
+			);
+			productName = StrideAppTests;
+			productReference = C470E04D5C990B37D021DAE7 /* StrideAppTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		717CF43FCC11687DEC63CF8C /* StrideMac */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 1310F67E11432450C6173B6D /* Build configuration list for PBXNativeTarget "StrideMac" */;
@@ -511,24 +523,6 @@
 			);
 			productName = StrideMac;
 			productReference = 087B83A743EB0D6A9DD29F50 /* StrideMac.app */;
-			productType = "com.apple.product-type.application";
-		};
-		8EF76192DA5B3357D8CF00CC /* StrideWatch */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = 2A38889394AF9A5612F50ADE /* Build configuration list for PBXNativeTarget "StrideWatch" */;
-			buildPhases = (
-				BBDD8E2190230BA49B501D0F /* Sources */,
-				DA9E70C4A8EF820F7003DFA0 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			name = StrideWatch;
-			packageProductDependencies = (
-			);
-			productName = StrideWatch;
-			productReference = 1706C0B4E08F1EAA14C993BA /* StrideWatch.app */;
 			productType = "com.apple.product-type.application";
 		};
 		E1BB2E2598B4FA709933A7D6 /* StrideWidgetExtension */ = {
@@ -566,11 +560,11 @@
 						DevelopmentTeam = KHMK6Q3L3K;
 						ProvisioningStyle = Automatic;
 					};
-					717CF43FCC11687DEC63CF8C = {
+					421C23CCCEE469D9B226EB37 = {
 						DevelopmentTeam = KHMK6Q3L3K;
 						ProvisioningStyle = Automatic;
 					};
-					8EF76192DA5B3357D8CF00CC = {
+					717CF43FCC11687DEC63CF8C = {
 						DevelopmentTeam = KHMK6Q3L3K;
 						ProvisioningStyle = Automatic;
 					};
@@ -603,9 +597,9 @@
 			projectRoot = "";
 			targets = (
 				11C6639D99F991501FFBAE5F /* Stride */,
+				421C23CCCEE469D9B226EB37 /* StrideAppTests */,
 				717CF43FCC11687DEC63CF8C /* StrideMac */,
 				2DE28F58290CBBBDC954BF76 /* StrideTests */,
-				8EF76192DA5B3357D8CF00CC /* StrideWatch */,
 				E1BB2E2598B4FA709933A7D6 /* StrideWidgetExtension */,
 			);
 		};
@@ -634,19 +628,7 @@
 				283E7EF798517EC7EE874B59 /* Localizable.strings in Resources */,
 				E0947C417A321DA2B1B2588C /* Localizable.strings in Resources */,
 				49C03632C093D6EFDBFA04D2 /* Localizable.strings in Resources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		DA9E70C4A8EF820F7003DFA0 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				A2DFCB784B3F7755F2B09579 /* Assets.xcassets in Resources */,
-				F471C3D5398D75E05154F3C7 /* Localizable.strings in Resources */,
-				B12D4A9971BB8AE40BBEF325 /* Localizable.strings in Resources */,
-				A66A13E6D9D55FB08CE8B2AA /* Localizable.strings in Resources */,
-				1A6D24E3DB8D037F2F7404F6 /* Localizable.strings in Resources */,
-				8475CA4EB2EDB635484E4FF6 /* Localizable.strings in Resources */,
+				B6D2B17025AAA69F85FD5EC9 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -752,26 +734,6 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		BBDD8E2190230BA49B501D0F /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				3B3FCE2757E1D0F6744F977A /* ColorExtension.swift in Sources */,
-				5089C72CCDBC69F7A29DDE9B /* DateHelpers.swift in Sources */,
-				43D1EAA477394361526C2D3A /* DemoData.swift in Sources */,
-				1517A3B040DA1C518C9CAACD /* Habit.swift in Sources */,
-				C7CF4E1DDD006B7ADC7EE0DF /* HabitCheckIn.swift in Sources */,
-				8B435A413D9BD001170112D6 /* SharedModelContainer.swift in Sources */,
-				F4DE49FD25EFB640024BF7CC /* StrideWatchApp.swift in Sources */,
-				19B0044FD16B58517166F348 /* SyncDeletionQueue.swift in Sources */,
-				CD9F3318F98F7351B2148C5A /* SyncModels.swift in Sources */,
-				18683DB24253D224F5B25774 /* SyncReconciler.swift in Sources */,
-				BAEAFD94A47887241F3CAE2E /* SyncTimestamp.swift in Sources */,
-				B509C79C0FB6D18E05392005 /* TodaySelection.swift in Sources */,
-				374114CAC590D39258CFA884 /* WatchTodayView.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		D8224E20AF9D901310F305FE /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -831,6 +793,19 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F60B839D20CEE218CB81E537 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EAA63FA049BB304EFA9175B9 /* APIClientTests.swift in Sources */,
+				78CE5838D6D4BF11DB7E8A03 /* AuthServiceTests.swift in Sources */,
+				13B2134CFB1BA48CBBA87A8D /* NotificationServiceTests.swift in Sources */,
+				76B09623CC3377BD5E943645 /* StoreServiceTests.swift in Sources */,
+				4BF29878BAB3689496013E81 /* StubServer.swift in Sources */,
+				0D9C4736613CA40ECD51900B /* SyncServiceTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -838,6 +813,11 @@
 			isa = PBXTargetDependency;
 			target = E1BB2E2598B4FA709933A7D6 /* StrideWidgetExtension */;
 			targetProxy = A1BCD2A542BAFD199C203BED /* PBXContainerItemProxy */;
+		};
+		E53C2A35840019D5C2F4F47F /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 11C6639D99F991501FFBAE5F /* Stride */;
+			targetProxy = 9B8ECFB2E79803E39E99C08C /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -919,7 +899,6 @@
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 5.9;
-				WATCHOS_DEPLOYMENT_TARGET = 10.0;
 			};
 			name = Release;
 		};
@@ -931,6 +910,7 @@
 				CODE_SIGN_ENTITLEMENTS = Stride/Stride.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Stride;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -1055,25 +1035,6 @@
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.9;
-				WATCHOS_DEPLOYMENT_TARGET = 10.0;
-			};
-			name = Debug;
-		};
-		84D0C75EE174B2B60165D8A5 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = StrideWatch/StrideWatch.entitlements;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
-				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = yyh.stride.habittracker;
-				PRODUCT_BUNDLE_IDENTIFIER = yyh.stride.habittracker.watchkitapp;
-				SDKROOT = watchos;
-				SKIP_INSTALL = YES;
-				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
-				TARGETED_DEVICE_FAMILY = 4;
-				WATCHOS_DEPLOYMENT_TARGET = 10.0;
 			};
 			name = Debug;
 		};
@@ -1098,21 +1059,20 @@
 			};
 			name = Release;
 		};
-		BFDEEBC25B07524DB29260B7 /* Release */ = {
+		98DD90955AB99D1028326A18 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = StrideWatch/StrideWatch.entitlements;
+				BUNDLE_LOADER = "$(TEST_HOST)";
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
-				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = yyh.stride.habittracker;
-				PRODUCT_BUNDLE_IDENTIFIER = yyh.stride.habittracker.watchkitapp;
-				SDKROOT = watchos;
-				SKIP_INSTALL = YES;
-				SWIFT_OPTIMIZATION_LEVEL = "-O";
-				TARGETED_DEVICE_FAMILY = 4;
-				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = yyh.stride.habittracker.apptests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Stride.app/Stride";
 			};
 			name = Release;
 		};
@@ -1124,6 +1084,7 @@
 				CODE_SIGN_ENTITLEMENTS = Stride/Stride.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Stride;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -1151,6 +1112,7 @@
 				CODE_SIGN_ENTITLEMENTS = StrideMac/StrideMac.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Stride;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.healthcare-fitness";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1164,6 +1126,23 @@
 			};
 			name = Debug;
 		};
+		E58E7359AE34EF9F753C3B53 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = yyh.stride.habittracker.apptests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Stride.app/Stride";
+			};
+			name = Debug;
+		};
 		ED53B26646E95E435F390080 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1172,6 +1151,7 @@
 				CODE_SIGN_ENTITLEMENTS = StrideMac/StrideMac.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Stride;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.healthcare-fitness";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1206,15 +1186,6 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
-		2A38889394AF9A5612F50ADE /* Build configuration list for PBXNativeTarget "StrideWatch" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				84D0C75EE174B2B60165D8A5 /* Debug */,
-				BFDEEBC25B07524DB29260B7 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Debug;
-		};
 		2DF074FCB186B8F02CB7B093 /* Build configuration list for PBXProject "Stride" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -1238,6 +1209,15 @@
 			buildConfigurations = (
 				5D528979BFB185E446990309 /* Debug */,
 				8F35913D5E58056070BF0E3C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		DFFD5F51FD72DDFF70DDC779 /* Build configuration list for PBXNativeTarget "StrideAppTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E58E7359AE34EF9F753C3B53 /* Debug */,
+				98DD90955AB99D1028326A18 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
