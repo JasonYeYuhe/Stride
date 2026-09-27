@@ -5,10 +5,27 @@ actor APIClient {
     static let shared = APIClient()
 
     #if DEBUG
-    private let baseURL = URL(string: "http://localhost:3002")!
+    static let defaultBaseURL = URL(string: "http://localhost:3002")!
     #else
-    private let baseURL = URL(string: "https://stride-api.colorarchive.me")!
+    static let defaultBaseURL = URL(string: "https://stride-api.colorarchive.me")!
     #endif
+
+    private let baseURL: URL
+    private let session: URLSession
+    private let tokenStore: SessionTokenStore
+
+    /// The defaults are what `shared` has always used. StrideAppTests passes a URLSession whose
+    /// URLProtocol answers instead of a server, and an in-memory token store (see
+    /// `SessionTokenStore` for why never the real Keychain item).
+    init(
+        baseURL: URL = APIClient.defaultBaseURL,
+        session: URLSession = .shared,
+        tokenStore: SessionTokenStore = KeychainSessionTokenStore()
+    ) {
+        self.baseURL = baseURL
+        self.session = session
+        self.tokenStore = tokenStore
+    }
 
     private let encoder: JSONEncoder = {
         let e = JSONEncoder()
@@ -29,12 +46,12 @@ actor APIClient {
     }()
 
     private var sessionToken: String? {
-        get { KeychainHelper.read(key: "stride_session_token") }
+        get { tokenStore.read() }
         set {
             if let newValue {
-                KeychainHelper.save(key: "stride_session_token", value: newValue)
+                tokenStore.save(newValue)
             } else {
-                KeychainHelper.delete(key: "stride_session_token")
+                tokenStore.delete()
             }
         }
     }
@@ -111,7 +128,7 @@ actor APIClient {
     }
 
     private func perform<T: Decodable>(_ request: URLRequest) async throws -> T {
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw APIError.invalidResponse
         }

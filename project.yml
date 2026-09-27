@@ -4,9 +4,12 @@ options:
   deploymentTarget:
     iOS: "17.0"
     macOS: "14.0"
-    watchOS: "10.0"
   xcodeVersion: "15.0"
-  generateEmptyDirectories: true
+  # generateEmptyDirectories stays off: git does not track empty directories, so with it on
+  # the generated project depended on what happened to exist on disk. A local-only empty
+  # Stride/Sources/Models put a "Models" group into the committed pbxproj that a clean
+  # checkout could never reproduce, and the CI drift check failed on it.
+  generateEmptyDirectories: false
   developmentLanguage: en
   knownRegions: [en, zh-Hans, zh-Hant, ja, ko, es]
 
@@ -36,6 +39,11 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: yyh.stride.habittracker
         GENERATE_INFOPLIST_FILE: YES
+        # The 1.2.3 archive's Info.plist had no CFBundleDisplayName at all: nothing ever set
+        # it, so the home-screen name fell back to CFBundleName. CFBundleDisplayName IS on
+        # the INFOPLIST_KEY_* allowlist (unlike SentryDSN below), and
+        # scripts/verify_archive.sh now asserts it in every archive that ships.
+        INFOPLIST_KEY_CFBundleDisplayName: Stride
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
@@ -59,8 +67,10 @@ targets:
     dependencies:
       - package: Sentry
         product: Sentry
-      # Without this the extension is never copied into the .app: no
-      # "Embed Foundation Extensions" phase is generated, Stride.app has no
+      # Explicit, although XcodeGen 2.45.3 embeds an app's extension dependencies
+      # by default (deleting this line changes nothing in the pbxproj). With
+      # `embed: false`, or with no dependency, the extension is never copied into
+      # the .app: no "Embed Foundation Extensions" phase, Stride.app has no
       # PlugIns/ directory, and the widget does not exist for any user — while
       # the App Store description, the keyword list and the Pro feature list all
       # sell it. The dependency used to point the other way (extension -> app,
@@ -81,6 +91,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: yyh.stride.habittracker
         PRODUCT_NAME: Stride
         GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Stride
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.healthcare-fitness"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -113,32 +124,30 @@ targets:
         TEST_HOST: ""
         BUNDLE_LOADER: ""
 
-  StrideWatch:
-    type: application
-    platform: watchOS
+  # Hosted tests: TEST_HOST = Stride.app (xcodegen derives TEST_HOST/BUNDLE_LOADER from the
+  # dependency below), so `@testable import Stride` reaches what StrideTests cannot — APIClient,
+  # SyncService.sync, AuthService, NotificationService, StoreService. The price is a simulator:
+  # a hosted bundle cannot run on a generic destination or on macOS, so CI keeps the host-less
+  # StrideTests, and this suite is a release gate instead (scripts/ci/run_hosted_tests.sh,
+  # called by scripts/ship.sh before anything is archived). Tests go through the services'
+  # injection points with a stubbed URLSession, an in-memory token store and throwaway
+  # defaults — never the host app's Keychain item, UserDefaults or notification store.
+  StrideAppTests:
+    type: bundle.unit-test
+    platform: iOS
     sources:
-      - StrideWatch/Sources
-      - StrideWatch/Assets.xcassets
-      - path: Shared
-        excludes:
-          # See StrideWidgetExtension: this target never calls SentryBootstrap
-          # and must not try to resolve the Sentry module.
-          - "SentryBootstrap.swift"
+      - StrideAppTests
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: yyh.stride.habittracker.watchkitapp
+        PRODUCT_BUNDLE_IDENTIFIER: yyh.stride.habittracker.apptests
         GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
-        INFOPLIST_KEY_WKCompanionAppBundleIdentifier: yyh.stride.habittracker
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
-        CODE_SIGN_ENTITLEMENTS: StrideWatch/StrideWatch.entitlements
-        WATCHOS_DEPLOYMENT_TARGET: "10.0"
-      configs:
-        debug:
-          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
-        release:
-          SWIFT_OPTIMIZATION_LEVEL: "-O"
+    dependencies:
+      - target: Stride
+
+  # There was a watchOS app target here until 1.3.0. It was never embedded (no
+  # "Embed Watch Content" phase; absent from the 1.2.3 archive), had no sync path to the
+  # server, and was never sold — it only cost build time and every a11y/l10n pass. The
+  # sources are in git history (last present at ab9e854) if a watch app is ever built.
 
   StrideWidgetExtension:
     type: app-extension
@@ -146,6 +155,11 @@ targets:
     sources:
       - StrideWidget/Sources
       - StrideWidget/Assets.xcassets
+      # Its own manifest, not the app's: the appex runs as a separate bundle that touches
+      # app-group UserDefaults (required-reason API) and shipped through 1.2.3 declaring
+      # nothing. The app's manifest declares email/user-content collection the widget never
+      # does; App Store Connect aggregates both into one privacy report anyway.
+      - StrideWidget/PrivacyInfo.xcprivacy
       - path: Shared
         excludes:
           # Not referenced by this target, and compiling it here is actively
@@ -178,8 +192,12 @@ schemes:
       targets:
         Stride: all
         StrideTests: [test]
+        StrideAppTests: [test]
     run:
       config: Debug
+      # Local StoreKit testing for Run from Xcode: the paywall gets Monthly/Yearly/Lifetime
+      # without a sandbox account. Run action only — archives and CI never see it.
+      storeKitConfiguration: Stride/Configuration.storekit
     # Without this, `xcodebuild -scheme Stride test` exits 0 having run nothing
     # ("Scheme Stride is not currently configured for the test action") — a green
     # CI result that proves absolutely nothing.
@@ -187,6 +205,7 @@ schemes:
       config: Debug
       targets:
         - StrideTests
+        - StrideAppTests
     archive:
       config: Release
   # Tests only, no app: lets `xcodebuild test -scheme StrideTests -destination platform=macOS`
@@ -205,5 +224,6 @@ schemes:
         StrideMac: all
     run:
       config: Debug
+      storeKitConfiguration: Stride/Configuration.storekit
     archive:
       config: Release

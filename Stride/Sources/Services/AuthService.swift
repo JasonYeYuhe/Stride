@@ -17,9 +17,25 @@ final class AuthService {
     var isLoggedIn: Bool { currentUser != nil }
     var userEmail: String? { currentUser?.email }
 
-    init() {
+    private let api: APIClient
+    private let tokenStore: SessionTokenStore
+    /// A closure rather than a SyncService so that creating `shared` still does not create
+    /// `SyncService.shared` as a side effect; it is reached only on logout, as before.
+    private let resetSyncState: @MainActor () -> Void
+
+    /// The defaults are what `shared` has always used. StrideAppTests passes an APIClient over a
+    /// stubbed URLSession and the same in-memory token store it gave that client — the two must
+    /// share one store, exactly as both share the Keychain item in the app.
+    init(
+        api: APIClient = .shared,
+        tokenStore: SessionTokenStore = KeychainSessionTokenStore(),
+        resetSyncState: @escaping @MainActor () -> Void = { SyncService.shared.resetSyncState() }
+    ) {
+        self.api = api
+        self.tokenStore = tokenStore
+        self.resetSyncState = resetSyncState
         // Check session on init if we have a stored token
-        if KeychainHelper.read(key: "stride_session_token") != nil {
+        if tokenStore.read() != nil {
             Task { await checkSession() }
         } else {
             isSessionRestored = true
@@ -43,7 +59,7 @@ final class AuthService {
         isLoading = true
         error = nil
         do {
-            let response = try await APIClient.shared.getSession()
+            let response = try await api.getSession()
             currentUser = response.user
         } catch {
             currentUser = nil
@@ -56,7 +72,7 @@ final class AuthService {
         isLoading = true
         error = nil
         do {
-            try await APIClient.shared.requestMagicLink(email: email)
+            try await api.requestMagicLink(email: email)
             isLoading = false
             return true
         } catch {
@@ -70,7 +86,7 @@ final class AuthService {
         isLoading = true
         error = nil
         do {
-            let response = try await APIClient.shared.verifyToken(token)
+            let response = try await api.verifyToken(token)
             currentUser = response.user
             isLoading = false
             return true
@@ -90,31 +106,31 @@ final class AuthService {
               trimmed.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") })
         else { return }
 
-        KeychainHelper.save(key: "stride_session_token", value: trimmed)
+        tokenStore.save(trimmed)
         Task {
             await checkSession()
             // Clear invalid token if session check failed
             if currentUser == nil {
-                KeychainHelper.delete(key: "stride_session_token")
+                tokenStore.delete()
             }
         }
     }
 
     func logout() async {
         do {
-            try await APIClient.shared.logout()
+            try await api.logout()
         } catch {
             // Clear locally even if server call fails
         }
         currentUser = nil
-        KeychainHelper.delete(key: "stride_session_token")
-        SyncService.shared.resetSyncState()
+        tokenStore.delete()
+        resetSyncState()
     }
 
     func deleteAccount() async throws {
-        try await APIClient.shared.deleteAccount()
+        try await api.deleteAccount()
         currentUser = nil
-        KeychainHelper.delete(key: "stride_session_token")
-        SyncService.shared.resetSyncState()
+        tokenStore.delete()
+        resetSyncState()
     }
 }

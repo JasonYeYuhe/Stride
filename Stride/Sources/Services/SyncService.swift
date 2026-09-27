@@ -25,8 +25,22 @@ final class SyncService {
     // which would shift check-ins across day boundaries after travel.
     private static let dateOnly: DateFormatter = HabitCalendar.dayStringFormatter
 
-    init() {
-        lastSyncTime = UserDefaults.standard.string(forKey: lastSyncKey)
+    private let api: APIClient
+    private let defaults: UserDefaults
+    private let deletionQueue: SyncDeletionQueue
+
+    /// The defaults are exactly what `shared` used before they were parameters. StrideAppTests
+    /// passes an APIClient over a stubbed URLSession, a throwaway defaults suite and a queue on
+    /// it, so a test neither talks to a server nor touches the host app's cursor and queues.
+    init(
+        api: APIClient = .shared,
+        defaults: UserDefaults = .standard,
+        deletionQueue: SyncDeletionQueue = .live
+    ) {
+        self.api = api
+        self.defaults = defaults
+        self.deletionQueue = deletionQueue
+        lastSyncTime = defaults.string(forKey: lastSyncKey)
     }
 
     // MARK: - Deletion Tracking
@@ -35,17 +49,16 @@ final class SyncService {
     // only after the server accepts that push — see the type's comment for why.
 
     /// Track a deleted habit ID for next sync push.
-    func trackDeletedHabit(_ id: String) { SyncDeletionQueue.live.trackHabit(id) }
+    func trackDeletedHabit(_ id: String) { deletionQueue.trackHabit(id) }
 
     /// Track a deleted entry ID for next sync push.
-    func trackDeletedEntry(_ id: String) { SyncDeletionQueue.live.trackEntry(id) }
+    func trackDeletedEntry(_ id: String) { deletionQueue.trackEntry(id) }
 
     /// Track a deleted group ID for next sync push.
-    func trackDeletedGroup(_ id: String) { SyncDeletionQueue.live.trackGroup(id) }
+    func trackDeletedGroup(_ id: String) { deletionQueue.trackGroup(id) }
 
     /// Full sync: push local changes then pull remote changes.
     func sync(context: ModelContext) async {
-        let api = APIClient.shared
         guard await api.isLoggedIn else { return }
         guard !isSyncing else { return }
 
@@ -53,17 +66,17 @@ final class SyncService {
         syncError = nil
 
         do {
-            try await pushLocal(context: context, api: api)
-            let serverTime = try await pullRemote(context: context, api: api)
+            try await pushLocal(context: context)
+            let serverTime = try await pullRemote(context: context)
 
             if let cursor = SyncCursor.next(afterServerTime: serverTime) {
-                UserDefaults.standard.set(cursor, forKey: cursorKey)
+                defaults.set(cursor, forKey: cursorKey)
             } else {
-                UserDefaults.standard.removeObject(forKey: cursorKey)   // full pull next time
+                defaults.removeObject(forKey: cursorKey)   // full pull next time
             }
             let now = SyncTimestamp.string(from: Date())
             lastSyncTime = now
-            UserDefaults.standard.set(now, forKey: lastSyncKey)
+            defaults.set(now, forKey: lastSyncKey)
             AnalyticsService.shared.send("syncPerformed")
         } catch {
             syncError = error.localizedDescription
@@ -72,9 +85,9 @@ final class SyncService {
         isSyncing = false
     }
 
-    private func pushLocal(context: ModelContext, api: APIClient) async throws {
+    private func pushLocal(context: ModelContext) async throws {
         let habits = try context.fetch(FetchDescriptor<Habit>())
-        let queue = SyncDeletionQueue.live
+        let queue = deletionQueue
         let deleted = queue.pending()
 
         let syncHabits = habits.map { habit in
@@ -147,14 +160,14 @@ final class SyncService {
     /// Forget the cursor and last-sync time, so the next account signed in on this device starts
     /// with a full pull instead of an incremental one against the previous account's cursor.
     func resetSyncState() {
-        UserDefaults.standard.removeObject(forKey: cursorKey)
-        UserDefaults.standard.removeObject(forKey: lastSyncKey)
+        defaults.removeObject(forKey: cursorKey)
+        defaults.removeObject(forKey: lastSyncKey)
         lastSyncTime = nil
     }
 
     /// Returns the response's `serverTime`, from which the next cursor is taken.
-    private func pullRemote(context: ModelContext, api: APIClient) async throws -> String {
-        let cursor = UserDefaults.standard.string(forKey: cursorKey)
+    private func pullRemote(context: ModelContext) async throws -> String {
+        let cursor = defaults.string(forKey: cursorKey)
         let response = try await api.pullChanges(since: cursor)
         // Reconciliation lives in Shared/SyncReconciler.swift so StrideTests exercises the
         // real code rather than a copy of it.

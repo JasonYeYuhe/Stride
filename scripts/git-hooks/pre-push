@@ -1,0 +1,88 @@
+#!/bin/bash
+# pre-push: before commits that touch the Apple side leave this Mac, build them for a generic
+# iOS device and check the product — the same scripts CI runs (scripts/ci/).
+#
+# Installed by scripts/install-git-hooks.sh (sets core.hooksPath to scripts/git-hooks).
+# Skip once with:  SKIP_STRIDE_HOOKS=1 git push
+#
+# Why a hook as well as CI: releases are built with Xcode 27, and the only GitHub image
+# carrying it is a preview (runs-on: xcode-27). If that image queues for hours or disappears,
+# this is the gate that still stops a push whose app has lost its widget extension or a
+# privacy manifest — the 1.2.x class of bug, which a green compile does not catch.
+#
+# What it builds is the WORKING TREE, incrementally (derived data persists, so a push costs
+# seconds to a couple of minutes, not a clean build). For that to say anything about the
+# commits being pushed, the Apple paths in the working tree must equal the pushed commit;
+# if they do not (uncommitted edits, untracked sources, pushing a branch that is not checked
+# out), the hook refuses rather than vouching for code it did not build.
+set -uo pipefail
+
+if [[ "${SKIP_STRIDE_HOOKS:-}" == "1" ]]; then
+    echo "pre-push: SKIP_STRIDE_HOOKS=1 — skipping the iOS build check."
+    exit 0
+fi
+
+ROOT="$(git rev-parse --show-toplevel)"
+CI="$ROOT/scripts/ci"
+DERIVED="${STRIDE_HOOK_DERIVED_DATA:-$HOME/Library/Developer/Xcode/DerivedData/Stride-prepush}"
+# Keep in sync with the Apple patterns in scripts/ci/changed_areas.sh.
+# (':(glob)' because a plain 'Stride*/' pathspec matches nothing.)
+APPLE_PATHS=(project.yml ':(glob)Stride*/**' Shared/ scripts/ci/)
+ZERO="0000000000000000000000000000000000000000"
+
+# stdin: "<local ref> <local sha> <remote ref> <remote sha>" per ref being pushed.
+target=""
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [[ "$local_sha" == "$ZERO" ]] && continue          # deleting a remote branch
+    # An annotated tag arrives as the tag OBJECT's sha, not its commit's. Unpeeled, the release
+    # push (`git push origin main v1.3.0`, or --follow-tags) looked like two different trees
+    # with Apple changes and was refused. Peel to the commit; a tag of a non-commit keeps its sha.
+    local_sha="$(git rev-parse -q --verify "${local_sha}^{commit}" 2>/dev/null || echo "$local_sha")"
+    base="$remote_sha"
+    if [[ "$base" == "$ZERO" ]]; then
+        # New remote branch: compare with where it leaves main.
+        base="$(git merge-base "$local_sha" origin/main 2>/dev/null || echo "$ZERO")"
+    fi
+    # Captured, not piped into `grep -q`: grep exiting early can SIGPIPE the script, and
+    # under pipefail that turns a match into a failure.
+    areas="$("$CI/changed_areas.sh" "$base" "$local_sha")"
+    if [[ "$areas" == *"apple=true"* ]]; then
+        if [[ -n "$target" && "$target" != "$local_sha" ]]; then
+            echo "pre-push: several refs with Apple changes in one push; push them one at a time"
+            echo "          (or SKIP_STRIDE_HOOKS=1) — the hook builds one tree."
+            exit 1
+        fi
+        target="$local_sha"
+    fi
+done
+
+[[ -z "$target" ]] && exit 0   # nothing on the Apple side: nothing to build
+
+cd "$ROOT"
+echo "pre-push: Apple paths changed in $(git rev-parse --short "$target") — building for generic iOS."
+
+# The working tree must be the commit being pushed, at least where the build looks.
+if ! git diff --quiet "$target" -- "${APPLE_PATHS[@]}" \
+    || [[ -n "$(git ls-files --others --exclude-standard -- "${APPLE_PATHS[@]}")" ]]; then
+    echo "pre-push: ✗ the working tree differs from $(git rev-parse --short "$target") under"
+    echo "          project.yml, Stride*/, Shared/ or scripts/ci/ — the build would not be of"
+    echo "          what you are pushing."
+    echo "          Commit or stash, or check out the branch being pushed; or SKIP_STRIDE_HOOKS=1."
+    exit 1
+fi
+
+# Drift check only with the pinned XcodeGen (exit 3 = other version): a different version
+# writes a different project, and "regenerate with the wrong tool" is not a useful failure.
+"$CI/check_xcodegen_drift.sh"
+case $? in
+    0) ;;
+    3) echo "pre-push: (XcodeGen drift check skipped — install XcodeGen 2.45.3 to run it)" ;;
+    *) echo "pre-push: ✗ Stride.xcodeproj is out of date; see above."; exit 1 ;;
+esac
+
+start=$(date +%s)
+if ! "$CI/build_ios_generic.sh" "$DERIVED"; then
+    echo "pre-push: ✗ iOS build or product check failed — push aborted. (SKIP_STRIDE_HOOKS=1 to override.)"
+    exit 1
+fi
+echo "pre-push: ✓ iOS build and product check passed in $(( $(date +%s) - start ))s."

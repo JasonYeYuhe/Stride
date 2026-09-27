@@ -5,19 +5,30 @@ import SwiftData
 import UIKit
 #endif
 
+/// The part of `UNUserNotificationCenter` that plans reminders: add, remove, list. A seam for
+/// StrideAppTests, which records what would be scheduled instead of filling the host app's real
+/// pending-notification store (and iOS's 64-request limit) with test reminders.
+protocol NotificationScheduling: AnyObject, Sendable {
+    func add(_ request: UNNotificationRequest, withCompletionHandler completionHandler: (@Sendable (Error?) -> Void)?)
+    func removePendingNotificationRequests(withIdentifiers identifiers: [String])
+    func getPendingNotificationRequests(completionHandler: @escaping @Sendable ([UNNotificationRequest]) -> Void)
+}
+
+extension UNUserNotificationCenter: NotificationScheduling {}
+
 /// Manages daily habit reminder notifications.
 @MainActor
 final class NotificationService {
     static let shared = NotificationService()
 
-    private let center = UNUserNotificationCenter.current()
+    private let center: NotificationScheduling
     private let reminderIdentifierPrefix = "stride.daily.reminder"
     private let morningIdentifier = "stride.daily.morning"
     private let eveningIdentifier = "stride.daily.evening"
 
     // MARK: - UserDefaults Keys (synced via App Group)
 
-    private let defaults = UserDefaults(suiteName: "group.yyh.stride.habittracker") ?? .standard
+    private let defaults: UserDefaults
 
     var isReminderEnabled: Bool {
         get { defaults.bool(forKey: "reminderEnabled") }
@@ -77,13 +88,27 @@ final class NotificationService {
         }
     }
 
-    private init() {}
+    private convenience init() {
+        self.init(
+            center: UNUserNotificationCenter.current(),
+            defaults: UserDefaults(suiteName: "group.yyh.stride.habittracker") ?? .standard
+        )
+    }
+
+    /// For StrideAppTests: a recording center and a throwaway defaults suite. The app only ever
+    /// uses `shared`, built by the private initializer above with the real center and app group.
+    init(center: NotificationScheduling, defaults: UserDefaults) {
+        self.center = center
+        self.defaults = defaults
+    }
 
     // MARK: - Permission
 
     func requestPermission() async -> Bool {
         do {
-            let granted = try await center.requestAuthorization(options: [.alert, .badge, .sound])
+            // Permission and settings go to the real center directly: they are not planning, and
+            // `NotificationScheduling` deliberately covers only add/remove/list.
+            let granted = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound])
             return granted
         } catch {
             return false
@@ -91,7 +116,7 @@ final class NotificationService {
     }
 
     func checkPermission() async -> UNAuthorizationStatus {
-        let settings = await center.notificationSettings()
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
         return settings.authorizationStatus
     }
 
@@ -113,7 +138,7 @@ final class NotificationService {
         let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
         let request = UNNotificationRequest(identifier: eveningIdentifier, content: content, trigger: trigger)
 
-        center.add(request)
+        center.add(request, withCompletionHandler: nil)
 
         if isMorningMotivationEnabled {
             scheduleMorningMotivation()
@@ -135,7 +160,7 @@ final class NotificationService {
         let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
         let request = UNNotificationRequest(identifier: morningIdentifier, content: content, trigger: trigger)
 
-        center.add(request)
+        center.add(request, withCompletionHandler: nil)
     }
 
     func removeAllReminders() {
@@ -164,7 +189,7 @@ final class NotificationService {
         let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
         let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
 
-        center.add(request)
+        center.add(request, withCompletionHandler: nil)
     }
 
     func removeHabitReminder(for habitId: UUID) {
@@ -200,10 +225,11 @@ final class NotificationService {
 
         let prefix = habitReminderPrefix
         let wanted = Set(habits.map { prefix + $0.id.uuidString })
+        let center = self.center
         center.getPendingNotificationRequests { requests in
             let orphans = requests.map(\.identifier).filter { $0.hasPrefix(prefix) && !wanted.contains($0) }
             guard !orphans.isEmpty else { return }
-            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: orphans)
+            center.removePendingNotificationRequests(withIdentifiers: orphans)
         }
     }
 

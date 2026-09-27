@@ -59,11 +59,41 @@ if [[ -z "${TMUX:-}" ]] && command -v tmux >/dev/null; then
     exec tmux -L stride-ship new-session -A -s ship "$0" "$VERSION" "$BUILD"
 fi
 
-echo "==> [1/3] iOS archive + upload"
-./scripts/build-appstore.sh ios --upload
-echo "==> [2/3] macOS archive + upload"
-./scripts/build-appstore.sh macos --upload
-echo "==> [3/3] Attach build $BUILD and submit $VERSION for review"
+# The hosted tests (StrideAppTests: APIClient's 401 and decoding, SyncService's push-before-pull
+# and acknowledge-after-push, AuthService's token handling, reminder planning) need a simulator
+# to host Stride.app. ci.yml also runs them, but only on the xcode-27 preview image, which may
+# queue for hours or lack a simulator runtime; this is the run that gates a release whatever
+# that image does. First, so a red suite costs minutes rather than an archive and an upload —
+# and inside tmux, so a dropped connection does not kill them. The simulator build needs no
+# signing.
+#
+# STRIDE_SKIP_HOSTED_TESTS=1 is for the day the simulator itself is broken (CoreSimulator
+# wedged, runtime missing) and a fix has to ship anyway. It is never for a failing test: a red
+# test here means the build would ship that bug to everyone.
+if [[ "${STRIDE_SKIP_HOSTED_TESTS:-}" == "1" ]]; then
+    echo "==> [0/2] Hosted tests: SKIPPED (STRIDE_SKIP_HOSTED_TESTS=1)."
+    echo "    ⚠ Shipping WITHOUT the hosted tests. Record why in the release notes."
+else
+    echo "==> [0/2] Hosted tests (simulator)"
+    # Teed to a fixed path: when this runs inside tmux and fails, the session closes with the
+    # script and takes the message with it; the file is what is left to read after reattaching.
+    mkdir -p build
+    ./scripts/ci/run_hosted_tests.sh 2>&1 | tee build/ship-hosted-tests.log || {
+        echo "✗ Hosted tests failed — nothing was archived or uploaded (build/ship-hosted-tests.log)."
+        echo "  Fix them, or, only if the simulator itself is broken, rerun with"
+        echo "  STRIDE_SKIP_HOSTED_TESTS=1."
+        exit 1
+    }
+fi
+echo
+
+# One call for both platforms, so NOTHING is uploaded until both have archived, exported and
+# passed verify_archive.sh. This used to be `ios --upload` then `macos --upload`: a macOS-only
+# gate failure left iOS build $BUILD already in App Store Connect, and the rerun with the same
+# build number died re-uploading iOS before it ever reached macOS.
+echo "==> [1/2] iOS + macOS: archive and verify both, then upload both"
+./scripts/build-appstore.sh all --upload
+echo "==> [2/2] Attach build $BUILD and submit $VERSION for review"
 python3 scripts/release.py finish "$VERSION" "$BUILD"
 python3 scripts/release.py show "$VERSION"
 echo "✓ Done. Both platforms should read WAITING_FOR_REVIEW above."

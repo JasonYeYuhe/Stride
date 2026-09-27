@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The widget extension's own manifest. Through 1.2.3 the appex shipped with none while
+	     using a required-reason API (below). It deliberately does NOT copy the app's
+	     collected-data list: the widget has no network code (it never links APIClient or
+	     Sentry — SentryBootstrap.swift is excluded from this target in project.yml), so it
+	     collects nothing. The app's manifest covers what the app sends. -->
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<!-- App-group defaults only: un-checking a day from the widget queues the deleted
+		     entry id under SyncDeletionQueue.sharedEntriesKey in
+		     UserDefaults(suiteName: "group.yyh.stride.habittracker"), which the app reads on
+		     its next sync (StrideWidget.swift, Shared/SyncDeletionQueue.swift). 1C8F.1 is the
+		     reason for defaults shared with apps/extensions in the same App Group. The widget
+		     reads and writes no other defaults, file timestamps, boot time or disk space. -->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>1C8F.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>
