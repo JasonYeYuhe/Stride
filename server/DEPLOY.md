@@ -25,7 +25,19 @@ ssh -o IdentityAgent=none -i ~/.ssh/id_ed25519 azureuser@172.207.80.109
 > `IdentityAgent=none` is not optional for unattended sessions — the 1Password SSH
 > agent will otherwise hang the connection forever with no prompt.
 
-## ⚠️ Diff the host against the repo BEFORE you rsync
+## Deploying — five steps, in this order
+
+1. tests on the Mac, 2. diff the host, 3. rehearse on a copy of production, 4. back up,
+5. rsync, restart, verify. Steps 2 and 3 are the ones that have each saved a deploy; skip
+neither.
+
+### 1. Tests
+
+```bash
+cd server && npm test && npm run typecheck     # CI runs the same two on every server change
+```
+
+### 2. ⚠️ Diff the host against the repo BEFORE you rsync
 
 The host has held changes that were never committed. On 2026-09-09 a deploy was
 one command away from reverting a live security fix: production's `index.js` was
@@ -41,10 +53,15 @@ Always dry-run first and read the itemised output. `s` means the content differs
 ```bash
 rsync -avzn --itemize-changes \
   --exclude node_modules --exclude '*.db' --exclude '*.db-shm' --exclude '*.db-wal' \
-  --exclude .env --exclude test \
+  --exclude .env --exclude test --exclude SYNC_PAUSED --exclude .DS_Store \
   -e "ssh -o IdentityAgent=none -i ~/.ssh/id_ed25519" --rsync-path="sudo rsync" \
   server/ azureuser@172.207.80.109:/root/stride-server/
 ```
+
+`SYNC_PAUSED` is the [pause switch](#pausing-sync)'s flag file. Carried to the host it would
+pause every user; and since this rsync has no `--delete`, excluding it also means a deploy
+never removes a pause someone set on the host during an incident. Both excludes must be in
+the dry run *and* the real run below, or the dry run is not showing you what will happen.
 
 For every file marked `s` that you did not change yourself, diff it and port the
 host's version into the repo first:
@@ -55,21 +72,69 @@ ssh -o IdentityAgent=none -i ~/.ssh/id_ed25519 azureuser@172.207.80.109 \
 diff /tmp/prod_index.js server/index.js
 ```
 
-Then take a backup before touching anything:
+### 3. Rehearse on a copy of production — must pass before the real rsync
+
+```bash
+scripts/rehearse_server.sh      # ends "✓ rehearsal passed — safe to deploy", exit 0
+```
+
+It copies the working tree's `server/` and an online `.backup` of the live `stride.db` into
+`/root/rehearsal-<stamp>` on the host, boots that copy on `127.0.0.1:3199` with no `.env`
+(no Sentry, no email, no APM), runs [`ops/rehearsal-checks.js`](ops/rehearsal-checks.js)
+against it as the App Review demo account, prints the server log and deletes the directory.
+The live process and database are never touched. The checks: `integrity_check` on the
+migrated copy and the new tables present; `/health`; the AASA file; the demo token signs in;
+a full pull whose `totals` equal its arrays, every entry matched to a habit, every id upper
+case; a 1.2.3-shaped snapshot of the real account applying with nothing skipped and bumping
+no `updated_at`; an unknown-habit entry landing in `skipped.entries`; `cursor_expired` only
+with a ≥ 1.3.1 header; a 20-day-old session sliding to 30 days; and the pause flag answering
+503 then 200.
+
+Why it is a step and not an option: the test suite's database never has the shapes an
+upgraded production database has — columns added by `ALTER TABLE`, rows written by seed
+scripts rather than pushes. 1.2.3's rehearsal found all 133 demo entries with a NULL
+`updated_at`, which no test could have. Any `FAIL` line, or a non-zero exit: do not deploy.
+Rehearse again after porting anything from step 2, because the rehearsal runs the working
+tree.
+
+### 4. Back up
 
 ```bash
 sudo sqlite3 /root/stride-server/stride.db \
   ".backup /root/backups/stride-predeploy-$(date +%Y%m%d-%H%M%S).db"
 ```
 
-Deploy, restart, verify:
+(Kept until deleted by hand — `backup.sh`'s retention matches only the nightly files.)
+
+### 5. Deploy, restart, verify
 
 ```bash
-# (same rsync without -n)
-sudo pm2 restart stride-server --update-env
+rsync -avz --itemize-changes \
+  --exclude node_modules --exclude '*.db' --exclude '*.db-shm' --exclude '*.db-wal' \
+  --exclude .env --exclude test --exclude SYNC_PAUSED --exclude .DS_Store \
+  -e "ssh -o IdentityAgent=none -i ~/.ssh/id_ed25519" --rsync-path="sudo rsync" \
+  server/ azureuser@172.207.80.109:/root/stride-server/
+```
+
+then restart, and check from the Mac (the loopback check only means something from outside):
+
+```bash
+ssh -o IdentityAgent=none -i ~/.ssh/id_ed25519 azureuser@172.207.80.109 \
+  'sudo pm2 restart stride-server --update-env'
 curl -s -o /dev/null -w '%{http_code}\n' https://stride-api.colorarchive.me/health   # 200
 curl -s -m 5 -o /dev/null -w '%{http_code}\n' http://172.207.80.109:3002/health      # 000 = loopback bind intact
+curl -sI https://stride-api.colorarchive.me/.well-known/apple-app-site-association \
+  | grep -iE '^HTTP|^content-type'                                                    # 200, exactly application/json
 ```
+
+The AASA file (the server half of one-tap sign-in from the email link) must come back `200`
+with `Content-Type: application/json` and nothing after it — no `; charset=…`, no redirect,
+no auth. The app sets that header itself; what can break it is nginx, if a `location` rewrites
+or redirects `/.well-known/` or adds a charset. Apple's CDN caches the file for hours, so a
+bad answer outlives the fix. The rehearsal checks the app on `127.0.0.1`; only this `curl`
+checks the path through nginx.
+
+Then from the Mac, `scripts/check_demo_account.sh` should exit 0.
 
 ## Setup on the host
 
@@ -185,7 +250,9 @@ unless you know nothing else sends as it.
   hardens error responses. The global error handler never leaks stack traces
   regardless, but production mode is still expected.
 - `PORT` — defaults to 3002.
-- `FRONTEND_ORIGIN` — allowed CORS origin (default `https://stride.colorarchive.me`).
+- `FRONTEND_ORIGIN` — the origin this process answers on: CORS allowlist and the host in
+  magic-link emails (default `https://stride-api.colorarchive.me`, see `origins.js`; the old
+  default had no DNS record).
 - `RESEND_API_KEY` — magic-link email delivery.
 - `DEMO_TOKEN` — App Review demo account login token, consumed by `seed-demo.js`.
   Mirrored into the ASC App Review sign-in fields; rotate in both places at once.
@@ -195,6 +262,52 @@ unless you know nothing else sends as it.
 - `SENTRY_TRACES_SAMPLE_RATE` — optional, default `0.1`.
 - Datadog APM (`dd-trace`) auto-initializes when `NODE_ENV !== test`; configure
   via the standard `DD_*` env vars (no-op without a local agent).
+- Sync switches and limits, all optional and commented out in `.env.example` with their
+  defaults: `SYNC_PAUSED`, `SYNC_PAUSE_FILE`, `SYNC_PAUSE_RETRY_AFTER_SECONDS` (900) — see
+  [Pausing sync](#pausing-sync); `SYNC_RATE_LIMIT_PER_MIN` (60, per account),
+  `SYNC_AUTH_FAILURE_LIMIT_PER_15MIN` (100, per IP, sync requests without a valid session),
+  `GLOBAL_RATE_LIMIT_PER_15MIN` (100, per IP, everything except sync). None is set on
+  production; the defaults are the intended values.
+
+## Sync contract — what a client can be told
+
+The full contract is the comment at the top of `routes/sync.js`; this is the operator's view:
+which answers exist, and which apps can receive them. `/v1/sync/*` and the legacy `/sync/*`
+behave identically.
+
+An app identifies itself with `X-Stride-Client: ios|macos/<version>(<build>)`, e.g.
+`ios/1.3.1(19)`, sent from 1.3.0 on. **No header, or one that does not parse, means a shipped
+app ≤ 1.2.3**, and those are never sent anything they cannot handle: they push their whole
+history on every sync, cannot split a request, and have no handler for a cursor error — for
+them a 400 is as fatal as a 413 and a 409 would be an endless loop.
+
+| Status | `code` | Who can get it | Meaning / what the app does |
+|---|---|---|---|
+| 200 | — | everyone | Push: `{ok, applied, skipped, skippedReasons}`. Pull: arrays + `totals` + `serverTime`. |
+| 401 | — | everyone | `{error:"Unauthorized"}` — no or expired session; sign in again. |
+| 400 | `invalid_payload` | everyone | A present field is not an array, or `since` is repeated. A client bug. |
+| 400 | `too_many_rows` | header ≥ 1.3.1 | Over 500 habits / 5,000 entries / 200 groups in one push; `limits` says which. Deletion lists are not capped. |
+| 409 | `snapshot_required` | header ≥ 1.3.1 | Support asked this account to re-upload everything ([below](#per-account-re-upload)). One-shot. |
+| 409 | `cursor_expired` | header ≥ 1.3.1 | Pull `since` older than 355 days (365 − 10 grace). The app does a full pull. |
+| 413 | — | everyone | Body over 5 MB. |
+| 429 | `rate_limited` | everyone | Over 60 sync requests/min for the account, or over 100 per 15 min from one IP without a session; `Retry-After`. |
+| 503 | `sync_paused` | everyone | The [pause switch](#pausing-sync) is on; `Retry-After`. |
+
+Error bodies added in 1.3 carry a machine `code` always. With a valid header the body is
+`{error:<code>, code, message:<sentence>}`; without one it is `{error:<sentence>, code}`,
+because 1.2.3 prints `error` verbatim in the Settings footer — a user should read "Too many
+sync requests, please try again later", not `rate_limited`. The older errors (401, the
+global 429, 413) are unchanged.
+
+Skipped rows are reported, never silently dropped: `skippedReasons` names why (`tombstoned`,
+`tombstoned_habit`, `missing_field`, `row_error`, `not_owned`, `not_owned_habit`,
+`skipped_habit`, `unknown_habit`). A shipped app ignores all of it — it decodes only `ok` and
+re-sends everything next time — so the field is additive. It matters from 1.3.1, when apps
+send only what changed and a silently dropped row would be a row that never syncs.
+
+The request log line carries what an operator needs to answer "what did that device send":
+`client=<header or ->`, and for sync `user=… in=… applied=… skipped=… reasons=…` or
+`pull=full|since out=…`.
 
 ## Database Backups
 
@@ -250,8 +363,11 @@ PM2 `reload`/`restart` leaves the DB in a clean state.
 [`ops/crontab.stride`](ops/crontab.stride) lists Stride's lines: the 03:30 backup, the
 03:50 demo top-up and the 04:10 restore drill, each logging to `/root/backups/`. It is a
 **fragment** — root's crontab also holds ColorArchive's jobs, and `crontab <file>` would
-replace them. Install the two new lines (the 03:30 one is already there) after an rsync
-has put `backup.sh` and `ops/` on the host:
+replace them. The block below installs the two new lines (the 03:30 one was already there)
+once an rsync has put `backup.sh` and `ops/` on the host. **Done on production 2026-09-27**
+(the previous crontab is saved in `/root/backups`; first runs: backup `integrity_check: ok
+users: 4`, top-up 43 check-ins added and then 0, drill ok). On a rebuilt host, add the 03:30
+line from the fragment too — the block only appends the 03:50 and 04:10 lines:
 
 ```bash
 sudo chmod 755 /root/stride-server/backup.sh   # cron runs it directly; the .js files run via node
@@ -406,6 +522,71 @@ GitHub Actions cron (5-minute floor, often delayed much longer).
 
 ## Maintenance / GC
 
-The server self-maintains on a 6-hour timer (and once at boot): it deletes
-deletion tombstones older than 90 days and expired sessions / magic-link tokens
-(`db.sweepStaleData()` in `db.js`). No external cron needed for this.
+A 6-hour timer (and one run at boot) sweeps expired sessions and magic links,
+`usage_counters` and `user_clients` rows older than 400 days, and snapshot requests
+answered more than 90 days ago (`db.sweepStaleData()` in `db.js`). No external cron needed.
+
+**Deletion tombstones are kept indefinitely.** Sweeping them would let a ≤ 1.2.3 app
+resurrect deleted rows: it cannot be told its cursor is too old (it has no
+`cursor_expired` handler), pulls past the swept window, and pushes the deleted rows back
+with its next full snapshot. Tombstones are about 100 bytes each. Sweeping returns — at 365
+days, `sweepStaleData({ tombstoneRetentionDays: 365 })` — only after a 426 minimum-version
+floor retires ≤ 1.2.3, and the [usage report](#usage-report) is what says when that is.
+(Until 2026-09-27 this section said tombstones were swept at 90 days; they were, until M0.)
+
+The three tables M0 added — `sync_snapshot_requests`, `usage_counters`, `user_clients` —
+are created on boot with `CREATE TABLE IF NOT EXISTS`; nothing to run by hand.
+
+### Pausing sync
+
+For a day the server cannot take the sync load, or a bad deploy that needs the fleet held
+still while it is rolled back. Every `/v1/sync/*` and `/sync/*` request then answers
+`503 sync_paused` with `Retry-After`, before any session lookup or body parsing. Shipped
+apps show the error in Settings and retry on their next sync, as they do for any failed
+sync; from 1.3.1 (DEV-PLAN-1.3.md M2) apps back off with jitter and show "sync paused". Sign-in and everything else keep
+working.
+
+```bash
+sudo touch /root/stride-server/SYNC_PAUSED                     # pause, Retry-After 900 s
+echo 1800 | sudo tee /root/stride-server/SYNC_PAUSED            # pause, Retry-After 1800 s
+sudo rm /root/stride-server/SYNC_PAUSED                         # resume
+```
+
+Read on every request: no restart either way. `SYNC_PAUSED=1` in `.env` does the same but
+needs `pm2 restart --update-env`, so prefer the file. The file is gitignored and excluded
+from the deploy rsync (see step 2).
+
+There is deliberately no global "everyone re-upload" switch: every installed app would push
+its whole history in the same minute.
+
+### Per-account re-upload
+
+For support: an account whose server copy is missing rows the user still has on a device.
+The next push or pull from that account by an app ≥ 1.3.1 gets `409 snapshot_required`, and
+that device marks every local row dirty and uploads them all (the client half is M2; until a
+1.3.1 build ships, a request just stays pending). Apps before 1.3.1 already push
+everything on every sync and leave the request pending for a newer device.
+
+```bash
+cd /root/stride-server
+sudo node ops/request-snapshot.js <email> [note]   # set it, or re-arm an answered one
+sudo node ops/request-snapshot.js --list           # pending, or "answered <time> to <client>"
+sudo node ops/request-snapshot.js --clear <email>  # withdraw it
+```
+
+Answered is not repaired: the 409 can be lost on the way (a timeout, the app suspended).
+Check the account's rows; if the re-upload never came, run it again for the email.
+
+### Usage report
+
+```bash
+cd /root/stride-server && sudo node ops/usage-report.js [--days N] [--db path]
+```
+
+Active accounts by client version over 7 / 28 / 56 days, the legacy (no header) and < 1.3.1
+cohorts, and counter totals by UTC day: `snake_fallback.*` (the snake_case shim),
+`habit_without_kind`, `mount.*` (hits on the legacy `/sync`, `/auth`, `/habits` mounts),
+`client.*`. It opens the database read-only and runs no migrations, so it is safe on the live
+host or on a copy. The process flushes its counters hourly and on SIGTERM, so the report
+trails live traffic by up to an hour. **These numbers, not a date, decide when the
+snake_case shim, the legacy mounts, the 426 floor and tombstone sweeping can go.**

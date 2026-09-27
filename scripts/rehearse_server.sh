@@ -19,7 +19,7 @@ R="/root/rehearsal-$STAMP"
 
 echo "==> copying server/ to $HOST:$R"
 rsync -az --exclude node_modules --exclude '*.db' --exclude '*.db-shm' --exclude '*.db-wal' \
-  --exclude .env --exclude test --exclude SYNC_PAUSED \
+  --exclude .env --exclude test --exclude SYNC_PAUSED --exclude .DS_Store \
   -e "ssh ${SSH_OPTS[*]}" --rsync-path="sudo mkdir -p $R && sudo rsync" \
   server/ "$HOST:$R/"
 

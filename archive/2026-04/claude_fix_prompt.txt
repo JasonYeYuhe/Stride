@@ -1,0 +1,52 @@
+请在当前仓库中直接完成修改，不要只做分析。
+
+你需要基于 `CLAUDE_AUDIT_HANDOFF.md` 里的审计结论，优先修复最高优先级问题，并在结束时汇报修改内容、验证结果、剩余风险。
+
+工作要求：
+
+1. 先阅读这些文件：
+   - `CLAUDE_AUDIT_HANDOFF.md`
+   - `server/routes/sync.js`
+   - `server/db.js`
+   - `server/index.js`
+   - `server/DEPLOY.md`
+   - `Stride/Sources/Services/APIClient.swift`
+   - `Stride/Sources/Services/SyncService.swift`
+   - `Stride/Sources/Services/AuthService.swift`
+   - `Stride/Sources/App/StrideApp.swift`
+   - `StrideWidget/Sources/StrideWidget.swift`
+   - `.github/workflows/ci.yml`
+
+2. 直接实现下面这些修复，优先级从高到低：
+   - 修复跨设备同步协议不完整的问题：
+     - 让删除可以跨设备传播
+     - 让 reminder 相关字段可以持久化并 round-trip
+     - 让 note 可以持久化并 round-trip
+     - 不要让已删除的数据在另一台设备上“复活”
+   - 修复 Widget 中取消打卡无法正确参与删除同步的问题
+   - 修复 server 静态页面路径/部署假设错误，确保 `/privacy`、`/terms`、`/support` 能正常工作
+   - 修复冷启动时 session 恢复和自动 sync 的时序问题
+   - 补充必要测试和 CI 覆盖，至少覆盖：
+     - sync 删除传播
+     - sync 字段 round-trip
+     - iOS `StrideTests`
+
+3. 修改原则：
+   - 不要删除或回滚无关的未提交文件
+   - 尽量沿用现有代码风格
+   - 优先修真实问题，不做大规模无关重构
+   - 如果需要调整 schema，请同时处理迁移/兼容风险
+
+4. 完成后请执行并汇报这些验证：
+   - `cd server && npm test`
+   - `xcodebuild build -scheme Stride -project Stride.xcodeproj -destination 'platform=iOS Simulator,name=iPhone 17' CODE_SIGNING_ALLOWED=NO`
+   - `xcodebuild test -scheme StrideTests -project Stride.xcodeproj -destination 'platform=iOS Simulator,name=iPhone 17' CODE_SIGNING_ALLOWED=NO`
+   - 任何你新增的测试
+
+5. 最终汇报格式：
+   - 已修复问题
+   - 关键改动点
+   - 验证结果
+   - 剩余风险 / 后续建议
+
+如果你发现 `CLAUDE_AUDIT_HANDOFF.md` 中某条结论不准确，可以修正，但必须给出具体代码证据。

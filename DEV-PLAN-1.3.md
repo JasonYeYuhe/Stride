@@ -147,7 +147,10 @@ rehearsal is what caught 1.2.3's NULL `updated_at`):
 - `scripts/verify_archive.sh`, called by `ship.sh` before upload: assert the appex, both
   privacy manifests, `CFBundleDisplayName`, and — from M1 — the associated-domains
   entitlement, in the archive that is actually being shipped. CI cannot see the machine that
-  ships.
+  ships. *(As built in M0: `build-appstore.sh` calls it after each archive and again on the
+  export with `--exported` — the archive is Development-signed, so entitlements are asserted on
+  the Distribution-signed app that is uploaded — and uploads nothing until every requested
+  platform has passed.)*
 - A **hosted test target** `StrideAppTests` (TEST_HOST = Stride.app) so `StoreService`,
   `SyncService.sync` ordering, `APIClient` (401 → nil token; header; decode of
   `applied/skipped`), `NotificationService` trigger planning and `AuthService` become
@@ -177,7 +180,8 @@ equal to the array lengths; `GET /v1/sync/pull?since=<400 days ago>` with `X-Str
 ios/1.3.1(19)` returns 409 and without the header returns 200; a 20-day-old session's
 `expires_at` extends (visible in sqlite); `curl -sI …/.well-known/apple-app-site-association`
 returns 200 `application/json`. (3) A PR shows the new jobs green; a scratch branch that
-deletes `embed: true` from `project.yml` turns `ios-build` (or the pre-push hook) red.
+sets the widget dependency to `embed: false` in `project.yml` (deleting `embed: true` is a
+no-op in XcodeGen 2.45.3) turns `ios-build` (or the pre-push hook) red.
 (4) `scripts/check_demo_account.sh` green; the re-seed cron run once by hand leaves it green.
 (5) The restore-drill log shows `integrity_check: ok` with row counts; stopping the pm2
 process for two minutes triggers the uptime alert once. (6) `git status` clean at the repo
@@ -265,11 +269,14 @@ release that does not touch the schema.
   twice per render; `WeeklyReviewView` empty state when `habits.isEmpty` and hide the Stats
   toolbar button then; remove the dead `AnalyticsService` call sites, the Settings analytics
   toggle and the `ProductInteraction` entry in `Stride/PrivacyInfo.xcprivacy` (the appID is a
-  placeholder — the declared collection never happens); paywall reads
-  `product.subscription?.introductoryOffer` + `isEligibleForIntroOffer` and renders "$0.99 for
-  the first month, then $2.99/month" when eligible, and computes the SAVE badge from the real
-  yearly-vs-12×monthly prices (depends on the M0 ASC check); `APIClient` sends
-  `X-Stride-Client: ios|macos/<version>(<build>)`.
+  placeholder — the declared collection never happens); the paywall computes the SAVE badge
+  from the real yearly-vs-12×monthly prices (the M0 ASC check found **no introductory offers**
+  on Monthly or Yearly, so no intro-offer disclosure line is needed; `Configuration.storekit`
+  and `setup_iap.py` were aligned in M0); `APIClient` sends
+  `X-Stride-Client: ios|macos/<version>(<build>)` and — because the server answers a client
+  that sends the header with the machine code in `error` — decodes `{error, code?, message?}`,
+  shows `message ?? error`, and matches behaviour on `code` (`sync_paused`, `rate_limited`,
+  …) so 1.3.0 never prints a raw code in the Settings footer.
 - **Metadata.** `description.txt` widget sentence in all six locales → "small, medium and
   large on the Home Screen", edited in this submission only and pushed with
   `scripts/push_metadata.py`. What's New: text fixes in every language, large widget, larger
@@ -321,14 +328,24 @@ the plan; both reviewers called the first estimate a fantasy, and it is schedule
   history until the next sync — peers see fewer entries temporarily, which the reconciler
   already tolerates. Acknowledge per chunk — only rows whose `updatedAt` still equals what
   was sent, and never ids in the response's `skipped`. `SyncDeletionQueue.acknowledge` only
-  the delivered deletion ids.
+  the delivered deletion ids. *(As built in M0: the server caps only rows — deletion lists are
+  uncapped, since deleting a multi-year habit queues one id per check-in — so chunk 1 may carry
+  every deletion; a 400 whose `code` is `too_many_rows` is a planner bug: re-chunk against the
+  returned `limits`, never bisect or quarantine.)*
 - **Poison-pill guard.** A chunk answered with 400 is bisected; a single row that still fails
   is quarantined (acknowledged, kept locally, reported to Sentry with its id) so one bad row
   cannot wedge sync forever. 429 / 5xx / `sync_paused` → retry on the next sync with jittered
   backoff, never `syncError` (today `APIClient`/`SyncService` have no retry at all).
-- **Skipped rows.** An entry the server skipped (unknown or tombstoned habit) is acknowledged
-  and reported with a count; if its habit is also absent locally it is deleted. A habit or
-  group the server skipped stays dirty for one retry, then is acknowledged and reported.
+- **Skipped rows.** Act on the push response's `skippedReasons` (added in M0), not on the id
+  alone: `tombstoned` / `tombstoned_habit` → acknowledge and drop (if the habit is also absent
+  locally, delete the entry); `missing_field` / `row_error` → quarantine like a poison row;
+  `unknown_habit` / `skipped_habit` → keep dirty and retry once the habit lands, then
+  acknowledge and report; `not_owned` / `not_owned_habit` are the previous account's rows after
+  "keep the habits on this device" — give those habits (and their entries and groups) new
+  UUIDs and push again, **never acknowledge them**, or the full-pull deletion pass removes the
+  data the user chose to keep. Back off on `code` `sync_paused` (503) and `rate_limited` (429)
+  using `retryAfterSeconds` / `Retry-After`. `409 snapshot_required` is sent once per request
+  (support re-arms it with `ops/request-snapshot.js` if a device lost it).
 - **Reconciler.** Set `syncedAt = updatedAt` wherever remote state is applied (habit
   update/insert, entry update/insert including the id-alignment path, group update/insert) —
   otherwise the device's own push returns through the 60 s overlap at whole-second precision,

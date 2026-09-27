@@ -35,3 +35,6 @@ server/stride.db
 
 # Sync pause flag (server/lib/syncPause.js): runtime-only, never commit or deploy it
 server/SYNC_PAUSED
+
+# Per-machine MCP config: a symlink to ~/.mcp.json, which holds no project settings
+.mcp.json
