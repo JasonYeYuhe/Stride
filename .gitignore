@@ -32,3 +32,6 @@ scripts/.env
 server/node_modules/
 server/.env
 server/stride.db
+
+# Sync pause flag (server/lib/syncPause.js): runtime-only, never commit or deploy it
+server/SYNC_PAUSED

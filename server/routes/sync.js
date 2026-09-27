@@ -1,15 +1,17 @@
 // @ts-check
 const express = require("express");
 const router = express.Router();
-const crypto = require("crypto");
-const { rateLimit } = require("express-rate-limit");
 
 /** @typedef {{ id: string, name: string, emoji: string, color_hex: string, is_archived: number, sort_order: number, reminder_enabled: number, reminder_hour: number, reminder_minute: number, note: string|null, kind: string, target_value: number, unit: string|null, schedule_kind: string, times_per_week: number, active_days_mask: number, group_id: string|null, created_at: string, updated_at: string }} HabitRow */
 /** @typedef {{ id: string, habit_id: string, date: string, note: string|null, value: number, created_at: string, updated_at: string }} EntryRow */
 /** @typedef {{ id: string, name: string, color_hex: string, sort_order: number, created_at: string, updated_at: string }} GroupRow */
 /** @typedef {{ entity_type: string, entity_id: string }} TombstoneRow */
 const db = require("../db");
-const { requireUser } = require("../auth");
+const { attachSessionUser, requireUser } = require("../auth");
+const { clientAtLeast, clientInfo, errorBody } = require("../lib/clientVersion");
+const { syncPauseGuard } = require("../lib/syncPause");
+const { createSyncLimiter, createSyncAuthFailureLimiter } = require("../lib/rateLimits");
+const metrics = require("../metrics");
 
 /**
  * Read a push-payload field that may arrive under either casing.
@@ -23,12 +25,21 @@ const { requireUser } = require("../auth");
  * user's local records because the server had none. The client is fixed, but
  * installed clients keep sending snake_case until users update, so the server
  * must accept both. Do not remove while any <= 1.2.1 build is still in the wild.
+ *
+ * Each read that finds only the snake_case key is counted (metrics.js,
+ * `snake_fallback.<camelKey>`): the shim goes when that counter has read zero for long
+ * enough, not on a date.
  */
 const toSnake = (k) => k.replace(/[A-Z]/g, (c) => "_" + c.toLowerCase());
 function field(obj, camelKey) {
   if (obj === null || obj === undefined) return undefined;
   const v = obj[camelKey];
-  return v !== undefined ? v : obj[toSnake(camelKey)];
+  if (v !== undefined) return v;
+  const snakeKey = toSnake(camelKey);
+  if (snakeKey === camelKey) return undefined;
+  const snake = obj[snakeKey];
+  if (snake !== undefined) metrics.count(`snake_fallback.${camelKey}`);
+  return snake;
 }
 
 /*
@@ -46,9 +57,10 @@ function field(obj, camelKey) {
  *   one and the last device to push won: an iPad coming back online with "Water 2/8" from the
  *   morning overwrote the 8/8 logged on the phone that afternoon, and pulled 2 back to it.
  *
- * A row's `updated_at` moves only when the push actually changes it. Every client pushes a
- * full snapshot on every sync, so bumping unchanged rows would put the whole dataset back
- * into every other device's incremental pull.
+ * A row's `updated_at` moves only when the push actually changes it. Every client up to 1.3.0
+ * pushes a full snapshot on every sync, so bumping unchanged rows would put the whole dataset
+ * back into every other device's incremental pull — and from 1.3.1, where a device pushes only
+ * its changed rows, a 1.2.3 phone's snapshot of the same rows must still change nothing.
  */
 
 /** Normalise a client timestamp to this server's own format, or null if it isn't one.
@@ -77,30 +89,200 @@ function wireTime(v) {
 }
 
 
-// Sync-specific rate limit: 30 requests per minute per IP
-const syncLimiter = process.env.NODE_ENV === "test"
-  ? /** @type {import('express').RequestHandler} */ ((req, res, next) => next())
-  : rateLimit({
-      windowMs: 60 * 1000,
-      max: 30,
-      standardHeaders: true,
-      legacyHeaders: false,
-      message: { error: "Too many sync requests, please try again later" },
-    });
+/*
+ * The incremental-push contract (server half; the 1.3.1 client is DEV-PLAN-1.3.md M2).
+ *
+ * From 1.3.1 a device pushes only its changed rows, chunked, and marks a row synced only once
+ * the server has accepted it. So the push response says, per row, what happened:
+ *   applied — rows accepted. Includes rows the LWW guard kept as they were (the server already
+ *             holds an edit at least as new) and identical re-sends: the device may treat them
+ *             as delivered, and its next pull brings the newer version down.
+ *   skipped — ids that were not written, with the reason for each in `skippedReasons`
+ *             (`{habits:{id:reason}, entries:{…}, groups:{…}}`). The reason is what tells the
+ *             device whether to drop the row or send it again, so it must not be guessed from
+ *             the id alone:
+ *               tombstoned        the row itself was deleted (earlier, or in this very push) — drop
+ *               tombstoned_habit  an entry whose habit was deleted — drop
+ *               missing_field     no name / habitId / date — never applies as sent
+ *               row_error         SQLite refused the row (constraint, unbindable value)
+ *               not_owned         a habit or group id that belongs to another account
+ *               not_owned_habit   an entry whose habit id belongs to another account
+ *               skipped_habit     an entry whose habit was in this push and was skipped — retry
+ *                                 once the habit lands
+ *               unknown_habit     an entry whose habit this server does not have at all (e.g.
+ *                                 the habit's own chunk has not landed yet) — retry
+ *             The two not_owned reasons are what "keep this device's habits and add them to
+ *             this account" hits: those ids are the previous account's rows, so acknowledging
+ *             them would lose the data the user chose to keep — they need new ids.
+ * Before 1.3.1 nothing read this — the apps decode only `ok` — and a dropped row was harmless
+ * because the next snapshot re-sent it anyway. Once clients stop re-sending, a silent drop
+ * becomes a row that is never synced, so it has to be visible.
+ *
+ * One malformed row must never fail the request. The 1.3.1 client bisects a chunk answered
+ * 400 down to the one bad row and quarantines it, but backs off on 5xx; a row that made every
+ * push of its chunk 500 would stop that account syncing, permanently.
+ */
 
+/**
+ * Row caps per request, for clients that chunk (>= 1.3.1).
+ *
+ * Rows only, not the deleted*Ids lists. The apps queue one deletedEntryId per check-in when a
+ * habit is deleted (SettingsView: trackDeletedEntry for every record), so deleting a couple
+ * of multi-year habits queues thousands of ids, and M2's planner sends all deletions in its
+ * first chunk. A cap there would 400 that chunk on every sync — and bisecting its rows never
+ * shrinks the deletion list, so the account would stop syncing. Each id is one indexed DELETE
+ * and one tombstone INSERT; the 5 MB body limit bounds them, as it always has.
+ */
+const ROW_LIMITS = Object.freeze({ habits: 500, entries: 5000, groups: 200 });
+
+/** Every array a push may carry, in either casing (see field()). */
+const PUSH_ARRAYS = /** @type {const} */ ([
+  "habits", "entries", "groups", "deletedHabitIds", "deletedEntryIds", "deletedGroupIds",
+]);
+
+/*
+ * Change-feed cursors. Tombstones are kept forever for now (db.js sweepStaleData), so no
+ * cursor is ever actually too old to be served correctly. The window is a contract with the
+ * 1.3.1 client, enforced before sweeping comes back: once a 426 minimum-version floor has
+ * retired the <= 1.2.3 apps, tombstones older than CURSOR_RETENTION_DAYS can be swept, and a
+ * client whose cursor predates what the server still holds must do a full pull instead of
+ * trusting an incremental one that silently lacks those deletions. The grace refuses cursors
+ * 10 days before the sweep line, so a cursor accepted today can never need a tombstone that a
+ * sweep running between two syncs has just removed.
+ */
+const CURSOR_RETENTION_DAYS = 365;
+
+/** Row errors logged one line each per request; the rest are counted. */
+const MAX_ROW_ERROR_LOG_LINES = 5;
+const CURSOR_GRACE_DAYS = 10;
+
+/** @param {unknown} v */
+const isRow = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** A row's id if it has a usable one. @param {unknown} row @returns {string|null} */
+function rowId(row) {
+  if (!isRow(row)) return null;
+  const id = /** @type {any} */ (row).id;
+  return typeof id === "string" && id !== "" ? id : null;
+}
+
+/**
+ * A failure that belongs to one row, not to the request: a constraint SQLite refused (the
+ * statement is rolled back, the transaction survives), or a value better-sqlite3 cannot bind
+ * (an object or boolean where a string belongs — thrown before the statement runs).
+ * Anything else — disk, lock, a bug — still fails the request.
+ * @param {any} err
+ */
+function isRowError(err) {
+  if (err instanceof TypeError || err instanceof RangeError) return true;
+  const code = err?.code;
+  return typeof code === "string" && (code.startsWith("SQLITE_CONSTRAINT") || code === "SQLITE_MISMATCH");
+}
+
+/**
+ * Support tool, one account at a time: `ops/request-snapshot.js <email>` sets a flag, and the
+ * next push or pull from that account's first 1.3.1+ device answers 409 snapshot_required —
+ * that device marks every row dirty and re-uploads everything, repairing an account whose
+ * server copy has gone wrong. One-shot: answering marks the request answered (when, and to
+ * which build) instead of deleting it. The 409 can be lost on the way — a timeout, the app
+ * suspended mid-sync — and the device then carries on incrementally with the repair never
+ * run; a deleted row would leave support believing it had. `request-snapshot.js --list` shows
+ * answered requests, and running it again for the email re-arms one. Clients before 1.3.1
+ * have no handler for the 409, and push a full snapshot on every sync anyway, so they neither
+ * see it nor use the request up.
+ */
+const takeSnapshotRequest = db.prepare(
+  "UPDATE sync_snapshot_requests SET answered_at = ?, answered_client = ? WHERE user_id = ? AND answered_at IS NULL"
+);
+
+/** @param {import('express').Request} req @param {import('express').Response} res */
+function answerSnapshotRequest(req, res) {
+  if (!clientAtLeast(req, "1.3.1")) return false;
+  const client = /** @type {import('../lib/clientVersion').ClientInfo} */ (clientInfo(req));
+  const label = `${client.platform}/${client.version}(${client.build})`;
+  if (takeSnapshotRequest.run(new Date().toISOString(), label, req.user.id).changes === 0) return false;
+  res.locals.syncStats = { user: req.user.id, snapshotRequested: 1 };
+  res.status(409).json(errorBody(req, "snapshot_required", "This account needs a full re-upload from this device."));
+  return true;
+}
+
+// Order matters, cheapest refusal first: a paused server answers before any session lookup,
+// and nobody's snapshot is parsed until the session and the per-account limit have passed.
+// The 5 MB parser lives here rather than in index.js for that reason — index.js mounts this
+// router ahead of the global 10kb parser, which would otherwise 413 every snapshot (see the
+// comment on the parser below).
+// Sync is exempt from the global per-IP limiter (lib/rateLimits.js), so requests WITHOUT a
+// valid session get their own per-IP limit, between the session lookup and the 401: signed-in
+// devices behind one NAT address never share a bucket, and token guessing still does.
+router.use(syncPauseGuard);
+router.use(attachSessionUser);
+router.use(createSyncAuthFailureLimiter());
 router.use(requireUser);
-router.use(syncLimiter);
+router.use(metrics.noteSyncClient);   // which app build this account syncs from (metrics.js)
+router.use(createSyncLimiter());
+
+// Why sync needs a larger body limit than the global 10kb: every client up to 1.3.0
+// (SyncService.pushLocal) sends a FULL SNAPSHOT of every habit and every check-in on every
+// sync, so the payload grows without bound. Measured against the old 10kb cap: one habit is
+// 403 B and one entry 175 B, so 3 habits + 53 entries = 10,627 B returned 413 — under three
+// weeks of daily use. Worse, sync() awaits pushLocal BEFORE pullRemote, so a 413 killed BOTH
+// directions and never self-healed. 5mb is ~15 years of daily check-ins at the measured wire
+// size, and stays the ONLY ceiling for those clients: they cannot chunk, so the row caps below
+// apply to 1.3.1+ only. body-parser sets `req._body` and the first parser to run wins, so this
+// one must run before the global parser — which is why index.js mounts this router first.
+router.use(express.json({ limit: "5mb" }));
 
 // POST /sync/push — mobile app pushes local changes to server
-// Accepts { habits: [...], entries: [...], deletedHabitIds: [...], deletedEntryIds: [...] }
+// Accepts { habits, entries, groups, deletedHabitIds, deletedEntryIds, deletedGroupIds }
+// Returns { ok, applied: {habits, entries, groups}, skipped: {habits: [ids], entries: [ids], groups: [ids]},
+//           skippedReasons: {habits: {id: reason}, entries: {…}, groups: {…}} }
 router.post("/push", (req, res) => {
-  const habits = req.body.habits ?? [];
-  const entries = req.body.entries ?? [];
-  const groups = req.body.groups ?? [];
-  const deletedHabitIds = field(req.body, "deletedHabitIds") ?? [];
-  const deletedEntryIds = field(req.body, "deletedEntryIds") ?? [];
-  const deletedGroupIds = field(req.body, "deletedGroupIds") ?? [];
   const userId = req.user.id;
+  const body = req.body ?? {};
+
+  // A present-but-wrong field used to throw a TypeError inside the loop and answer 500. null
+  // still means "none" — a test pins that for the shipped clients.
+  /** @type {Record<string, unknown[]>} */
+  const lists = {};
+  for (const name of PUSH_ARRAYS) {
+    const v = field(body, name);
+    if (v === undefined || v === null) { lists[name] = []; continue; }
+    if (!Array.isArray(v)) {
+      return res.status(400).json(errorBody(req, "invalid_payload", `Sync data was malformed ("${name}" must be an array).`));
+    }
+    lists[name] = v;
+  }
+  const { habits, entries, groups } = lists;
+
+  // Caps only for clients that chunk. A client before 1.3.1 — and 1.3.0, which still pushes a
+  // full snapshot — cannot split its push, so a 400 would be exactly as fatal to it as a 413:
+  // every sync fails, forever. The 5 MB body limit stays their only ceiling. For a chunking
+  // client the caps turn "too big" into a diagnosable error naming the limits, instead of a
+  // bare 413 or a request that holds the write lock for seconds.
+  if (clientAtLeast(req, "1.3.1")) {
+    const over = /** @type {(keyof typeof ROW_LIMITS)[]} */ (Object.keys(ROW_LIMITS))
+      .filter((name) => lists[name].length > ROW_LIMITS[name]);
+    if (over.length > 0) {
+      return res.status(400).json(errorBody(req, "too_many_rows",
+        `Too many rows in one request (${over.join(", ")}); split the push into smaller chunks.`,
+        { limits: ROW_LIMITS }));
+    }
+  }
+
+  if (answerSnapshotRequest(req, res)) return;
+
+  // Deletion ids that are not non-empty strings cannot be anyone's row; bound as-is, an object
+  // would throw and fail the whole push.
+  let noId = 0;
+  /** @param {unknown[]} ids @returns {string[]} */
+  const idsOnly = (ids) => /** @type {string[]} */ (ids.filter((id) => {
+    const ok = typeof id === "string" && id !== "";
+    if (!ok) noId++;
+    return ok;
+  }));
+  const deletedHabitIds = idsOnly(lists.deletedHabitIds);
+  const deletedEntryIds = idsOnly(lists.deletedEntryIds);
+  const deletedGroupIds = idsOnly(lists.deletedGroupIds);
 
   const upsertHabit = db.prepare(`
     INSERT INTO habits (id, user_id, name, emoji, color_hex, is_archived, sort_order,
@@ -200,18 +382,49 @@ router.post("/push", (req, res) => {
   const fetchGroupTombstones = db.prepare(
     "SELECT entity_id FROM deletion_tombstones WHERE user_id = ? AND entity_type = 'group'"
   );
+  const fetchHabitIds = db.prepare("SELECT id FROM habits WHERE user_id = ?");
+  const habitExists = db.prepare("SELECT 1 FROM habits WHERE id = ?");
+  const fetchGroupIds = db.prepare("SELECT id FROM habit_groups WHERE user_id = ?");
+
+  /** @param {import('better-sqlite3').Statement} stmt @returns {Set<string>} */
+  const idSet = (stmt, col = "id") =>
+    new Set(/** @type {Record<string, string>[]} */ (stmt.all(userId)).map((r) => r[col]));
+
+  const applied = { habits: 0, entries: 0, groups: 0 };
+  /** Skipped id -> reason, per kind; a Map keeps the order ids were skipped in. The first
+   * reason wins when an id is sent twice. @type {{ habits: Map<string, string>, entries: Map<string, string>, groups: Map<string, string> }} */
+  const skipped = { habits: new Map(), entries: new Map(), groups: new Map() };
+  /** @type {Record<string, number>} */
+  const reasons = {};
+  /** @param {"habits"|"entries"|"groups"} kind @param {string} id @param {string} reason */
+  const skip = (kind, id, reason) => {
+    if (!skipped[kind].has(id)) skipped[kind].set(id, reason);
+    reasons[reason] = (reasons[reason] ?? 0) + 1;
+  };
+  // A row error is logged, but the id is client text: raw, an id holding a newline wrote a
+  // whole forged request line into the log, and one push of 5 MB of bad rows (no row caps
+  // before 1.3.1) wrote a line per row. So the id is quoted and cut, and only the first few
+  // rows per request get a line; the rest are counted (`reasons` on the request line).
+  let rowErrors = 0;
+  /** @param {"habits"|"entries"|"groups"} kind @param {string} id @param {any} err */
+  const skipRowError = (kind, id, err) => {
+    if (++rowErrors <= MAX_ROW_ERROR_LOG_LINES) {
+      const why = String(`${err?.code ?? err?.name} ${err?.message}`).replace(/\s+/g, " ").slice(0, 200);
+      console.warn(`[sync] push user=${userId} skipped ${kind} ${JSON.stringify(id.slice(0, 64))}: ${why}`);
+    }
+    skip(kind, id, "row_error");
+  };
 
   const transaction = db.transaction(() => {
     // Load pre-existing tombstones to prevent cross-device resurrection
-    const blockedHabits = new Set(
-      /** @type {{ entity_id: string }[]} */ (fetchHabitTombstones.all(userId)).map((r) => r.entity_id)
-    );
-    const blockedEntries = new Set(
-      /** @type {{ entity_id: string }[]} */ (fetchEntryTombstones.all(userId)).map((r) => r.entity_id)
-    );
-    const blockedGroups = new Set(
-      /** @type {{ entity_id: string }[]} */ (fetchGroupTombstones.all(userId)).map((r) => r.entity_id)
-    );
+    const blockedHabits = idSet(fetchHabitTombstones, "entity_id");
+    const blockedEntries = idSet(fetchEntryTombstones, "entity_id");
+    const blockedGroups = idSet(fetchGroupTombstones, "entity_id");
+    // This account's rows before the push. An upsert of an id outside these sets that changed
+    // nothing hit the `user_id = ?` guard: the id is another account's row.
+    // (Added to as rows are accepted, so an id sent twice in one push is not misread.)
+    const ownGroups = idSet(fetchGroupIds);
+    const ownHabitsSoFar = idSet(fetchHabitIds);
 
     // Delete first and record tombstones
     const now = new Date().toISOString();
@@ -232,130 +445,224 @@ router.post("/push", (req, res) => {
     }
 
     // Upsert groups first so habits can reference them
-    for (const g of groups) {
-      if (blockedGroups.has(g.id)) continue;
-      if (!g.id || !g.name) continue;
-      upsertGroup.run(
-        g.id, userId, g.name, field(g, "colorHex") || "#34C759", field(g, "sortOrder") || 0,
-        field(g, "createdAt") || now, now, isoOrNull(field(g, "updatedAt")) || now,
-        userId,
-      );
+    for (const g of /** @type {any[]} */ (groups)) {
+      const id = rowId(g);
+      if (!id) { noId++; continue; }
+      if (blockedGroups.has(id)) { skip("groups", id, "tombstoned"); continue; }
+      if (!g.name) { skip("groups", id, "missing_field"); continue; }
+      try {
+        const r = upsertGroup.run(
+          id, userId, g.name, field(g, "colorHex") || "#34C759", field(g, "sortOrder") || 0,
+          field(g, "createdAt") || now, now, isoOrNull(field(g, "updatedAt")) || now,
+          userId,
+        );
+        if (r.changes === 0 && !ownGroups.has(id)) { skip("groups", id, "not_owned"); continue; }
+        ownGroups.add(id);
+        applied.groups++;
+      } catch (err) {
+        if (!isRowError(err)) throw err;
+        skipRowError("groups", id, err);
+      }
     }
 
     // Upsert habits — skip any that are tombstoned (deleted in this push or previously)
-    for (const h of habits) {
-      if (blockedHabits.has(h.id)) continue;
-      if (!h.id || !h.name) continue;
+    for (const h of /** @type {any[]} */ (habits)) {
+      const id = rowId(h);
+      if (!id) { noId++; continue; }
+      // Apps before `kind` existed (1.1) push habits without it, and the upsert below resets
+      // the stored kind/target/unit to defaults: the field-wipe population, never measured.
+      if (h.kind === undefined) metrics.count("habit_without_kind");
+      if (blockedHabits.has(id)) { skip("habits", id, "tombstoned"); continue; }
+      if (!h.name) { skip("habits", id, "missing_field"); continue; }
       // Drop a stale group reference (group deleted on another device)
       const rawGroupId = field(h, "groupId");
       const groupId = rawGroupId && !blockedGroups.has(rawGroupId) ? rawGroupId : null;
-      upsertHabit.run(
-        h.id, userId, h.name, h.emoji || "⭐", field(h, "colorHex") || "#34C759",
-        field(h, "isArchived") ? 1 : 0, field(h, "sortOrder") || 0,
-        field(h, "reminderEnabled") ? 1 : 0, field(h, "reminderHour") ?? 20, field(h, "reminderMinute") ?? 0,
-        h.note ?? null,
-        h.kind || "binary", field(h, "targetValue") ?? 1, h.unit ?? null,
-        field(h, "scheduleKind") || "daily", field(h, "timesPerWeek") ?? 7, field(h, "activeDaysMask") ?? 127,
-        groupId,
-        field(h, "createdAt") || now, now, isoOrNull(field(h, "updatedAt")) || now,
-        userId,
-      );
+      try {
+        const r = upsertHabit.run(
+          id, userId, h.name, h.emoji || "⭐", field(h, "colorHex") || "#34C759",
+          field(h, "isArchived") ? 1 : 0, field(h, "sortOrder") || 0,
+          field(h, "reminderEnabled") ? 1 : 0, field(h, "reminderHour") ?? 20, field(h, "reminderMinute") ?? 0,
+          h.note ?? null,
+          h.kind || "binary", field(h, "targetValue") ?? 1, h.unit ?? null,
+          field(h, "scheduleKind") || "daily", field(h, "timesPerWeek") ?? 7, field(h, "activeDaysMask") ?? 127,
+          groupId,
+          field(h, "createdAt") || now, now, isoOrNull(field(h, "updatedAt")) || now,
+          userId,
+        );
+        if (r.changes === 0 && !ownHabitsSoFar.has(id)) { skip("habits", id, "not_owned"); continue; }
+        ownHabitsSoFar.add(id);
+        applied.habits++;
+      } catch (err) {
+        if (!isRowError(err)) throw err;
+        skipRowError("habits", id, err);
+      }
     }
 
+    // Read once, after this push's habit deletes and upserts: a habit created in this push
+    // counts, one deleted in it does not. This was one SELECT per entry.
+    const ownHabits = idSet(fetchHabitIds);
+
     // Upsert entries — skip any that are tombstoned (deleted in this push or previously)
-    for (const e of entries) {
-      if (blockedEntries.has(e.id)) continue;
+    for (const e of /** @type {any[]} */ (entries)) {
+      const id = rowId(e);
+      if (!id) { noId++; continue; }
+      if (blockedEntries.has(id)) { skip("entries", id, "tombstoned"); continue; }
       const entryHabitId = field(e, "habitId");
-      if (!e.id || !entryHabitId || !e.date) continue;
-      // Verify the habit belongs to this user
-      const habit = db.prepare("SELECT id FROM habits WHERE id = ? AND user_id = ?").get(entryHabitId, userId);
-      if (habit) {
+      if (!entryHabitId || !e.date) { skip("entries", id, "missing_field"); continue; }
+      // Not one of this account's habits. Which case it is decides whether the device drops
+      // the entry or keeps it for a retry (see the contract above), so say which. The lookup
+      // runs only on this path.
+      if (!ownHabits.has(entryHabitId)) {
+        const reason = blockedHabits.has(entryHabitId) ? "tombstoned_habit"
+          : habitExists.get(entryHabitId) ? "not_owned_habit"
+          : skipped.habits.has(entryHabitId) ? "skipped_habit"
+          : "unknown_habit";
+        skip("entries", id, reason);
+        continue;
+      }
+      try {
         // Clients before 1.2.3 send no entry updatedAt; stamping those `now` keeps their
         // last-push-wins behaviour rather than letting them lose every conflict.
-        upsertEntry.run(e.id, entryHabitId, e.date, e.note ?? null, e.value ?? 1, field(e, "createdAt") || now, now,
-          isoOrNull(field(e, "updatedAt")) || now);
-        refeedMismatchedEntry.run(now, entryHabitId, e.date, e.id);
+        const r = upsertEntry.run(id, entryHabitId, e.date, e.note ?? null, e.value ?? 1,
+          field(e, "createdAt") || now, now, isoOrNull(field(e, "updatedAt")) || now);
+        // A row this upsert changed already carries updated_at = now.
+        if (r.changes === 0) refeedMismatchedEntry.run(now, entryHabitId, e.date, id);
+        applied.entries++;
+      } catch (err) {
+        if (!isRowError(err)) throw err;
+        skipRowError("entries", id, err);
       }
     }
   });
 
   transaction();
-  return res.json({ ok: true });
+
+  if (noId > 0) console.warn(`[sync] push user=${userId} dropped ${noId} row(s) with no usable id`);
+  if (rowErrors > MAX_ROW_ERROR_LOG_LINES) {
+    console.warn(`[sync] push user=${userId} skipped ${rowErrors - MAX_ROW_ERROR_LOG_LINES} more row(s) on row errors`);
+  }
+  res.locals.syncStats = {
+    user: userId,
+    in: {
+      habits: habits.length, entries: entries.length, groups: groups.length,
+      deletions: deletedHabitIds.length + deletedEntryIds.length + deletedGroupIds.length,
+    },
+    applied,
+    skipped: { habits: skipped.habits.size, entries: skipped.entries.size, groups: skipped.groups.size },
+    ...(Object.keys(reasons).length > 0 ? { reasons } : {}),
+    ...(noId > 0 ? { noId } : {}),
+  };
+  return res.json({
+    ok: true,
+    applied,
+    skipped: {
+      habits: [...skipped.habits.keys()],
+      entries: [...skipped.entries.keys()],
+      groups: [...skipped.groups.keys()],
+    },
+    skippedReasons: {
+      habits: Object.fromEntries(skipped.habits),
+      entries: Object.fromEntries(skipped.entries),
+      groups: Object.fromEntries(skipped.groups),
+    },
+  });
 });
 
 // GET /sync/pull — mobile app pulls all data from server
 // Optional: ?since=ISO8601 to get only changes after a timestamp
+// Returns { habits, entries, groups, deleted*Ids, serverTime, totals: {habits, entries, groups} }
 router.get("/pull", (req, res) => {
   const userId = req.user.id;
+  const rawSince = req.query.since;
+  // `?since=a&since=b` arrives as an array, which used to reach SQLite and answer 500.
+  if (rawSince !== undefined && typeof rawSince !== "string") {
+    return res.status(400).json(errorBody(req, "invalid_payload", 'Sync request was malformed ("since" must be a single timestamp).'));
+  }
   // Compared as a string against stored toISOString() values, so bring it to that format
   // first: "…:18Z" sorts AFTER "…:18.500Z" ('Z' > '.'), which silently dropped every row
   // written later in the same second as the cursor.
-  const since = isoOrNull(req.query.since) ?? req.query.since;
+  const sinceIso = isoOrNull(rawSince);
+  const since = sinceIso ?? rawSince;
+
+  if (answerSnapshotRequest(req, res)) return;
+
+  // Only for clients that know what to do with it (a full pull, then push). A <= 1.2.3 app has
+  // no handler: it would show the error and retry the same cursor on every sync, forever — it
+  // keeps getting 200, which is correct for as long as tombstones are never swept. A full pull
+  // (no since) is never refused.
+  if (sinceIso && clientAtLeast(req, "1.3.1")) {
+    const oldest = Date.now() - (CURSOR_RETENTION_DAYS - CURSOR_GRACE_DAYS) * 86400000;
+    if (new Date(sinceIso).getTime() < oldest) {
+      res.locals.syncStats = { user: userId, cursorExpired: 1 };
+      return res.status(409).json(errorBody(req, "cursor_expired",
+        "This device has not synced for too long; a full sync is needed.",
+        { retentionDays: CURSOR_RETENTION_DAYS }));
+    }
+  }
 
   const HABIT_COLS = `id, name, emoji, color_hex, is_archived, sort_order,
               reminder_enabled, reminder_hour, reminder_minute, note,
               kind, target_value, unit, schedule_kind, times_per_week,
               active_days_mask, group_id,
               created_at, COALESCE(client_updated_at, updated_at) AS updated_at`;
+  const GROUP_COLS = "id, name, color_hex, sort_order, created_at, COALESCE(client_updated_at, updated_at) AS updated_at";
+  const ENTRY_COLS = "id, habit_id, date, note, value, created_at, COALESCE(client_updated_at, updated_at, created_at) AS updated_at";
+  const OWN_HABITS = "SELECT id FROM habits WHERE user_id = ?";
 
-  let habits, entries, groups, deletedHabitIds, deletedEntryIds, deletedGroupIds;
+  // One read transaction, so `totals` and the arrays describe the same snapshot. The server is
+  // not the only writer (seed-demo.js and other scripts write from another process in WAL
+  // mode), and a client that deletes whatever a full pull lacks must be able to tell a
+  // complete response from one that raced a write: M2's rule is to delete only when the
+  // totals equal the arrays.
+  const read = db.transaction(() => {
+    const totals = {
+      habits: /** @type {{ n: number }} */ (db.prepare("SELECT COUNT(*) AS n FROM habits WHERE user_id = ?").get(userId)).n,
+      entries: /** @type {{ n: number }} */ (db.prepare(
+        `SELECT COUNT(*) AS n FROM habit_entries WHERE habit_id IN (${OWN_HABITS})`,
+      ).get(userId)).n,
+      groups: /** @type {{ n: number }} */ (db.prepare("SELECT COUNT(*) AS n FROM habit_groups WHERE user_id = ?").get(userId)).n,
+    };
 
-  if (since) {
-    habits = db.prepare(
-      `SELECT ${HABIT_COLS} FROM habits WHERE user_id = ? AND updated_at > ?`,
-    ).all(userId, since);
-
-    groups = db.prepare(
-      `SELECT id, name, color_hex, sort_order, created_at, COALESCE(client_updated_at, updated_at) AS updated_at
-       FROM habit_groups WHERE user_id = ? AND updated_at > ?`,
-    ).all(userId, since);
-
-    const habitIds = db.prepare(
-      "SELECT id FROM habits WHERE user_id = ?",
-    ).all(userId).map((h) => /** @type {{ id: string }} */ (h).id);
-
-    if (habitIds.length > 0) {
-      const placeholders = habitIds.map(() => "?").join(",");
-      entries = db.prepare(
-        `SELECT id, habit_id, date, note, value, created_at, COALESCE(client_updated_at, updated_at, created_at) AS updated_at
-         FROM habit_entries WHERE habit_id IN (${placeholders}) AND updated_at > ?`,
-      ).all(...habitIds, since);
-    } else {
-      entries = [];
+    if (since) {
+      // Return tombstones created since last sync (DISTINCT prevents duplicate IDs on retry pushes)
+      const tombstones = /** @type {TombstoneRow[]} */ (db.prepare(
+        "SELECT DISTINCT entity_type, entity_id FROM deletion_tombstones WHERE user_id = ? AND deleted_at > ?"
+      ).all(userId, since));
+      /** @param {string} type */
+      const deletedOf = (type) => tombstones.filter((t) => t.entity_type === type).map((t) => t.entity_id);
+      return {
+        totals,
+        habits: db.prepare(`SELECT ${HABIT_COLS} FROM habits WHERE user_id = ? AND updated_at > ?`).all(userId, since),
+        groups: db.prepare(`SELECT ${GROUP_COLS} FROM habit_groups WHERE user_id = ? AND updated_at > ?`).all(userId, since),
+        entries: db.prepare(
+          `SELECT ${ENTRY_COLS} FROM habit_entries WHERE habit_id IN (${OWN_HABITS}) AND updated_at > ?`,
+        ).all(userId, since),
+        deletedHabitIds: deletedOf("habit"),
+        deletedEntryIds: deletedOf("entry"),
+        deletedGroupIds: deletedOf("group"),
+      };
     }
+    return {
+      totals,
+      habits: db.prepare(`SELECT ${HABIT_COLS} FROM habits WHERE user_id = ?`).all(userId),
+      groups: db.prepare(`SELECT ${GROUP_COLS} FROM habit_groups WHERE user_id = ?`).all(userId),
+      entries: db.prepare(`SELECT ${ENTRY_COLS} FROM habit_entries WHERE habit_id IN (${OWN_HABITS})`).all(userId),
+      // Full pull: no tombstones needed (client reconciles against full set)
+      deletedHabitIds: [],
+      deletedEntryIds: [],
+      deletedGroupIds: [],
+    };
+  });
+  const { totals, habits, entries, groups, deletedHabitIds, deletedEntryIds, deletedGroupIds } = read();
 
-    // Return tombstones created since last sync (DISTINCT prevents duplicate IDs on retry pushes)
-    const tombstones = db.prepare(
-      "SELECT DISTINCT entity_type, entity_id FROM deletion_tombstones WHERE user_id = ? AND deleted_at > ?"
-    ).all(userId, since);
-
-    deletedHabitIds = tombstones.map((t) => /** @type {TombstoneRow} */ (t)).filter((t) => t.entity_type === "habit").map((t) => t.entity_id);
-    deletedEntryIds = tombstones.map((t) => /** @type {TombstoneRow} */ (t)).filter((t) => t.entity_type === "entry").map((t) => t.entity_id);
-    deletedGroupIds = tombstones.map((t) => /** @type {TombstoneRow} */ (t)).filter((t) => t.entity_type === "group").map((t) => t.entity_id);
-  } else {
-    habits = db.prepare(`SELECT ${HABIT_COLS} FROM habits WHERE user_id = ?`).all(userId);
-    groups = db.prepare(
-      `SELECT id, name, color_hex, sort_order, created_at, COALESCE(client_updated_at, updated_at) AS updated_at
-       FROM habit_groups WHERE user_id = ?`,
-    ).all(userId);
-    const habitIds = habits.map((h) => /** @type {HabitRow} */ (h).id);
-
-    if (habitIds.length > 0) {
-      const placeholders = habitIds.map(() => "?").join(",");
-      entries = db.prepare(
-        `SELECT id, habit_id, date, note, value, created_at, COALESCE(client_updated_at, updated_at, created_at) AS updated_at
-         FROM habit_entries WHERE habit_id IN (${placeholders})`,
-      ).all(...habitIds);
-    } else {
-      entries = [];
-    }
-
-    // Full pull: no tombstones needed (client reconciles against full set)
-    deletedHabitIds = [];
-    deletedEntryIds = [];
-    deletedGroupIds = [];
-  }
-
+  res.locals.syncStats = {
+    user: userId,
+    pull: since ? "since" : "full",
+    out: {
+      habits: habits.length, entries: entries.length, groups: groups.length,
+      deletions: deletedHabitIds.length + deletedEntryIds.length + deletedGroupIds.length,
+    },
+  };
   return res.json({
     habits: habits.map((h) => { const row = /** @type {HabitRow} */ (h); return {
       id: row.id, name: row.name, emoji: row.emoji, colorHex: row.color_hex,
@@ -379,6 +686,9 @@ router.get("/pull", (req, res) => {
     deletedEntryIds,
     deletedGroupIds,
     serverTime: new Date().toISOString(),
+    // Rows the server holds for this account, full-pull scope, on every pull. A client may
+    // delete local rows missing from a full pull only when these equal the arrays' lengths.
+    totals,
   });
 });
 

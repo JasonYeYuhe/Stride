@@ -11,9 +11,10 @@ const express = require("express");
 const path = require("path");
 const cors = require("cors");
 const helmet = /** @type {any} */ (require("helmet"));
-const { rateLimit } = require("express-rate-limit");
+const { createGlobalLimiter } = require("./lib/rateLimits");
 const Sentry = require("@sentry/node");
 const { requestLogger } = require("./logger");
+const metrics = require("./metrics");
 const origins = require("./origins");
 const db = require("./db");
 
@@ -47,23 +48,40 @@ app.use(helmet({
   },
 }));
 
+// Apple App Site Association: the server half of one-tap sign-in (M1). With it, iOS opens
+// the magic link `/login?token=…` from the email straight in the app instead of the /login
+// page below, which stays for devices without the app update. Apple's CDN fetches this file
+// and caches it for hours, so it has to answer correctly before the app that relies on it
+// ships, and exactly as Apple wants it: 200, `application/json`, no redirect, no auth. It
+// sits above the static handler, the logger and every limiter so none of them can turn a
+// CDN fetch into a 404, a 429 or a redirect. Content-Type is set on the raw response —
+// res.json() would append `; charset=utf-8` — and HEAD gets the same headers (`curl -sI` is
+// the acceptance check; Express routes HEAD to this GET handler, Node drops the body).
+const APPLE_APP_SITE_ASSOCIATION = JSON.stringify({
+  applinks: {
+    details: [{
+      appIDs: ["KHMK6Q3L3K.yyh.stride.habittracker"],
+      components: [{ "/": "/login", "?": { token: "*" } }],
+    }],
+  },
+});
+app.get("/.well-known/apple-app-site-association", (req, res) => {
+  res.statusCode = 200;
+  res.setHeader("Content-Type", "application/json");
+  res.setHeader("Content-Length", Buffer.byteLength(APPLE_APP_SITE_ASSOCIATION));
+  res.end(APPLE_APP_SITE_ASSOCIATION);
+});
+
 // Serve static pages (terms, privacy, support) — after helmet so they get security headers
 app.use(express.static(path.join(__dirname, "docs"), { extensions: ["html"] }));
 
 // Request logging
 app.use(requestLogger);
 
-// Global rate limit: 100 requests per 15 minutes per IP (bypassed in test environment)
-if (process.env.NODE_ENV !== "test") {
-  const globalLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 100,
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: { error: "Too many requests, please try again later" },
-  });
-  app.use(globalLimiter);
-}
+// Global rate limit: 100 requests per 15 minutes per IP, sync exempt — it has its own
+// per-account limiter (lib/rateLimits.js). Bypassed under NODE_ENV=test unless the test
+// sets SYNC_RATE_LIMIT_PER_MIN.
+app.use(createGlobalLimiter());
 
 const allowedOrigins = new Set([
   origins.frontendOrigin,
@@ -86,41 +104,32 @@ app.use(
   }),
 );
 
-// The sync endpoints get their own, larger body parser, mounted BEFORE the
-// global one. body-parser sets `req._body` and the first parser to run wins, so
-// ordering here is load-bearing — moving this below the 10kb line silently
-// restores the bug.
-//
-// Why it is needed: SyncService.pushLocal sends a FULL SNAPSHOT of every habit
-// and every check-in on every sync (no incremental filter, no chunking), so the
-// payload grows without bound while the cap stayed at 10kb. Measured against
-// this exact config: one habit is 403 B and one entry 175 B, so 3 habits + 50
-// entries = 10,099 B still passes and 3 habits + 53 entries = 10,627 B returns
-// 413 "entity.too.large". That is under three weeks of daily use. Worse, sync()
-// awaits pushLocal BEFORE pullRemote, so a 413 kills BOTH directions and never
-// self-heals — the client just resends a larger payload next time.
-//
-// 5mb is ~15 years of daily check-ins at the measured wire size. Making the push
-// incremental is the real fix, but it is a client change that needs App Review;
-// this is deployable immediately and buys all the time that work needs.
-app.use("/v1/sync", express.json({ limit: "5mb" }));
-app.use("/sync", express.json({ limit: "5mb" }));   // legacy alias, mounted below
+// Sync is mounted BEFORE the global 10kb body parser, and parses its own bodies (5 MB)
+// only after the pause switch, the session and the per-account rate limit have passed —
+// see routes/sync.js. body-parser sets `req._body` and the first parser to run wins, so
+// this ordering is load-bearing: mounting sync below the 10kb line 413s every full-snapshot
+// push (3 habits + 53 entries already exceed 10kb), and since the apps push before they
+// pull, that stops sync in both directions for good.
+const syncRouter = require("./routes/sync");
+// metrics.countRequests counts each API request's client label, and hits on the mounts no
+// current app should be using — those counters decide when the mounts can go (metrics.js).
+app.use("/v1/sync", metrics.countRequests(), syncRouter);
+app.use("/sync", metrics.countRequests("mount./sync"), syncRouter);   // legacy alias
 
 app.use(express.json({ limit: "10kb" }));
 
 // API v1 routes
 const authRouter = require("./routes/auth");
 const habitsRouter = require("./routes/habits");
-const syncRouter = require("./routes/sync");
 
-app.use("/v1/auth", authRouter);
-app.use("/v1/habits", habitsRouter);
-app.use("/v1/sync", syncRouter);
+app.use("/v1/auth", metrics.countRequests(), authRouter);
+// The apps never call the REST habit routes (they sync), so /v1/habits is counted like a
+// legacy mount.
+app.use("/v1/habits", metrics.countRequests("mount./v1/habits"), habitsRouter);
 
 // Legacy routes (backwards compatible, same handlers)
-app.use("/auth", authRouter);
-app.use("/habits", habitsRouter);
-app.use("/sync", syncRouter);
+app.use("/auth", metrics.countRequests("mount./auth"), authRouter);
+app.use("/habits", metrics.countRequests("mount./habits"), habitsRouter);
 
 // Magic link login page — handles email link taps from mobile
 app.get("/login", (req, res) => {
@@ -208,22 +217,29 @@ const BIND_HOST = process.env.BIND_HOST || "127.0.0.1";
 const server = app.listen(PORT, BIND_HOST, () => {
   console.log(`Stride API running on ${BIND_HOST}:${PORT}`);
   if (process.env.NODE_ENV !== "test") {
-    // Initial sweep + periodic GC of tombstones / expired sessions & magic links.
+    // Initial sweep + periodic GC of expired sessions & magic links. Tombstones are kept —
+    // see sweepStaleData in db.js for why, and what would turn their sweeping back on.
     const sweep = () => { try { /** @type {any} */ (db).sweepStaleData(); } catch (e) { console.error("[sweep] failed:", e); } };
     sweep();
     const sweepTimer = setInterval(sweep, 6 * 60 * 60 * 1000); // every 6h
     sweepTimer.unref();
+    // Hourly usage-counter flush (log line + SQLite); shutdown() flushes the remainder.
+    metrics.start();
   }
 });
 
 // Graceful shutdown: stop accepting connections, checkpoint the WAL, close DB.
 function shutdown(signal) {
   console.log(`Received ${signal}, shutting down gracefully...`);
+  // Counters live in memory until flushed; without this every deploy (pm2 restart) would
+  // lose up to an hour of them. Flushed again below for requests that finish meanwhile.
+  metrics.flush();
   // Release idle keep-alive sockets so close() resolves promptly (in-flight
   // requests still get to finish).
   if (typeof server.closeIdleConnections === "function") server.closeIdleConnections();
   server.close(() => {
     try {
+      metrics.flush();
       db.pragma("wal_checkpoint(TRUNCATE)");
       db.close();
     } catch (e) {

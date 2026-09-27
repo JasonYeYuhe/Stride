@@ -3,15 +3,34 @@ const assert = require("node:assert/strict");
 const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
 const path = require("node:path");
+const fs = require("node:fs");
+const os = require("node:os");
 const Database = require("better-sqlite3");
 
 const PORT = 3099;
 const BASE = `http://localhost:${PORT}`;
 const DB_PATH = path.join(__dirname, "..", "stride.db");
 
+// Every server this suite spawns reads its sync pause flag from here, never from the default
+// server/SYNC_PAUSED: a test that died between writing and removing that file would leave it
+// in the tree, and the next rsync would carry it to production and pause every user.
+const PAUSE_FILE = path.join(os.tmpdir(), `stride-test-SYNC_PAUSED-${process.pid}`);
+
+/** The environment for a spawned test server: no inherited sync switches, pause flag outside the repo. */
+function serverEnv(port, extra = {}) {
+  const env = { ...process.env, PORT: String(port), NODE_ENV: "test", SYNC_PAUSE_FILE: PAUSE_FILE, ...extra };
+  for (const k of ["SYNC_PAUSED", "SYNC_PAUSE_RETRY_AFTER_SECONDS", "SYNC_RATE_LIMIT_PER_MIN",
+    "SYNC_AUTH_FAILURE_LIMIT_PER_15MIN", "GLOBAL_RATE_LIMIT_PER_15MIN"]) {
+    if (!(k in extra)) delete env[k];
+  }
+  return env;
+}
+
 // ---------- helpers ----------
 
 let serverProcess;
+/** Everything the main server wrote to stderr (console.warn / console.error). */
+let serverStderr = "";
 let db;
 
 /** Hash a token the same way auth.js does */
@@ -64,11 +83,11 @@ async function api(method, urlPath, { body, token, query } = {}) {
 // 8s was too tight: on a loaded machine (or a slow CI box) node takes longer
 // than that just to require express, and the whole suite then fails with a
 // misleading "Server did not start" rather than a real assertion failure.
-async function waitForServer(maxMs = Number(process.env.TEST_SERVER_START_TIMEOUT_MS || 60000)) {
+async function waitForServer(maxMs = Number(process.env.TEST_SERVER_START_TIMEOUT_MS || 60000), base = BASE) {
   const start = Date.now();
   while (Date.now() - start < maxMs) {
     try {
-      const r = await fetch(`${BASE}/health`);
+      const r = await fetch(`${base}/health`);
       if (r.ok) return;
     } catch {
       // not ready yet
@@ -76,6 +95,24 @@ async function waitForServer(maxMs = Number(process.env.TEST_SERVER_START_TIMEOU
     await new Promise((r) => setTimeout(r, 150));
   }
   throw new Error(`Server did not start within ${maxMs}ms`);
+}
+
+/**
+ * Run a script under server/ops and collect its exit status and output.
+ *
+ * Asynchronous on purpose. spawnSync blocks this process's event loop for as long as the
+ * script runs (seconds on a loaded machine), so fetch's keep-alive timer cannot retire an idle
+ * socket the server has meanwhile closed (5 s keep-alive); the next request reuses it and
+ * dies with ECONNRESET. That is how the snapshot-request tests flaked.
+ * @returns {Promise<{ status: number, stdout: string, stderr: string }>}
+ */
+function runScript(script, args = [], { env } = {}) {
+  const { execFile } = require("node:child_process");
+  return new Promise((resolve) => {
+    execFile(process.execPath, [script, ...args], { encoding: "utf8", env: env ?? process.env }, (err, stdout, stderr) => {
+      resolve({ status: err ? (typeof err.code === "number" ? err.code : 1) : 0, stdout, stderr });
+    });
+  });
 }
 
 // ---------- lifecycle ----------
@@ -87,17 +124,19 @@ before(async () => {
   db.pragma("foreign_keys = ON");
 
   // Spawn the server
+  fs.rmSync(PAUSE_FILE, { force: true });
   serverProcess = spawn(process.execPath, [path.join(__dirname, "..", "index.js")], {
-    env: { ...process.env, PORT: String(PORT), NODE_ENV: "test" },
+    env: serverEnv(PORT),
     stdio: "pipe",
   });
 
-  serverProcess.stderr.on("data", (d) => process.stderr.write(d));
+  serverProcess.stderr.on("data", (d) => { serverStderr += d; process.stderr.write(d); });
 
   await waitForServer();
 });
 
 after(() => {
+  fs.rmSync(PAUSE_FILE, { force: true });
   // Kill server
   if (serverProcess) {
     serverProcess.kill("SIGTERM");
@@ -7290,7 +7329,10 @@ describe("sweepStaleData GC", () => {
   // after the sweep's transaction commits).
   const appDb = require("../db");
 
-  it("deletes tombstones older than the retention window, keeps recent ones", () => {
+  // Opt-in since M0: the default sweep keeps every tombstone (see db.js and the
+  // "M0 sweepStaleData keeps tombstones unless asked" test). Passing a retention is how
+  // sweeping comes back once a minimum-version floor has retired the <= 1.2.3 apps.
+  it("deletes tombstones older than an explicitly passed retention window, keeps recent ones", () => {
     const { userId } = createTestUser();
     const oldIso = new Date(Date.now() - 200 * 86400000).toISOString(); // 200 days ago
     const freshIso = new Date().toISOString();
@@ -7891,5 +7933,1225 @@ describe("Magic-link emails point at a host this server actually serves", () => 
     assert.match(index, /origins\.frontendOrigin/);
     assert.match(auth, /origins\.loginUrl\(/);
     assert.ok(!/stride\.colorarchive\.me/.test(index + auth), "no hardcoded origin left");
+  });
+});
+
+// ===========================================================================
+// M0 — the server half of the incremental-push contract (DEV-PLAN-1.3.md).
+//
+// From 1.3.1 a device pushes only the rows it changed, in chunks, and treats a row as synced
+// once a push response accepts it. Everything below is what that client will rely on, and
+// every shipped client (<= 1.2.1 snake_case, 1.2.2/1.2.3 camelCase full snapshots, no
+// X-Stride-Client header) must keep getting exactly what it gets today.
+// ===========================================================================
+
+const m0 = {
+  uuid: () => crypto.randomUUID().toUpperCase(),
+  sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+  V131: "ios/1.3.1(19)",
+  V130: "ios/1.3.0(18)",
+
+  /** Like api(), plus an X-Stride-Client header, response headers and another base URL. */
+  async req(method, urlPath, { token, body, query, client, base = BASE } = {}) {
+    let url = `${base}${urlPath}`;
+    if (query) url += `?${new URLSearchParams(query).toString()}`;
+    const headers = {};
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    if (client) headers["X-Stride-Client"] = client;
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    const res = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    const json = await res.json().catch(() => null);
+    return { status: res.status, json, headers: res.headers };
+  },
+
+  /** A 1.3.1-style push: all six arrays always present, whatever the chunk carries.
+   * `client: null` sends no X-Stride-Client header (a shipped app). */
+  push(token, body, { client = "ios/1.3.1(19)", base } = {}) {
+    return m0.req("POST", "/v1/sync/push", { token, client, base, body: {
+      habits: [], entries: [], groups: [], deletedHabitIds: [], deletedEntryIds: [], deletedGroupIds: [], ...body,
+    } });
+  },
+
+  user() {
+    const { userId, email } = createTestUser();
+    return { userId, email, token: createTestSession(userId) };
+  },
+
+  cleanup(userId) {
+    db.prepare("DELETE FROM habit_entries WHERE habit_id IN (SELECT id FROM habits WHERE user_id = ?)").run(userId);
+    db.prepare("DELETE FROM habits WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM habit_groups WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM deletion_tombstones WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sync_snapshot_requests WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  },
+
+  /** Every row's server change time (`updated_at`), keyed "table:id". */
+  clocks(userId) {
+    const out = {};
+    for (const r of db.prepare("SELECT id, updated_at FROM habits WHERE user_id = ?").all(userId)) out[`h:${r.id}`] = r.updated_at;
+    for (const r of db.prepare("SELECT id, updated_at FROM habit_groups WHERE user_id = ?").all(userId)) out[`g:${r.id}`] = r.updated_at;
+    for (const r of db.prepare(
+      "SELECT id, updated_at FROM habit_entries WHERE habit_id IN (SELECT id FROM habits WHERE user_id = ?)",
+    ).all(userId)) out[`e:${r.id}`] = r.updated_at;
+    return out;
+  },
+
+  habit: (id, over = {}) => ({
+    id, name: "Water", emoji: "\u{1F4A7}", colorHex: "#007AFF", isArchived: false, sortOrder: 0,
+    reminderEnabled: false, reminderHour: 20, reminderMinute: 0,
+    kind: "count", targetValue: 8, scheduleKind: "daily", timesPerWeek: 7, activeDaysMask: 127,
+    createdAt: "2026-09-01T00:00:00Z", updatedAt: "2026-09-01T00:00:00Z", ...over,
+  }),
+  entry: (id, habitId, date, over = {}) => ({
+    id, habitId, date, value: 1, createdAt: `${date}T00:00:00Z`, updatedAt: `${date}T12:00:00Z`, ...over,
+  }),
+  group: (id, over = {}) => ({
+    id, name: "Health", colorHex: "#FF9500", sortOrder: 1,
+    createdAt: "2026-09-01T00:00:00Z", updatedAt: "2026-09-01T00:00:00Z", ...over,
+  }),
+
+  /**
+   * The body 1.2.3 sends, built from what that device holds — i.e. what it last pulled.
+   *
+   * Derived from v1.2.3's SyncService.pushLocal and Shared/SyncModels.swift: synthesized
+   * Encodable drops nil optionals (encodeIfPresent), so `note`, `unit` and `groupId` are
+   * ABSENT rather than null when unset; all six arrays are always present; timestamps are
+   * whole-second ISO8601 (SyncTimestamp.string); an entry's createdAt is its day
+   * (`record.date`, midnight UTC) and its updatedAt is `record.updatedAt ?? record.date`; a
+   * habit's and a group's updatedAt is `updatedAt ?? createdAt`. No X-Stride-Client header.
+   */
+  snapshot123(pulled, deletions = {}) {
+    const present = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== null && v !== undefined));
+    return {
+      habits: pulled.habits.map((h) => present({
+        id: h.id, name: h.name, emoji: h.emoji, colorHex: h.colorHex, isArchived: h.isArchived,
+        sortOrder: h.sortOrder, reminderEnabled: h.reminderEnabled, reminderHour: h.reminderHour,
+        reminderMinute: h.reminderMinute, note: h.note, kind: h.kind, targetValue: h.targetValue,
+        unit: h.unit, scheduleKind: h.scheduleKind, timesPerWeek: h.timesPerWeek,
+        activeDaysMask: h.activeDaysMask, groupId: h.groupId,
+        createdAt: h.createdAt, updatedAt: h.updatedAt ?? h.createdAt,
+      })),
+      entries: pulled.entries.map((e) => present({
+        id: e.id, habitId: e.habitId, date: e.date, note: e.note, value: e.value,
+        createdAt: `${e.date}T00:00:00Z`, updatedAt: e.updatedAt ?? `${e.date}T00:00:00Z`,
+      })),
+      groups: (pulled.groups ?? []).map((g) => ({
+        id: g.id, name: g.name, colorHex: g.colorHex, sortOrder: g.sortOrder,
+        createdAt: g.createdAt, updatedAt: g.updatedAt ?? g.createdAt,
+      })),
+      deletedHabitIds: deletions.habits ?? [],
+      deletedEntryIds: deletions.entries ?? [],
+      deletedGroupIds: deletions.groups ?? [],
+    };
+  },
+
+  /**
+   * The two error-body shapes (lib/clientVersion.js errorBody). A shipped app (no or malformed
+   * X-Stride-Client) shows `error` verbatim in Settings, so it must get the sentence there and
+   * the code in `code`; an app that sends the header gets the code in `error` and the sentence
+   * in `message`. `code` is in both, so a client can always match on it.
+   */
+  assertErrorShape(json, code, client) {
+    const legacy = !client || !require("../lib/clientVersion").parseClientHeader(client);
+    if (legacy) {
+      assert.equal(json.code, code, JSON.stringify(json));
+      assert.notEqual(json.error, code, "a shipped app would show the bare code");
+      assert.match(json.error, / /, "a sentence, not a code");
+      assert.equal(json.message, undefined);
+    } else {
+      assert.equal(json.error, code, JSON.stringify(json));
+      assert.equal(json.code, code);
+      assert.equal(typeof json.message, "string");
+      assert.match(json.message, / /);
+    }
+  },
+
+  /** Spawn another server (own env, own in-memory rate-limit store) on the same database. */
+  async spawnServer(port, env) {
+    const proc = spawn(process.execPath, [path.join(__dirname, "..", "index.js")], {
+      env: serverEnv(port, env), stdio: "pipe",
+    });
+    proc.stderr.on("data", (d) => process.stderr.write(d));
+    await waitForServer(undefined, `http://localhost:${port}`);
+    return proc;
+  },
+  async stopServer(proc) {
+    if (!proc || proc.exitCode !== null || proc.signalCode !== null) return;
+    await new Promise((resolve) => { proc.once("exit", resolve); proc.kill("SIGTERM"); });
+  },
+};
+
+describe("M0 push response: applied counts and skipped ids", () => {
+  let a, b;
+  const HB = m0.uuid(), GB = m0.uuid(), EB = m0.uuid();
+  before(async () => {
+    a = m0.user();
+    b = m0.user();
+    // User B owns a habit, a group and an entry that A will try to write to.
+    const r = await m0.push(b.token, {
+      groups: [m0.group(GB, { name: "B's group" })],
+      habits: [m0.habit(HB, { name: "B's habit" })],
+      entries: [m0.entry(EB, HB, "2026-09-05")],
+    });
+    assert.equal(r.status, 200);
+  });
+  after(() => { m0.cleanup(a.userId); m0.cleanup(b.userId); });
+
+  it("a clean push applies every row and skips none", async () => {
+    const H1 = m0.uuid(), H2 = m0.uuid(), G1 = m0.uuid();
+    const r = await m0.push(a.token, {
+      groups: [m0.group(G1)],
+      habits: [m0.habit(H1, { groupId: G1 }), m0.habit(H2, { name: "Read" })],
+      entries: [m0.entry(m0.uuid(), H1, "2026-09-01"), m0.entry(m0.uuid(), H1, "2026-09-02"), m0.entry(m0.uuid(), H2, "2026-09-02")],
+    });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json, {
+      ok: true,
+      applied: { habits: 2, entries: 3, groups: 1 },
+      skipped: { habits: [], entries: [], groups: [] },
+      skippedReasons: { habits: {}, entries: {}, groups: {} },
+    });
+  });
+
+  it("shipped clients get the same body — they decode only `ok`, the rest is additive", async () => {
+    const r = await api("POST", "/v1/sync/push", { token: a.token, body: { habits: [m0.habit(m0.uuid())] } });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.ok, true);
+    assert.deepEqual(r.json.applied, { habits: 1, entries: 0, groups: 0 });
+  });
+
+  it("an entry for an unknown habit is 200 with its id in skipped.entries", async () => {
+    const H = m0.uuid(), E = m0.uuid(), orphan = m0.uuid();
+    const r = await m0.push(a.token, {
+      habits: [m0.habit(H)],
+      entries: [m0.entry(E, H, "2026-09-03"), m0.entry(orphan, m0.uuid(), "2026-09-03")],
+    });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json.skipped.entries, [orphan]);
+    assert.deepEqual(r.json.skippedReasons.entries, { [orphan]: "unknown_habit" });
+    assert.deepEqual(r.json.applied, { habits: 1, entries: 1, groups: 0 });
+    assert.equal(db.prepare("SELECT 1 FROM habit_entries WHERE id = ?").get(orphan), undefined);
+  });
+
+  it("an entry whose habit exists only in the NEXT chunk is skipped, then applies once the habit lands", async () => {
+    const H = m0.uuid(), E = m0.uuid();
+    let r = await m0.push(a.token, { entries: [m0.entry(E, H, "2026-09-04")] });
+    assert.deepEqual(r.json.skipped.entries, [E]);
+    r = await m0.push(a.token, { habits: [m0.habit(H)] });
+    r = await m0.push(a.token, { entries: [m0.entry(E, H, "2026-09-04")] });
+    assert.deepEqual(r.json.skipped.entries, []);
+    assert.equal(r.json.applied.entries, 1);
+  });
+
+  it("tombstoned ids — from an earlier push or this one — are skipped", async () => {
+    const H = m0.uuid(), Hdead = m0.uuid(), Gdead = m0.uuid(), Edead = m0.uuid(), Hnow = m0.uuid();
+    await m0.push(a.token, {
+      groups: [m0.group(Gdead)], habits: [m0.habit(H), m0.habit(Hdead)],
+      entries: [m0.entry(Edead, H, "2026-09-06")],
+    });
+    await m0.push(a.token, { deletedHabitIds: [Hdead], deletedEntryIds: [Edead], deletedGroupIds: [Gdead] });
+
+    // A stale device re-sends all three, plus a habit it deletes in the same push.
+    const r = await m0.push(a.token, {
+      groups: [m0.group(Gdead)],
+      habits: [m0.habit(Hdead), m0.habit(Hnow)],
+      entries: [m0.entry(Edead, H, "2026-09-06")],
+      deletedHabitIds: [Hnow],
+    });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json.skipped.groups, [Gdead]);
+    assert.deepEqual(new Set(r.json.skipped.habits), new Set([Hdead, Hnow]));
+    assert.deepEqual(r.json.skipped.entries, [Edead]);
+    assert.deepEqual(r.json.applied, { habits: 0, entries: 0, groups: 0 });
+    assert.deepEqual(r.json.skippedReasons, {
+      habits: { [Hdead]: "tombstoned", [Hnow]: "tombstoned" },
+      entries: { [Edead]: "tombstoned" },
+      groups: { [Gdead]: "tombstoned" },
+    });
+  });
+
+  it("skippedReasons tells an entry to drop from one to retry, per case of 'not this account's habit'", async () => {
+    const H = m0.uuid(), Hdel = m0.uuid(), Hbad = m0.uuid(), Hlater = m0.uuid();
+    await m0.push(a.token, { habits: [m0.habit(H), m0.habit(Hdel)] });
+    await m0.push(a.token, { deletedHabitIds: [Hdel] });
+    const E = { del: m0.uuid(), theirs: m0.uuid(), bad: m0.uuid(), later: m0.uuid(), missing: m0.uuid() };
+    const r = await m0.push(a.token, {
+      habits: [m0.habit(Hbad, { name: "" })],
+      entries: [
+        m0.entry(E.del, Hdel, "2026-09-13"),        // its habit was deleted: drop it
+        m0.entry(E.theirs, HB, "2026-09-13"),       // its habit is B's: needs new ids
+        m0.entry(E.bad, Hbad, "2026-09-13"),        // its habit was refused in this push: retry
+        m0.entry(E.later, Hlater, "2026-09-13"),    // its habit has not landed yet: retry
+        { ...m0.entry(E.missing, H, "2026-09-13"), date: undefined },
+      ],
+    });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json.skippedReasons, {
+      habits: { [Hbad]: "missing_field" },
+      entries: {
+        [E.del]: "tombstoned_habit", [E.theirs]: "not_owned_habit", [E.bad]: "skipped_habit",
+        [E.later]: "unknown_habit", [E.missing]: "missing_field",
+      },
+      groups: {},
+    });
+    assert.deepEqual(r.json.skipped.entries, [E.del, E.theirs, E.bad, E.later, E.missing], "ids stay in push order");
+  });
+
+  it("keep-and-merge into another account: every row reads not_owned, never a silent drop", async () => {
+    // The reviewers' repro: B pushes, as a 1.3.1 device signed into A, the habit and entries
+    // it holds from B's account. Nothing may look like "acknowledge and forget".
+    const E2 = m0.uuid();
+    const r = await m0.push(a.token, {
+      habits: [m0.habit(HB)],
+      entries: [m0.entry(EB, HB, "2026-09-05"), m0.entry(E2, HB, "2026-09-06")],
+    });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json.skippedReasons.habits, { [HB]: "not_owned" });
+    assert.deepEqual(r.json.skippedReasons.entries, { [EB]: "not_owned_habit", [E2]: "not_owned_habit" });
+  });
+
+  it("a habit or group id that belongs to another account is skipped and left untouched", async () => {
+    const before = { ...m0.clocks(b.userId) };
+    const r = await m0.push(a.token, {
+      groups: [m0.group(GB, { name: "hijacked", updatedAt: "2030-01-01T00:00:00Z" })],
+      habits: [m0.habit(HB, { name: "hijacked", updatedAt: "2030-01-01T00:00:00Z" })],
+    });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json.skipped.habits, [HB]);
+    assert.deepEqual(r.json.skipped.groups, [GB]);
+    assert.deepEqual(r.json.applied, { habits: 0, entries: 0, groups: 0 });
+    assert.equal(db.prepare("SELECT name FROM habits WHERE id = ?").get(HB).name, "B's habit");
+    assert.equal(db.prepare("SELECT name FROM habit_groups WHERE id = ?").get(GB).name, "B's group");
+    assert.deepEqual(m0.clocks(b.userId), before, "B's rows must not even move in the change feed");
+  });
+
+  it("a row SQLite refuses is skipped; the rest of the push still applies (200, not 500)", async () => {
+    const H = m0.uuid(), E = m0.uuid(), Enew = m0.uuid();
+    await m0.push(a.token, { habits: [m0.habit(H)], entries: [m0.entry(E, H, "2026-09-07")] });
+
+    // The same entry id for a different day: the (habit_id, date) upsert does not cover the
+    // primary key, so SQLite raises a constraint error. It used to abort the whole push.
+    // And an entry id that is another account's row, the same way.
+    const r = await m0.push(a.token, {
+      habits: [m0.habit(H, { name: "Renamed", updatedAt: "2026-09-08T00:00:00Z" })],
+      entries: [
+        m0.entry(E, H, "2026-09-08"),
+        m0.entry(EB, H, "2026-09-09"),
+        m0.entry(Enew, H, "2026-09-10"),
+      ],
+    });
+    assert.equal(r.status, 200);
+    assert.deepEqual(new Set(r.json.skipped.entries), new Set([E, EB]));
+    assert.deepEqual(r.json.skippedReasons.entries, { [E]: "row_error", [EB]: "row_error" });
+    assert.deepEqual(r.json.applied, { habits: 1, entries: 1, groups: 0 });
+    assert.equal(db.prepare("SELECT name FROM habits WHERE id = ?").get(H).name, "Renamed");
+    assert.equal(db.prepare("SELECT date FROM habit_entries WHERE id = ?").get(E).date, "2026-09-07");
+    assert.ok(db.prepare("SELECT 1 FROM habit_entries WHERE id = ?").get(Enew));
+    const theirs = db.prepare("SELECT habit_id, date FROM habit_entries WHERE id = ?").get(EB);
+    assert.deepEqual({ ...theirs }, { habit_id: HB, date: "2026-09-05" }, "B's entry is untouched");
+  });
+
+  it("a value SQLite cannot bind (an object where a string belongs) is skipped, not a 500", async () => {
+    const H = m0.uuid(), bad = m0.uuid();
+    const r = await m0.push(a.token, {
+      habits: [m0.habit(bad, { note: { nested: true } }), m0.habit(H)],
+    });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json.skipped.habits, [bad]);
+    assert.equal(r.json.applied.habits, 1);
+  });
+
+  it("row-error ids reach the log quoted and cut, a few lines per request, never a forged line", async () => {
+    const forged = "[2026-09-27T00:00:00.000Z] INFO POST /v1/auth/verify 200 1ms client=ios/9.9(1) FORGED";
+    const evil = `EVIL\n${forged}`;
+    const logBefore = serverStderr.length;
+    const r = await m0.push(a.token, {
+      habits: [evil, ...Array.from({ length: 7 }, (_, i) => `BAD-${i}-${"x".repeat(200)}`)]
+        .map((id) => m0.habit(id, { note: { nested: true } })),
+    });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.skipped.habits.length, 8);
+    assert.equal(r.json.skippedReasons.habits[evil], "row_error");
+    let log = "";
+    for (let i = 0; i < 50 && !/3 more row\(s\) on row errors/.test(log); i++) {
+      await m0.sleep(100);
+      log = serverStderr.slice(logBefore);
+    }
+    assert.match(log, /skipped 3 more row\(s\) on row errors/);
+    assert.ok(!log.split("\n").some((line) => line.startsWith(forged)), "the id's newline must not start a line");
+    assert.ok(log.includes(JSON.stringify(evil.slice(0, 64))), "the id is logged JSON-quoted, cut at 64");
+    const skippedLines = log.split("\n").filter((l) => l.includes("skipped habits"));
+    assert.equal(skippedLines.length, 5);
+    assert.ok(skippedLines.every((l) => l.length < 400), "ids are cut");
+  });
+
+  it("a row with an id but a missing required field is skipped; rows with no id are only counted", async () => {
+    const H = m0.uuid(), nameless = m0.uuid(), dateless = m0.uuid();
+    await m0.push(a.token, { habits: [m0.habit(H)] });
+    const r = await m0.push(a.token, {
+      habits: [{ ...m0.habit(nameless), name: "" }, null, { name: "no id" }, "junk"],
+      entries: [{ ...m0.entry(dateless, H, "2026-09-11"), date: undefined }, { habitId: H, date: "2026-09-11" }],
+      deletedEntryIds: [42, { id: "x" }],
+    });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json.skipped, { habits: [nameless], entries: [dateless], groups: [] });
+    assert.deepEqual(r.json.applied, { habits: 0, entries: 0, groups: 0 });
+  });
+
+  it("LWW-older and identical rows count as applied: the server holds a version at least as new", async () => {
+    const H = m0.uuid(), E = m0.uuid();
+    await m0.push(a.token, {
+      habits: [m0.habit(H, { updatedAt: "2026-09-12T00:00:00Z" })],
+      entries: [m0.entry(E, H, "2026-09-12", { value: 5, updatedAt: "2026-09-12T18:00:00Z" })],
+    });
+    const older = await m0.push(a.token, {
+      habits: [m0.habit(H, { name: "stale", updatedAt: "2026-09-10T00:00:00Z" })],
+      entries: [m0.entry(E, H, "2026-09-12", { value: 2, updatedAt: "2026-09-12T08:00:00Z" })],
+    });
+    assert.deepEqual(older.json.applied, { habits: 1, entries: 1, groups: 0 });
+    assert.deepEqual(older.json.skipped, { habits: [], entries: [], groups: [] });
+    assert.equal(db.prepare("SELECT value FROM habit_entries WHERE id = ?").get(E).value, 5, "the newer edit stays");
+  });
+});
+
+describe("M0 push: an incremental chunk moves only the rows it changes", () => {
+  let u;
+  const H1 = m0.uuid(), H2 = m0.uuid(), G = m0.uuid(), E1 = m0.uuid(), E2 = m0.uuid(), E3 = m0.uuid();
+  before(async () => {
+    u = m0.user();
+    const r = await m0.push(u.token, {
+      groups: [m0.group(G)],
+      habits: [m0.habit(H1, { groupId: G }), m0.habit(H2, { name: "Read", kind: "binary", targetValue: 1 })],
+      entries: [m0.entry(E1, H1, "2026-09-01", { value: 3 }), m0.entry(E2, H1, "2026-09-02"), m0.entry(E3, H2, "2026-09-02")],
+    });
+    assert.equal(r.status, 200);
+  });
+  after(() => m0.cleanup(u.userId));
+
+  it("an entries-only push leaves every other row's updated_at untouched", async () => {
+    const before = m0.clocks(u.userId);
+    await m0.sleep(5);
+    const r = await m0.push(u.token, {
+      entries: [m0.entry(E1, H1, "2026-09-01", { value: 6, updatedAt: "2026-09-01T20:00:00Z" })],
+    });
+    assert.deepEqual(r.json.applied, { habits: 0, entries: 1, groups: 0 });
+    const after = m0.clocks(u.userId);
+    assert.notEqual(after[`e:${E1}`], before[`e:${E1}`], "the edited entry enters the feed");
+    for (const key of Object.keys(before)) {
+      if (key !== `e:${E1}`) assert.equal(after[key], before[key], `${key} must not move`);
+    }
+  });
+
+  it("the identical chunk re-sent changes no updated_at anywhere", async () => {
+    const before = m0.clocks(u.userId);
+    await m0.sleep(5);
+    const r = await m0.push(u.token, {
+      entries: [m0.entry(E1, H1, "2026-09-01", { value: 6, updatedAt: "2026-09-01T20:00:00Z" })],
+    });
+    assert.deepEqual(r.json.applied, { habits: 0, entries: 1, groups: 0 }, "still acknowledged");
+    assert.deepEqual(m0.clocks(u.userId), before);
+  });
+});
+
+describe("M0 mixed fleet: a 1.2.3 full snapshot after a 1.3.1 incremental push bumps nothing", () => {
+  let u;
+  const H = m0.uuid(), H2 = m0.uuid(), G = m0.uuid(), E = m0.uuid(), E2 = m0.uuid();
+  before(async () => {
+    u = m0.user();
+    // Both devices start from the same state, written by the 1.2.3 phone: habits with no
+    // note/unit (omitted keys), one in a group, two check-ins.
+    const seed = m0.snapshot123({
+      habits: [
+        { ...m0.habit(H), note: null, unit: null, groupId: G },
+        { ...m0.habit(H2, { name: "Stretch", kind: "binary", targetValue: 1 }), note: "morning", unit: null, groupId: null },
+      ],
+      entries: [
+        { id: E, habitId: H, date: "2026-09-10", value: 3, note: null, updatedAt: "2026-09-10T09:00:00Z" },
+        { id: E2, habitId: H2, date: "2026-09-10", value: 1, note: "felt good", updatedAt: null },
+      ],
+      groups: [m0.group(G)],
+    });
+    const r = await api("POST", "/v1/sync/push", { token: u.token, body: seed });
+    assert.equal(r.status, 200);
+  });
+  after(() => m0.cleanup(u.userId));
+
+  it("the fixture really is 1.2.3-shaped (omitted optionals, whole seconds, all six arrays)", async () => {
+    const pulled = (await api("GET", "/v1/sync/pull", { token: u.token })).json;
+    const body = m0.snapshot123(pulled);
+    assert.deepEqual(Object.keys(body).sort(),
+      ["deletedEntryIds", "deletedGroupIds", "deletedHabitIds", "entries", "groups", "habits"]);
+    const h = body.habits.find((x) => x.id === H);
+    assert.ok(!("note" in h) && !("unit" in h), "nil optionals are absent, not null");
+    assert.equal(h.groupId, G);
+    assert.ok(!("note" in body.entries.find((x) => x.id === E)));
+    for (const t of [h.createdAt, h.updatedAt, ...body.entries.map((e) => e.updatedAt)]) {
+      assert.match(t, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/, "whole-second timestamps");
+    }
+  });
+
+  it("the 1.2.3 phone pulls the 1.3.1 iPad's edit and pushes its snapshot back: nothing moves", async () => {
+    // iPad on 1.3.1 logs a new value: one entry, nothing else.
+    const inc = await m0.push(u.token, {
+      entries: [{ id: E, habitId: H, date: "2026-09-10", value: 7, createdAt: "2026-09-10T00:00:00Z", updatedAt: "2026-09-10T21:00:00Z" }],
+    });
+    assert.deepEqual(inc.json.applied, { habits: 0, entries: 1, groups: 0 });
+
+    const clocksAfterIncremental = m0.clocks(u.userId);
+    const pulled = (await api("GET", "/v1/sync/pull", { token: u.token })).json;
+    const cursor = pulled.serverTime;
+    await m0.sleep(5);
+
+    // The phone applies what it pulled and, like every 1.2.3 sync, pushes everything it has.
+    const snap = await api("POST", "/v1/sync/push", { token: u.token, body: m0.snapshot123(pulled) });
+    assert.equal(snap.status, 200);
+    assert.deepEqual(snap.json.applied, { habits: 2, entries: 2, groups: 1 });
+
+    assert.deepEqual(m0.clocks(u.userId), clocksAfterIncremental, "no updated_at may move");
+    const feed = (await api("GET", "/v1/sync/pull", { token: u.token, query: { since: cursor } })).json;
+    assert.deepEqual([feed.habits.length, feed.entries.length, feed.groups.length], [0, 0, 0],
+      "the snapshot must not put the account back into every device's incremental pull");
+    assert.equal(db.prepare("SELECT value FROM habit_entries WHERE id = ?").get(E).value, 7);
+  });
+});
+
+describe("M0 race: a 1.2.3 snapshot and a 1.3.1 incremental push for the same entry", () => {
+  let u;
+  const H = m0.uuid();
+  before(async () => {
+    u = m0.user();
+    await m0.push(u.token, { habits: [m0.habit(H)] });
+  });
+  after(() => m0.cleanup(u.userId));
+
+  /** Fire both pushes at once, in the given order, and return the entry the server kept. */
+  async function race(date, snapshotEdit, incrementalEdit, snapshotFirst) {
+    const E = m0.uuid();
+    const snapshot = () => api("POST", "/v1/sync/push", { token: u.token, body: m0.snapshot123({
+      habits: [{ ...m0.habit(H), note: null, unit: null, groupId: null }],
+      entries: [{ id: E, habitId: H, date, note: null, ...snapshotEdit }],
+      groups: [],
+    }) });
+    const incremental = () => m0.push(u.token, {
+      entries: [{ id: E, habitId: H, date, createdAt: `${date}T00:00:00Z`, ...incrementalEdit }],
+    });
+    const results = await Promise.all(snapshotFirst ? [snapshot(), incremental()] : [incremental(), snapshot()]);
+    for (const r of results) assert.equal(r.status, 200);
+    const row = db.prepare("SELECT value, client_updated_at FROM habit_entries WHERE habit_id = ? AND date = ?").get(H, date);
+    return { value: row.value, editedAt: row.client_updated_at };
+  }
+
+  for (const snapshotFirst of [true, false]) {
+    const order = snapshotFirst ? "snapshot arrives first" : "incremental arrives first";
+    it(`the newer edit wins when it is the 1.3.1 device's (${order})`, async () => {
+      const kept = await race(snapshotFirst ? "2026-08-01" : "2026-08-02",
+        { value: 2, updatedAt: "2026-08-01T08:00:00Z" },
+        { value: 9, updatedAt: "2026-08-01T20:00:00Z" }, snapshotFirst);
+      assert.deepEqual(kept, { value: 9, editedAt: "2026-08-01T20:00:00.000Z" });
+    });
+    it(`the newer edit wins when it is the 1.2.3 device's (${order})`, async () => {
+      const kept = await race(snapshotFirst ? "2026-08-03" : "2026-08-04",
+        { value: 4, updatedAt: "2026-08-03T22:00:00Z" },
+        { value: 1, updatedAt: "2026-08-03T07:00:00Z" }, snapshotFirst);
+      assert.deepEqual(kept, { value: 4, editedAt: "2026-08-03T22:00:00.000Z" });
+    });
+  }
+});
+
+describe("M0 pull totals", () => {
+  let u, cursor;
+  const H1 = m0.uuid(), H2 = m0.uuid(), G = m0.uuid();
+  before(async () => {
+    u = m0.user();
+    cursor = new Date(Date.now() - 1000).toISOString();
+  });
+  after(() => m0.cleanup(u.userId));
+
+  it("habits in one request, their entries in the next: a full pull returns all of them", async () => {
+    let r = await m0.push(u.token, { groups: [m0.group(G)], habits: [m0.habit(H1, { groupId: G }), m0.habit(H2)] });
+    assert.deepEqual(r.json.applied, { habits: 2, entries: 0, groups: 1 });
+    const entries = [];
+    for (let d = 1; d <= 5; d++) entries.push(m0.entry(m0.uuid(), d % 2 ? H1 : H2, `2026-07-0${d}`));
+    r = await m0.push(u.token, { entries });
+    assert.deepEqual(r.json.applied, { habits: 0, entries: 5, groups: 0 });
+
+    const full = await m0.req("GET", "/v1/sync/pull", { token: u.token, client: m0.V131 });
+    assert.equal(full.status, 200);
+    assert.equal(full.json.habits.length, 2);
+    assert.equal(full.json.entries.length, 5);
+    assert.equal(full.json.groups.length, 1);
+  });
+
+  it("a full pull's totals equal its arrays' lengths", async () => {
+    const { json } = await api("GET", "/v1/sync/pull", { token: u.token });
+    assert.deepEqual(json.totals, { habits: json.habits.length, entries: json.entries.length, groups: json.groups.length });
+    assert.deepEqual(json.totals, { habits: 2, entries: 5, groups: 1 });
+  });
+
+  it("an incremental pull carries the account's totals, not the page's", async () => {
+    const serverTime = (await api("GET", "/v1/sync/pull", { token: u.token })).json.serverTime;
+    await m0.sleep(5);
+    await m0.push(u.token, { entries: [m0.entry(m0.uuid(), H1, "2026-07-09")] });
+    const { json } = await api("GET", "/v1/sync/pull", { token: u.token, query: { since: serverTime } });
+    assert.equal(json.entries.length, 1);
+    assert.equal(json.habits.length, 0);
+    assert.deepEqual(json.totals, { habits: 2, entries: 6, groups: 1 });
+    assert.ok(cursor < serverTime);
+  });
+
+  it("totals count only this account's rows", async () => {
+    const other = m0.user();
+    try {
+      await m0.push(other.token, { habits: [m0.habit(m0.uuid())] });
+      const { json } = await api("GET", "/v1/sync/pull", { token: other.token });
+      assert.deepEqual(json.totals, { habits: 1, entries: 0, groups: 0 });
+    } finally {
+      m0.cleanup(other.userId);
+    }
+  });
+});
+
+describe("M0 X-Stride-Client parsing", () => {
+  const { parseClientHeader } = require("../lib/clientVersion");
+
+  it("reads platform, version and build", () => {
+    assert.deepEqual(parseClientHeader("ios/1.3.1(19)"),
+      { platform: "ios", version: "1.3.1", build: 19, parts: [1, 3, 1] });
+    assert.deepEqual(parseClientHeader("macos/1.4(22)"),
+      { platform: "macos", version: "1.4.0", build: 22, parts: [1, 4, 0] });
+  });
+
+  it("anything else is a legacy client", () => {
+    for (const h of [undefined, "", "ios/1.3.1", "ios 1.3.1(19)", "Stride/1.3.1(19)", "ios/1.3.1(19) extra",
+      "ios/1.3.1-beta(19)", "ios/v1.3.1(19)", "watchos/1.3.1(19)", "IOS/1.3.1(19)", `ios/1.3.1(${"9".repeat(80)})`]) {
+      assert.equal(parseClientHeader(h), null, String(h));
+    }
+  });
+});
+
+describe("M0 cursor_expired is gated on the client header", () => {
+  let u;
+  const daysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString();
+  before(() => { u = m0.user(); });
+  after(() => m0.cleanup(u.userId));
+
+  const pull = (since, client) =>
+    m0.req("GET", "/v1/sync/pull", { token: u.token, client, query: since ? { since } : undefined });
+
+  it("since = 400 days ago from ios/1.3.1(19) → 409 cursor_expired", async () => {
+    const r = await pull(daysAgo(400), "ios/1.3.1(19)");
+    assert.equal(r.status, 409);
+    assert.equal(r.json.error, "cursor_expired");
+    assert.equal(r.json.retentionDays, 365);
+    assert.equal(typeof r.json.message, "string");
+  });
+
+  it("… and from macos/1.3.1(19), and from a later version", async () => {
+    assert.equal((await pull(daysAgo(400), "macos/1.3.1(19)")).status, 409);
+    assert.equal((await pull(daysAgo(400), "ios/1.4(25)")).status, 409);
+  });
+
+  it("… on the legacy /sync mount too", async () => {
+    const r = await m0.req("GET", "/sync/pull", { token: u.token, client: m0.V131, query: { since: daysAgo(400) } });
+    assert.equal(r.status, 409);
+  });
+
+  it("ios/1.3.0(18), no header and a malformed header all get 200 as today", async () => {
+    for (const client of ["ios/1.3.0(18)", undefined, "ios/1.3.1", "garbage"]) {
+      const r = await pull(daysAgo(400), client);
+      assert.equal(r.status, 200, String(client));
+      assert.ok(Array.isArray(r.json.habits));
+    }
+  });
+
+  it("a recent cursor, or none at all, is never refused", async () => {
+    assert.equal((await pull(daysAgo(30), m0.V131)).status, 200);
+    assert.equal((await pull(undefined, m0.V131)).status, 200);
+  });
+
+  it("the edge is retention minus the 10-day grace (355 days)", async () => {
+    assert.equal((await pull(daysAgo(354), m0.V131)).status, 200);
+    assert.equal((await pull(daysAgo(356), m0.V131)).status, 409);
+  });
+});
+
+describe("M0 row caps (1.3.1+) and payload validation (everyone)", () => {
+  let u;
+  before(() => { u = m0.user(); });
+  after(() => m0.cleanup(u.userId));
+
+  const ids = (n) => Array.from({ length: n }, () => m0.uuid());
+  const orphanEntries = (n) => ids(n).map((id) => ({ id, habitId: "NO-SUCH-HABIT", date: "2026-01-01" }));
+
+  it("a 1.3.1 chunk over a cap is 400 too_many_rows, naming the limits", async () => {
+    const cases = [
+      { entries: orphanEntries(5001) },
+      { habits: ids(501).map((id) => m0.habit(id)) },
+      { groups: ids(201).map((id) => m0.group(id)) },
+    ];
+    for (const body of cases) {
+      const r = await m0.push(u.token, body);
+      assert.equal(r.status, 400, Object.keys(body)[0]);
+      m0.assertErrorShape(r.json, "too_many_rows", m0.V131);
+      assert.deepEqual(r.json.limits, { habits: 500, entries: 5000, groups: 200 });
+    }
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM habit_groups WHERE user_id = ?").get(u.userId).n, 0,
+      "nothing from a refused chunk is written");
+  });
+
+  it("deletion lists are not capped: a habit's deletion queues one id per check-in", async () => {
+    // SettingsView queues a deletedEntryId for every record of a deleted habit, and M2 sends
+    // all deletions in its first chunk; a cap would 400 that chunk forever.
+    const r = await m0.push(u.token, { deletedEntryIds: ids(6000), deletedHabitIds: ids(5001), deletedGroupIds: ids(5001) });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.ok, true);
+  });
+
+  it("exactly at the cap is fine", async () => {
+    const r = await m0.push(u.token, { entries: orphanEntries(5000) });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.skipped.entries.length, 5000);
+  });
+
+  it("clients that cannot chunk get no caps: no header, and 1.3.0 (still a full snapshot)", async () => {
+    for (const client of [null, m0.V130]) {
+      const r = await m0.push(u.token, { entries: orphanEntries(5001) }, { client });
+      assert.equal(r.status, 200, String(client));
+      assert.equal(r.json.ok, true);
+    }
+  });
+
+  it("a present-but-non-array field is 400 invalid_payload for every client, not a 500", async () => {
+    const cases = [{ habits: {} }, { entries: "x" }, { groups: 3 }, { deletedHabitIds: "abc" },
+      { deleted_entry_ids: 5 }, { deletedGroupIds: { id: 1 } }];
+    for (const body of cases) {
+      // A malformed header is a shipped app as far as the body shape goes, too.
+      for (const client of [undefined, "ios/1.3.1-beta(19)", m0.V130, m0.V131]) {
+        const r = await m0.req("POST", "/v1/sync/push", { token: u.token, client, body });
+        assert.equal(r.status, 400, `${JSON.stringify(body)} ${client}`);
+        m0.assertErrorShape(r.json, "invalid_payload", client);
+      }
+    }
+  });
+
+  it("a repeated ?since is 400 invalid_payload, not a 500", async () => {
+    const res = await fetch(`${BASE}/v1/sync/pull?since=2026-01-01T00:00:00Z&since=2026-02-01T00:00:00Z`, {
+      headers: { Authorization: `Bearer ${u.token}` },
+    });
+    assert.equal(res.status, 400);
+    m0.assertErrorShape(await res.json(), "invalid_payload", undefined);
+  });
+});
+
+describe("M0 snapshot request: per account, one-shot, 1.3.1+ only", () => {
+  let u, bystander;
+  const script = path.join(__dirname, "..", "ops", "request-snapshot.js");
+  const ops = (...args) => runScript(script, args, { env: serverEnv(PORT) });
+  const flagged = (userId) => Boolean(db.prepare("SELECT 1 FROM sync_snapshot_requests WHERE user_id = ? AND answered_at IS NULL").get(userId));
+  const request = (userId) => db.prepare("SELECT * FROM sync_snapshot_requests WHERE user_id = ?").get(userId);
+
+  before(() => { u = m0.user(); bystander = m0.user(); });
+  after(() => { m0.cleanup(u.userId); m0.cleanup(bystander.userId); });
+
+  it("ops/request-snapshot.js sets, lists and clears the request by email", async () => {
+    let r = await ops(u.email.toUpperCase(), "support ticket 12");
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(flagged(u.userId));
+    assert.equal(db.prepare("SELECT note FROM sync_snapshot_requests WHERE user_id = ?").get(u.userId).note, "support ticket 12");
+    r = await ops("--list");
+    assert.equal(r.status, 0);
+    assert.match(r.stdout, new RegExp(u.email.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    r = await ops("--clear", u.email);
+    assert.equal(r.status, 0);
+    assert.ok(!flagged(u.userId));
+    assert.equal((await ops("nobody@stride-test.local")).status, 1, "an unknown email is an error, not a silent no-op");
+  });
+
+  it("legacy clients and 1.3.0 are never answered 409 and do not consume the flag", async () => {
+    assert.equal((await ops(u.email)).status, 0);
+    for (const client of [null, m0.V130]) {
+      assert.equal((await m0.push(u.token, {}, { client })).status, 200);
+      assert.equal((await m0.req("GET", "/v1/sync/pull", { token: u.token, client })).status, 200);
+    }
+    assert.ok(flagged(u.userId), "still waiting for a device that can act on it");
+  });
+
+  it("the first 1.3.1 request gets 409 snapshot_required, once", async () => {
+    const first = await m0.push(u.token, { entries: [] });
+    assert.equal(first.status, 409);
+    assert.equal(first.json.error, "snapshot_required");
+    assert.equal(typeof first.json.message, "string");
+    assert.ok(!flagged(u.userId), "consumed");
+    assert.equal((await m0.push(u.token, {})).status, 200);
+  });
+
+  it("answering keeps a durable record: --list shows when and to which build, and re-running re-arms it", async () => {
+    // The 409 can be lost on the way; a deleted row would leave support believing the repair ran.
+    const row = request(u.userId);
+    assert.ok(row, "the answered request is kept");
+    assert.equal(row.answered_client, m0.V131);
+    assert.ok(row.answered_at >= row.requested_at);
+    const list = await ops("--list");
+    assert.match(list.stdout, new RegExp(`answered ${row.answered_at} to ios/1\\.3\\.1\\(19\\)`));
+
+    assert.equal((await ops(u.email, "again")).status, 0);
+    assert.ok(flagged(u.userId), "re-armed");
+    assert.equal(request(u.userId).answered_client, null);
+    assert.equal((await m0.push(u.token, {})).status, 409);
+    assert.equal((await m0.push(u.token, {})).status, 200);
+  });
+
+  it("a pull consumes it too; other accounts are never affected", async () => {
+    assert.equal((await ops(u.email)).status, 0);
+    assert.equal((await m0.req("GET", "/v1/sync/pull", { token: bystander.token, client: m0.V131 })).status, 200);
+    const r = await m0.req("GET", "/v1/sync/pull", { token: u.token, client: m0.V131 });
+    assert.equal(r.status, 409);
+    assert.equal(r.json.error, "snapshot_required");
+    assert.equal((await m0.req("GET", "/v1/sync/pull", { token: u.token, client: m0.V131 })).status, 200);
+  });
+
+  it("sweepStaleData drops requests answered over 90 days ago and keeps pending ones", () => {
+    const appDb = require("../db");
+    const old = new Date(Date.now() - 91 * 86400000).toISOString();
+    db.prepare("UPDATE sync_snapshot_requests SET answered_at = ? WHERE user_id = ?").run(old, u.userId);
+    db.prepare("INSERT INTO sync_snapshot_requests (user_id, requested_at) VALUES (?, ?)").run(bystander.userId, old);
+    assert.ok(appDb.sweepStaleData().snapshotRequests >= 1);
+    assert.equal(request(u.userId), undefined);
+    assert.ok(flagged(bystander.userId), "a pending request is never swept");
+  });
+});
+
+describe("M0 sync pause switch (flag file, read per request)", () => {
+  let u;
+  before(() => { u = m0.user(); });
+  after(() => { fs.rmSync(PAUSE_FILE, { force: true }); m0.cleanup(u.userId); });
+
+  it("flag file on → 503 sync_paused with Retry-After from the file, before auth, on both mounts", async () => {
+    fs.writeFileSync(PAUSE_FILE, "120\n");
+    for (const [method, p, token, client] of [
+      ["GET", "/v1/sync/pull", u.token, undefined], ["POST", "/v1/sync/push", u.token, m0.V131],
+      ["GET", "/v1/sync/pull", undefined, m0.V130], ["POST", "/sync/push", undefined, undefined],
+    ]) {
+      const r = await m0.req(method, p, { token, client, body: method === "POST" ? {} : undefined });
+      assert.equal(r.status, 503, `${method} ${p} ${token ? "auth" : "no auth"}`);
+      m0.assertErrorShape(r.json, "sync_paused", client);
+      assert.equal(r.json.retryAfterSeconds, 120);
+      assert.equal(r.headers.get("retry-after"), "120");
+    }
+    assert.equal((await api("GET", "/health")).status, 200, "only sync is paused");
+    assert.equal((await api("GET", "/v1/habits", { token: u.token })).status, 200);
+  });
+
+  it("an empty flag file pauses with the default Retry-After (900 s)", async () => {
+    fs.writeFileSync(PAUSE_FILE, "");
+    const r = await api("GET", "/v1/sync/pull", { token: u.token });
+    assert.equal(r.status, 503);
+    assert.equal(r.json.retryAfterSeconds, 900);
+  });
+
+  it("flag removed → sync answers normally again, no restart", async () => {
+    fs.rmSync(PAUSE_FILE, { force: true });
+    assert.equal((await api("GET", "/v1/sync/pull", { token: u.token })).status, 200);
+    assert.equal((await api("GET", "/v1/sync/pull")).status, 401);
+  });
+
+  it("no test run can leave the default flag file in the tree", () => {
+    assert.ok(!fs.existsSync(path.join(__dirname, "..", "SYNC_PAUSED")));
+  });
+});
+
+describe("M0 sync pause switch (environment variable, second server)", () => {
+  const PORT2 = 3098, BASE2 = `http://localhost:${PORT2}`;
+  let proc, u;
+  before(async () => {
+    u = m0.user();
+    proc = await m0.spawnServer(PORT2, { SYNC_PAUSED: "1", SYNC_PAUSE_RETRY_AFTER_SECONDS: "42" });
+  });
+  after(async () => { await m0.stopServer(proc); m0.cleanup(u.userId); });
+
+  it("SYNC_PAUSED=1 pauses every sync request, with SYNC_PAUSE_RETRY_AFTER_SECONDS", async () => {
+    for (const token of [u.token, undefined]) {
+      const r = await m0.req("GET", "/v1/sync/pull", { token, base: BASE2, client: m0.V131 });
+      assert.equal(r.status, 503);
+      m0.assertErrorShape(r.json, "sync_paused", m0.V131);
+      assert.equal(r.json.retryAfterSeconds, 42);
+      assert.equal(r.headers.get("retry-after"), "42");
+    }
+    assert.equal((await m0.req("GET", "/health", { base: BASE2 })).status, 200);
+  });
+});
+
+describe("M0 rate limits (second server with limits switched on)", () => {
+  const PORT2 = 3098, BASE2 = `http://localhost:${PORT2}`;
+  let proc, a, b;
+  before(async () => {
+    a = m0.user();
+    b = m0.user();
+    // waitForServer's /health probe spends one of the 5 global requests.
+    proc = await m0.spawnServer(PORT2, {
+      SYNC_RATE_LIMIT_PER_MIN: "3", GLOBAL_RATE_LIMIT_PER_15MIN: "5", SYNC_AUTH_FAILURE_LIMIT_PER_15MIN: "2",
+    });
+  });
+  after(async () => { await m0.stopServer(proc); m0.cleanup(a.userId); m0.cleanup(b.userId); });
+
+  it("the sync limit is per account: A exhausts it, B from the same IP still gets through", async () => {
+    for (let i = 0; i < 3; i++) {
+      assert.equal((await m0.req("GET", "/v1/sync/pull", { token: a.token, base: BASE2 })).status, 200);
+    }
+    const limited = await m0.req("GET", "/v1/sync/pull", { token: a.token, base: BASE2 });
+    assert.equal(limited.status, 429);
+    // A shipped app shows `error` in Settings: it gets the same sentence the old limiter sent.
+    m0.assertErrorShape(limited.json, "rate_limited", undefined);
+    assert.equal(limited.json.error, "Too many sync requests, please try again later");
+    assert.ok(Number.isInteger(limited.json.retryAfterSeconds) && limited.json.retryAfterSeconds > 0);
+    assert.ok(Number(limited.headers.get("retry-after")) > 0);
+    const limited131 = await m0.req("GET", "/v1/sync/pull", { token: a.token, base: BASE2, client: m0.V131 });
+    assert.equal(limited131.status, 429);
+    m0.assertErrorShape(limited131.json, "rate_limited", m0.V131);
+
+    assert.equal((await m0.req("POST", "/sync/push", { token: a.token, base: BASE2, body: {} })).status, 429,
+      "the legacy mount shares the account's bucket");
+    assert.equal((await m0.req("GET", "/v1/sync/pull", { token: b.token, base: BASE2 })).status, 200);
+  });
+
+  it("sync requests are exempt from the global per-IP limiter, which still guards everything else", async () => {
+    // 7 sync requests above already passed a global limit of 5 (1 spent on /health).
+    for (let i = 0; i < 4; i++) {
+      const r = await m0.req("GET", "/v1/auth/session", { base: BASE2 });
+      assert.notEqual(r.status, 429, `non-sync request ${i + 2} of 5`);
+    }
+    assert.equal((await m0.req("GET", "/v1/auth/session", { base: BASE2 })).status, 429, "the 6th is over the global limit");
+    assert.equal((await m0.req("GET", "/v1/sync/pull", { token: b.token, base: BASE2 })).status, 200,
+      "and sync still is not");
+  });
+
+  it("sync requests without a valid session are limited per IP; signed-in ones from that IP are not", async () => {
+    // Exempt from the global limiter, and never reaching the per-account one, these had no
+    // limit at all: token guessing on /v1/sync ran free.
+    assert.equal((await m0.req("GET", "/v1/sync/pull", { base: BASE2 })).status, 401);
+    assert.equal((await m0.req("POST", "/sync/push", { token: "not-a-token", base: BASE2, body: {} })).status, 401);
+    const limited = await m0.req("GET", "/v1/sync/pull", { token: "still-not-a-token", base: BASE2, client: m0.V131 });
+    assert.equal(limited.status, 429);
+    m0.assertErrorShape(limited.json, "rate_limited", m0.V131);
+    assert.ok(Number(limited.headers.get("retry-after")) > 0);
+    assert.equal((await m0.req("GET", "/v1/sync/pull", { token: b.token, base: BASE2 })).status, 200,
+      "a signed-in device behind the same address is not in that bucket");
+  });
+});
+
+describe("M0 sweepStaleData keeps tombstones unless asked", () => {
+  const appDb = require("../db");
+  let userId;
+  before(() => { userId = createTestUser().userId; });
+  after(() => m0.cleanup(userId));
+
+  it("a 400-day-old tombstone survives the default sweep; expired sessions still go", () => {
+    const tomb = m0.uuid();
+    db.prepare("INSERT INTO deletion_tombstones (user_id, entity_type, entity_id, deleted_at) VALUES (?, 'entry', ?, ?)")
+      .run(userId, tomb, new Date(Date.now() - 400 * 86400000).toISOString());
+    const expired = hashToken(crypto.randomBytes(32).toString("hex"));
+    db.prepare("INSERT INTO sessions (user_id, token_hash, expires_at) VALUES (?, ?, ?)").run(userId, expired, Date.now() - 1000);
+
+    const swept = appDb.sweepStaleData();
+    assert.equal(swept.tombstones, 0);
+    assert.ok(db.prepare("SELECT 1 FROM deletion_tombstones WHERE entity_id = ?").get(tomb), "tombstone kept");
+    assert.equal(db.prepare("SELECT 1 FROM sessions WHERE token_hash = ?").get(expired), undefined, "session swept");
+  });
+});
+
+describe("M0 request log carries the sync row counts", () => {
+  const { formatStats } = require("../logger");
+  it("renders counters as key=value, nested objects as a:1,b:2", () => {
+    assert.equal(
+      formatStats({ user: 7, in: { habits: 0, entries: 3 }, applied: { habits: 0, entries: 2 } }),
+      " sync user=7 in=habits:0,entries:3 applied=habits:0,entries:2",
+    );
+    assert.equal(formatStats(undefined), "");
+  });
+});
+
+// ---------- M0 (A2): sliding sessions, AASA, usage counters, client in the log ----------
+
+describe("M0 sliding sessions (Bearer)", () => {
+  const DAY = 86400000;
+  let userId;
+  before(() => { userId = createTestUser().userId; });
+  after(() => m0.cleanup(userId));
+
+  /** A Bearer session expiring at `expiresAt`, as if it had been created 30 days before that. */
+  const session = (expiresAt) => {
+    const token = crypto.randomBytes(32).toString("hex");
+    db.prepare("INSERT INTO sessions (user_id, token_hash, expires_at) VALUES (?, ?, ?)").run(userId, hashToken(token), expiresAt);
+    return token;
+  };
+  const expiry = (token) => db.prepare("SELECT expires_at FROM sessions WHERE token_hash = ?").get(hashToken(token))?.expires_at;
+
+  it("day 29 of 30: a request extends the session to ~now + 30 days", async () => {
+    const token = session(Date.now() + 1 * DAY);
+    const t0 = Date.now();
+    assert.equal((await api("GET", "/v1/sync/pull", { token })).status, 200);
+    const t1 = Date.now();
+    const e = expiry(token);
+    assert.ok(e >= t0 + 30 * DAY && e <= t1 + 30 * DAY, `expires_at ${e} not ~now+30d`);
+  });
+
+  it("day 31, never used since sign-in: 401, and the session row is deleted", async () => {
+    const token = session(Date.now() - 1 * DAY);
+    assert.equal((await api("GET", "/v1/sync/pull", { token })).status, 401);
+    assert.equal(expiry(token), undefined);
+  });
+
+  it("a session extended at day 29 is still valid at day 44 (it would have died at day 30)", async () => {
+    const token = session(Date.now() + 1 * DAY);
+    assert.equal((await api("GET", "/v1/sync/pull", { token })).status, 200);   // day 29: extended
+    // 15 days pass: move the expiry back instead of the clock forward.
+    db.prepare("UPDATE sessions SET expires_at = expires_at - ? WHERE token_hash = ?").run(15 * DAY, hashToken(token));
+    assert.equal((await api("GET", "/v1/sync/pull", { token })).status, 200);   // day 44
+    assert.ok(expiry(token) > Date.now());
+  });
+
+  it("a session with more than 15 days left is not written", async () => {
+    const fixed = Date.now() + 20 * DAY;
+    const token = session(fixed);
+    for (let i = 0; i < 3; i++) assert.equal((await api("GET", "/v1/sync/pull", { token })).status, 200);
+    assert.equal((await api("GET", "/v1/auth/session", { token })).json.user.id, userId);
+    assert.equal(expiry(token), fixed, "expires_at unchanged");
+  });
+});
+
+describe("M0 apple-app-site-association (universal link for the magic link)", () => {
+  const AASA = '{"applinks":{"details":[{"appIDs":["KHMK6Q3L3K.yyh.stride.habittracker"],"components":[{"/":"/login","?":{"token":"*"}}]}]}}';
+  const url = `${BASE}/.well-known/apple-app-site-association`;
+
+  it("GET: 200, exactly application/json, exactly the expected body, no redirect", async () => {
+    const res = await fetch(url, { redirect: "manual" });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("content-type"), "application/json");
+    assert.equal(await res.text(), AASA);
+  });
+
+  it("HEAD (curl -sI): 200 application/json", async () => {
+    const res = await fetch(url, { method: "HEAD", redirect: "manual" });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("content-type"), "application/json");
+  });
+
+  it("needs no auth, and a bad Bearer token does not turn it into a 401", async () => {
+    const res = await fetch(url, { headers: { Authorization: "Bearer not-a-session" }, redirect: "manual" });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), JSON.parse(AASA));
+  });
+});
+
+describe("M0 usage counters (metrics.js, in process)", () => {
+  const metrics = require("../metrics");
+  const appDb = require("../db");
+  const counter = (name) => db.prepare("SELECT COALESCE(SUM(value), 0) AS n FROM usage_counters WHERE name = ?").get(name).n;
+  /** Enough of an Express request for metrics.js. */
+  const fakeReq = (client, user) => ({ get: (h) => (h.toLowerCase() === "x-stride-client" ? client : undefined), user });
+  const run = (mw, req) => new Promise((resolve) => mw(req, {}, resolve));
+  let userId;
+  const name = `test.${m0.uuid()}`;
+  before(() => { userId = createTestUser().userId; metrics.flush(); });
+  after(() => {
+    db.prepare("DELETE FROM usage_counters WHERE name = ? OR name LIKE 'client.ios/0.0.%(777000)'").run(name);
+    m0.cleanup(userId);
+  });
+
+  it("flush persists counts and adds to the stored row, never overwrites it", () => {
+    metrics.count(name, 3);
+    const flushed = metrics.flush();
+    assert.equal(flushed.counters[metrics.hourKey()][name], 3);
+    assert.equal(counter(name), 3);
+    metrics.count(name);
+    metrics.count(name);
+    metrics.flush();
+    assert.equal(counter(name), 5);
+    assert.equal(metrics.flush(), null, "nothing left to flush");
+  });
+
+  it("client labels: parsed header, 'legacy' when absent or malformed, capped per hour into 'other'", async () => {
+    const mw = metrics.countRequests();
+    const req = fakeReq("ios/1.3.1(19)");
+    assert.equal(metrics.clientLabel(req), "ios/1.3.1(19)");
+    assert.equal(metrics.clientLabel(fakeReq(undefined)), "legacy");
+    assert.equal(metrics.clientLabel(fakeReq("ios/1.3.1-beta(19)")), "legacy");
+
+    const N = metrics.MAX_CLIENT_LABELS_PER_HOUR + 10;
+    for (let i = 0; i < N; i++) await run(mw, fakeReq(`ios/0.0.${i}(777000)`));
+    const flushed = metrics.flush();
+    let total = 0;
+    for (const bucket of Object.values(flushed.counters)) {
+      const labels = Object.keys(bucket).filter((k) => k.startsWith("client.") && k !== "client.other");
+      assert.ok(labels.length <= metrics.MAX_CLIENT_LABELS_PER_HOUR);
+      for (const [k, v] of Object.entries(bucket)) if (k.startsWith("client.")) total += v;
+    }
+    assert.equal(total, N, "every request counted, under its label or 'other'");
+    if (Object.keys(flushed.counters).length === 1) {
+      assert.equal(Object.values(flushed.counters)[0]["client.other"], 10);
+    }
+  });
+
+  it("the cohort: one user_clients row per account and client, first/last seen, legacy included", async () => {
+    const user = { id: userId };
+    await run(metrics.noteSyncClient, fakeReq("macos/1.3.0(18)", user));
+    await run(metrics.noteSyncClient, fakeReq("macos/1.3.0(18)", user));
+    await run(metrics.noteSyncClient, fakeReq(undefined, user));
+    await run(metrics.noteSyncClient, fakeReq("ios/1.3.1(19)", undefined));   // no account: not recorded
+    assert.equal(metrics.flush().userClients, 2);
+    const rows = db.prepare("SELECT platform, version, build, first_seen, last_seen FROM user_clients WHERE user_id = ? ORDER BY platform").all(userId);
+    assert.deepEqual(rows.map((r) => [r.platform, r.version, r.build]), [["legacy", "", 0], ["macos", "1.3.0", 18]]);
+    const before = rows[1];
+    assert.ok(before.first_seen <= before.last_seen);
+
+    await run(metrics.noteSyncClient, fakeReq("macos/1.3.0(18)", user));
+    metrics.flush();
+    const after = db.prepare("SELECT first_seen, last_seen FROM user_clients WHERE user_id = ? AND platform = 'macos'").get(userId);
+    assert.equal(after.first_seen, before.first_seen, "first_seen kept");
+    assert.ok(after.last_seen >= before.last_seen, "last_seen moved");
+  });
+
+  it("one account cannot flood the cohort by varying its build number", async () => {
+    const user = { id: userId };
+    const dropped = () => db.prepare("SELECT COALESCE(SUM(value), 0) AS n FROM usage_counters WHERE name = 'user_clients_dropped'").get().n;
+    const droppedBefore = dropped();
+    const rowsBefore = db.prepare("SELECT COUNT(*) AS n FROM user_clients WHERE user_id = ?").get(userId).n;
+    const N = metrics.MAX_CLIENTS_PER_ACCOUNT_PER_FLUSH + 6;
+    for (let i = 0; i < N; i++) await run(metrics.noteSyncClient, fakeReq(`ios/1.3.1(${900000 + i})`, user));
+    // Another account in the same hour is still recorded.
+    const other = createTestUser().userId;
+    await run(metrics.noteSyncClient, fakeReq("ios/1.3.1(19)", { id: other }));
+    assert.equal(metrics.flush().userClients, metrics.MAX_CLIENTS_PER_ACCOUNT_PER_FLUSH + 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM user_clients WHERE user_id = ?").get(userId).n - rowsBefore,
+      metrics.MAX_CLIENTS_PER_ACCOUNT_PER_FLUSH);
+    assert.equal(dropped() - droppedBefore, 6);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM user_clients WHERE user_id = ?").get(other).n, 1);
+    db.prepare("DELETE FROM user_clients WHERE user_id = ? AND build >= 900000").run(userId);
+    m0.cleanup(other);
+  });
+
+  it("an account deleted before the flush does not fail it (foreign key), and its rows go with it", async () => {
+    const gone = createTestUser().userId;
+    await run(metrics.noteSyncClient, fakeReq("ios/1.3.1(19)", { id: gone }));
+    metrics.count(name);
+    db.prepare("DELETE FROM users WHERE id = ?").run(gone);
+    assert.ok(metrics.flush(), "flush succeeded");
+    assert.equal(counter(name), 6, "the rest of the flush landed");
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM user_clients WHERE user_id = ?").get(gone).n, 0);
+
+    await run(metrics.noteSyncClient, fakeReq("ios/1.3.1(19)", { id: userId }));
+    metrics.flush();
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM user_clients WHERE user_id = ?").get(userId).n, 0, "ON DELETE CASCADE");
+  });
+
+  it("sweepStaleData prunes counters and cohort rows older than 400 days, keeps newer ones", () => {
+    const keepUser = createTestUser().userId;
+    const hourAgo = (days) => new Date(Date.now() - days * 86400000).toISOString().slice(0, 13);
+    const iso = (days) => new Date(Date.now() - days * 86400000).toISOString();
+    db.prepare("INSERT INTO usage_counters (hour, name, value) VALUES (?, ?, 1), (?, ?, 1)")
+      .run(hourAgo(401), name, hourAgo(399), name);
+    db.prepare("INSERT INTO user_clients VALUES (?, 'legacy', '', 0, ?, ?), (?, 'ios', '1.3.0', 18, ?, ?)")
+      .run(keepUser, iso(500), iso(401), keepUser, iso(500), iso(399));
+    const swept = appDb.sweepStaleData();
+    assert.ok(swept.usageCounters >= 1 && swept.userClients >= 1);
+    assert.deepEqual(db.prepare("SELECT hour FROM usage_counters WHERE name = ? AND hour < ?").all(name, hourAgo(1)).map((r) => r.hour), [hourAgo(399)]);
+    assert.deepEqual(db.prepare("SELECT platform FROM user_clients WHERE user_id = ?").all(keepUser).map((r) => r.platform), ["ios"]);
+    m0.cleanup(keepUser);
+  });
+});
+
+describe("M0 usage counters from real requests, flushed on SIGTERM (second server)", () => {
+  // A second server because what is under test is the running process: the hooks in the
+  // routes, and the flush in shutdown() that keeps a deploy from losing the hour's counts.
+  const PORT2 = 3098, BASE2 = `http://localhost:${PORT2}`;
+  const BUILD = 100000 + crypto.randomInt(800000);
+  const CLIENT = `ios/1.3.1(${BUILD})`;
+  const NAMES = [
+    "snake_fallback.colorHex", "snake_fallback.sortOrder", "snake_fallback.habitId",
+    "snake_fallback.deletedEntryIds", "habit_without_kind",
+    "mount./sync", "mount./auth", "mount./habits", "mount./v1/habits", `client.${CLIENT}`,
+  ];
+  const totals = () => Object.fromEntries(NAMES.map((n) =>
+    [n, db.prepare("SELECT COALESCE(SUM(value), 0) AS n FROM usage_counters WHERE name = ?").get(n).n]));
+  let proc, u, before0, after0, stdout = "";
+
+  before(async () => {
+    u = m0.user();
+    before0 = totals();
+    proc = await m0.spawnServer(PORT2, {});
+    proc.stdout.on("data", (d) => { stdout += d; });
+    const HID = m0.uuid();
+    // A <= 1.2.1-shaped push: snake_case keys, no header, and a habit with no `kind`.
+    const push = await m0.req("POST", "/sync/push", { token: u.token, base: BASE2, body: {
+      habits: [{ id: HID, name: "Old app", color_hex: "#FF0000", sort_order: 2 }],
+      entries: [{ id: m0.uuid(), habit_id: HID, date: "2026-09-20" }],
+      deleted_entry_ids: [],
+    } });
+    assert.equal(push.status, 200);
+    assert.equal(push.json.applied.entries, 1, "snake_case still applies");
+    assert.equal((await m0.req("GET", "/auth/session", { token: u.token, base: BASE2 })).status, 200);
+    assert.equal((await m0.req("GET", "/habits", { token: u.token, base: BASE2 })).status, 200);
+    assert.equal((await m0.req("GET", "/v1/habits", { token: u.token, base: BASE2 })).status, 200);
+    for (let i = 0; i < 3; i++) {
+      assert.equal((await m0.req("GET", "/v1/sync/pull", { token: u.token, base: BASE2, client: CLIENT })).status, 200);
+    }
+    await m0.stopServer(proc);
+    after0 = totals();
+  });
+  after(async () => { await m0.stopServer(proc); m0.cleanup(u.userId); });
+
+  it("counts snake_case fallbacks per key, habits without kind, and legacy-mount hits", () => {
+    const delta = Object.fromEntries(NAMES.map((n) => [n, after0[n] - before0[n]]));
+    assert.deepEqual(delta, {
+      "snake_fallback.colorHex": 1, "snake_fallback.sortOrder": 1, "snake_fallback.habitId": 1,
+      "snake_fallback.deletedEntryIds": 1, "habit_without_kind": 1,
+      "mount./sync": 1, "mount./auth": 1, "mount./habits": 1, "mount./v1/habits": 1,
+      [`client.${CLIENT}`]: 3,
+    });
+  });
+
+  it("records the account's cohort: the legacy app and the 1.3.1 build", () => {
+    const rows = db.prepare("SELECT platform, version, build FROM user_clients WHERE user_id = ? ORDER BY platform").all(u.userId);
+    assert.deepEqual(rows.map((r) => [r.platform, r.version, r.build]), [["ios", "1.3.1", BUILD], ["legacy", "", 0]]);
+  });
+
+  it("logs one parseable [metrics] line on shutdown, and the client on every request line", () => {
+    const lines = stdout.split("\n").filter((l) => l.startsWith("[metrics] "));
+    assert.equal(lines.length, 1, stdout);
+    const flushed = JSON.parse(lines[0].slice("[metrics] ".length));
+    const hours = Object.values(flushed.counters);
+    assert.equal(hours.reduce((n, b) => n + (b[`client.${CLIENT}`] ?? 0), 0), 3);
+    assert.equal(flushed.userClients, 2);
+    assert.match(stdout, new RegExp(`GET /v1/sync/pull 200 \\d+ms client=ios/1\\.3\\.1\\(${BUILD}\\) sync user=`));
+    assert.match(stdout, /POST \/sync\/push 200 \d+ms client=- sync user=/);
+  });
+
+  it("ops/usage-report.js runs against this database and shows the cohort and the counters", async () => {
+    const script = path.join(__dirname, "..", "ops", "usage-report.js");
+    const r = await runScript(script);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /Active accounts by client/);
+    assert.match(r.stdout, /\n {2}ios\/1\.3\.1 +\d+ +\d+ +\d+\n/);
+    assert.match(r.stdout, /\n {2}legacy +\d+ +\d+ +\d+\n/);
+    assert.match(r.stdout, /legacy or < 1\.3\.1/);
+    assert.match(r.stdout, new RegExp(`client\\.ios/1\\.3\\.1\\(${BUILD}\\) +3\\n`));
+    assert.equal((await runScript(script, ["--days", "0"])).status, 2);
+    assert.equal((await runScript(script, ["--db", path.join(os.tmpdir(), `no-such-${m0.uuid()}.db`)])).status, 1);
+  });
+});
+
+describe("M0 request log: X-Stride-Client, sanitised", () => {
+  const { sanitizeClientHeader } = require("../logger");
+  it("passes a well-formed header, '-' when absent, replaces anything else, caps at 40", () => {
+    assert.equal(sanitizeClientHeader("ios/1.3.1(19)"), "ios/1.3.1(19)");
+    assert.equal(sanitizeClientHeader("macos/1.3.0(18)"), "macos/1.3.0(18)");
+    assert.equal(sanitizeClientHeader(undefined), "-");
+    assert.equal(sanitizeClientHeader(""), "-");
+    assert.equal(sanitizeClientHeader("ios/1.3.1 (19)\n[x] INFO forged"), "ios/1.3.1_(19)__x__INFO_forged");
+    assert.equal(sanitizeClientHeader("a".repeat(100)), "a".repeat(40));
+    assert.equal(sanitizeClientHeader("é日本"), "___");
   });
 });

@@ -93,6 +93,43 @@ db.exec(`
     deleted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );
+
+  -- Per-account "re-upload everything" requests, set by ops/request-snapshot.js and answered
+  -- by the account's next push or pull from a 1.3.1+ app (409 snapshot_required, one-shot).
+  -- Answering stamps answered_at / answered_client rather than deleting the row, so support
+  -- can see whether and to which build it went out. Support use only: see routes/sync.js.
+  CREATE TABLE IF NOT EXISTS sync_snapshot_requests (
+    user_id         INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    requested_at    TEXT NOT NULL,
+    note            TEXT,
+    answered_at     TEXT,
+    answered_client TEXT
+  );
+
+  -- Hourly usage counters flushed by metrics.js (see its header for what they decide).
+  -- hour is UTC 'YYYY-MM-DDTHH'; flushes add to the row, never overwrite it. Kept 400 days
+  -- (sweepStaleData), because the logs they are also written to rotate after ~30.
+  CREATE TABLE IF NOT EXISTS usage_counters (
+    hour  TEXT NOT NULL,
+    name  TEXT NOT NULL,
+    value INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (hour, name)
+  );
+
+  -- Which app builds each account syncs from: one row per (account, client), first and last
+  -- seen. Written by metrics.js at flush time, not per request. A legacy app (no or malformed
+  -- X-Stride-Client) is platform 'legacy', version '', build 0 — not NULL, which SQLite treats
+  -- as distinct in a key, so every flush would add a row instead of updating the one there.
+  -- Goes with the account (ON DELETE CASCADE): it is about a person, not about the fleet.
+  CREATE TABLE IF NOT EXISTS user_clients (
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    platform   TEXT NOT NULL,
+    version    TEXT NOT NULL,
+    build      INTEGER NOT NULL,
+    first_seen TEXT NOT NULL,
+    last_seen  TEXT NOT NULL,
+    PRIMARY KEY (user_id, platform, version, build)
+  );
 `);
 
 // Migrate existing databases: add new columns if missing
@@ -180,6 +217,12 @@ const migrateIfNeeded = db.transaction(() => {
     }
   }
 
+  // sync_snapshot_requests first shipped (unreleased) without the answered_* columns, which
+  // any dev or rehearsal database created from that code still lacks.
+  const snapCols = db.prepare("PRAGMA table_info(sync_snapshot_requests)").all().map((c) => /** @type {PragmaColumn} */ (c).name);
+  if (!snapCols.includes("answered_at")) db.exec("ALTER TABLE sync_snapshot_requests ADD COLUMN answered_at TEXT");
+  if (!snapCols.includes("answered_client")) db.exec("ALTER TABLE sync_snapshot_requests ADD COLUMN answered_client TEXT");
+
   // Upper-case every stored id so server-generated (lower-case) ids match what the apps
   // send. See migrations/canonicalizeIds.js — it needs this surrounding transaction.
   canonicalizeIds(db);
@@ -206,30 +249,60 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_magic_expires ON magic_link_tokens(expires_at);
 `);
 
+/** How long metrics.js's usage_counters and user_clients rows are kept. */
+const USAGE_RETENTION_DAYS = 400;
+
+/** How long an answered snapshot request stays visible to `ops/request-snapshot.js --list`. */
+const ANSWERED_SNAPSHOT_RETENTION_DAYS = 90;
+
 /**
- * Garbage-collect stale rows so unbounded tables (tombstones, expired
- * sessions / magic links) don't grow forever and slow down sync pulls.
+ * Garbage-collect expired sessions and magic links.
  *
- * Tombstones are retained for `tombstoneRetentionDays` (default 90) — longer
- * than any plausible client offline window — so a device that's been offline
- * for weeks still learns about deletions on its next incremental pull.
+ * Deletion tombstones are NOT swept unless a caller asks (`tombstoneRetentionDays`). They
+ * were swept after 90 days until 1.3, and every sweep was a resurrection window: an app up to
+ * 1.2.3 that pulls with a cursor older than the oldest remaining tombstone never learns about
+ * the deletions that were swept, keeps those rows, and pushes them straight back in its next
+ * full snapshot — a habit deleted on the phone reappears from the iPad that was in a drawer
+ * for four months. Those apps have no way to be told their cursor is too old (the 1.3.1
+ * `cursor_expired` 409 is gated on the X-Stride-Client header they don't send). A tombstone
+ * is ~100 bytes, so keeping all of them costs nothing.
  *
- * @param {{ tombstoneRetentionDays?: number }} [opts]
- * @returns {{ tombstones: number, sessions: number, magicLinks: number }}
+ * What turns sweeping back on: a 426 minimum-version floor that retires the <= 1.2.3 apps
+ * (decided from the legacy-client counters, not a date). After that, sweep at
+ * CURSOR_RETENTION_DAYS (365, routes/sync.js) — every client left handles cursor_expired.
+ *
+ * Also drops usage counters and client-cohort rows (metrics.js) older than
+ * USAGE_RETENTION_DAYS: long enough to compare a year against the year before, short enough
+ * that a departed user's app version does not sit here forever. And snapshot requests answered
+ * more than ANSWERED_SNAPSHOT_RETENTION_DAYS ago (pending ones stay until answered or cleared).
+ *
+ * @param {{ tombstoneRetentionDays?: number }} [opts] retention in days; omit to keep all tombstones
+ * @returns {{ tombstones: number, sessions: number, magicLinks: number, usageCounters: number, userClients: number, snapshotRequests: number }}
  */
 function sweepStaleData(opts = {}) {
-  const retentionDays = opts.tombstoneRetentionDays ?? 90;
-  const cutoffIso = new Date(Date.now() - retentionDays * 86400000).toISOString();
+  const retentionDays = opts.tombstoneRetentionDays;
   const nowMs = Date.now();
 
   const sweep = db.transaction(() => {
-    const t = db.prepare("DELETE FROM deletion_tombstones WHERE deleted_at < ?").run(cutoffIso);
+    const t = retentionDays === undefined
+      ? { changes: 0 }
+      : db.prepare("DELETE FROM deletion_tombstones WHERE deleted_at < ?")
+        .run(new Date(nowMs - retentionDays * 86400000).toISOString());
     const s = db.prepare("DELETE FROM sessions WHERE expires_at < ?").run(nowMs);
     // Expired magic links, plus single-use links that were already consumed > 1 day ago.
     const m = db.prepare(
       "DELETE FROM magic_link_tokens WHERE expires_at < ? OR (is_reusable = 0 AND used_at IS NOT NULL)"
     ).run(nowMs);
-    return { tombstones: t.changes, sessions: s.changes, magicLinks: m.changes };
+    const usageCutoff = new Date(nowMs - USAGE_RETENTION_DAYS * 86400000).toISOString();
+    // usage_counters.hour is 'YYYY-MM-DDTHH', a prefix of toISOString(), so it compares as one.
+    const u = db.prepare("DELETE FROM usage_counters WHERE hour < ?").run(usageCutoff.slice(0, 13));
+    const c = db.prepare("DELETE FROM user_clients WHERE last_seen < ?").run(usageCutoff);
+    const r = db.prepare("DELETE FROM sync_snapshot_requests WHERE answered_at < ?")
+      .run(new Date(nowMs - ANSWERED_SNAPSHOT_RETENTION_DAYS * 86400000).toISOString());
+    return {
+      tombstones: t.changes, sessions: s.changes, magicLinks: m.changes,
+      usageCounters: u.changes, userClients: c.changes, snapshotRequests: r.changes,
+    };
   });
 
   return sweep();
