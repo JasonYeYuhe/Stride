@@ -429,6 +429,16 @@ from what it took, and record the new number in the progress log before building
   never refresh client-side; a change means another sign-in, which must abort the run), and the
   `liveRecord` fetch returning another context's deleted record (covered by
   `testAnUntapSavedInTheWidgetsContextDoesNotLeaveAGhostForTheApp`). Codex runs after its reset.
+- 2026-09-29 — **phase B done** (`e9e273e`): recovery log on disk (flushed before any delete; append
+  failure → nothing deleted, no cursor), restore as new copies + `SyncCopies.reidentify` / discard,
+  backups carry their account, per-owner persisted backoff, a rehearsal-only tombstone-sweep hook
+  (NODE_ENV=test + STRIDE_TEST_HOOKS=1 + loopback). StrideTests 385, hosted 84, server 443,
+  `sync_rehearsal.sh` 66 PASS / 0 FAIL / 2 SKIPPED (both need the account screen). Reviewed by
+  Claude and Gemini (MCP bridge, fact-checked): an owner change during a restore now clears the
+  old owner's cursor with its queue. **Rule for the phase C restore screen:** a restore that
+  would move the store away from an owner who still has queued deletions or recovery-log lines
+  goes through the account screen ("This device holds habits from …", export first) — the
+  previous owner's queue is never dropped silently.
 - 2026-09-28 — owner decision on the migrated-marks question (review R1 of the slice): **the first
   full pull proves the account.** A 1.3.0 session that expires keeps `stride_last_sync_time`, so
   "the device signed out" cannot be inferred from the key. The migration marks a store's rows
