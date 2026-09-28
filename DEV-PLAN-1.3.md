@@ -398,6 +398,27 @@ real-store migration test plus `sync_rehearsal.sh` running two devices on one ac
 the delivery state, the planner and per-chunk acknowledgement. Build that first, re-estimate
 from what it took, and record the new number in the progress log before building the rest.
 
+**Progress log.**
+- 2026-09-28 — first vertical slice built (commits `f911248` server, `2b9b0dd` rehearsal,
+  `6761b00` engine): StrideTests 297, hosted 70, server 435, `sync_rehearsal.sh` 37 PASS /
+  0 FAIL / 5 SKIPPED (next slice). **Re-estimate: ~9.5 solo developer-weeks for M2 in total
+  (range 8.5–11), ~7.3 remaining** — the engine and the per-answer rules each needed more stated
+  rules than the draft implied. The owner chose to continue in four phases, each ending in a
+  review-and-fix round: **A** harden the slice (real-container migration test, the migrated-marks
+  rule below, large-account performance, version 1.3.1 (19), external review), **B** the rest of
+  the non-UI safe core (file recovery log, `SyncCopies.reidentify`, backup `accountId`, per-owner
+  backoff, swept-tombstone rehearsal; deploy the server half once 1.3.0 is live), **C** UI (account
+  screen + owner gate, restore-as-copies and held rows, recovered edits, reauth row, Full resync;
+  strings localized in one pass), **D** ship (full review, Product Interaction manifest, device
+  checks, What's New, rehearsal + demo check, submit). Nothing from this branch reaches users
+  before phase D.
+- 2026-09-28 — owner decision on the migrated-marks question (review R1 of the slice): **the first
+  full pull proves the account.** A 1.3.0 session that expires keeps `stride_last_sync_time`, so
+  "the device signed out" cannot be inferred from the key. The migration marks a store's rows
+  delivered as before, but an owner-less store's marks stand only if the first full pull of the
+  account that adopts it contains at least one habit id this device delivered; otherwise the marks
+  are forgotten (every row pending, uploaded once). Neither data loss nor resurrection after a sweep.
+
 **Design** (from the sync-architecture research; the verified state is `SyncService.pushLocal`
 serialising every row on every sync, and the server's value-based two-clock guard from 1.2.3
 that makes a mixed fleet safe):
