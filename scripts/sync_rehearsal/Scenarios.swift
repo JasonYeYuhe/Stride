@@ -1,0 +1,732 @@
+import Foundation
+import SwiftData
+
+// The first vertical slice's scenarios — DEV-PLAN-1.3.md M2, Acceptance (1) — each on fresh
+// accounts against the local server, each asserted, none relaxed. A scenario that needs a part
+// of M2 this slice does not build (the owner-gate screen, the recovery-log file and its export,
+// restore-as-copies, the swept-tombstone server switch) is reported SKIPPED with the reason,
+// never as PASS.
+
+// MARK: - Report
+
+enum Verdict: String {
+    case pass = "PASS", fail = "FAIL", skipped = "SKIPPED"
+}
+
+struct Check {
+    var scenario: String
+    var name: String
+    var verdict: Verdict
+    var detail: String
+}
+
+@MainActor
+final class Report {
+    private(set) var checks: [Check] = []
+    var current = ""
+
+    func check(_ name: String, _ ok: Bool, _ detail: @autoclosure () -> String) {
+        let c = Check(scenario: current, name: name, verdict: ok ? .pass : .fail, detail: detail())
+        checks.append(c)
+        print("  \(c.verdict.rawValue.padding(toLength: 7, withPad: " ", startingAt: 0)) \(name) — \(c.detail)")
+    }
+
+    func skip(_ name: String, _ why: String) {
+        checks.append(Check(scenario: current, name: name, verdict: .skipped, detail: why))
+    }
+
+    var failed: Bool { checks.contains { $0.verdict == .fail } }
+}
+
+// MARK: - Helpers
+
+enum Scenario {
+    /// Noon UTC, so `HabitCalendar.dayKey` lands on the same calendar day in every time zone
+    /// from UTC−11 to UTC+11 (UTC+9 hides date bugs — feedback on Stride's blind spots).
+    static let day0 = HabitCalendar.utc.date(from: DateComponents(year: 2023, month: 1, day: 1, hour: 12))!
+    static func day(_ n: Int) -> Date { day0.addingTimeInterval(Double(n) * 86_400) }
+}
+
+func describe(_ outcome: SyncRunOutcome) -> String {
+    switch outcome {
+    case .synced: return "synced"
+    case .blocked(let r): return "blocked(\(r))"
+    case .stopped(let r, _): return "stopped(\(r))"
+    }
+}
+
+func isSynced(_ outcome: SyncRunOutcome) -> Bool {
+    if case .synced = outcome { return true }
+    return false
+}
+
+func describe(_ exchanges: [Exchange]) -> String {
+    exchanges.map { e in
+        let s = e.injected ? "injected" : e.answerLost ? "\(e.status.map(String.init) ?? "-")/lost" : (e.status.map(String.init) ?? "none")
+        switch e.endpoint {
+        case .push: return "push[\(e.pushed) \(e.requestBytes)B → \(s)]"
+        case .pull: return "pull[\(e.since == nil ? "full" : "since") → \(s)]"
+        }
+    }.joined(separator: " ")
+}
+
+func pushes(_ exchanges: [Exchange]) -> [Exchange] { exchanges.filter { $0.endpoint == .push } }
+
+func totalPushed(_ exchanges: [Exchange]) -> WireCounts {
+    pushes(exchanges).reduce(into: WireCounts()) { acc, e in
+        acc.habits += e.pushed.habits; acc.entries += e.pushed.entries
+        acc.groups += e.pushed.groups; acc.deletions += e.pushed.deletions
+        acc.wholeSecondStamps += e.pushed.wholeSecondStamps
+    }
+}
+
+/// Waits until the wall clock is 50–300 ms into a second, so two edits 300 ms apart share one
+/// whole second: the case a whole-second wire resolves by push order instead of by time.
+func waitUntilEarlyInASecond() async {
+    while true {
+        let ms = Int(SyncTimestamp.milliseconds(Date()) % 1000)
+        if ms >= 50 && ms < 300 { return }
+        let wait = (1050 - ms) % 1000
+        try? await Task.sleep(nanoseconds: UInt64(max(wait, 5)) * 1_000_000)
+    }
+}
+
+/// Waits past the next whole-second boundary: an edit after it is later than every earlier
+/// edit even at a snapshot device's whole-second precision.
+func waitForNextWholeSecond() async {
+    let ms = Int(SyncTimestamp.milliseconds(Date()) % 1000)
+    try? await Task.sleep(nanoseconds: UInt64(1_000 - ms + 20) * 1_000_000)
+}
+
+// MARK: - Scenarios
+
+@MainActor
+struct Scenarios {
+    let report: Report
+
+    // S1 — delivery state: a second sync pushes nothing; a device that only pulled pushes nothing.
+    func deliveryState() async throws {
+        let account = try Account.create()
+        let a = Device131("A", account: account), b = Device131("B", account: account)
+        defer { a.remove(); b.remove() }
+        a.habit("Read", days: [0, 1, 2])
+        a.habit("Run", days: [0])
+        a.habit("Stretch")
+        try a.save()
+
+        let first = await a.sync()
+        let ex1 = a.transport.exchanges
+        let order = ex1.map { $0.endpoint == .push ? "push" : ($0.since == nil ? "full-pull" : "pull") }
+        report.check("first sync: full pull → one push of every row (ms stamps) → pull",
+                     isSynced(first) && order == ["full-pull", "push", "pull"]
+                        && ex1.allSatisfy { $0.status == 200 }
+                        && pushes(ex1).first?.pushed == { var w = WireCounts(); w.habits = 3; w.entries = 4; return w }(),
+                     describe(ex1))
+
+        let mark = a.transport.mark()
+        let second = await a.sync()
+        let ex2 = a.transport.since(mark)
+        report.check("second sync with no edits pushes 0/0/0",
+                     isSynced(second) && pushes(ex2).isEmpty && second.summary?.pushedRows.total == 0,
+                     "\(describe(second)); requests: \(describe(ex2))")
+
+        let bFirst = await b.sync()
+        let bMark = b.transport.mark()
+        let bSecond = await b.sync()
+        let same = try a.digest().difference(from: b.digest())
+        report.check("a device that only pulled pushes 0/0/0 (first and second sync) and holds A's rows",
+                     isSynced(bFirst) && isSynced(bSecond) && pushes(b.transport.exchanges).isEmpty && same == nil,
+                     "B first: \(describe(b.transport.exchanges.prefix(bMark).map { $0 })); B second: \(describe(b.transport.since(bMark))); stores \(same ?? "equal")")
+
+        // S2 — one tap.
+        report.current = "S2 one tap"
+        let bRead = try unwrap(b.habits().first { $0.name == "Read" }, "B has Read")
+        try b.tapAndSave(bRead, day: 3)
+        let tapMark = b.transport.mark()
+        let tap = await b.sync()
+        let tapPushes = pushes(b.transport.since(tapMark))
+        let one = tapPushes.first
+        report.check("one tap → the next push carries exactly 1 entry and 0 habits",
+                     isSynced(tap) && tapPushes.count == 1 && one?.pushed.entries == 1 && one?.pushed.habits == 0
+                        && one?.pushed.groups == 0 && one?.pushed.deletions == 0 && one?.status == 200,
+                     describe(b.transport.since(tapMark)))
+        report.check("…and that request is small (bytes counted on the wire)",
+                     (one?.requestBytes ?? .max) < 1_024,
+                     "\(one?.requestBytes ?? -1) bytes (A's 1.3.0-style snapshot of the same store would carry every row)")
+
+        try b.tapAndSave(bRead, day: 3)   // untap: deletes the record, queues its tombstone
+        let untapMark = b.transport.mark()
+        let untap = await b.sync()
+        let untapPushes = pushes(b.transport.since(untapMark))
+        report.check("untap → the next push carries 0 rows and exactly 1 deletion id",
+                     isSynced(untap) && untapPushes.count == 1 && untapPushes.first?.pushed.rows == 0
+                        && untapPushes.first?.pushed.deletions == 1 && b.queue.pending().isEmpty,
+                     describe(b.transport.since(untapMark)))
+
+        try b.tapAndSave(bRead, day: 4)
+        _ = await b.sync()
+        _ = await a.sync()
+        let converged = try a.digest().difference(from: b.digest())
+        let server = StoreDigest(pull: try await serverSnapshot(account))
+        report.check("A and B converge on the server's rows after the taps",
+                     try converged == nil && (try a.digest()).difference(from: server) == nil,
+                     converged ?? "A = B = server (\(server.summary))")
+    }
+
+    // S3 — a 2,500-entry first upload.
+    func firstUpload2500() async throws {
+        let account = try Account.create()
+        let a = Device131("A", account: account)
+        defer { a.remove() }
+        for i in 0..<5 { a.habit("Habit \(i)", days: Array(0..<500)) }
+        try a.save()
+
+        let started = Date()
+        let outcome = await a.sync()
+        let seconds = Date().timeIntervalSince(started)
+        let ex = a.transport.exchanges
+        let p = pushes(ex)
+        let total = totalPushed(ex)
+        report.check("2,500-entry first upload completes in 2 push requests",
+                     isSynced(outcome) && p.count == 2 && p.allSatisfy { $0.status == 200 }
+                        && total.entries == 2_500 && total.habits == 5,
+                     "\(describe(ex)); \(String(format: "%.1f", seconds)) s")
+        report.check("…with no 429 (server at the production limit, 60 sync requests / min / account)",
+                     !ex.contains { $0.status == 429 }, "statuses \(ex.map { $0.status.map(String.init) ?? "none" })")
+        let server = try await serverSnapshot(account)
+        report.check("…and the server holds all of it, nothing left pending",
+                     try server.totals == SyncTotals(habits: 5, entries: 2_500, groups: 0) && (try a.pendingCount()) == 0,
+                     "server totals \(server.totals.map { "\($0.habits)h/\($0.entries)e" } ?? "none"), pending \((try? a.pendingCount()) ?? -1)")
+    }
+
+    // S4 — 2,000 entries with 2 KB notes: bounded by bytes, not only rows.
+    func notes2KB() async throws {
+        let account = try Account.create()
+        let a = Device131("A", account: account)
+        defer { a.remove() }
+        // ~2 KB of UTF-8 per note, multi-byte characters included: the bound is on encoded
+        // bytes, and "日記 ✓" is 3 bytes a character.
+        let unit = "Stride 日記 ✓ — a long note about the day. "
+        func note(_ day: Int) -> String {
+            var s = "day \(day): "
+            while s.utf8.count < 2_048 { s += unit }
+            return s
+        }
+        for i in 0..<4 { a.habit("Journal \(i)", days: Array(0..<500), note: note) }
+        try a.save()
+
+        let outcome = await a.sync()
+        let ex = a.transport.exchanges
+        let p = pushes(ex)
+        let largest = p.map(\.requestBytes).max() ?? 0
+        let total = totalPushed(ex)
+        report.check("2,000 entries with 2 KB notes → no request over 1 MB",
+                     isSynced(outcome) && largest <= 1_000_000 && p.allSatisfy { $0.status == 200 }
+                        && total.entries == 2_000 && total.habits == 4,
+                     "\(p.count) pushes, largest \(largest) bytes; \(describe(ex))")
+        let server = try await serverSnapshot(account)
+        let intact = server.entries.allSatisfy { ($0.note?.utf8.count ?? 0) >= 2_048 }
+        report.check("…and every note arrived whole",
+                     server.totals?.entries == 2_000 && intact,
+                     "server totals entries \(server.totals?.entries ?? -1), notes intact: \(intact)")
+    }
+
+    // S5 — a failure at chunk 2.
+    func failureAtChunk2() async throws {
+        for fault in [HTTPTransport.PushFault.failBeforeSending, .loseAnswer] {
+            let label = fault == .failBeforeSending ? "chunk 2 never reaches the server" : "chunk 2's answer is lost"
+            let account = try Account.create()
+            let a = Device131("A", account: account)
+            defer { a.remove() }
+            for i in 0..<3 { a.habit("Habit \(i)", days: Array(0..<1_000)) }   // 3 habits + 3,000 entries
+            try a.save()
+
+            a.transport.pushFault = { $0 == 2 ? fault : nil }
+            let failed = await a.sync()
+            let ex1 = a.transport.exchanges
+            let pendingAfter = try a.pendingCount()
+            var stoppedTransient = false
+            if case .stopped(.backOff(.transient, _), _) = failed { stoppedTransient = true }
+            report.check("\(label): the run stops, chunk 1 is acknowledged, chunk 2 stays pending",
+                         stoppedTransient && pushes(ex1).count == 2 && pushes(ex1)[0].status == 200
+                            && pendingAfter == pushes(ex1)[1].pushed.rows && pendingAfter > 0,
+                         "\(describe(failed)); \(describe(ex1)); pending \(pendingAfter)")
+
+            a.transport.pushFault = nil
+            let mark = a.transport.mark()
+            let retry = await a.sync()
+            let ex2 = a.transport.since(mark)
+            let resent = totalPushed(ex2)
+            let server = try await serverSnapshot(account)
+            report.check("\(label): the retry sends only chunk 2, and the server ends with every row once",
+                         try isSynced(retry) && pushes(ex2).count == 1 && resent.rows == pendingAfter && resent.habits == 0
+                            && server.totals == SyncTotals(habits: 3, entries: 3_000, groups: 0) && (try a.pendingCount()) == 0,
+                         "\(describe(ex2)); server \(server.totals.map { "\($0.habits)h/\($0.entries)e" } ?? "none")")
+        }
+    }
+
+    // S6 — a row_error row is held; the rest lands; the hold survives a full pull.
+    func rowError() async throws {
+        try Account.installRowErrorTrigger()
+        let account = try Account.create()
+        let a = Device131("A", account: account)
+        defer { a.remove() }
+        let habit = a.habit("Journal", days: [0, 1, 2, 3, 4], note: { $0 == 2 ? "REHEARSAL_ROW_ERROR" : nil })
+        try a.save()
+
+        let first = await a.sync()
+        let held = try unwrap(a.record(of: habit.id, day: 2), "the marked record")
+        var server = try await serverSnapshot(account)
+        report.check("a row_error row is held; the rest of its chunk lands",
+                     try isSynced(first) && held.activeHold == .rowError && (try a.pendingCount()) == 0
+                        && server.totals == SyncTotals(habits: 1, entries: 4, groups: 0),
+                     "\(describe(first)); hold \(held.activeHold?.rawValue ?? "none"); server \(server.totals.map { "\($0.habits)h/\($0.entries)e" } ?? "none"); \(describe(a.transport.exchanges))")
+
+        a.cursor = nil
+        let fullMark = a.transport.mark()
+        let full = await a.sync()
+        let exFull = a.transport.since(fullMark)
+        let survived = try a.record(of: habit.id, day: 2)
+        report.check("the held row survives the next full pull and is not sent again",
+                     isSynced(full) && exFull.first?.since == nil && exFull.first?.endpoint == .pull
+                        && survived?.activeHold == .rowError && pushes(exFull).isEmpty,
+                     "\(describe(exFull)); held row \(survived == nil ? "GONE" : "kept, \(survived?.activeHold?.rawValue ?? "not held")")")
+
+        try a.tapAndSave(habit, day: 5)
+        let tapMark = a.transport.mark()
+        _ = await a.sync()
+        let exTap = a.transport.since(tapMark)
+        report.check("an unrelated edit's push carries that edit only, not the held row",
+                     pushes(exTap).count == 1 && pushes(exTap)[0].pushed.entries == 1,
+                     describe(exTap))
+
+        held.note = "fixed by hand"
+        held.touch()
+        try a.save()
+        let editMark = a.transport.mark()
+        let edited = await a.sync()
+        let exEdit = a.transport.since(editMark)
+        server = try await serverSnapshot(account)
+        report.check("editing the held row lifts the hold; it is sent once and lands",
+                     try isSynced(edited) && pushes(exEdit).count == 1 && pushes(exEdit)[0].pushed.entries == 1
+                        && held.activeHold == nil && (try a.pendingCount()) == 0 && server.totals?.entries == 6,
+                     "\(describe(exEdit)); server entries \(server.totals?.entries ?? -1)")
+    }
+
+    // S7 — two 1.3.1 devices + a 1.2.3- and a 1.3.0-shaped snapshot device, interleaved.
+    func mixedFleet() async throws {
+        let account = try Account.create()
+        let a = Device131("A", account: account), b = Device131("B", account: account)
+        let l = SnapshotDevice("L(1.2.3)", shape: .v123, account: account)
+        let m = SnapshotDevice("M(1.3.0)", shape: .v130, account: account)
+        defer { a.remove(); b.remove(); l.remove(); m.remove() }
+
+        func named(_ d: StoreDevice, _ name: String) throws -> Habit {
+            try unwrap(d.habits().first { $0.name == name }, "\(d.name) has \(name)")
+        }
+        var statuses: [String] = []
+        func snap(_ d: SnapshotDevice) async throws {
+            let r = try await d.sync()
+            statuses.append("\(d.name):\(r.push.map(String.init) ?? "-")/\(r.pull.map(String.init) ?? "-")")
+        }
+
+        // 1. A starts the account.
+        let aRun = a.habit("Run", days: [0, 1])
+        a.habit("Read", days: [0, 1])
+        try a.save()
+        _ = await a.sync()
+        // 2. Everyone else joins.
+        try await snap(l); try await snap(m); _ = await b.sync()
+        // 3. 1.2.3: a new habit, a tap, an untap (a deleted entry).
+        l.habit("Legacy", days: [2])
+        try l.tapAndSave(try named(l, "Read"), day: 2)
+        try l.tapAndSave(try named(l, "Run"), day: 0)
+        try await snap(l)
+        // 4. 1.3.0: a rename, a tap, a group — in a later whole second than A's creation of
+        //    Read, so the rename is newer even at 1.3.0's whole-second precision (the
+        //    same-second case is the documented limit, checked on its own below).
+        await waitForNextWholeSecond()
+        let mRead = try named(m, "Read")
+        let group = HabitGroup(name: "Health")
+        m.context.insert(group)
+        mRead.name = "Read books"
+        mRead.groupId = group.id
+        mRead.touch()
+        try m.tapAndSave(try named(m, "Run"), day: 3)
+        try await snap(m)
+        // 5. B deletes Run, taps Read.
+        try b.deleteHabit(try named(b, "Run"))
+        try b.tapAndSave(try named(b, "Read"), day: 3)
+        _ = await b.sync()
+        // 6. A, offline since step 1: checks Run in (a habit B deleted meanwhile) and Read.
+        let offline = try a.tapAndSave(aRun, day: 5)
+        let offlineID = try unwrap(aRun.record(on: Scenario.day(5))?.id, "A's offline record")
+        _ = offline
+        try a.tapAndSave(try named(a, "Read"), day: 4)
+        _ = await a.sync()
+        // 7. Two rounds for everyone.
+        var finalMarks: [String: Int] = [:]
+        var lastL = 0, lastM = 0
+        for round in 0..<2 {
+            if round == 1 {
+                finalMarks = ["A": a.transport.mark(), "B": b.transport.mark()]
+                lastL = l.transport.mark(); lastM = m.transport.mark()
+            }
+            _ = await a.sync(); _ = await b.sync()
+            try await snap(l); try await snap(m)
+        }
+
+        let server = StoreDigest(pull: try await serverSnapshot(account))
+        var diffs: [String] = []
+        for d in [a, b, l, m] as [StoreDevice] {
+            if let diff = try d.digest().difference(from: server) { diffs.append("\(d.name): \(diff)") }
+        }
+        report.check("two 1.3.1 devices + 1.2.3- and 1.3.0-shaped snapshot devices converge after interleaved edits/deletes",
+                     diffs.isEmpty && server.habits.count == 2 && server.groups.count == 1,
+                     diffs.isEmpty ? "all four = server (\(server.summary)); snapshot syncs \(statuses.joined(separator: " "))" : diffs.joined(separator: "; "))
+
+        let names = try [a, b, l, m].map { try $0.habits().map(\.name).sorted() }
+        report.check("the 1.3.0 device's rename survived the 1.2.3 device's stale snapshot echo (LWW + re-feed)",
+                     names.allSatisfy { $0 == ["Legacy", "Read books"] },
+                     "habit names per device: \(names)")
+
+        let archived = a.log.lines.contains { $0.item.ref == SyncRowRef(kind: .entry, id: offlineID.uuidString) }
+        report.check("a habit deleted on B while checked in offline on A is gone from A, and A's recovery log holds the check-in",
+                     (try a.habits()).allSatisfy { $0.name != "Run" } && archived,
+                     "A's log: \(a.log.lines.map { "\($0.item.reason.rawValue) \($0.item.ref.kind)" })")
+
+        let finalA = pushes(a.transport.since(finalMarks["A"] ?? 0)), finalB = pushes(b.transport.since(finalMarks["B"] ?? 0))
+        let lFinal = pushes(l.transport.since(lastL)).last, mFinal = pushes(m.transport.since(lastM)).last
+        let lRows = try l.digest(), mRows = try m.digest()
+        report.check("once converged the 1.3.1 devices push nothing; the snapshot devices still push their whole store",
+                     finalA.isEmpty && finalB.isEmpty
+                        && lFinal?.pushed.entries == lRows.entries.count && lFinal?.pushed.habits == lRows.habits.count
+                        && mFinal?.pushed.entries == mRows.entries.count && mFinal?.pushed.habits == mRows.habits.count,
+                     "A \(finalA.count) pushes, B \(finalB.count); L pushed \(lFinal?.pushed.description ?? "-"), M pushed \(mFinal?.pushed.description ?? "-")")
+
+        // The documented limit (M2, "Millisecond edit stamps"): an older app's edit is only as
+        // precise as its string. A 1.3.0 edit made 300 ms AFTER a 1.3.1 edit in the same second
+        // is sent as :x.000 and loses. What must hold is that the fleet still ends on ONE value.
+        let aRead = try named(a, "Read books"), mRead2 = try named(m, "Read books")
+        await waitUntilEarlyInASecond()
+        aRead.note = "note from A (1.3.1)"
+        aRead.touch()
+        try a.save()
+        try await Task.sleep(nanoseconds: 300_000_000)
+        mRead2.note = "note from M (1.3.0), 300 ms later"
+        mRead2.touch()
+        try m.save()
+        let sameSecond = floor(aRead.stamp.timeIntervalSince1970) == floor(mRead2.stamp.timeIntervalSince1970)
+        _ = await a.sync(); try await snap(m); _ = await b.sync(); try await snap(l); _ = await a.sync(); try await snap(m)
+        let serverNote = try await serverSnapshot(account).habits.first { $0.name == "Read books" }?.note
+        let notes = try [a, b, l, m].map { try named($0, "Read books").note ?? "" }
+        report.check("documented limit: a 1.3.0 edit 300 ms after a 1.3.1 edit in the same second loses, and all four still end on one value",
+                     sameSecond && serverNote == "note from A (1.3.1)" && notes.allSatisfy { $0 == serverNote },
+                     "same second: \(sameSecond); server \"\(serverNote ?? "-")\"; devices \(notes)")
+
+        let aStamps = totalPushed(a.transport.exchanges).wholeSecondStamps + totalPushed(b.transport.exchanges).wholeSecondStamps
+        let lStamps = pushes(l.transport.exchanges).allSatisfy { $0.pushed.wholeSecondStamps == 2 * $0.pushed.rows }
+        report.check("stamps on the wire: 1.3.1 sends milliseconds, the snapshot devices whole seconds",
+                     aStamps == 0 && lStamps, "1.3.1 whole-second stamps: \(aStamps); snapshot pushes all whole seconds: \(lStamps)")
+    }
+
+    // S8 — two edits of one entry 300 ms apart on two devices.
+    func editsThreeHundredMsApart() async throws {
+        let account = try Account.create()
+        let a = Device131("A", account: account), b = Device131("B", account: account)
+        defer { a.remove(); b.remove() }
+        let habit = a.habit("Water", days: [0, 1])
+        try a.save()
+        _ = await a.sync(); _ = await b.sync()
+
+        // The pull format first: without milliseconds on the pull, the rest cannot pass.
+        let pulled131 = try await rawPull(account, clientHeader: Rehearsal.client131)
+        let pulled130 = try await rawPull(account, clientHeader: Rehearsal.client130)
+        let pulledNone = try await rawPull(account, clientHeader: nil)
+        func stamps(_ json: [String: Any]) -> [String] {
+            ((json["entries"] as? [[String: Any]]) ?? []).compactMap { $0["updatedAt"] as? String }
+                + ((json["habits"] as? [[String: Any]]) ?? []).compactMap { $0["updatedAt"] as? String }
+        }
+        let ms131 = stamps(pulled131), ms130 = stamps(pulled130), msNone = stamps(pulledNone)
+        report.check("pull stamps: ios/1.3.1(19) gets milliseconds; ios/1.3.0(18) and no header get whole seconds",
+                     !ms131.isEmpty && ms131.allSatisfy(WireCounts.hasMilliseconds)
+                        && !ms130.isEmpty && ms130.allSatisfy { !$0.contains(".") }
+                        && !msNone.isEmpty && msNone.allSatisfy { !$0.contains(".") },
+                     "1.3.1: \(ms131.first ?? "-"), 1.3.0: \(ms130.first ?? "-"), none: \(msNone.first ?? "-")")
+
+        for (day, laterPushesFirst) in [(0, true), (1, false)] {
+            let label = laterPushesFirst ? "the later edit pushes first" : "the earlier edit pushes first"
+            let aRecord = try unwrap(a.record(of: habit.id, day: day), "A's record")
+            let bRecord = try unwrap(b.record(of: habit.id, day: day), "B's record")
+            await waitUntilEarlyInASecond()
+            aRecord.note = "earlier edit (A)"
+            aRecord.touch()
+            try a.save()
+            try await Task.sleep(nanoseconds: 300_000_000)
+            bRecord.note = "later edit (B)"
+            bRecord.touch()
+            try b.save()
+            let aStamp = aRecord.stamp, bStamp = bRecord.stamp
+            let sameSecond = floor(aStamp.timeIntervalSince1970) == floor(bStamp.timeIntervalSince1970)
+
+            let order: [Device131] = laterPushesFirst ? [b, a, b, a] : [a, b, a, b]
+            for d in order { _ = await d.sync() }
+            let server = try await serverSnapshot(account)
+            let serverNote = server.entries.first { $0.date == HabitCalendar.dayStringFormatter.string(from: Scenario.day(day)) }?.note
+            report.check("two edits of one entry 300 ms apart (same second) end as the later edit — \(label)",
+                         try sameSecond && aRecord.note == "later edit (B)" && bRecord.note == "later edit (B)"
+                            && serverNote == "later edit (B)" && (try a.pendingCount()) == 0 && (try b.pendingCount()) == 0,
+                         "stamps \(SyncTimestamp.millisecondString(from: aStamp)) / \(SyncTimestamp.millisecondString(from: bStamp)); A \"\(aRecord.note ?? "")\", B \"\(bRecord.note ?? "")\", server \"\(serverNote ?? "")\"; A pending \((try? a.pendingCount()) ?? -1)")
+        }
+    }
+
+    // S9 — a device whose clock runs 10 min slow loses an edit and ends with the winner's value.
+    func skewedClock() async throws {
+        let account = try Account.create()
+        let a = Device131("A", account: account), s = Device131("S(-10 min)", account: account)
+        defer { a.remove(); s.remove() }
+        let habit = a.habit("Plan")
+        try a.save()
+        _ = await a.sync(); _ = await s.sync()
+
+        habit.name = "Winner"
+        habit.touch()
+        try a.save()
+        _ = await a.sync()
+        _ = await s.sync()
+        // The case the re-feed exists for: S's cursor is already PAST the winner's server
+        // `updated_at`. In a run this fast the 60 s cursor overlap would bring the winner back by
+        // itself and hide a missing re-feed (a scratch server without it passed this check). One
+        // machine, one clock: a cursor of "now" is what S stores after any sync a minute or more
+        // after A's edit.
+        try await Task.sleep(nanoseconds: 20_000_000)
+        s.cursor = SyncTimestamp.millisecondString(from: Date())
+        let sHabit = try unwrap(s.habit(id: habit.id), "S has the habit")
+        // S's clock is 10 minutes slow: its edit is stamped before A's, though made after it.
+        sHabit.name = "Loser"
+        sHabit.updatedAt = SyncTimestamp.floorToMillisecond(Date().addingTimeInterval(-600))
+        try s.save()
+        let mark = s.transport.mark()
+        let outcome = await s.sync()
+        _ = await a.sync()
+        let server = try await serverSnapshot(account)
+        report.check("a device whose clock runs 10 min slow and loses an edit ends with the winner's value (LWW re-feed)",
+                     try isSynced(outcome) && sHabit.name == "Winner" && habit.name == "Winner"
+                        && server.habits.first?.name == "Winner" && (try s.pendingCount()) == 0,
+                     "S shows \"\(sHabit.name)\", A \"\(habit.name)\", server \"\(server.habits.first?.name ?? "-")\"; S: \(describe(s.transport.since(mark)))")
+    }
+
+    // S10 — a truncated full pull deletes nothing.
+    func truncatedFullPull() async throws {
+        let account = try Account.create()
+        let a = Device131("A", account: account), b = Device131("B", account: account)
+        defer { a.remove(); b.remove() }
+        let habit = a.habit("Piano", days: Array(0..<6))
+        try a.save()
+        _ = await a.sync(); _ = await b.sync()
+        habit.name = "Piano (renamed)"
+        habit.touch()
+        try a.save()
+        _ = await a.sync()
+
+        // A body cut short (a proxy, a timed-out query): three entries missing, `totals` intact.
+        b.cursor = nil
+        b.transport.transformPull = { since, response in
+            guard since == nil, response.status == 200,
+                  var json = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any],
+                  var entries = json["entries"] as? [Any] else { return response }
+            entries.removeLast(min(3, entries.count))
+            json["entries"] = entries
+            var cut = response
+            cut.body = (try? JSONSerialization.data(withJSONObject: json)) ?? response.body
+            return cut
+        }
+        let outcome = await b.sync()
+        b.transport.transformPull = nil
+        let bHabit = try b.habit(id: habit.id)
+        let issues = outcome.summary?.pullIssues.map(\.reason.rawValue) ?? []
+        report.check("a truncated full pull (totals ≠ arrays) deletes nothing, and its upserts still apply",
+                     bHabit?.records.count == 6 && bHabit?.name == "Piano (renamed)"
+                        && outcome.summary?.deletionPassSkipped == true && issues.contains("totals_mismatch"),
+                     "\(describe(outcome)); B keeps \(bHabit?.records.count ?? 0) records, name \"\(bHabit?.name ?? "-")\"; issues \(issues)")
+
+        // Control: the same full pull, whole, does delete a row another device deleted — so the
+        // check above is the validation at work, not a deletion pass that never runs.
+        try a.tapAndSave(habit, day: 0)   // untap on A: delete + tombstone
+        _ = await a.sync()
+        b.cursor = nil
+        let control = await b.sync()
+        report.check("control: an intact full pull removes the row another device deleted",
+                     try isSynced(control) && (try b.habit(id: habit.id))?.records.count == 5
+                        && control.summary?.deletionPassSkipped == false,
+                     "B has \((try? b.habit(id: habit.id))??.records.count ?? -1) records")
+    }
+
+    // S11 — a sign-in to another account between two chunks.
+    func runBinding() async throws {
+        let x = try Account.create(), y = try Account.create()
+        let a = Device131("A", account: x)
+        defer { a.remove() }
+        for i in 0..<3 { a.habit("Habit \(i)", days: Array(0..<1_000)) }
+        try a.save()
+        let queued = UUID().uuidString
+        a.queue.trackEntry(queued)
+        let rows = try a.pendingCount()
+
+        var cursorAtSwitch: String?? = .none
+        a.transport.afterPush = { [a] n in
+            guard n == 1 else { return }
+            cursorAtSwitch = .some(a.cursor)
+            // Signed out of X and into Y while chunk 1 was in flight.
+            a.gate.state = .ready(SyncRunBinding(ownerID: y.owner, token: y.token, generation: 1))
+        }
+        let outcome = await a.sync()
+        let ex = a.transport.exchanges
+        let yServer = try await serverSnapshot(y)
+        report.check("a sign-in to another account between two chunks sends no further chunk and acknowledges nothing",
+                     try outcome == .stopped(.bindingChanged, outcome.summary ?? SyncRunSummary())
+                        && pushes(ex).count == 1 && !ex.contains { $0.token == y.token }
+                        && (try a.pendingCount()) == rows && a.queue.pending().entries.contains(queued)
+                        && cursorAtSwitch == .some(a.cursor)
+                        && yServer.totals == SyncTotals(habits: 0, entries: 0, groups: 0),
+                     "\(describe(outcome)); \(describe(ex)); pending \((try? a.pendingCount()) ?? -1)/\(rows); Y's account \(yServer.totals.map { "\($0.habits)h/\($0.entries)e" } ?? "none")")
+    }
+
+    // S12 (STRIDE_REHEARSAL_LARGE=1) — a 20,000-entry account, timed. The planner walks every
+    // habit's records and the resolver fetches each touched kind once per chunk, as 1.3.0's
+    // pushLocal did; the unit tests only showed that 2,500 is fast. Not a default gate: it
+    // measures, for the M2 re-estimate, and fails only if a sync itself does. The time between
+    // requests is the device's own work on the main actor (plan, resolve, reconcile, save).
+    func largeAccount() async throws {
+        let account = try Account.create()
+        let a = Device131("A", account: account), b = Device131("B", account: account)
+        defer { a.remove(); b.remove() }
+        for i in 0..<40 { a.habit("Habit \(i)", days: Array(0..<500)) }
+        try a.save()
+
+        func timed(_ d: Device131, _ body: () async -> SyncRunOutcome) async -> (SyncRunOutcome, String, [Exchange]) {
+            let mark = d.transport.mark()
+            let started = Date()
+            let outcome = await body()
+            let total = Date().timeIntervalSince(started)
+            let ex = d.transport.since(mark)
+            let network = ex.reduce(0) { $0 + $1.finished.timeIntervalSince($1.started) }
+            let steps = ex.map { e in
+                String(format: "%@ %.1fs", e.endpoint == .push ? "push" : (e.since == nil ? "full-pull" : "pull"),
+                       e.finished.timeIntervalSince(e.started))
+            }.joined(separator: ", ")
+            return (outcome, String(format: "%.1f s total, %.1f s on the device (requests: %@)", total, total - network, steps), ex)
+        }
+
+        let (upload, uploadTime, uploadEx) = await timed(a) { await a.sync() }
+        report.check("20,000-entry first upload completes in 10 pushes (timed)",
+                     isSynced(upload) && pushes(uploadEx).count == 10, uploadTime)
+
+        // A minute later: the cursor past the upload, so the pull is empty and what is left is
+        // the planner's walk over every row.
+        a.cursor = SyncTimestamp.millisecondString(from: Date())
+        let (idle, idleTime, idleEx) = await timed(a) { await a.sync() }
+        report.check("a sync with no edits on a 20,000-entry store pushes nothing (timed)",
+                     isSynced(idle) && pushes(idleEx).isEmpty, idleTime)
+
+        let (join, joinTime, _) = await timed(b) { await b.sync() }
+        let bCounts = try b.counts()
+        report.check("a second device joining a 20,000-entry account: one full pull (timed)",
+                     isSynced(join) && bCounts.records == 20_000, joinTime)
+    }
+
+    // MARK: Not in this slice
+
+    // S13 — untap and re-tap one day (M2 slice review). The deletion of X is queued and the
+    // re-tap Y pending when a sync pulls before it pushes: the pull brings X back, and before the
+    // fix the day match renamed Y to X, the push carried `deletedEntryIds: [X]` with an upsert of
+    // X, the server (deletions first) answered `tombstoned`, and the check-in was gone everywhere.
+    // Then the same edit made on B, reaching A as X deleted plus Y in ONE incremental pull.
+    func untapAndReTap() async throws {
+        let dayString = HabitCalendar.dayStringFormatter.string(from: HabitCalendar.startOfKey(Scenario.day(0)))
+        func serverDay(_ account: Account, habit: UUID) async throws -> [SyncEntry] {
+            try await serverSnapshot(account).entries.filter {
+                SyncReconciler.canonicalID($0.habitId) == habit.uuidString && $0.date == dayString
+            }
+        }
+        /// Untap, save (queues X), re-tap, save — TodayView's two taps. `HabitCheckIn.tap` right
+        /// after the untap's save may still see the deleted record through `habit.records`; if
+        /// so the re-tap is made as the app's list does after re-rendering: a new record.
+        func untapThenReTap(_ d: Device131, _ habit: Habit) throws -> String {
+            let untap = try d.tapAndSave(habit, day: 0)
+            let retap = try d.tapAndSave(habit, day: 0)
+            if !retap.isCompleted {
+                habit.records.append(HabitRecord(date: Scenario.day(0)))
+                try d.save()
+            }
+            return untap.deletedRecordID ?? "none"
+        }
+
+        for mode in ["first 1.3.1 sync (no cursor)", "Full resync"] {
+            let account = try Account.create()
+            let a = Device131("A", account: account)
+            defer { a.remove() }
+            let read = a.habit("Read", days: [0])
+            try a.save()
+            _ = await a.sync()
+            let untapped = try untapThenReTap(a, read)
+            if mode.hasPrefix("first") { a.cursor = nil }
+
+            let mark = a.transport.mark()
+            let outcome = await a.sync(options: mode == "Full resync" ? .fullResync : [])
+            let ex = a.transport.since(mark)
+            let onServer = try await serverDay(account, habit: read.id)
+            let local = try a.context.fetch(FetchDescriptor<HabitRecord>())
+            let pending = try a.pendingCount()
+            report.check("untap + re-tap offline, then a pull-first sync (\(mode)): the day stays checked here and on the server",
+                         isSynced(outcome) && ex.first?.endpoint == .pull && local.count == 1
+                            && local.first?.id.uuidString != untapped && onServer.count == 1
+                            && a.log.lines.isEmpty && a.queue.pending().isEmpty && pending == 0,
+                         "\(describe(outcome)); \(describe(ex)); local \(local.count), server \(onServer.count), log \(a.log.lines.count)")
+        }
+
+        let account = try Account.create()
+        let a = Device131("A", account: account), b = Device131("B", account: account)
+        defer { a.remove(); b.remove() }
+        let read = a.habit("Read", days: [0])
+        try a.save()
+        _ = await a.sync()
+        _ = await b.sync()
+        let bRead = try unwrap(b.habits().first, "B has Read")
+        _ = try untapThenReTap(b, bRead)
+        _ = await b.sync()
+        let mark = a.transport.mark()
+        let outcome = await a.sync()
+        let ex = a.transport.since(mark)
+        let onServer = try await serverDay(account, habit: read.id)
+        let local = try a.context.fetch(FetchDescriptor<HabitRecord>())
+        report.check("B's untap + re-tap reaches A in one incremental pull (X deleted + Y): A ends with Y",
+                     isSynced(outcome) && ex.allSatisfy { $0.since != nil || $0.endpoint == .push }
+                        && local.count == 1 && onServer.count == 1
+                        && local.first?.id.uuidString == SyncReconciler.canonicalID(onServer.first?.id ?? ""),
+                     "\(describe(ex)); local \(local.count), server \(onServer.count)")
+    }
+
+    func skipped() {
+        report.current = "next slice"
+        report.skip("tombstone swept on the test server: Full resync and snapshot_required leave the row deleted, archived",
+                    "needs the swept-tombstone server switch (M0 floor ≥ 1.3.1); the engine path is covered by SyncEngineTests' fake server")
+        report.skip("A's recovery-log EXPORT holds the displaced edit",
+                    "the JSON-lines file log and Settings → Export are the next slice; S7 checks the same lines in the in-memory sink")
+        report.skip("sign-in to another account → no request until the choice; Export first; Start from this account's data",
+                    "the owner-gate account screen (Acceptance 5) is the next slice")
+        report.skip("a backup from account A restored as new copies into B; a restored habit deleted elsewhere is held",
+                    "restore-as-copies / SyncCopies.reidentify (Acceptance 6) are the next slice")
+        report.skip("revoked session → Today's reauth row; pause switch → \"sync paused\", no error",
+                    "the needsReauth row and the sync-status line (Acceptance 9) are the next slice")
+    }
+}
+
+struct Missing: Error, CustomStringConvertible {
+    var description: String
+}
+
+func unwrap<T>(_ value: T?, _ what: String) throws -> T {
+    guard let value else { throw Missing(description: "missing: \(what)") }
+    return value
+}
