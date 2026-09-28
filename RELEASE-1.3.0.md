@@ -513,6 +513,44 @@ Completion round, each agent on its own derived data while the others edited the
 - The Mac shows "Go to Settings → Stride" for notifications, as it did before; "System
   Settings" would be a new key.
 
+## After submission — external review and the owner's decisions (2026-09-28)
+
+The state and ten decisions above were put to Codex (gpt-6-astra) and Gemini 3.8 Flash
+independently (same brief, `agy` / `codex exec`, read-only on the repo), and every factual
+claim either made was checked against the code. Codex's code claims held up almost without
+exception; Gemini had the operational picture right and several specifics wrong (offsite
+backups are not Mac-only — the VM pushes to Blob every 6 h; there is no `SyncPushPlanner.swift`
+yet; restoring a backup is not a way to move data between accounts). What changed:
+
+- **Release held.** `release.py` created every version with `releaseType: AFTER_APPROVAL`, so an
+  approval would have published 1.3.0 before any device check. Both platforms were switched to
+  `MANUAL` while `WAITING_FOR_REVIEW` (the submission was not disturbed), `release.py` now
+  creates versions `MANUAL`, and `release.py release <version>` publishes a held version.
+  Before running it: the Mail/Gmail link, a fresh-install reminder and the large widget on a
+  device (TestFlight build 18).
+- **Privacy policy published** (stride-site `422d22e`, and this repo's Pages copy via #5) — but
+  version-aware: the draft said Sentry reports carry no network data and no record of screens
+  or taps, which is true from 1.3.0 and false for the live 1.2.1–1.2.3 (their Sentry attaches
+  UI and network breadcrumbs). The page says which versions send that trail.
+- **"Product Interaction" stays declared** in App Store Connect (reversing the earlier plan to
+  remove it): Sentry session records are per app launch and are used to count devices per
+  version. 1.3.1 re-declares it in `PrivacyInfo.xcprivacy`.
+- **Server Sentry made safe before the DSN goes in** (1.3.1 branch): tracing off by default, a
+  scrubber for tokens, cookies, bodies and addresses, failed magic-link emails reported, a
+  `/health` that reads a real table.
+- **A 1.3.0 limitation found by the fact-check:** a backup made under account A, restored on a
+  device that then signs into account B, is skipped by the server as `not_owned` and removed
+  from the device by the first full pull (the file still has it). M2 adds "restore as new
+  copies".
+- **M2 revised** before implementation (DEV-PLAN-1.3.md "## M2"): account switch is "start from
+  this account's data" only; quarantine is its own state and is never deleted by a full pull;
+  an offline edit displaced by a delete goes to a recoverable local archive; millisecond edit
+  times for ≥ 1.3.1; chunks bounded by bytes too; per-reason handling instead of 400
+  bisection; the retirement cohort is ≤ 1.3.0 (1.3.0 has no `cursor_expired` handler either);
+  restore into another account as new copies. The safe core ships together in 1.3.1.
+
+Raw material: the brief, both answers and the fact-check were kept with the session's notes.
+
 ## TODO — before 1.3.0 is submitted (M1)
 
 ### Code still open
