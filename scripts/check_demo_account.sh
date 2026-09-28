@@ -1,8 +1,9 @@
 #!/bin/bash
 # The App Review demo-account acceptance test, run the way a reviewer's device would:
 # compile the SHIPPING sync code in Shared/ into a tiny macOS tool, sign in to production
-# with the demo token, pull, run the real SyncReconciler, and print what the app computes
-# (records, streaks, 30-day rates, createdAt) for every demo habit.
+# with the demo token, pull (read only — it never pushes), run the real SyncReconciler into an
+# in-memory store, and print what the app computes (records, streaks, 30-day rates,
+# createdAt, rows the reconciler rejected) for every demo habit.
 #
 # Run this before every submission. On 1.2.2 it would have shown six habits with no
 # history — the demo ids were lower case and the timestamps had milliseconds — and the
@@ -16,12 +17,18 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 OUT="$(mktemp -d -t stride-demo-check)"
 trap 'rm -rf "$OUT"' EXIT
 
-echo "Compiling Shared/ + scripts/demo_check/main.swift..."
+# Every Shared/*.swift, not a hand-kept list: the 1.3.1 reconciler reaches into the delivery
+# state, the deletion queue and the engine's types, and the old seven-file list stopped
+# compiling the day it landed. The one exclusion is SentryBootstrap.swift — it imports the
+# Sentry package, which a bare swiftc has no module for.
+# All the rest build for macOS as they are (SwiftUI/SwiftData/os.log only), checked 2026-09-28.
+SOURCES=()
+for f in "$PROJECT_DIR"/Shared/*.swift; do
+  [[ "$(basename "$f")" == "SentryBootstrap.swift" ]] || SOURCES+=("$f")
+done
+echo "Compiling Shared/ (${#SOURCES[@]} files, not SentryBootstrap.swift) + scripts/demo_check/main.swift..."
 xcrun swiftc -O -swift-version 5 -target arm64-apple-macos14.0 \
-  "$PROJECT_DIR"/Shared/Habit.swift "$PROJECT_DIR"/Shared/DateHelpers.swift \
-  "$PROJECT_DIR"/Shared/ColorExtension.swift "$PROJECT_DIR"/Shared/SyncModels.swift \
-  "$PROJECT_DIR"/Shared/SyncReconciler.swift "$PROJECT_DIR"/Shared/SyncTimestamp.swift \
-  "$PROJECT_DIR"/Shared/HabitCheckIn.swift "$SCRIPT_DIR"/demo_check/main.swift \
+  "${SOURCES[@]}" "$SCRIPT_DIR"/demo_check/main.swift \
   -o "$OUT/demo-check"
 
 DEMO_TOKEN="$(ssh -o IdentityAgent=none -o ConnectTimeout=20 -i ~/.ssh/id_ed25519 \
