@@ -439,6 +439,52 @@ from what it took, and record the new number in the progress log before building
   would move the store away from an owner who still has queued deletions or recovery-log lines
   goes through the account screen ("This device holds habits from …", export first) — the
   previous owner's queue is never dropped silently.
+- 2026-09-29 — **phase C done** (`aa0362c`): the account screen after a sign-in the user started
+  (Export a Backup / Recovered Edits first, then Start from This Account's Data, or Upload These
+  Habits for an owner-unknown store, or Cancel = sign out, nothing changed; no request until the
+  choice), Settings → Sync (held rows by reason with Restore as New Copies / Discard, restored
+  habits deleted elsewhere, Recovered Edits (N) → Export / Clear, Full Resync, the restore
+  hand-over), and Today's inline rows (reauth, "Sync paused", a quiet status line; signed-out
+  Today pixel-identical to HEAD). 64 plain + 12 plural keys in all five languages. Reviewed by
+  UI/a11y, localization, flow data-safety and Gemini (MCP bridge, fact-checked: 1 of 5 findings
+  held, G2); 21 fixes, G5 rejected. The fixes that change behaviour: the account screen reopened
+  from Settings has a Cancel (it had none); 429 / 503 `sync_paused` never set `syncError`
+  (acceptance 9); a stored token at the first 1.3.1 launch counts as signed in only once the
+  server names its user (F1 — a dead token leaves the store owner-unknown); "Sign in again"
+  persists across launches (`stride_session_expired`); an erase or a Clear stops if its own sync
+  archived a recovered edit the confirmation never counted (F4); a failed erase keeps the owner
+  (F5). Two new persisted defaults keys: `stride_sync_owner_unknown_pending`,
+  `stride_session_expired`. StrideTests 403 (0 failures, also under ja/JP), hosted 124, server
+  443, `sync_rehearsal.sh` 72 PASS / 0 FAIL / 1 SKIPPED (LARGE 77/0/1; the skip is the UI-only
+  reauth/pause scenario). **Owner-level decisions on the phase C leftovers** (the orchestrator,
+  2026-09-29; implemented in the follow-up round before phase D):
+  1. **F1 stays.** A device whose session is already dead at its first 1.3.1 launch is
+     owner-unknown, so the next sign-in shows Upload / Start even for the same account (Upload
+     is the right pick then). It matches sub-decision (e): "had its session expire" is
+     owner-unknown.
+  2. **Erase Local Data also clears the persisted "Sign in again" state**
+     (`stride_session_expired`): after an erase nothing is left to sync.
+  3. **Delete Account gets a real in-flow Export step** before the final confirmation, as Erase
+     Local Data has. Alerts cannot host a `ShareLink`, so it is a sheet step or ShareLinks above
+     the destructive row — inside the flow the user started, so no new interruption.
+  4. **RestoreHandoverView's headline** gets the caption + address layout UI-5 gave the account
+     screen: no email inside a sentence.
+- 2026-09-29 — **phase D prep done**: decisions 2–4 as built (`SyncSessionSource.localDataErased()`
+  clears "Sign in again" after an erase; Delete Account → Continue opens a sheet with Export as
+  JSON / Recovered Edits before the final button; the restore hand-over uses the shared
+  `AccountAddressLine` under a "Changes from" caption). Product Interaction is re-declared in the
+  app's privacy manifest (Linked no, Tracking no, Analytics), and `product_checks.sh` now fails a
+  built app whose manifest drops it (acceptance 8 is guarded, not only checked by hand). 1.3.1's
+  What's New is written in six locales (starts with "save a backup first"). RELEASE-1.3.1.md
+  started. One review round (4 minor findings, all held and fixed): the final Delete Account
+  button waits for a running sync, counts the recovered edits again and deletes nothing if lines
+  arrived after Continue (M2-1). **One race left open on purpose:** a sync that starts after that
+  recheck and finishes inside the `DELETE /account` round trip could archive a line that
+  `accountDeleted` clears unseen. The window is one request, and the server rejects the sync once
+  the account is gone. Closing it would need a sync suspension during deletion (not this phase).
+  New DEBUG screenshot hooks `-scrollTo <anchor>[@bottom]` and `-demoScenario deleteAccount|restoreHandover`.
+  StrideTests 403 (en and ja), hosted 129, server 443, rehearsal 72/0/1 (LARGE 77/0/1).
+  Device-check list gains: the real alert → Continue → sheet → recheck hand-off.
 - 2026-09-28 — owner decision on the migrated-marks question (review R1 of the slice): **the first
   full pull proves the account.** A 1.3.0 session that expires keeps `stride_last_sync_time`, so
   "the device signed out" cannot be inferred from the key. The migration marks a store's rows
