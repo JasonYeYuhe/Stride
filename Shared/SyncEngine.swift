@@ -11,6 +11,17 @@ import SwiftData
 // an APIClient-backed transport, the owner / token / generation capture, UI state. Testing a
 // hand-copied replica instead of the real code is how the reconciler drifted before 1.2.3.
 //
+// It runs on the main actor, store work included, and stays there after the M2 large-account
+// work (StrideTests/SyncPerformanceTests; DEV-PLAN-1.3.md M2 progress log). What made a large
+// account slow was quadratic work in the planner, resolver and reconciler, now gone; what is
+// left is mostly SwiftData saving the rows a step changed, and a save belongs to the context's
+// own actor: `ModelContext` is not Sendable, and the context is the app's `mainContext`, the one
+// the UI's unsaved edits live in — the reconciler saves those first so a rollback never takes a
+// check-in. Reconciling on a background context instead would mean a second context the UI
+// learns about only by merge, and a new class of races with the user's taps. The pure steps
+// (decoding a pull, parsing its stamps) now cost about 0.1 s for 54,750 entries, too little to be
+// worth another suspension point in a run that re-checks its binding after every one.
+//
 // What plugs in later (not in the first vertical slice): the owner gate UI decides what
 // `SyncRunGate.current()` returns; the recovery-log file implements `SyncRecoveryLogSink`; the
 // backoff scheduler and the sync-status line read `SyncRunOutcome`; Settings → Full resync is
@@ -224,6 +235,9 @@ struct SyncRunSummary: Equatable {
     var heldTombstoned: [SyncRowRef] = []
     var pullIssues: [SyncPullIssue] = []
     var deletionPassSkipped = false
+    /// What a proving full pull decided about the store's migrated delivery marks
+    /// (`SyncMarksProof`); nil when no pull in the run was asked to.
+    var marks: SyncMarksVerdict?
     /// The last pull's `serverTime`.
     var serverTime: String?
 
@@ -308,6 +322,8 @@ final class SyncEngine {
     let cursorStore: any SyncCursorStore
     let deletionQueue: SyncDeletionQueue
     let strikes: SyncUnknownHabitStrikes
+    /// Whether the store's delivery marks still wait for the first full pull to prove them.
+    let marks: SyncMarksProof
     let recoveryLog: any SyncRecoveryLogSink
     /// Sentry, in the app: ids, reason codes and counts only (`SyncDiagnosticReport`).
     let report: (SyncDiagnosticReport) -> Void
@@ -322,6 +338,7 @@ final class SyncEngine {
         cursorStore: any SyncCursorStore,
         deletionQueue: SyncDeletionQueue,
         strikes: SyncUnknownHabitStrikes,
+        marks: SyncMarksProof,
         recoveryLog: any SyncRecoveryLogSink,
         report: @escaping (SyncDiagnosticReport) -> Void = { _ in },
         bounds: SyncPushBounds = .standard,
@@ -332,6 +349,7 @@ final class SyncEngine {
         self.cursorStore = cursorStore
         self.deletionQueue = deletionQueue
         self.strikes = strikes
+        self.marks = marks
         self.recoveryLog = recoveryLog
         self.report = report
         self.bounds = bounds
@@ -343,6 +361,9 @@ final class SyncEngine {
     /// - The run captures the gate's binding and re-checks it before every request and after
     ///   every await, before any acknowledgement, deletion-queue change, reconcile or cursor
     ///   write. A mismatch ends it as `.bindingChanged`, acknowledging nothing more.
+    /// - While the store's delivery marks are unproven (`SyncMarksProof`), it starts with a FULL
+    ///   pull whatever the cursor, and that pull decides them before its deletion pass: nothing
+    ///   is pushed, and nothing deleted by absence, before the account is proven.
     /// - It pulls BEFORE pushing when there is no cursor, when the cursor is older than
     ///   `cursorLifetime` (cleared: a full pull) or `cursorProbeAge` (so the server's
     ///   `cursor_expired` comes before the push), or when any row waits on a forced resend: the
@@ -441,6 +462,13 @@ private final class SyncRun {
             // Cleared locally, exactly as a 409 cursor_expired: a full pull first, then push.
             try check()
             engine.cursorStore.setCursor(nil, for: binding.ownerID)
+            cursor = nil
+        }
+
+        if engine.marks.isAwaited {
+            // Not cleared in the store: the proving pull writes the next cursor, and a run that
+            // stops before it comes back here. The first run after adoption has no cursor anyway;
+            // this also covers an owner that had one (a store adopted, erased empty, re-adopted).
             cursor = nil
         }
 
@@ -546,10 +574,12 @@ private final class SyncRun {
                 summary.requests.append(record)
                 try check()
                 let reconciled: SyncReconcileReport
+                let proving = since == nil && engine.marks.isAwaited
                 do {
                     // Read now, not at the run's start: the push before this pull acknowledged
                     // what it delivered, and whatever is still queued must not come back.
                     reconciled = try SyncReconciler.apply(pulled, to: context, isFullPull: since == nil,
+                                                          proveMarks: proving,
                                                           queuedDeletions: engine.deletionQueue.pending(),
                                                           recoveryLog: engine.recoveryLog,
                                                           accountID: binding.ownerID, now: engine.now())
@@ -557,6 +587,14 @@ private final class SyncRun {
                     throw SyncRunStop(reason: .recoveryLogFailed)
                 } catch {
                     throw SyncRunStop(reason: .localFailure(String(describing: error)))
+                }
+                if proving, let verdict = reconciled.marks {
+                    summary.marks = verdict
+                    // Only once the decision is saved (the reconcile saved or threw): a flag
+                    // cleared ahead of a rolled-back forget would let the next full pull delete by
+                    // marks nobody proved. Settled even if the gate changes next — the store is
+                    // what it is. Undecided stays awaited: the next run full-pulls again.
+                    if verdict != .undecided { engine.marks.settle() }
                 }
                 summary.archived += reconciled.archived
                 summary.heldTombstoned += reconciled.heldTombstoned
@@ -775,14 +813,19 @@ private final class SyncRun {
         }
         if kinds.contains(.habit) || kinds.contains(.entry) {
             // Records are reached through their habits: `HabitRecord` has no inverse, and the
-            // archived line names the habit.
+            // archived line names the habit. The dropped ones are fetched by id first and then
+            // recognised by identifier, so the walk reads no other record's fields — a store whose
+            // every row comes back `tombstoned` (the migrated-marks residual) drops in every chunk.
+            let entryIDs = drops.filter { $0.kind == .entry }.compactMap { UUID(uuidString: $0.id) }
+            let droppedRecords = entryIDs.isEmpty ? Set<PersistentIdentifier>() : Set(try context.fetch(
+                FetchDescriptor<HabitRecord>(predicate: #Predicate { entryIDs.contains($0.id) })).map(\.persistentModelID))
             for habit in try context.fetch(FetchDescriptor<Habit>()) {
                 if wanted.contains(SyncRowRef(kind: .habit, id: habit.id.uuidString)) {
                     removal.removeHabit(habit)
                     continue
                 }
-                guard kinds.contains(.entry) else { continue }
-                for record in habit.records where wanted.contains(SyncRowRef(kind: .entry, id: record.id.uuidString)) {
+                guard !droppedRecords.isEmpty else { continue }
+                for record in habit.records where droppedRecords.contains(record.persistentModelID) {
                     removal.removeRecord(record, of: habit)
                 }
             }

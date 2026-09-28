@@ -355,26 +355,34 @@ final class SyncServiceTests: XCTestCase {
 
     /// The migrated-rows rule runs before the first 1.3.1 sync: a row older than 1.3.0's last
     /// sync was in that sync's snapshot, so it counts as delivered — and when the account no
-    /// longer has it (deleted on another device), the first full pull removes it (archived)
-    /// instead of this device uploading it again. A row newer than that sync is pushed.
+    /// longer has it (deleted on another device), the first full pull removes it instead of this
+    /// device uploading it again. A row newer than that sync is pushed. The marks stand because
+    /// the snapshot holds another row this device delivered (the proof, `SyncMarksProof`); one
+    /// that held none would have them forgotten and the row re-sent, to be answered `tombstoned`.
     func testMigratedRowsCountAsDeliveredOnTheFirstSync() async throws {
         let lastSync130 = Date().addingTimeInterval(-3_600)
         local.defaults.set(SyncTimestamp.string(from: lastSync130), forKey: SyncDeliveryMigration.lastSyncTimeKey)
         let old = Habit(name: "Deleted on the iPad")
         old.createdAt = SyncTimestamp.floorToMillisecond(lastSync130.addingTimeInterval(-86_400))
         old.updatedAt = old.createdAt
+        let kept = Habit(name: "Still on the account")
+        kept.createdAt = old.createdAt
+        kept.updatedAt = old.createdAt
         let new = Habit(name: "Made after the last 1.3.0 sync")
         context.insert(old)
+        context.insert(kept)
         context.insert(new)
         try context.save()
-        let newID = new.id
-        stubHappyServer()
+        let newID = new.id, keptID = kept.id
+        let snapshot = SyncStubBodies.pull(habits: [SyncStubBodies.habit(kept)])
+        server.on("POST", "/v1/sync/push", respond: .ok(SyncStubBodies.pushOK))
+        server.on("GET", "/v1/sync/pull") { request in .ok(request.query["since"] == nil ? snapshot : SyncStubBodies.pull()) }
 
         await sync.sync(context: context)
 
         let pushed = try XCTUnwrap(syncRequests.first { $0.path == "/v1/sync/push" }?.json?["habits"] as? [[String: Any]])
         XCTAssertEqual(pushed.map { $0["id"] as? String }, [newID.uuidString])
-        XCTAssertEqual(try context.fetch(FetchDescriptor<Habit>()).map(\.id), [newID])
+        XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Habit>()).map(\.id)), [keptID, newID])
     }
 
     /// A 1.3.0 store with one row stamped by the migrated-rows rule's cutoff and one after it,
@@ -398,62 +406,77 @@ final class SyncServiceTests: XCTestCase {
             .compactMap { $0["id"] as? String })
     }
 
-    /// The first 1.3.1 launch found 1.3.0's session, and that session is the one that syncs:
-    /// the marks are its account's (1.3.0's snapshots went there), so they stand — the row the
-    /// account no longer has is removed as deleted elsewhere, and only the newer row goes up.
-    func testTheLaunchSessionAdoptsAMigratedStoreWithItsMarks() async throws {
-        let (_, newID) = try seedMigratedStore()
-        SyncService.prepareLaunch(context: context, defaults: local.defaults, hasStoredSession: true)
-        XCTAssertEqual(owners.marksAttribution, .launchSession)
-        stubHappyServer()
+    private var marks: SyncMarksProof { SyncMarksProof(defaults: local.defaults) }
+
+    /// The first full pull proves the account (owner decision, 2026-09-28). A dormant 1.3.0
+    /// device whose session EXPIRED (1.3.0 deletes the token and keeps `stride_last_sync_time`)
+    /// updates, and the user signs back into the same account. Its snapshot holds a habit this
+    /// device delivered, so the migrated marks are this account's and stand: nothing is deleted,
+    /// and only the row made after the last 1.3.0 sync goes up.
+    func testAnExpiredSessionsStoreSignedIntoTheSameAccountIsProvenAndUploadsOnlyTheNewerRow() async throws {
+        let (oldID, newID) = try seedMigratedStore()
+        SyncService.prepareLaunch(context: context, defaults: local.defaults, hasStoredSession: false)
+        XCTAssertTrue(marks.isAwaited, "the migration stamped a row: its marks wait for the proof")
+        let old = try XCTUnwrap(try context.fetch(FetchDescriptor<Habit>()).first { $0.id == oldID })
+        let snapshot = SyncStubBodies.pull(habits: [SyncStubBodies.habit(old)])
+        server.on("POST", "/v1/sync/push", respond: .ok(SyncStubBodies.pushOK))
+        server.on("GET", "/v1/sync/pull") { request in .ok(request.query["since"] == nil ? snapshot : SyncStubBodies.pull()) }
 
         let ran = await sync.sync(context: context)
 
         XCTAssertTrue(ran)
+        XCTAssertEqual(syncPaths, ["/v1/sync/pull", "/v1/sync/push", "/v1/sync/pull"])
+        XCTAssertNil(syncRequests.first?.query["since"], "the proof is a full pull, before any push")
         XCTAssertEqual(pushedHabitIDs, [newID.uuidString])
-        XCTAssertEqual(try context.fetch(FetchDescriptor<Habit>()).map(\.id), [newID])
+        XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Habit>()).map(\.id)), [oldID, newID])
         XCTAssertEqual(owners.owner?.id, owner)
-        XCTAssertNil(owners.marksAttribution, "consumed by the adoption")
+        XCTAssertFalse(marks.isAwaited, "decided")
     }
 
-    /// M2 slice review: 1.3.0 deletes an expired session's token without clearing
-    /// `stride_last_sync_time`, so a dormant device arrives stamped and signed out. Whoever signs
-    /// in next may not be the account those marks came from — kept, they made the first full
-    /// pull delete every stamped row the new account lacks, with no recovery-log line. Adopted by
-    /// an account the device cannot name, the store is uploaded: every row kept and pushed.
-    func testASignedOutMigratedStoreAdoptedByAnotherAccountKeepsAndUploadsEveryRow() async throws {
+    /// M2 slice review R1, now under the owner's rule. The first launch found a stored token
+    /// (so the slice's interim rule would have credited the marks to it), but the account that
+    /// adopts the store is another: its snapshot holds none of this device's rows, so every mark
+    /// is forgotten before the deletion pass — nothing is deleted, and both rows are uploaded.
+    /// Kept, the marks made that pull delete every migrated row, with no recovery-log line.
+    func testAMigratedStoreAdoptedByAnotherAccountForgetsItsMarksAndUploadsEveryRow() async throws {
         let (oldID, newID) = try seedMigratedStore()
-        SyncService.prepareLaunch(context: context, defaults: local.defaults, hasStoredSession: false)
-        XCTAssertEqual(owners.marksAttribution, .unknown)
-        XCTAssertTrue(owners.ownerUnknown)
+        SyncService.prepareLaunch(context: context, defaults: local.defaults, hasStoredSession: true)
         sessions.session = .accountB
         stubHappyServer()
 
         let ran = await sync.sync(context: context)
 
         XCTAssertTrue(ran)
+        XCTAssertNil(syncRequests.first?.query["since"])
         XCTAssertEqual(pushedHabitIDs, [oldID.uuidString, newID.uuidString])
         XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Habit>()).map(\.id)), [oldID, newID])
         XCTAssertEqual(try context.fetch(FetchDescriptor<Habit>()).filter(\.isPending).count, 0,
                        "both acknowledged by the push")
         XCTAssertEqual(owners.owner?.id, SyncSession.accountB.account.id)
-        XCTAssertNil(owners.marksAttribution)
+        XCTAssertFalse(marks.isAwaited)
     }
 
-    /// The launch found a stored token, but it was dead (`{user: null}` deletes it after
-    /// `prepareLaunch` ran) and the user signed in again: a sign-in replaces the launch session,
-    /// so the marks can no longer be credited to whoever adopts the store.
-    func testASignInSinceTheFirstLaunchForgetsTheMigratedMarks() async throws {
-        let (oldID, newID) = try seedMigratedStore()
-        SyncService.prepareLaunch(context: context, defaults: local.defaults, hasStoredSession: true)
-        sync.signedIn()
-        XCTAssertEqual(owners.marksAttribution, .unknown)
+    /// The proving pull never came back (offline): nothing was decided, so the next sync — even
+    /// automatic, and even with a cursor stored for the owner by then — is a full pull again.
+    func testTheProofWaitsForAFullPullThatCameBack() async throws {
+        let (oldID, _) = try seedMigratedStore()
+        SyncService.prepareLaunch(context: context, defaults: local.defaults, hasStoredSession: false)
+        server.on("GET", "/v1/sync/pull", respond: .init(status: 503, body: #"{"error":"server_error"}"#))
+
+        let failed = await sync.sync(context: context)
+        XCTAssertFalse(failed)
+        XCTAssertTrue(marks.isAwaited)
+        XCTAssertEqual(pushedHabitIDs, [], "nothing goes up before the proof")
+        cursors.setCursor(recentCursor, for: owner)
+        let before = syncRequests.count
         stubHappyServer()
 
-        await sync.sync(context: context)
+        let ran = await sync.sync(context: context)
 
-        XCTAssertEqual(pushedHabitIDs, [oldID.uuidString, newID.uuidString])
-        XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Habit>()).map(\.id)), [oldID, newID])
+        XCTAssertTrue(ran)
+        XCTAssertNil(syncRequests.dropFirst(before).first?.query["since"], "full, whatever the cursor")
+        XCTAssertTrue(pushedHabitIDs.contains(oldID.uuidString), "an empty account holds none of the rows: uploaded")
+        XCTAssertFalse(marks.isAwaited)
     }
 
     // MARK: - The owner gate (account isolation)
@@ -688,5 +711,12 @@ final class SyncServiceTests: XCTestCase {
         XCTAssertNil(cursors.cursor(for: owner))
         XCTAssertNil(owners.owner)
         XCTAssertTrue(queue.pending().isEmpty)
+    }
+
+    /// An erased store has no delivery marks, so none wait for a proof.
+    func testResetSyncStateSettlesTheMarksProof() {
+        marks.require()
+        sync.resetSyncState()
+        XCTAssertFalse(marks.isAwaited)
     }
 }

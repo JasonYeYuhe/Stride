@@ -223,10 +223,16 @@ enum SyncPushPlanner {
             items.append(SyncPushItem(body: .habit(wire), encodedSize: size, ref: ref, sentStamp: stamp))
         }
 
-        // Entries. `HabitRecord` has no `habitId` and `Habit.records` has no inverse, so the
-        // planner walks each habit's records; fine at these sizes.
-        for habit in habits where !blockedHabits.contains(habit.id.uuidString) {
+        // Entries. The pending ones are found with one fetch (`SyncPendingRows`); only when there
+        // are any does the planner go through the habits, because `HabitRecord` has no `habitId`
+        // and `Habit.records` has no inverse, so a record's habit is known only from that side —
+        // and it then compares identifiers, reading no record's fields but the pending ones'. Up
+        // to the M2 slice it sorted and read every record of every habit on every sync: 3.4 s on
+        // the main actor for a sync with nothing to send on a 20,000-entry store (rehearsal S12).
+        let pendingRecords = try SyncPendingRows.records(in: context)
+        for habit in habits where !pendingRecords.isEmpty && !blockedHabits.contains(habit.id.uuidString) {
             let records = habit.records
+                .filter { pendingRecords.contains($0.persistentModelID) }
                 .sorted { ($0.date, $0.id.uuidString) < ($1.date, $1.id.uuidString) }
             for record in records where record.isPending {
                 let ref = SyncRowRef(kind: .entry, id: record.id.uuidString)
@@ -254,11 +260,18 @@ enum SyncPushPlanner {
 
     /// Whether any row waits on a forced resend. A sync that finds one pulls before it pushes
     /// ("Forced resend waits until deletions are settled").
+    ///
+    /// Asks the store for the rows with `needsResend` set rather than reading every row: this
+    /// runs at the start of every sync.
     static func hasForcedResend(in context: ModelContext) throws -> Bool {
         func any<Row: SyncDeliverable>(_ rows: [Row]) -> Bool { rows.contains { $0.needsResend && !$0.isHeld } }
-        if any(try context.fetch(FetchDescriptor<HabitGroup>())) { return true }
-        if any(try context.fetch(FetchDescriptor<Habit>())) { return true }
-        return any(try context.fetch(FetchDescriptor<HabitRecord>()))
+        if any(try context.fetch(FetchDescriptor<HabitGroup>(predicate: #Predicate { $0.needsResend == true }))) {
+            return true
+        }
+        if any(try context.fetch(FetchDescriptor<Habit>(predicate: #Predicate { $0.needsResend == true }))) {
+            return true
+        }
+        return any(try context.fetch(FetchDescriptor<HabitRecord>(predicate: #Predicate { $0.needsResend == true })))
     }
 
     // MARK: Pack
@@ -422,7 +435,9 @@ enum SyncPushPlanner {
     //
     // What 1.3.0's `SyncService.pushLocal` sent, except the stamps: `createdAt` / `updatedAt`
     // go out with three fractional digits (`millisecondString`), exactly the stamp the store
-    // holds, so an acknowledgement and this device's own echo compare equal to it.
+    // holds, so an acknowledgement and this device's own echo compare equal to it. Written by
+    // `SyncWireStamp`, the same strings without a date formatter: a first upload formats two per
+    // entry.
 
     static func wireHabit(_ habit: Habit, stamp: Date) -> SyncHabit {
         SyncHabit(
@@ -445,8 +460,8 @@ enum SyncPushPlanner {
             timesPerWeek: habit.timesPerWeek,
             activeDaysMask: habit.activeDaysMask,
             groupId: habit.groupId?.uuidString,
-            createdAt: SyncTimestamp.millisecondString(from: habit.createdAt),
-            updatedAt: SyncTimestamp.millisecondString(from: stamp)
+            createdAt: SyncWireStamp.string(from: habit.createdAt),
+            updatedAt: SyncWireStamp.string(from: stamp)
         )
     }
 
@@ -459,8 +474,8 @@ enum SyncPushPlanner {
             date: dateOnly.string(from: record.date),
             note: record.note,
             value: record.value,
-            createdAt: SyncTimestamp.millisecondString(from: record.date),
-            updatedAt: SyncTimestamp.millisecondString(from: stamp)
+            createdAt: SyncWireStamp.string(from: record.date),
+            updatedAt: SyncWireStamp.string(from: stamp)
         )
     }
 
@@ -470,8 +485,8 @@ enum SyncPushPlanner {
             name: group.name,
             colorHex: group.colorHex,
             sortOrder: group.sortOrder,
-            createdAt: SyncTimestamp.millisecondString(from: group.createdAt),
-            updatedAt: SyncTimestamp.millisecondString(from: stamp)
+            createdAt: SyncWireStamp.string(from: group.createdAt),
+            updatedAt: SyncWireStamp.string(from: stamp)
         )
     }
 }
@@ -551,7 +566,8 @@ enum SyncPushResolver {
     ) throws -> SyncChunkOutcome {
         let skipped = skippedIDs(in: response)
         let index = try RowIndex(context, kinds: Set(chunk.submitted.map(\.ref.kind)).union(
-            chunk.payload.entries.isEmpty ? [] : [.habit]))
+            chunk.payload.entries.isEmpty ? [] : [.habit]),
+            entries: chunk.submitted.map(\.ref).filter { $0.kind == .entry })
         var outcome = SyncChunkOutcome()
         var handled = Set<SyncRowRef>()
         var clearedStrikes: [String] = []
@@ -613,7 +629,8 @@ enum SyncPushResolver {
     /// (`holdTooLarge(_:in:)`). Does not save.
     static func apply(_ holds: [SyncPlannedHold], in context: ModelContext) throws {
         guard !holds.isEmpty else { return }
-        let index = try RowIndex(context, kinds: Set(holds.map(\.ref.kind)))
+        let index = try RowIndex(context, kinds: Set(holds.map(\.ref.kind)),
+                                 entries: holds.map(\.ref).filter { $0.kind == .entry })
         for hold in holds {
             index.rows(hold.ref).forEach { $0.hold(hold.reason, sentStamp: hold.stamp) }
         }
@@ -628,14 +645,22 @@ enum SyncPushResolver {
         return holds
     }
 
-    /// The store's rows by canonical id, for the kinds a chunk touched.
+    /// The store's rows by canonical id, for the kinds a chunk touched: every group and habit
+    /// (a few hundred at most), and of the records only those the chunk names — fetched by id.
+    /// Up to the M2 slice every record was fetched for every chunk, so a first upload of n
+    /// entries read n × n / 2,000 rows: 28.5 s on the main actor for 20,000 (rehearsal S12).
     private struct RowIndex {
         private var byRef: [SyncRowRef: [any SyncDeliverable]] = [:]
 
-        init(_ context: ModelContext, kinds: Set<SyncRowKind>) throws {
+        init(_ context: ModelContext, kinds: Set<SyncRowKind>, entries: [SyncRowRef] = []) throws {
             if kinds.contains(.group) { add(.group, try context.fetch(FetchDescriptor<HabitGroup>())) }
             if kinds.contains(.habit) { add(.habit, try context.fetch(FetchDescriptor<Habit>())) }
-            if kinds.contains(.entry) { add(.entry, try context.fetch(FetchDescriptor<HabitRecord>())) }
+            if kinds.contains(.entry) {
+                // Refs are canonical `uuidString`s, so each parses back to the id it came from;
+                // every record with that id comes back, duplicates included.
+                let ids = entries.compactMap { UUID(uuidString: $0.id) }
+                add(.entry, try context.fetch(FetchDescriptor<HabitRecord>(predicate: #Predicate { ids.contains($0.id) })))
+            }
         }
 
         private mutating func add<Row: SyncDeliverable>(_ kind: SyncRowKind, _ rows: [Row]) {

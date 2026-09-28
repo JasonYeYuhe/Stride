@@ -70,6 +70,15 @@ func describe(_ exchanges: [Exchange]) -> String {
     }.joined(separator: " ")
 }
 
+func describe(_ marks: SyncMarksVerdict?) -> String {
+    switch marks {
+    case nil: return "not asked"
+    case .proven(let ref)?: return "proven by \(ref.kind) \(ref.id.prefix(8))"
+    case .forgotten(let c)?: return "forgotten (\(c.groups)g/\(c.habits)h/\(c.records)e)"
+    case .undecided?: return "undecided"
+    }
+}
+
 func pushes(_ exchanges: [Exchange]) -> [Exchange] { exchanges.filter { $0.endpoint == .push } }
 
 func totalPushed(_ exchanges: [Exchange]) -> WireCounts {
@@ -592,11 +601,13 @@ struct Scenarios {
                      "\(describe(outcome)); \(describe(ex)); pending \((try? a.pendingCount()) ?? -1)/\(rows); Y's account \(yServer.totals.map { "\($0.habits)h/\($0.entries)e" } ?? "none")")
     }
 
-    // S12 (STRIDE_REHEARSAL_LARGE=1) — a 20,000-entry account, timed. The planner walks every
-    // habit's records and the resolver fetches each touched kind once per chunk, as 1.3.0's
-    // pushLocal did; the unit tests only showed that 2,500 is fast. Not a default gate: it
-    // measures, for the M2 re-estimate, and fails only if a sync itself does. The time between
-    // requests is the device's own work on the main actor (plan, resolve, reconcile, save).
+    // S12 (STRIDE_REHEARSAL_LARGE=1) — a 20,000-entry account, timed. Not a default gate: it
+    // measures, and fails only if a sync itself does. The time between requests is the device's
+    // own work on the main actor (plan, resolve, reconcile, save). The M2 slice measured 28.5 s
+    // for the upload, 3.4 s for a sync with no edits and 51.4 s for the join: the planner read
+    // every record, the resolver fetched every record per chunk, the reconciler matched each
+    // pulled entry by walking its habit's history. StrideTests/SyncPerformanceTests pins the fixed
+    // shape on bigger stores; this is the same engine against the real server, -O.
     func largeAccount() async throws {
         let account = try Account.create()
         let a = Device131("A", account: account), b = Device131("B", account: account)
@@ -615,7 +626,7 @@ struct Scenarios {
                 String(format: "%@ %.1fs", e.endpoint == .push ? "push" : (e.since == nil ? "full-pull" : "pull"),
                        e.finished.timeIntervalSince(e.started))
             }.joined(separator: ", ")
-            return (outcome, String(format: "%.1f s total, %.1f s on the device (requests: %@)", total, total - network, steps), ex)
+            return (outcome, String(format: "%.2f s total, %.2f s on the device (requests: %@)", total, total - network, steps), ex)
         }
 
         let (upload, uploadTime, uploadEx) = await timed(a) { await a.sync() }
@@ -633,6 +644,20 @@ struct Scenarios {
         let bCounts = try b.counts()
         report.check("a second device joining a 20,000-entry account: one full pull (timed)",
                      isSynced(join) && bCounts.records == 20_000, joinTime)
+
+        // The same device again: a full pull onto a store that already holds every row (Full
+        // resync's cleared cursor, a cursor_expired, the migrated marks' proof), then a sync
+        // with nothing new either way.
+        b.cursor = nil
+        let (again, againTime, againEx) = await timed(b) { await b.sync() }
+        let afterAgain = (records: try b.counts().records, pending: try b.pendingCount())
+        report.check("a full pull onto a synced 20,000-entry store changes nothing and pushes nothing (timed)",
+                     isSynced(again) && pushes(againEx).isEmpty && afterAgain.records == 20_000
+                        && afterAgain.pending == 0, againTime)
+        b.cursor = SyncTimestamp.millisecondString(from: Date())
+        let (quiet, quietTime, quietEx) = await timed(b) { await b.sync() }
+        report.check("then a sync with no edits on the joined device pushes nothing (timed)",
+                     isSynced(quiet) && pushes(quietEx).isEmpty, quietTime)
     }
 
     // MARK: Not in this slice
@@ -705,6 +730,96 @@ struct Scenarios {
                         && local.count == 1 && onServer.count == 1
                         && local.first?.id.uuidString == SyncReconciler.canonicalID(onServer.first?.id ?? ""),
                      "\(describe(ex)); local \(local.count), server \(onServer.count)")
+    }
+
+    // S14 — the first full pull proves the account (owner decision 2026-09-28; slice review R1).
+    // Device D ran 1.3.0 on account A, synced, and went dormant; its session expired, which
+    // deletes the token and keeps `stride_last_sync_time`, so nothing says which account its
+    // rows were delivered to. Meanwhile A's phone deleted a habit. D updates: the real migration
+    // marks its rows delivered, provisionally, and D signs in — to A again, or to B.
+    func migratedMarksProof() async throws {
+        let accountA = try Account.create(), accountB = try Account.create()
+        let old = SnapshotDevice("D on 1.3.0", shape: .v130, account: accountA)
+        let phone = Device131("A's phone", account: accountA)
+        defer { old.remove(); phone.remove() }
+        let group = HabitGroup(name: "Morning")
+        old.context.insert(group)
+        let read = old.habit("Read", days: [0, 1, 2])
+        read.groupId = group.id
+        old.age(read, group: group)
+        old.age(old.habit("Run", days: [0]))
+        old.age(old.habit("Stretch"))
+        try old.save()
+        let synced = try await old.sync()
+        guard synced.push == 200, synced.pull == 200 else { throw Missing(description: "1.3.0 sync: \(synced)") }
+        let lastSync130 = SyncTimestamp.string(from: Date())    // what 1.3.0 wrote after that sync
+        old.habit("Made after the last 1.3.0 sync", days: [3])  // an offline edit, never pushed
+        try old.save()
+        _ = await phone.sync()
+        try phone.deleteHabit(try unwrap(phone.habits().first { $0.name == "Stretch" }, "phone has Stretch"))
+        _ = await phone.sync()
+        let aIDs = Set(try await serverSnapshot(accountA).habits.map { SyncReconciler.canonicalID($0.id) })
+
+        for (label, account) in [("same account", accountA), ("another account", accountB)] {
+            let d = Device131("D on 1.3.1 (\(label))", account: account)
+            defer { d.remove() }
+            try d.open130Store(from: old)
+            d.defaults.set(lastSync130, forKey: SyncDeliveryMigration.lastSyncTimeKey)
+            let migrated = SyncDeliveryMigration.runOnceIfNeeded(in: d.context, defaults: d.defaults)
+            let before = try d.digest()
+
+            let first = await d.sync()
+            let ex1 = d.transport.exchanges
+            let mark = d.transport.mark()
+            let second = await d.sync()
+            let ex2 = d.transport.since(mark)
+            let after = try d.digest()
+            let fullFirst = ex1.first?.endpoint == .pull && ex1.first?.since == nil
+            let names = Set(try d.habits().map(\.name))
+            let quiet = isSynced(second) && pushes(ex2).isEmpty && ex2.allSatisfy { $0.since != nil }
+
+            if account.userId == accountA.userId {
+                let onServer = try await serverSnapshot(accountA)
+                report.check("SAME account: the first sync is a full pull before any push, and it proves the marks",
+                             migrated != .failed && isSynced(first) && fullFirst && { if case .proven = first.summary?.marks { return true }; return false }()
+                                && !d.marks.isAwaited,
+                             "\(describe(first)); marks \(describe(first.summary?.marks)); \(describe(ex1))")
+                report.check("SAME account: nothing deleted but the habit A's phone deleted while D slept (not re-uploaded)",
+                             names == ["Read", "Run", "Made after the last 1.3.0 sync"] && d.log.lines.isEmpty
+                                && !onServer.habits.contains { $0.name == "Stretch" }
+                                && after.difference(from: StoreDigest(pull: onServer)) == nil,
+                             "D \(after.summary) \(names.sorted()); server \(StoreDigest(pull: onServer).summary); log \(d.log.lines.count)")
+                report.check("SAME account: only the row made after the last 1.3.0 sync goes up; the next sync pushes 0/0/0",
+                             totalPushed(ex1).rows == 2 && totalPushed(ex1).habits == 1 && quiet,
+                             "first pushed \(totalPushed(ex1)); second: \(describe(ex2))")
+            } else {
+                // What A holds now — the same-account run above uploaded D's newest row there,
+                // exactly as one device's first choice would have.
+                let onA = try await serverSnapshot(accountA), onB = try await serverSnapshot(accountB)
+                let inA = Set((onA.habits.map(\.id) + onA.entries.map(\.id) + (onA.groups ?? []).map(\.id))
+                    .map(SyncReconciler.canonicalID))
+                let habits = try d.habits()
+                let rows: [any SyncDeliverable] = habits + habits.flatMap(\.records).map { $0 }
+                    + (try d.context.fetch(FetchDescriptor<HabitGroup>())).map { $0 }
+                let heldIDs = Set(rows.filter { $0.activeHold == .notOwned }.map(\.id.uuidString))
+                let ownedByA = Set(rows.map(\.id.uuidString)).intersection(inA)
+                let uploaded = Set(habits.filter { !inA.contains($0.id.uuidString) }.map(\.name))
+                report.check("ANOTHER account: the first sync is a full pull before any push, and it forgets the marks",
+                             migrated != .failed && isSynced(first) && fullFirst && { if case .forgotten = first.summary?.marks { return true }; return false }()
+                                && !d.marks.isAwaited,
+                             "\(describe(first)); marks \(describe(first.summary?.marks)); \(describe(ex1))")
+                report.check("ANOTHER account: nothing deleted — every row D held is still there",
+                             after == before && d.log.lines.isEmpty,
+                             "before \(before.summary), after \(after.summary); log \(d.log.lines.count)")
+                report.check("ANOTHER account: every row A holds comes back not_owned and is held; the rest are uploaded to B",
+                             !ownedByA.isEmpty && heldIDs == ownedByA
+                                && Set(onB.habits.map(\.name)) == uploaded && uploaded.contains("Stretch")
+                                && Set(onB.habits.map { SyncReconciler.canonicalID($0.id) }).isDisjoint(with: aIDs),
+                             "held \(heldIDs.count) of \(ownedByA.count) rows A holds; B holds \(onB.habits.map(\.name).sorted()) (Stretch: deleted on A, so nobody's)")
+                report.check("ANOTHER account: the next sync pushes 0/0/0 (held rows wait for an edit)",
+                             quiet, describe(ex2))
+            }
+        }
     }
 
     func skipped() {

@@ -366,6 +366,59 @@ class StoreDevice {
         (try context.fetchCount(FetchDescriptor<Habit>()), try context.fetchCount(FetchDescriptor<HabitRecord>()))
     }
 
+    /// Stamps an hour old on `habit`, its records and `group`: rows a 1.3.0 snapshot carried
+    /// well before its last sync, which the migrated-rows rule marks delivered (5 min margin).
+    func age(_ habit: Habit, group: HabitGroup? = nil) {
+        let t = SyncTimestamp.floorToMillisecond(Date().addingTimeInterval(-3_600))
+        habit.createdAt = t
+        habit.updatedAt = t
+        habit.records.forEach { $0.updatedAt = t }
+        group?.createdAt = t
+        group?.updatedAt = t
+    }
+
+    /// Opens `other`'s store the way 1.3.1 opens one 1.3.0 wrote: every row with its id, values
+    /// and stamps, and NO delivery state — 1.3.0 had none, and the new fields are optional, so
+    /// they open nil (the lightweight migration SyncDeliveryTests checks on disk). This store
+    /// must be empty.
+    func open130Store(from other: StoreDevice) throws {
+        for g in try other.context.fetch(FetchDescriptor<HabitGroup>()) {
+            let copy = HabitGroup(name: g.name, colorHex: g.colorHex, sortOrder: g.sortOrder)
+            copy.id = g.id
+            copy.createdAt = g.createdAt
+            copy.updatedAt = g.updatedAt
+            context.insert(copy)
+        }
+        for h in try other.habits() {
+            let copy = Habit(name: h.name, emoji: h.emoji, colorHex: h.colorHex)
+            copy.id = h.id
+            copy.createdAt = h.createdAt
+            copy.updatedAt = h.updatedAt
+            copy.isArchived = h.isArchived
+            copy.sortOrder = h.sortOrder
+            copy.note = h.note
+            copy.groupId = h.groupId
+            copy.kind = h.kind
+            copy.targetValue = h.targetValue
+            copy.unit = h.unit
+            copy.scheduleKind = h.scheduleKind
+            copy.timesPerWeek = h.timesPerWeek
+            copy.activeDaysMask = h.activeDaysMask
+            copy.reminderEnabled = h.reminderEnabled
+            copy.reminderHour = h.reminderHour
+            copy.reminderMinute = h.reminderMinute
+            context.insert(copy)
+            copy.records = h.records.map { r in
+                let record = HabitRecord(date: r.date, note: r.note, value: r.value)
+                record.id = r.id
+                record.date = r.date
+                record.updatedAt = r.updatedAt
+                return record
+            }
+        }
+        try save()
+    }
+
     /// Queues deletions the way the app does; overridden per device kind.
     func queueDeletion(habit: String, entries: [String]) {}
     func queueEntryDeletion(_ id: String) {}
@@ -409,6 +462,8 @@ final class Device131: StoreDevice {
     /// next slice; this is the same protocol the file log will implement.
     let log = SyncMemoryRecoveryLog()
     let gate: Gate
+    /// Whether this store's migrated delivery marks still wait for the first full pull.
+    var marks: SyncMarksProof { SyncMarksProof(defaults: defaults) }
     private(set) var engine: SyncEngine!
     private(set) var reports: [SyncDiagnosticReport] = []
 
@@ -420,7 +475,8 @@ final class Device131: StoreDevice {
         cursors = SyncDefaultsCursorStore(defaults: suite.defaults)
         super.init(name: name, suite: suite)
         engine = SyncEngine(transport: transport, gate: gate, cursorStore: cursors, deletionQueue: queue,
-                            strikes: SyncUnknownHabitStrikes(defaults: suite.defaults), recoveryLog: log,
+                            strikes: SyncUnknownHabitStrikes(defaults: suite.defaults),
+                            marks: SyncMarksProof(defaults: suite.defaults), recoveryLog: log,
                             report: { [weak self] in self?.reports.append($0) }, bounds: bounds)
     }
 

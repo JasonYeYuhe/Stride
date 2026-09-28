@@ -28,6 +28,7 @@ func main() async -> Int32 {
         ("S10 truncated full pull", scenarios.truncatedFullPull),
         ("S11 run binding", scenarios.runBinding),
         ("S13 untap + re-tap", scenarios.untapAndReTap),
+        ("S14 migrated marks proof", scenarios.migratedMarksProof),
     ]
     if Rehearsal.env["STRIDE_REHEARSAL_LARGE"] == "1" {
         plan.append(("S12 20,000 entries (timed)", scenarios.largeAccount))

@@ -384,6 +384,150 @@ final class SyncDeliveryTests: XCTestCase {
         XCTAssertEqual(g.restoredAt, date("2026-09-15T17:33:18.500Z"))
     }
 
+    // MARK: - Wire stamps without a formatter (large-account performance, M2)
+
+    /// `SyncWireStamp` must give exactly what `SyncTimestamp` gives — the same string, and the
+    /// same `Date` bit for bit — or an echo would stop comparing equal to the stamp it echoes.
+    /// Swept over every millisecond fraction, both shapes, leap days, the ends of the range it
+    /// handles, and random instants from 1970 to 9999; anything it does not handle must come
+    /// back from `SyncTimestamp` unchanged.
+    func testWireStampsMatchTheFormatterBitForBit() {
+        func check(_ date: Date, file: StaticString = #filePath, line: UInt = #line) {
+            let string = SyncWireStamp.string(from: date)
+            XCTAssertEqual(string, SyncTimestamp.millisecondString(from: date), file: file, line: line)
+            let whole = String(string.prefix(19)) + "Z"
+            for s in [string, whole] {
+                let fast = SyncWireStamp.parse(s), slow = SyncTimestamp.parse(s)
+                XCTAssertEqual(fast?.timeIntervalSince1970.bitPattern, slow?.timeIntervalSince1970.bitPattern,
+                               s, file: file, line: line)
+            }
+        }
+        let base = date("2026-09-15T17:33:18.000Z")
+        for ms in 0..<1_000 { check(base.addingTimeInterval(Double(ms) / 1000)) }
+        for iso in ["1970-01-01T00:00:00.000Z", "1999-12-31T23:59:59.999Z", "2000-02-29T12:00:00.500Z",
+                    "2024-02-29T23:59:59.999Z", "2069-12-31T23:59:59.999Z", "2070-01-01T00:00:00.000Z",
+                    "2100-03-01T00:00:00.001Z", "9999-12-31T23:59:59.999Z"] {
+            check(SyncTimestamp.parse(iso)!)
+        }
+        // Sub-millisecond instants (1.3.0's stamps) floor as `milliseconds` does.
+        check(Date(timeIntervalSince1970: 1_789_493_598.123_456))
+        check(Date(timeIntervalSince1970: 1_789_493_598.999_999_9))
+        var generator = SystemRandomNumberGenerator()
+        // Where it parses itself (1970–2069) most densely; to 9999 it formats itself and parses
+        // through the formatter.
+        for _ in 0..<10_000 {
+            check(Date(timeIntervalSince1970: Double(Int64.random(in: 0..<3_155_760_000_000, using: &generator)) / 1000))
+            check(Date(timeIntervalSince1970: Double.random(in: 0..<3_155_760_000, using: &generator)))
+        }
+        for _ in 0..<2_000 {
+            check(Date(timeIntervalSince1970: Double(Int64.random(in: 0..<253_402_300_800_000, using: &generator)) / 1000))
+        }
+
+        // Outside what it handles: the formatter answers, whatever it answers.
+        for s in ["1969-12-31T23:59:59.999Z", "0001-01-01T00:00:00Z", "2026-02-29T00:00:00Z",
+                  "2026-13-01T00:00:00Z", "2026-00-10T00:00:00Z", "2026-04-31T00:00:00Z",
+                  "2026-09-15T24:00:00Z", "2026-09-15T23:60:00Z", "2026-09-15T23:59:60Z",
+                  "2026-09-15T17:33:18.12Z", "2026-09-15T17:33:18.1234Z", "2026-09-15T17:33:18z",
+                  "2026-09-15t17:33:18Z", "2026-09-15T17:33:18+00:00", "2026-09-15T17:33:18.123+09:00",
+                  "2026-09-15 17:33:18Z", "+2026-09-15T17:33:18Z", "2026-9-15T17:33:18.000Z", "",
+                  "not a date", "２０２６-09-15T17:33:18Z", "2026-09-15T17:33:18.１２３Z"] {
+            XCTAssertEqual(SyncWireStamp.parse(s)?.timeIntervalSince1970.bitPattern,
+                           SyncTimestamp.parse(s)?.timeIntervalSince1970.bitPattern, s)
+        }
+        for date in [Date(timeIntervalSince1970: -0.001), Date(timeIntervalSince1970: -86_400 * 365),
+                     Date(timeIntervalSince1970: 253_402_300_800)] {
+            XCTAssertEqual(SyncWireStamp.string(from: date), SyncTimestamp.millisecondString(from: date))
+        }
+    }
+
+    // MARK: - The pending fetch (large-account performance, M2)
+
+    /// `SyncPendingRows` asks the store for a superset and lets `isPending` decide: it must
+    /// return exactly the records `isPending` names, in every delivery state — the 1.3.0 shapes
+    /// included (a stamp below the millisecond, a record with no `updatedAt`) — before a save
+    /// (the planner runs on the app's context between autosaves), after it, and cold.
+    func testThePendingFetchFindsExactlyThePendingRecords() throws {
+        let dir = try makeTempDir()
+        let url = dir.appendingPathComponent("pending.store")
+        let schema = Schema([Habit.self, HabitRecord.self, HabitGroup.self])
+        let disk = try ModelContainer(for: schema, configurations: [ModelConfiguration(url: url)])
+        let context = ModelContext(disk)
+        context.autosaveEnabled = false
+        let day = HabitCalendar.utc.date(from: DateComponents(year: 2026, month: 9, day: 1))!
+        let base = date("2026-09-15T17:33:18.000Z")
+        let legacy = Date(timeIntervalSince1970: 1_789_493_598.123_456)   // 1.3.0: below the ms
+
+        let habit = Habit(name: "States")
+        context.insert(habit)
+        var cases: [(String, HabitRecord)] = []
+        func record(_ name: String, _ n: Int, _ configure: (HabitRecord) -> Void) {
+            let r = HabitRecord(date: day.addingTimeInterval(Double(n) * 86_400))
+            r.updatedAt = base.addingTimeInterval(Double(n))
+            configure(r)
+            habit.records.append(r)
+            cases.append((name, r))
+        }
+        record("new", 0) { _ in }
+        record("acknowledged", 1) { $0.acknowledge(sentStamp: $0.stamp) }
+        record("acknowledged, then edited", 2) { $0.acknowledge(sentStamp: $0.stamp); $0.touch() }
+        record("pulled", 3) { $0.adoptRemoteState() }
+        record("held", 4) { $0.hold(.rowError) }
+        record("delivered, then held", 5) { $0.acknowledge(sentStamp: $0.stamp); $0.hold(.notOwned) }
+        record("held, needsResend", 6) { $0.acknowledge(sentStamp: $0.stamp); $0.hold(.rowError); $0.markNeedsResend() }
+        record("held, then edited", 7) { $0.hold(.rowError); $0.touch() }
+        record("needsResend", 8) { $0.acknowledge(sentStamp: $0.stamp); $0.markNeedsResend() }
+        record("legacy stamp, acknowledged from the wire", 9) {
+            $0.updatedAt = legacy
+            $0.acknowledge(sentStamp: SyncTimestamp.parse(SyncTimestamp.millisecondString(from: legacy))!)
+        }
+        record("legacy stamp, delivered at another stamp", 10) {
+            $0.updatedAt = legacy
+            $0.syncedAt = base
+        }
+        record("no updatedAt, delivered at its day", 11) { $0.updatedAt = nil; $0.syncedAt = $0.date }
+        record("no updatedAt, never delivered", 12) { $0.updatedAt = nil }
+        record("no updatedAt, delivered at another stamp", 13) { $0.updatedAt = nil; $0.syncedAt = base }
+        record("no updatedAt, held", 14) { $0.updatedAt = nil; $0.hold(.invalidValue) }
+        record("clock stepped back", 15) {
+            $0.acknowledge(sentStamp: $0.stamp)
+            $0.updatedAt = $0.stamp.addingTimeInterval(-600)
+        }
+        record("restored with its ids", 16) { $0.acknowledge(sentStamp: $0.stamp); $0.restoredAt = base }
+
+        func check(_ phase: String, in context: ModelContext) throws {
+            let all = try context.fetch(FetchDescriptor<HabitRecord>())
+            let expected = Set(all.filter(\.isPending).map(\.persistentModelID))
+            let found = try SyncPendingRows.records(in: context)
+            let names = { (ids: Set<PersistentIdentifier>) in
+                all.filter { ids.contains($0.persistentModelID) }.map { r in
+                    cases.first { $0.1.id == r.id }?.0 ?? "?"
+                }.sorted()
+            }
+            XCTAssertEqual(names(found), names(expected), phase)
+            XCTAssertEqual(all.count, cases.count, phase)
+        }
+
+        let pendingNames = cases.filter { $0.1.isPending }.map(\.0).sorted()
+        XCTAssertEqual(pendingNames, ["acknowledged, then edited", "clock stepped back", "held, then edited",
+                                      "legacy stamp, delivered at another stamp", "needsResend", "new",
+                                      "no updatedAt, delivered at another stamp", "no updatedAt, never delivered"],
+                       "the states cover both answers")
+
+        try check("before the first save", in: context)
+        try context.save()
+        try check("saved", in: context)
+
+        // Edits since the save, not yet saved: an acknowledged row edited, a pending one delivered.
+        cases.first { $0.0 == "acknowledged" }!.1.touch()
+        let new = cases.first { $0.0 == "new" }!.1
+        new.acknowledge(sentStamp: new.stamp)
+        try check("edited since the save", in: context)
+        try context.save()
+
+        let cold = ModelContext(try ModelContainer(for: schema, configurations: [ModelConfiguration(url: url)]))
+        try check("reopened cold", in: cold)
+    }
+
     // MARK: - Migrated rows (sub-decision (b))
 
     /// Rows stamped at least 5 minutes before 1.3.0's last successful sync are delivered; later
@@ -495,6 +639,53 @@ final class SyncDeliveryTests: XCTestCase {
         defaults.set("", forKey: SyncDeliveryMigration.pinnedLastSyncKey)
         XCTAssertEqual(SyncDeliveryMigration.runOnceIfNeeded(in: context, defaults: defaults), .stamped(.init()))
         XCTAssertTrue(habit.isPending)
+    }
+
+    /// Owner decision 2026-09-28: the marks the rule infers are for an account 1.3.0 never
+    /// recorded, so a store it stamped waits for the first full pull of the account that adopts
+    /// it (`SyncMarksProof`). One it stamped nothing in has nothing to prove.
+    func testStampedMarksAwaitTheProofAndAStoreWithNoneHasNothingToProve() throws {
+        let proof = SyncMarksProof(defaults: defaults)
+        let habit = Habit(name: "A")
+        habit.updatedAt = date("2026-09-01T00:00:00Z")
+        context.insert(habit)
+        try context.save()
+        XCTAssertEqual(SyncDeliveryMigration.runOnceIfNeeded(in: context, defaults: defaults), .stamped(.init()))
+        XCTAssertFalse(proof.isAwaited, "no last-sync time: nothing stamped")
+
+        defaults.removeObject(forKey: SyncDeliveryMigration.doneKey)
+        defaults.set("2026-09-20T12:00:00Z", forKey: SyncDeliveryMigration.lastSyncTimeKey)
+        XCTAssertEqual(SyncDeliveryMigration.runOnceIfNeeded(in: context, defaults: defaults),
+                       .stamped(.init(habits: 1, records: 0, groups: 0)))
+        XCTAssertTrue(proof.isAwaited)
+    }
+
+    /// "Upload these habits to this account": every mark forgotten and saved, holds and
+    /// `needsResend` untouched, and nothing left to prove.
+    func testForgettingTheMarksSavesAndSettlesTheProof() throws {
+        let proof = SyncMarksProof(defaults: defaults)
+        proof.require()
+        let habit = Habit(name: "A")
+        context.insert(habit)
+        habit.records.append(HabitRecord(date: date("2026-09-01T00:00:00Z")))
+        habit.syncedAt = SyncTimestamp.floorToMillisecond(habit.stamp)
+        habit.records.first?.syncedAt = habit.records.first?.stamp
+        habit.hold(.notOwned)
+        let group = HabitGroup(name: "G")
+        context.insert(group)
+        group.syncedAt = group.stamp
+        group.needsResend = true
+        try context.save()
+
+        let counts = try proof.forgetMarks(in: context)
+
+        XCTAssertEqual(counts, .init(habits: 1, records: 1, groups: 1))
+        XCTAssertFalse(context.hasChanges)
+        XCTAssertFalse(proof.isAwaited)
+        XCTAssertNil(habit.syncedAt)
+        XCTAssertEqual(habit.activeHold, .notOwned, "a hold is not a mark")
+        XCTAssertTrue(group.needsResend)
+        XCTAssertTrue(group.isPending)
     }
 
     // MARK: - Wire models

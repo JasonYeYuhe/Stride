@@ -109,6 +109,7 @@ final class SyncService {
     private var owners: SyncOwnerStore { SyncOwnerStore(defaults: defaults) }
     private var cursors: SyncDefaultsCursorStore { SyncDefaultsCursorStore(defaults: defaults) }
     private var strikes: SyncUnknownHabitStrikes { SyncUnknownHabitStrikes(defaults: defaults) }
+    private var marks: SyncMarksProof { SyncMarksProof(defaults: defaults) }
 
     // MARK: - Deletion Tracking
 
@@ -163,7 +164,7 @@ final class SyncService {
         let transport = APISyncTransport(api: api, afterExchange: afterSyncRequest)
         let engine = SyncEngine(
             transport: transport, gate: self, cursorStore: cursors, deletionQueue: deletionQueue,
-            strikes: strikes, recoveryLog: recoveryLog, report: report, bounds: bounds)
+            strikes: strikes, marks: marks, recoveryLog: recoveryLog, report: report, bounds: bounds)
         let outcome = await engine.run(in: context, options: options)
         return finish(outcome, transport: transport)
     }
@@ -232,14 +233,7 @@ final class SyncService {
         }
     }
 
-    // MARK: - Sign-in, sign-out, erase
-
-    /// AuthService, once a sign-in has completed (a magic link verified): a new session. If the
-    /// store has no owner yet, its migrated delivery marks can no longer be credited to the
-    /// session this device had at its first 1.3.1 launch (`SyncOwnerStore.noteSignIn`).
-    func signedIn() {
-        owners.noteSignIn()
-    }
+    // MARK: - Sign-out, erase
 
     /// Bumped by `signedOut()` and `resetSyncState()`. Part of every run's binding: a run that
     /// started before it stops at its next check and writes nothing more — otherwise a launch or
@@ -271,7 +265,7 @@ final class SyncService {
     /// 1.2.3 an incremental pull from the old cursor left an erased device "Signed in" with no
     /// habits. The owner goes too — an erased store has none, and the next account signed into
     /// adopts it (M2, "No owner") — and with it the deletion queue and the `unknown_habit`
-    /// strikes, which belong to that owner.
+    /// strikes, which belong to that owner. An empty store has no delivery marks to prove.
     func resetSyncState() {
         signedOut()
         defaults.removeObject(forKey: SyncDefaultsCursorStore.key)
@@ -279,6 +273,7 @@ final class SyncService {
         owners.clear()
         deletionQueue.clearAll()
         strikes.clearAll()
+        marks.settle()
     }
 
     // MARK: - The owner (account isolation)
@@ -287,14 +282,16 @@ final class SyncService {
     ///
     /// - The owner signed in → yes.
     /// - No owner (a fresh 1.3.1 install, an erased store, a 1.3.0 store) → the signed-in account
-    ///   adopts the store and its rows. Rows the migrated-rows rule marked delivered keep that
-    ///   mark only when the adopting session is the one this device had at its first 1.3.1
-    ///   launch; otherwise the marks are forgotten first, so adopting means uploading
-    ///   (`SyncOwnerStore.MarksAttribution` — kept, they would make the first full pull delete
-    ///   every one the new account lacks). TODO(M2 account screen): when `SyncOwnerStore.ownerUnknown`
-    ///   (the device updated to 1.3.1 signed out, with rows) the screen offers "Upload these
-    ///   habits to this account" and "Start from this account's data" instead (sub-decision (e));
-    ///   until it exists this is 1.3.0's behaviour for that device.
+    ///   adopts the store and its rows, whichever account it is. Rows the migrated-rows rule
+    ///   marked delivered keep that mark only provisionally: the adopting account's first full
+    ///   pull proves it (a row this device delivered is in the snapshot) or forgets every mark
+    ///   before its deletion pass (`SyncMarksProof`, run by the engine) — so adopting a store
+    ///   whose marks were another account's uploads it rather than deleting it. TODO(M2 account
+    ///   screen): when `SyncOwnerStore.ownerUnknown` (the device updated to 1.3.1 signed out,
+    ///   with rows) the screen offers "Upload these habits to this account" — which must call
+    ///   `SyncMarksProof.forgetMarks(in:)` before adopting — and "Start from this account's
+    ///   data" instead (sub-decision (e)); until it exists this is 1.3.0's behaviour for that
+    ///   device, with the proof in place of 1.3.0's merge.
     /// - Another account, nothing to lose (no rows, no queued deletions, no recovery-log lines) →
     ///   it becomes the owner silently.
     /// - Another account with something to lose → no: `ownerConflict` is set and every sync entry
@@ -306,15 +303,6 @@ final class SyncService {
     private func settleOwner(for session: SyncSession, in context: ModelContext) -> Bool {
         let owners = self.owners
         guard let owner = owners.owner else {
-            if owners.marksAttribution == .unknown {
-                do {
-                    try SyncDeliveryMigration.forgetDeliveryMarks(in: context)
-                } catch {
-                    // Not adopted: kept, the marks would let the first full pull delete rows.
-                    syncError = appLocalized("Unable to save changes. Please try again.")
-                    return false
-                }
-            }
             owners.set(SyncOwner(session.account))
             ownerConflict = nil
             return true
@@ -353,7 +341,8 @@ final class SyncService {
     // MARK: - Launch
 
     /// Once per launch, before the first sync (StrideApp.init): the migrated-rows rule
-    /// (`SyncDeliveryMigration`, sub-decision (b)), and — once per install — whether this device
+    /// (`SyncDeliveryMigration`, sub-decision (b); its marks wait for the proof,
+    /// `SyncMarksProof`), and — once per install — whether this device
     /// reached 1.3.1 signed out with rows and no owner, which the account screen will need and
     /// which cannot be reconstructed after the first sign-in adopts the store.
     static func prepareLaunch(context: ModelContext, defaults: UserDefaults, hasStoredSession: Bool) {
@@ -457,21 +446,6 @@ struct SyncOwnerStore {
     static let ownerUnknownKey = "stride_sync_owner_unknown"
     static let firstLaunchNotedKey = "stride_sync_owner_first_launch_noted"
 
-    /// Whose delivery marks a store with no owner holds (M2 slice review). The migrated-rows rule
-    /// (`SyncDeliveryMigration`) marks rows delivered to the account 1.3.0 last synced as, which
-    /// 1.3.0 never recorded; the marks are safe to keep only for that account. Set at the first
-    /// 1.3.1 launch when the store has rows and no owner; consumed when an account adopts it.
-    enum MarksAttribution: String {
-        /// A session was stored at the first 1.3.1 launch — 1.3.0's own, whose account its
-        /// snapshots went to — and no sign-in has replaced it since. Its adoption keeps them.
-        case launchSession = "launch_session"
-        /// Signed out at the first launch (a 1.3.0 session that expired deletes the token but
-        /// keeps `stride_last_sync_time`), or a sign-in since: the account cannot be named, and
-        /// the adoption forgets the marks.
-        case unknown
-    }
-    static let marksAttributionKey = "stride_sync_marks_attribution"
-
     let defaults: UserDefaults
 
     var owner: SyncOwner? {
@@ -482,39 +456,21 @@ struct SyncOwnerStore {
 
     var ownerUnknown: Bool { defaults.bool(forKey: Self.ownerUnknownKey) }
 
-    var marksAttribution: MarksAttribution? {
-        defaults.string(forKey: Self.marksAttributionKey).flatMap(MarksAttribution.init(rawValue:))
-    }
-
-    /// A sign-in completed. Every path by which the launch session ends — sign-out, an expired
-    /// session's `{user: null}`, a 401 — leaves the device signed out, and the only way back to a
-    /// sync is a new sign-in, so this one hook is where the launch session's claim ends.
-    func noteSignIn() {
-        guard owner == nil, marksAttribution == .launchSession else { return }
-        defaults.set(MarksAttribution.unknown.rawValue, forKey: Self.marksAttributionKey)
-    }
-
     func set(_ owner: SyncOwner) {
         defaults.set(["id": owner.id, "email": owner.email], forKey: Self.ownerKey)
         defaults.removeObject(forKey: Self.ownerUnknownKey)
-        defaults.removeObject(forKey: Self.marksAttributionKey)
     }
 
     func clear() {
         defaults.removeObject(forKey: Self.ownerKey)
         defaults.removeObject(forKey: Self.ownerUnknownKey)
-        defaults.removeObject(forKey: Self.marksAttributionKey)
     }
 
     func noteFirstLaunch(hasStoredSession: Bool, hasRows: Bool) {
         guard !defaults.bool(forKey: Self.firstLaunchNotedKey) else { return }
         defaults.set(true, forKey: Self.firstLaunchNotedKey)
-        guard owner == nil, hasRows else { return }
-        if !hasStoredSession {
-            defaults.set(true, forKey: Self.ownerUnknownKey)
-        }
-        let attribution: MarksAttribution = hasStoredSession ? .launchSession : .unknown
-        defaults.set(attribution.rawValue, forKey: Self.marksAttributionKey)
+        guard owner == nil, hasRows, !hasStoredSession else { return }
+        defaults.set(true, forKey: Self.ownerUnknownKey)
     }
 }
 

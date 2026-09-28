@@ -869,6 +869,57 @@ final class SyncReconcileTests: XCTestCase {
         XCTAssertEqual(log.lines.map(\.item.ref.id), [xID])
     }
 
+    /// The day match through the per-habit index (large-account performance, M2): the same
+    /// answers the record-by-record `isDate(_:inSameDayAs:)` walk gave. A local record stored off
+    /// UTC midnight (written before the day-key migration) still matches its UTC day; each habit
+    /// matches only its own records; a day with no local record inserts one, attached to its
+    /// habit once the pull is applied; and a second entry for one day in the same pull
+    /// (`duplicate_day`) lands on the record the first inserted, as it did when records were
+    /// appended one at a time — one record for the day, carrying the later entry.
+    func testTheDayMatchAlignsAndInsertsPerHabitAndDay() throws {
+        let read = Habit(name: "Read"), run = Habit(name: "Run")
+        context.insert(read); context.insert(run)
+        let offMidnight = HabitRecord(date: dayKey(2026, 9, 15))
+        offMidnight.date = dayKey(2026, 9, 15).addingTimeInterval(13 * 3600)   // 13:00 UTC, pre-migration shape
+        read.records.append(offMidnight)
+        let runDay = HabitRecord(date: dayKey(2026, 9, 15))
+        run.records.append(runDay)
+        // Edited before the pulled values, so the local-newer guard lets them in.
+        for record in [offMidnight, runDay] { record.updatedAt = SyncTimestamp.parse("2025-01-01T00:00:00Z") }
+        [read, run].forEach(delivered)
+        [offMidnight, runDay].forEach(delivered)
+        try context.save()
+
+        let aligned = UUID().uuidString.lowercased(), runAligned = UUID().uuidString
+        let fresh = UUID().uuidString, twiceA = UUID().uuidString, twiceB = UUID().uuidString
+        let report = try SyncReconciler.apply(pull(entries: [
+            remoteEntry(aligned, habit: read.id.uuidString.lowercased(), date: "2026-09-15", note: "read", updatedAt: late),
+            remoteEntry(runAligned, habit: run.id.uuidString, date: "2026-09-15", note: "run", updatedAt: late),
+            remoteEntry(fresh, habit: read.id.uuidString, date: "2026-09-16", updatedAt: late),
+            remoteEntry(twiceA, habit: run.id.uuidString, date: "2026-09-17", note: "first", updatedAt: late),
+            remoteEntry(twiceB, habit: run.id.uuidString, date: "2026-09-17", note: "second", updatedAt: late),
+        ]), to: context, isFullPull: false)
+
+        XCTAssertEqual(report.applied.entries, 5)
+        XCTAssertEqual(report.issues.map(\.reason), [.duplicateDay])
+        XCTAssertEqual(offMidnight.id.uuidString, SyncReconciler.canonicalID(aligned))
+        XCTAssertEqual(offMidnight.note, "read")
+        XCTAssertEqual(runDay.id.uuidString, runAligned)
+        XCTAssertEqual(runDay.note, "run")
+
+        let fetched = try habits()
+        let readRecords = try XCTUnwrap(fetched.first { $0.id == read.id }).records
+        let runRecords = try XCTUnwrap(fetched.first { $0.id == run.id }).records
+        XCTAssertEqual(Set(readRecords.map(\.id.uuidString)), [offMidnight.id.uuidString, fresh])
+        XCTAssertEqual(runRecords.count, 2, "one record for the 17th, not two")
+        let seventeenth = try XCTUnwrap(runRecords.first { $0.id != runDay.id })
+        XCTAssertEqual(seventeenth.id.uuidString, twiceB)
+        XCTAssertEqual(seventeenth.note, "second")
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<HabitRecord>()), 4)
+        XCTAssertTrue((readRecords + runRecords).allSatisfy { !$0.isPending })
+        XCTAssertFalse(context.hasChanges, "saved once")
+    }
+
     /// Deletions queued here and not yet delivered are authoritative: a pull that runs before the
     /// push carrying them (no cursor, Full resync, snapshot_required) applies no row they name.
     /// Before, the user's re-tap Y of an untapped day was renamed to the deleted X by the day
@@ -905,6 +956,151 @@ final class SyncReconcileTests: XCTestCase {
         XCTAssertTrue(report.issues.isEmpty)
         XCTAssertTrue(report.deletionPassRan, "a queued deletion is no reason to skip the pass")
         XCTAssertEqual(report.deleted.habits, 1, "the pass still removed the delivered-but-absent habit")
+    }
+
+    // MARK: - The first full pull proves the account (owner decision, 2026-09-28)
+
+    /// A migrated store: two delivered habits with a delivered check-in each, a delivered group,
+    /// and a pending habit made after the last 1.3.0 sync. Returns them for the assertions.
+    private func seedMarkedStore() throws -> (read: Habit, run: Habit, group: HabitGroup, fresh: Habit) {
+        let group = HabitGroup(name: "Morning")
+        context.insert(group)
+        delivered(group)
+        let read = Habit(name: "Read"), run = Habit(name: "Run"), fresh = Habit(name: "Made after")
+        for h in [read, run, fresh] { context.insert(h) }
+        read.records.append(HabitRecord(date: dayKey(2026, 9, 1)))
+        run.records.append(HabitRecord(date: dayKey(2026, 9, 2)))
+        for h in [read, run] {
+            delivered(h)
+            h.records.forEach(delivered)
+        }
+        try context.save()
+        return (read, run, group, fresh)
+    }
+
+    private func marksCount() throws -> Int {
+        try habits().filter(\.hasBeenDelivered).count
+            + context.fetch(FetchDescriptor<HabitRecord>()).filter(\.hasBeenDelivered).count
+            + context.fetch(FetchDescriptor<HabitGroup>()).filter(\.hasBeenDelivered).count
+    }
+
+    /// The same account: its snapshot holds a habit this device delivered, so the marks stand,
+    /// and the pass removes what that account deleted — the resurrection the migrated-rows rule
+    /// exists to prevent once tombstones are swept. The row made after the last sync is kept.
+    func testAProvingFullPullWithADeliveredHabitKeepsTheMarksAndDeletesWhatTheAccountLacks() throws {
+        let (read, run, _, fresh) = try seedMarkedStore()
+        let readRecord = try XCTUnwrap(read.records.first)
+        let log = SyncMemoryRecoveryLog()
+
+        let report = try SyncReconciler.apply(
+            pull(habits: [remoteHabit(read.id.uuidString.lowercased(), name: "Read")],
+                 entries: [remoteEntry(readRecord.id.uuidString, habit: read.id.uuidString, date: "2026-09-01")]),
+            to: context, isFullPull: true, proveMarks: true, recoveryLog: log)
+
+        XCTAssertEqual(report.marks, .proven(SyncRowRef(kind: .habit, id: read.id.uuidString)))
+        XCTAssertTrue(report.deletionPassRan)
+        XCTAssertEqual(Set(try habits().map(\.name)), ["Read", "Made after"], "Run was deleted elsewhere")
+        XCTAssertFalse(try habits().contains { $0.id == run.id })
+        XCTAssertTrue(try context.fetch(FetchDescriptor<HabitGroup>()).isEmpty, "the group too")
+        XCTAssertTrue(fresh.isPending)
+        XCTAssertTrue(log.lines.isEmpty, "nothing pending was taken")
+    }
+
+    /// Another account: its snapshot holds none of this device's rows. Every mark is forgotten
+    /// BEFORE the deletion pass, so the pass deletes nothing and every row is pending — uploaded
+    /// once, or answered `not_owned` (held) / `tombstoned` (dropped, archived). The account's
+    /// own rows arrive as usual.
+    func testAProvingFullPullWithNoneOfTheRowsForgetsEveryMarkAndDeletesNothing() throws {
+        let (read, run, group, fresh) = try seedMarkedStore()
+        let theirs = UUID().uuidString
+
+        let report = try SyncReconciler.apply(pull(habits: [remoteHabit(theirs, name: "Theirs")]),
+                                              to: context, isFullPull: true, proveMarks: true)
+
+        XCTAssertEqual(report.marks, .forgotten(.init(habits: 2, records: 2, groups: 1)))
+        XCTAssertTrue(report.deletionPassRan)
+        XCTAssertEqual(report.deleted, SyncRowCounts())
+        XCTAssertEqual(Set(try habits().map(\.name)), ["Read", "Run", "Made after", "Theirs"])
+        let rows: [any SyncDeliverable] = [read, run, fresh, group] + (read.records + run.records).map { $0 }
+        for row in rows {
+            XCTAssertTrue(row.isPending)
+            XCTAssertNil(row.syncedAt)
+        }
+        XCTAssertEqual(try marksCount(), 1, "only the pulled habit is delivered")
+    }
+
+    /// A store holding only groups (every habit deleted) is proven by a group; one whose every
+    /// habit was edited after the last 1.3.0 sync (a reorder touches every active habit) but
+    /// whose history was not, by a check-in. Ids of all three kinds are global on the server.
+    func testAGroupOrACheckInProvesTheAccountWhenNoDeliveredHabitDoes() throws {
+        let group = HabitGroup(name: "Only groups left")
+        context.insert(group)
+        delivered(group)
+        try context.save()
+        var report = try SyncReconciler.apply(
+            pull(groups: [remoteGroup(group.id.uuidString, name: "Only groups left", updatedAt: late)]),
+            to: context, isFullPull: true, proveMarks: true)
+        XCTAssertEqual(report.marks, .proven(SyncRowRef(kind: .group, id: group.id.uuidString)))
+
+        try tearDownStore()
+        let habit = Habit(name: "Reordered")
+        context.insert(habit)
+        let record = HabitRecord(date: dayKey(2026, 9, 1))
+        habit.records.append(record)
+        delivered(record)
+        let gone = Habit(name: "Deleted elsewhere")
+        context.insert(gone)
+        gone.records.append(HabitRecord(date: dayKey(2026, 9, 1)))
+        delivered(gone)
+        gone.records.forEach(delivered)
+        try context.save()
+        XCTAssertFalse(habit.hasBeenDelivered, "precondition: its edit came after the last sync")
+
+        report = try SyncReconciler.apply(
+            pull(habits: [remoteHabit(habit.id.uuidString, name: "Reordered")],
+                 entries: [remoteEntry(record.id.uuidString, habit: habit.id.uuidString, date: "2026-09-01")]),
+            to: context, isFullPull: true, proveMarks: true)
+        XCTAssertEqual(report.marks, .proven(SyncRowRef(kind: .entry, id: record.id.uuidString)))
+        XCTAssertEqual(try habits().map(\.name), ["Reordered"], "the marks stood, so the habit the account lacks goes")
+    }
+
+    /// A snapshot that fails validation cannot show an account lacks a row (a truncated body
+    /// may have cut the one that proves it): undecided — no mark forgotten, nothing deleted (the
+    /// pass needs a valid snapshot as well), and the next full pull decides. One that proves
+    /// despite a failed check still proves: the id is in the account whatever else is wrong.
+    func testAnInvalidSnapshotDecidesOnlyIfItProves() throws {
+        let (read, _, _, _) = try seedMarkedStore()
+        let before = try marksCount()
+
+        var report = try SyncReconciler.apply(pull(habits: [], totals: .some(SyncTotals(habits: 5, entries: 0, groups: 0))),
+                                              to: context, isFullPull: true, proveMarks: true)
+        XCTAssertEqual(report.marks, .undecided)
+        XCTAssertFalse(report.deletionPassRan)
+        XCTAssertEqual(try marksCount(), before)
+        XCTAssertEqual(try habits().count, 3)
+
+        report = try SyncReconciler.apply(
+            pull(habits: [remoteHabit(read.id.uuidString, name: "Read")],
+                 totals: .some(SyncTotals(habits: 5, entries: 0, groups: 0))),
+            to: context, isFullPull: true, proveMarks: true)
+        XCTAssertEqual(report.marks, .proven(SyncRowRef(kind: .habit, id: read.id.uuidString)))
+        XCTAssertFalse(report.deletionPassRan)
+        XCTAssertEqual(try habits().count, 3)
+    }
+
+    /// Only a full pull asked to proves: an incremental pull shows what changed, not what the
+    /// account lacks, and a store with proven marks is never asked.
+    func testOnlyAFullPullAskedToProveDecidesTheMarks() throws {
+        _ = try seedMarkedStore()
+        let before = try marksCount()
+        var report = try SyncReconciler.apply(pull(), to: context, isFullPull: false, proveMarks: true)
+        XCTAssertNil(report.marks)
+        XCTAssertEqual(try marksCount(), before)
+
+        report = try SyncReconciler.apply(pull(habits: [remoteHabit(UUID().uuidString, name: "Theirs")]),
+                                          to: context, isFullPull: true)
+        XCTAssertNil(report.marks)
+        XCTAssertEqual(report.deleted.habits, 2, "proven marks delete as ever")
     }
 
     private func tearDownStore() throws {

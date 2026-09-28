@@ -126,10 +126,11 @@ extension SyncDeliverable {
         syncHoldStamp = SyncTimestamp.floorToMillisecond(sentStamp ?? stamp)
     }
 
-    /// Lifts a hold without an edit: "Restore as new copies", Discard.
+    /// Lifts a hold without an edit: "Restore as new copies", Discard. Writes only a field that
+    /// is set (see `adoptRemoteState`).
     func releaseHold() {
-        syncHoldReason = nil
-        syncHoldStamp = nil
+        if syncHoldReason != nil { syncHoldReason = nil }
+        if syncHoldStamp != nil { syncHoldStamp = nil }
     }
 
     /// The reconciler applied the server's version of this row (update, insert, id alignment).
@@ -140,10 +141,16 @@ extension SyncDeliverable {
     /// holding this id live for this account is the same evidence. Left set, a restored row
     /// whose first contact was a pull (not pending afterwards, so never acknowledged) could never
     /// again be deleted by another device — every later tombstone would hold it instead.
+    ///
+    /// Writes only the fields that differ. SwiftData counts an assignment of an equal value as a
+    /// change, and most rows a pull applies are already in this state (the echo of this device's
+    /// own push, a full pull of a synced store): writing them anyway made the pull's save rewrite
+    /// every such row.
     func adoptRemoteState() {
-        syncedAt = SyncTimestamp.floorToMillisecond(stamp)
-        needsResend = false
-        restoredAt = nil
+        let delivered = SyncTimestamp.floorToMillisecond(stamp)
+        if syncedAt != delivered { syncedAt = delivered }
+        if needsResend { needsResend = false }
+        if restoredAt != nil { restoredAt = nil }
         releaseHold()
     }
 
@@ -151,6 +158,165 @@ extension SyncDeliverable {
     /// of delivery is what lets the full-pull rule tell "deleted elsewhere" from "never sent".
     func markNeedsResend() {
         needsResend = true
+    }
+}
+
+// MARK: - Finding pending records without reading every one
+
+/// The pending records (`isPending`), found by one fetch the store evaluates.
+///
+/// A store holding years of check-ins has tens of thousands of records and, on almost every
+/// sync, none pending. Reading `isPending` means firing every record's fault: 3.4 s on the main
+/// actor for a sync with nothing to send on a 20,000-entry store (rehearsal S12, M2 slice).
+///
+/// `isPending` compares at millisecond precision, which a predicate cannot express, so the
+/// predicate selects a SUPERSET and `isPending` decides on what it returns. It leaves out only a
+/// row whose `syncedAt` is non-nil and equal, as a `Date`, to its stamp (`updatedAt ?? date`)
+/// with `needsResend` off — and equal instants are the same millisecond, so such a row is not
+/// pending, held or not. Every row 1.3.1 acknowledges or pulls is stored that way:
+/// `acknowledge` and `adoptRemoteState` write `floorToMillisecond(stamp)`, and every stamp 1.3.1
+/// writes is already floored, which `floorToMillisecond` returns bit for bit. A stamp 1.3.0
+/// wrote below the millisecond never equals its floored `syncedAt`, so that row is returned and
+/// `isPending` answers for it, as it did before.
+@MainActor
+enum SyncPendingRows {
+    static func records(in context: ModelContext) throws -> Set<PersistentIdentifier> {
+        // Two fetches, not one predicate: the compiler cannot type-check the four clauses in one
+        // expression in reasonable time. A record with no `updatedAt` (from before v2 added it)
+        // stamps as its `date`.
+        let edited = #Predicate<HabitRecord> { r in
+            r.needsResend == true || r.syncedAt == nil || (r.updatedAt != nil && r.syncedAt != r.updatedAt)
+        }
+        let neverEdited = #Predicate<HabitRecord> { r in
+            r.updatedAt == nil && r.syncedAt.flatMap { $0 != r.date } == true
+        }
+        var pending = Set<PersistentIdentifier>()
+        for predicate in [edited, neverEdited] {
+            for record in try context.fetch(FetchDescriptor<HabitRecord>(predicate: predicate)) where record.isPending {
+                pending.insert(record.persistentModelID)
+            }
+        }
+        return pending
+    }
+}
+
+// MARK: - Wire stamps at the size of a whole account
+
+/// `SyncTimestamp.parse` and `SyncTimestamp.millisecondString`, with the same results bit for
+/// bit, but without a date formatter for the two shapes the wire actually carries.
+///
+/// `ISO8601DateFormatter` costs about 0.1 ms a call on an M1 Pro, and a pull parses one stamp per
+/// entry, a push formats two: 54,750 entries with distinct stamps spent 6 s in the parse alone
+/// once the reconciler's matching stopped being quadratic (M2 large-account work). The server's
+/// stamps are `YYYY-MM-DDTHH:MM:SS.mmmZ` (`toISOString()`) or whole seconds from before 1.3.1;
+/// those are read and written here with calendar arithmetic, anything else — another shape, a
+/// field out of range, a year before 1970 — goes to `SyncTimestamp` exactly as before.
+/// `StrideTests/SyncDeliveryTests` sweeps both against it.
+enum SyncWireStamp {
+    /// `SyncTimestamp.parse(string)`.
+    static func parse(_ string: String) -> Date? {
+        if let ms = milliseconds(parsing: string) { return Date(timeIntervalSince1970: Double(ms) / 1000) }
+        return SyncTimestamp.parse(string)
+    }
+
+    /// `SyncTimestamp.millisecondString(from: date)`.
+    static func string(from date: Date) -> String {
+        let ms = SyncTimestamp.milliseconds(date)
+        guard ms >= 0, ms < maxMilliseconds else { return SyncTimestamp.millisecondString(from: date) }
+        let (y, m, d) = civil(fromDays: ms / 86_400_000)
+        let time = ms % 86_400_000
+        var bytes = [UInt8](repeating: 0, count: 24)
+        func put(_ value: Int64, at offset: Int, digits: Int) {
+            var v = value
+            for i in stride(from: offset + digits - 1, through: offset, by: -1) {
+                bytes[i] = UInt8(ascii: "0") + UInt8(v % 10)
+                v /= 10
+            }
+        }
+        put(y, at: 0, digits: 4); bytes[4] = UInt8(ascii: "-")
+        put(m, at: 5, digits: 2); bytes[7] = UInt8(ascii: "-")
+        put(d, at: 8, digits: 2); bytes[10] = UInt8(ascii: "T")
+        put(time / 3_600_000, at: 11, digits: 2); bytes[13] = UInt8(ascii: ":")
+        put(time / 60_000 % 60, at: 14, digits: 2); bytes[16] = UInt8(ascii: ":")
+        put(time / 1_000 % 60, at: 17, digits: 2); bytes[19] = UInt8(ascii: ".")
+        put(time % 1_000, at: 20, digits: 3); bytes[23] = UInt8(ascii: "Z")
+        return String(decoding: bytes, as: UTF8.self)
+    }
+
+    /// 10000-01-01T00:00:00Z: four-digit years only.
+    private static let maxMilliseconds: Int64 = 253_402_300_800_000
+
+    /// Milliseconds since 1970 for `YYYY-MM-DDTHH:MM:SSZ` or `YYYY-MM-DDTHH:MM:SS.mmmZ` with every
+    /// field in range and a year from 1970 to 2069; nil for anything else.
+    ///
+    /// The years stop at 2069 because the formatter's own result stops being exact: it builds the
+    /// instant in floating point, and past 2^31 s from 2001 its error can exceed the microsecond
+    /// of slack `SyncTimestamp.milliseconds` allows, so it floors some stamps to the millisecond
+    /// below (the sweep found two in year 3071). Matching it there would mean copying its error.
+    static func milliseconds(parsing string: String) -> Int64? {
+        var string = string   // `withUTF8` may make it contiguous; a decoded string already is
+        return string.withUTF8(parse)
+    }
+
+    private static func parse(_ b: UnsafeBufferPointer<UInt8>) -> Int64? {
+        guard b.count == 20 || b.count == 24, b[4] == UInt8(ascii: "-"), b[7] == UInt8(ascii: "-"),
+              b[10] == UInt8(ascii: "T"), b[13] == UInt8(ascii: ":"), b[16] == UInt8(ascii: ":"),
+              b[b.count - 1] == UInt8(ascii: "Z")
+        else { return nil }
+        func number(_ offset: Int, _ digits: Int) -> Int64? {
+            var v: Int64 = 0
+            for i in offset..<(offset + digits) {
+                let c = b[i]
+                guard c >= UInt8(ascii: "0"), c <= UInt8(ascii: "9") else { return nil }
+                v = v * 10 + Int64(c - UInt8(ascii: "0"))
+            }
+            return v
+        }
+        guard let y = number(0, 4), let m = number(5, 2), let d = number(8, 2),
+              let hh = number(11, 2), let mm = number(14, 2), let ss = number(17, 2),
+              (1970...2069).contains(y), (1...12).contains(m), d >= 1, d <= daysIn(month: m, year: y),
+              hh < 24, mm < 60, ss < 60
+        else { return nil }
+        var fraction: Int64 = 0
+        if b.count == 24 {
+            guard b[19] == UInt8(ascii: "."), let f = number(20, 3) else { return nil }
+            fraction = f
+        }
+        let seconds = days(fromCivil: y, m, d) * 86_400 + hh * 3_600 + mm * 60 + ss
+        return seconds * 1_000 + fraction
+    }
+
+    private static func isLeap(_ y: Int64) -> Bool { y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) }
+
+    private static func daysIn(month m: Int64, year y: Int64) -> Int64 {
+        switch m {
+        case 2: return isLeap(y) ? 29 : 28
+        case 4, 6, 9, 11: return 30
+        default: return 31
+        }
+    }
+
+    // Howard Hinnant's `days_from_civil` / `civil_from_days` (proleptic Gregorian, which is what
+    // the formatter uses for every year this handles).
+    private static func days(fromCivil year: Int64, _ m: Int64, _ d: Int64) -> Int64 {
+        let y = m <= 2 ? year - 1 : year
+        let era = (y >= 0 ? y : y - 399) / 400
+        let yoe = y - era * 400
+        let doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+        return era * 146_097 + doe - 719_468
+    }
+
+    private static func civil(fromDays days: Int64) -> (Int64, Int64, Int64) {
+        let z = days + 719_468
+        let era = (z >= 0 ? z : z - 146_096) / 146_097
+        let doe = z - era * 146_097
+        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+        let mp = (5 * doy + 2) / 153
+        let d = doy - (153 * mp + 2) / 5 + 1
+        let m = mp < 10 ? mp + 3 : mp - 9
+        return (yoe + era * 400 + (m <= 2 ? 1 : 0), m, d)
     }
 }
 
@@ -166,17 +332,17 @@ extension SyncDeliverable {
 ///
 /// 1.3.0 wrote `stride_last_sync_time` only after a full snapshot went up and the pull came
 /// back, and the same device clock stamped both, so a row whose stamp is at least 5 minutes
-/// before it was in that snapshot. Later rows stay pending (a re-send is harmless). A 1.3.0
-/// device that signed out cleared the key; its rows stay "never delivered" and the owner-unknown
-/// choice decides them. A fresh 1.3.1 install has no key and stamps nothing.
+/// before it was in that snapshot. Later rows stay pending (a re-send is harmless). A fresh
+/// 1.3.1 install has no key and stamps nothing.
 ///
-/// The marks are true only for the account 1.3.0 last synced as, which 1.3.0 never recorded —
-/// and a session that EXPIRED (1.3.0's `{user: null}` launch check, a 401) deleted the token
-/// without clearing the key, so a dormant device can arrive stamped and signed out (M2 slice
-/// review). Adopted by any other account, its first full pull would delete every stamped row as
-/// "delivered, then deleted elsewhere", with nothing in the recovery log (they are not pending).
-/// So `SyncService` forgets the marks (`forgetDeliveryMarks`) when a store with no owner is
-/// adopted by an account it cannot prove is that one (`SyncOwnerStore.MarksAttribution`).
+/// The marks are true only for the account 1.3.0 last synced as, which 1.3.0 never recorded.
+/// And the key does not say the device is still signed into it: a session that EXPIRED
+/// (1.3.0's `{user: null}` launch check, a 401) deleted the token and kept the key, so a dormant
+/// device can arrive stamped and signed out (M2 slice review). Adopted by another account, its
+/// first full pull would delete every stamped row as "delivered, then deleted elsewhere", with
+/// nothing in the recovery log (they are not pending). So a store this rule stamped starts with
+/// its marks **unproven** (`SyncMarksProof`), and the first full pull of the account that adopts
+/// it decides them before its deletion pass (`SyncReconciler`, owner decision 2026-09-28).
 enum SyncDeliveryMigration {
     /// Written by 1.3.0's `SyncService` (whole seconds, `SyncTimestamp.string`) and still by
     /// 1.3.1's, for the Settings display — which is why the rule must run before 1.3.1's first
@@ -223,12 +389,11 @@ enum SyncDeliveryMigration {
         return counts
     }
 
-    /// Undoes the rule for a store adopted by an account the marks may not belong to: every
-    /// row's `syncedAt` back to nil, so the adoption's full pull keeps the rows (never delivered)
-    /// and the push uploads them — or has them answered `not_owned` (held) or `tombstoned`. Holds,
-    /// `needsResend` and `restoredAt` are untouched. Saves; on failure rolls back and throws.
-    @discardableResult
-    static func forgetDeliveryMarks(in context: ModelContext) throws -> Counts {
+    /// Every row's `syncedAt` back to nil, so a full pull keeps the rows (never delivered) and
+    /// the push uploads them — or has them answered `not_owned` (held) or `tombstoned`
+    /// (dropped, archived first). Holds, `needsResend` and `restoredAt` are untouched. Mutates,
+    /// does not save: the reconciler forgets inside the pull it saves once.
+    static func forgetMarks(habits: [Habit], groups: [HabitGroup]) -> Counts {
         func forget<Row: SyncDeliverable>(_ rows: [Row]) -> Int {
             var n = 0
             for row in rows where row.syncedAt != nil {
@@ -237,11 +402,20 @@ enum SyncDeliveryMigration {
             }
             return n
         }
+        var counts = Counts()
+        counts.groups = forget(groups)
+        counts.habits = forget(habits)
+        counts.records = habits.reduce(0) { $0 + forget($1.records) }
+        return counts
+    }
+
+    /// `forgetMarks` over the whole store, saved; on failure rolls back and throws. For
+    /// `SyncMarksProof.forgetMarks(in:)` ("Upload these habits to this account").
+    @discardableResult
+    static func forgetDeliveryMarks(in context: ModelContext) throws -> Counts {
         do {
-            var counts = Counts()
-            counts.groups = forget(try context.fetch(FetchDescriptor<HabitGroup>()))
-            counts.habits = forget(try context.fetch(FetchDescriptor<Habit>()))
-            counts.records = forget(try context.fetch(FetchDescriptor<HabitRecord>()))
+            let counts = forgetMarks(habits: try context.fetch(FetchDescriptor<Habit>()),
+                                     groups: try context.fetch(FetchDescriptor<HabitGroup>()))
             if context.hasChanges { try context.save() }
             return counts
         } catch {
@@ -267,6 +441,10 @@ enum SyncDeliveryMigration {
 
         do {
             let counts = try stampMigratedRows(in: context, lastSyncTime: lastSync)
+            // Before the save: a crash between the two must not leave marks without the flag
+            // (the retry finds them stamped and stamps nothing, so it would never set it). A
+            // flag whose marks were rolled back is harmless — the proof finds nothing to forget.
+            if counts.total > 0 { SyncMarksProof(defaults: defaults).require() }
             if context.hasChanges { try context.save() }
             defaults.set(true, forKey: doneKey)
             defaults.removeObject(forKey: pinnedLastSyncKey)
@@ -281,4 +459,65 @@ enum SyncDeliveryMigration {
             return .failed
         }
     }
+}
+
+// MARK: - The first full pull proves the account (owner decision, 2026-09-28)
+
+/// Whether this store's delivery marks still wait for their proof.
+///
+/// Set when `SyncDeliveryMigration` stamps a row: those marks were inferred from 1.3.0's
+/// last-sync time, for an account 1.3.0 never recorded — whether or not a session was still
+/// stored at the first 1.3.1 launch, since an expired session keeps the key (M2 slice review).
+/// Until the proof, the marks are provisional:
+///
+/// - Every run of `SyncEngine` starts with a FULL pull, whatever cursor the owner has, and no
+///   push goes before it. (It would anyway: the first run after adoption has no cursor.)
+/// - That pull decides, before its deletion pass (`SyncReconciler`): if the snapshot holds at
+///   least one habit, group or entry id this device holds as delivered, the marks are this
+///   account's and stand — ids are global primary keys on the server (`not_owned` exists
+///   because of it), so another account's snapshot cannot hold one. If it holds none, every
+///   mark is forgotten first, so the rows are kept and uploaded once, and an unproven store
+///   never has a row deleted by its absence from another account's snapshot.
+/// - A snapshot that fails validation (a truncated body proves nothing) decides only if it
+///   proves; otherwise the marks stay provisional, its deletion pass does not run anyway, and
+///   the next run full-pulls again.
+///
+/// Settled by the deciding pull, by "Upload these habits to this account" (`forgetMarks`), and
+/// by an erase (`SyncService.resetSyncState`: no rows, no marks). A sign-in to the same account
+/// later needs no proof — the owner and its cursor resume. Neither data loss nor resurrection
+/// after a sweep, with one residual: a store whose every delivered row was deleted elsewhere
+/// holds nothing the snapshot can show, so it re-uploads (see DEV-PLAN-1.3.md M2, "Migrated rows").
+struct SyncMarksProof {
+    static let key = "stride_delivery_marks_unproven"
+
+    /// Where `SyncService` keeps the cursors and the owner (`UserDefaults.standard` in the app).
+    let defaults: UserDefaults
+
+    /// The marks wait for the first full pull of the adopting account.
+    var isAwaited: Bool { defaults.bool(forKey: Self.key) }
+
+    func require() { defaults.set(true, forKey: Self.key) }
+
+    func settle() { defaults.removeObject(forKey: Self.key) }
+
+    /// "Upload these habits to this account" (the account screen, M2 phase C; sub-decision (e)).
+    /// The user said these rows go up, so no mark may let the adoption's full pull delete one —
+    /// even when the account is the marks' own: its deletions come back as `tombstoned` answers
+    /// (dropped, archived first) while tombstones are kept. Forgets every mark, saves, settles.
+    @MainActor @discardableResult
+    func forgetMarks(in context: ModelContext) throws -> SyncDeliveryMigration.Counts {
+        let counts = try SyncDeliveryMigration.forgetDeliveryMarks(in: context)
+        settle()
+        return counts
+    }
+}
+
+/// What a proving full pull decided (`SyncMarksProof`).
+enum SyncMarksVerdict: Equatable {
+    /// The snapshot holds this row, which the device holds as delivered: the marks stand.
+    case proven(SyncRowRef)
+    /// It holds none of them: every mark was forgotten before the deletion pass.
+    case forgotten(SyncDeliveryMigration.Counts)
+    /// It holds none, but it failed validation: nothing decided, nothing deleted.
+    case undecided
 }

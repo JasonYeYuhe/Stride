@@ -463,8 +463,42 @@ that makes a mixed fleet safe):
   on every row whose stamp is at least 5 min before 1.3.0's `stride_last_sync_time`, when the
   store has one: 1.3.0 wrote that key only after a full snapshot went up and the pull came
   back, and the same device clock stamped both. Later rows stay pending (a re-send is harmless).
-  A 1.3.0 device that signed out cleared the key, so its rows stay "never delivered", and the
-  owner-unknown screen below decides them.
+  **The first full pull proves the account** *(owner decision 2026-09-28, slice review R1)*.
+  The marks are true only for the account 1.3.0 last synced as, which it never recorded, and the
+  key does not say the device is still signed into it: an expired session (`{user: null}` at
+  launch, a 401) deletes the token and keeps the key. Adopted by another account, the first full
+  pull would delete every stamped row as "deleted elsewhere", with no recovery-log line. So a
+  store the rule stamped has its marks **unproven** (`SyncMarksProof`,
+  `stride_delivery_marks_unproven`, set before the migration's save) — whether or not a session
+  was stored at the first launch — and:
+  - every sync starts with a **full pull**, whatever cursor the owner has, before any push;
+  - that pull decides before anything is applied or deleted. If the snapshot holds at least one
+    habit, group or entry id this device holds as delivered, the marks are this account's and
+    stand (ids are global primary keys on the server — `not_owned` exists because of it — so no
+    other account's snapshot holds one). If it holds none, every mark is forgotten first: the
+    deletion pass then finds nothing delivered to delete, and the rows upload once, or come
+    back `not_owned` (held) or `tombstoned` (dropped, archived). An unproven store never loses a
+    row by its absence from another account's snapshot;
+  - a snapshot that fails validation decides only if it proves (a truncated body may have cut
+    the proving row); otherwise the marks stay provisional, its deletion pass is skipped
+    anyway, and the next sync full-pulls again. The flag is cleared only once the deciding pull
+    has saved; a rolled-back pull leaves it.
+
+  Groups and entries count as proof, not only habits (the owner's wording), because a store can
+  hold marks with no delivered habit: only groups left, or every habit edited after the last
+  1.3.0 sync (a reorder touches every active habit) while its history was not. **Residual:** a
+  store whose every delivered row was deleted elsewhere holds nothing the snapshot can show, so
+  its marks are forgotten and the rows re-uploaded. While tombstones are kept that is harmless —
+  the answer is `tombstoned`, the rows are dropped and land in the recovery log, as the marks
+  would have deleted them. After a sweep the rows come back into the account: a restore the user
+  can undo, not a loss, and it needs a store with no surviving delivered row. Settled otherwise
+  by "Upload these habits" (below: it forgets every mark) and by an erase; the same account
+  signing back in later resumes with no proof. Tests: SyncReconcileTests / SyncEngineTests
+  (proof, forget, groups-only, entry-only, truncated, rollback, the residual pinned),
+  SyncServiceTests, and `sync_rehearsal.sh` S14 (a 1.3.0 device, session expired, into the same
+  account: proven, only its newer row goes up, then 0/0/0, nothing deleted but what A deleted
+  meanwhile; into another: marks forgotten, nothing deleted, A's rows held `not_owned`, the rest
+  uploaded).
 - **Millisecond edit stamps from 1.3.1** *(revised)*. The app sends whole seconds
   (`SyncTimestamp.string`) and the server's guard is `excluded.client_updated_at >= stored`
   plus a values-differ check (`routes/sync.js` :385, :408, :431), so two different edits of
@@ -689,12 +723,19 @@ that makes a mixed fleet safe):
     account signed into adopts the local rows: the "use it without an account, sign in later"
     path, unchanged.
   - **Owner unknown** — a device that updates to 1.3.1 signed out with rows. 1.3.0 records no
-    account and clears its cursor on sign-out, so those rows may be a previous account's or
+    account, and a signed-out device may have signed out on purpose or had its session expire
+    (which keeps `stride_last_sync_time`), so those rows may be a previous account's or
     nobody's. At the next sign-in the same screen offers both "Upload these habits to this
     account" and "Start from this account's data" — the device cannot tell, so the user
-    decides once; rows the server knows as another account's come back `not_owned` and are
-    held, not deleted. A device signed in at its first 1.3.1 launch takes that account as
-    owner (1.3.0's snapshots pushed its rows there).
+    decides once. **Upload** forgets every delivery mark first
+    (`SyncMarksProof.forgetMarks(in:)`), even for the marks' own account: the user said these
+    rows go up, so the adoption's full pull keeps them all and the push uploads them — rows the
+    server knows as another account's come back `not_owned` and are held, rows that account
+    deleted come back `tombstoned` and are archived; none is deleted by absence. A device
+    signed in at its first 1.3.1 launch takes that account as owner, and its migrated marks
+    still wait for the proof above: a stored token is not evidence that its account is the one
+    the marks were inferred for. Until the screen exists (phase C), any adoption goes through
+    the proof.
   - `deleteAccount` erases local data and clears the owner.
 
   Why no keep-and-add: reactive `not_owned` handling cannot find all of the previous account's

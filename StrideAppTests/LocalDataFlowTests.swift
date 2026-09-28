@@ -58,8 +58,7 @@ final class LocalDataFlowTests: XCTestCase {
     @discardableResult
     private func makeAuth() -> AuthService {
         let auth = AuthService(api: server.makeClient(tokenStore: tokens), tokenStore: tokens,
-                               defaults: local.defaults, onSignOut: { [unowned self] in self.sync.signedOut() },
-                               onSignIn: { [unowned self] in self.sync.signedIn() })
+                               defaults: local.defaults, onSignOut: { [unowned self] in self.sync.signedOut() })
         sync = SyncService(api: server.makeClient(tokenStore: tokens), defaults: local.defaults,
                            deletionQueue: queue, sessions: auth)
         return auth

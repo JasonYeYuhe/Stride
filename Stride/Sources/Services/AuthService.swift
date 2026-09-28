@@ -39,9 +39,11 @@ final class AuthService {
     /// account again"). 1.3.0 reset the cursor here; that was what let the next account on the
     /// device receive the previous one's never-pushed rows.
     private let onSignOut: @MainActor () -> Void
-    /// After a sign-in completes (`SyncService.signedIn`): a new session, which ends the claim of
-    /// the session stored at the first 1.3.1 launch on a store with no owner yet (M2 slice
-    /// review — see `SyncOwnerStore.MarksAttribution`).
+    /// After a sign-in completes (a magic link verified). Nothing in the app subscribes: the M2
+    /// slice used it to end the launch session's claim on a store's migrated delivery marks, and
+    /// the owner's rule that replaced that claim — the adopting account's first full pull proves
+    /// the marks (`SyncMarksProof`) — needs no sign-in hook. TODO(M2): remove it together with
+    /// the argument StrideAppTests/AuthServiceTests.swift passes.
     private let onSignIn: @MainActor () -> Void
 
     /// The defaults are what `shared` has always used. StrideAppTests passes an APIClient over a
@@ -53,7 +55,7 @@ final class AuthService {
         tokenStore: SessionTokenStore = KeychainSessionTokenStore(),
         defaults: UserDefaults = .standard,
         onSignOut: @escaping @MainActor () -> Void = { SyncService.shared.signedOut() },
-        onSignIn: @escaping @MainActor () -> Void = { SyncService.shared.signedIn() }
+        onSignIn: @escaping @MainActor () -> Void = {}
     ) {
         self.api = api
         self.tokenStore = tokenStore
