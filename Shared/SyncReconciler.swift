@@ -25,6 +25,34 @@ import SwiftData
 /// Every id is now compared through `canonicalID`, maps use `uniquingKeysWith:`, and an
 /// inserted habit or group is registered in its map so the same id appearing twice in one
 /// response updates the row instead of inserting another.
+///
+/// From 1.3.1 (DEV-PLAN-1.3.md M2, "Reconciler", "Deletions", "Full-pull deletion rule"):
+///
+/// - Applying remote state marks the row delivered at the applied stamp and clears
+///   `needsResend` and any hold (`SyncDeliverable.adoptRemoteState`) — otherwise this device's
+///   own push comes back through the cursor's 60 s overlap, looks pending again, and every row
+///   echoes forever.
+/// - Habits, entries AND groups keep a local value that is strictly newer at millisecond
+///   precision. Up to 1.3.0 only entries had the guard, flooring the local side to whole
+///   seconds: right while the wire carried seconds, wrong from 1.3.1 — an edit at :18.700 made
+///   while this device's :18.300 push was in flight floored to :18 and lost to its own echo.
+/// - Every deletion path (`deleted*Ids`, full-pull absence, a habit's cascade to its records)
+///   archives each affected pending or held row to the recovery log, one row per line, before
+///   anything is deleted, and never deletes a row restored with its ids (`restoredAt`): that
+///   row is held `tombstoned` for the restore-as-copies choice instead.
+/// - The full-pull deletion pass runs only on a snapshot that was validated and applied whole
+///   (`validate`). A failed check still applies the upserts — they are LWW-safe — and skips
+///   only the deletion pass (sub-decision (d), 2026-09-28).
+/// - One save per pull, after the recovery log is on disk. Anything that throws rolls the
+///   context back: nothing is saved, and the caller writes no cursor.
+/// - Deletions this device has queued but not yet delivered are authoritative until they are
+///   (`queuedDeletions`): a pull applies no remote row with a queued id. Found by the M2 slice
+///   review: a run that pulls before it pushes (no cursor — every device's first 1.3.1 sync —,
+///   Full resync, `snapshot_required`, a forced resend) still gets the untapped check-in X back,
+///   the day match below renamed the user's re-tap Y to X, and the push then carried both
+///   `deletedEntryIds: [X]` and an upsert of X — which the server answers `tombstoned` (it
+///   deletes first), so the re-tap was dropped on every device. 1.3.0 pushed before it pulled
+///   and never met this.
 @MainActor
 enum SyncReconciler {
     /// The one form ids are compared in: the uppercase `uuidString` of the parsed UUID.
@@ -36,175 +64,593 @@ enum SyncReconciler {
     // Day-only dates are UTC day-keys, matching the stored representation (HabitCalendar).
     private static let dateOnly: DateFormatter = HabitCalendar.dayStringFormatter
 
-    static func apply(_ response: SyncPullResponse, to context: ModelContext, isFullPull: Bool) throws {
-        let existingHabits = try context.fetch(FetchDescriptor<Habit>())
-        var habitMap = Dictionary(existingHabits.map { ($0.id.uuidString, $0) }, uniquingKeysWith: { first, _ in first })
+    /// Applies `response`.
+    ///
+    /// - Parameters:
+    ///   - isFullPull: the pull was made without `since`. Only a full pull runs the absence pass.
+    ///   - queuedDeletions: this device's deletion queue (`SyncDeletionQueue.pending()`), read
+    ///     for this pull. A remote habit, entry or group whose id is queued — or an entry of a
+    ///     queued habit — is not applied: the push carrying the deletion is still to come, and
+    ///     the server will tombstone it then.
+    ///   - recoveryLog: where pending and held rows go before a deletion takes them. The engine
+    ///     always passes one. nil (1.3.0's `SyncService`, until it is rewired onto the engine)
+    ///     deletes without archiving, as 1.3.0 did.
+    ///   - accountID: the owner the run is bound to, recorded on each archived line.
+    ///   - now: `archivedAt` for the lines this pull writes.
+    /// - Throws: whatever the store or the recovery log threw. The context is rolled back first,
+    ///   so a caller that catches it must write no cursor: the next sync retries the same pull.
+    @discardableResult
+    static func apply(
+        _ response: SyncPullResponse,
+        to context: ModelContext,
+        isFullPull: Bool,
+        queuedDeletions: SyncDeletionQueue.Batch = .init(),
+        recoveryLog: (any SyncRecoveryLogSink)? = nil,
+        accountID: String? = nil,
+        now: Date = Date()
+    ) throws -> SyncReconcileReport {
+        // Edits the user made before this pull are saved on their own first, so a rollback below
+        // discards only what this pull did — never an unsaved check-in.
+        if context.hasChanges { try context.save() }
 
-        // Apply remote deletions first to prevent resurrection
+        var report = SyncReconcileReport(isFullPull: isFullPull)
+        report.issues = validate(response, isFullPull: isFullPull)
+        do {
+            try applyValidated(response, to: context, isFullPull: isFullPull, queuedDeletions: queuedDeletions,
+                               report: &report, recoveryLog: recoveryLog, accountID: accountID, now: now)
+            return report
+        } catch {
+            context.rollback()
+            throw error
+        }
+    }
+
+    // MARK: - Validation
+
+    /// The checks a full pull must pass before its absence pass may delete anything
+    /// ("Full-pull deletion rule", review 2). `totals` equal to the arrays is necessary — a
+    /// truncated body or a timed-out query must never purge the local store — but not enough:
+    /// the upserts silently skip ids that are not UUIDs, entries whose habit is missing and
+    /// dates that do not parse, and the server accepts any non-empty string as an id, so two
+    /// case variants of one UUID are two rows there and one row here. Each of those would make a
+    /// row the server holds look absent.
+    ///
+    /// For an incremental pull only the row-level checks run (an entry's habit legitimately may
+    /// not be in it), and they only report: its deletions are explicit tombstones.
+    static func validate(_ response: SyncPullResponse, isFullPull: Bool) -> [SyncPullIssue] {
+        var issues: [SyncPullIssue] = []
+        let groups = response.groups ?? []
+
+        if isFullPull {
+            if let totals = response.totals {
+                if totals.habits != response.habits.count || totals.entries != response.entries.count
+                    || totals.groups != groups.count {
+                    issues.append(SyncPullIssue(kind: nil, id: nil, reason: .totalsMismatch))
+                }
+            } else {
+                // Every server since M0 (deployed 2026-09-27) sends them; one that does not
+                // cannot prove the snapshot is whole.
+                issues.append(SyncPullIssue(kind: nil, id: nil, reason: .totalsMissing))
+            }
+        }
+
+        func checkIDs(_ kind: SyncRowKind, _ ids: [String]) -> Set<String> {
+            var seen = Set<String>()
+            for id in ids {
+                guard UUID(uuidString: id) != nil else {
+                    issues.append(SyncPullIssue(kind: kind, id: id, reason: .invalidID)); continue
+                }
+                if !seen.insert(canonicalID(id)).inserted {
+                    issues.append(SyncPullIssue(kind: kind, id: id, reason: .duplicateID))
+                }
+            }
+            return seen
+        }
+        let habitIDs = checkIDs(.habit, response.habits.map(\.id))
+        _ = checkIDs(.entry, response.entries.map(\.id))
+        _ = checkIDs(.group, groups.map(\.id))
+
+        for habit in response.habits where stamps(habit.createdAt, habit.updatedAt) == nil {
+            issues.append(SyncPullIssue(kind: .habit, id: habit.id, reason: .invalidDate))
+        }
+        for group in groups where stamps(group.createdAt, group.updatedAt) == nil {
+            issues.append(SyncPullIssue(kind: .group, id: group.id, reason: .invalidDate))
+        }
+        var days = Set<String>()
+        for entry in response.entries {
+            if dateOnly.date(from: entry.date) == nil || entryStamp(entry) == nil {
+                issues.append(SyncPullIssue(kind: .entry, id: entry.id, reason: .invalidDate))
+            }
+            let habit = canonicalID(entry.habitId)
+            if isFullPull, !habitIDs.contains(habit) {
+                issues.append(SyncPullIssue(kind: .entry, id: entry.id, reason: .missingHabit))
+            }
+            if !days.insert(habit + "|" + entry.date).inserted {
+                // The reconciler matches an entry to a local record by habit and day, so the
+                // second one re-keys the record and the first id then looks absent.
+                issues.append(SyncPullIssue(kind: .entry, id: entry.id, reason: .duplicateDay))
+            }
+        }
+        return issues
+    }
+
+    /// Both stamps of a habit or group, parsed; nil if either does not parse.
+    private static func stamps(_ created: String, _ updated: String) -> (created: Date, updated: Date)? {
+        guard let c = SyncTimestamp.parse(created), let u = SyncTimestamp.parse(updated) else { return nil }
+        return (c, u)
+    }
+
+    /// An entry's edit stamp. The server sends `COALESCE(client_updated_at, updated_at,
+    /// created_at)`; a server from before 2026-09-15 sent no `updatedAt`, and `createdAt` is then
+    /// the best it said.
+    private static func entryStamp(_ entry: SyncEntry) -> Date? {
+        if let updated = entry.updatedAt { return SyncTimestamp.parse(updated) }
+        return SyncTimestamp.parse(entry.createdAt)
+    }
+
+    // MARK: - Apply
+
+    private static func applyValidated(
+        _ response: SyncPullResponse,
+        to context: ModelContext,
+        isFullPull: Bool,
+        queuedDeletions: SyncDeletionQueue.Batch,
+        report: inout SyncReconcileReport,
+        recoveryLog: (any SyncRecoveryLogSink)?,
+        accountID: String?,
+        now: Date
+    ) throws {
+        let existingHabits = try context.fetch(FetchDescriptor<Habit>())
+        let existingGroups = try context.fetch(FetchDescriptor<HabitGroup>())
+        var habitMap = Dictionary(existingHabits.map { ($0.id.uuidString, $0) }, uniquingKeysWith: { first, _ in first })
+        var groupMap = Dictionary(existingGroups.map { ($0.id.uuidString, $0) }, uniquingKeysWith: { first, _ in first })
+        var removal = SyncLocalRemoval(reason: .deletedElsewhere, archivedAt: now)
+
+        // Remote deletions first, so nothing below resurrects them or matches onto them
+        // (`removal.touches`). Collected, not yet applied: the recovery log must be on disk
+        // before anything is deleted.
         let deletedHabitSet = Set((response.deletedHabitIds ?? []).map(canonicalID))
         let deletedEntrySet = Set((response.deletedEntryIds ?? []).map(canonicalID))
+        let deletedGroupSet = Set((response.deletedGroupIds ?? []).map(canonicalID))
+        // Deleted here, not yet delivered: the server still has these rows, so any pull before
+        // the push that carries the deletion brings them back. Applying one would re-insert what
+        // the user deleted, and — through the day match below — rename a re-tap of the same day
+        // to the deleted id, which the push then deletes along with it.
+        let queuedHabitSet = Set(queuedDeletions.habits.map(canonicalID))
+        let queuedEntrySet = Set(queuedDeletions.entries.map(canonicalID))
+        let queuedGroupSet = Set(queuedDeletions.groups.map(canonicalID))
 
-        for deletedId in deletedHabitSet {
-            if let local = habitMap[deletedId] {
-                context.delete(local)
+        // Every local habit with the id, not only the map's first: `Habit.id` has no uniqueness
+        // constraint, and the server holds one row for it.
+        for habit in existingHabits where deletedHabitSet.contains(habit.id.uuidString) {
+            removal.removeHabit(habit)
+            habitMap.removeValue(forKey: habit.id.uuidString)
+        }
+        if !deletedEntrySet.isEmpty {
+            for habit in existingHabits {
+                for record in habit.records where deletedEntrySet.contains(record.id.uuidString) {
+                    removal.removeRecord(record, of: habit)
+                }
             }
         }
-
-        for habit in existingHabits {
-            for record in habit.records where deletedEntrySet.contains(record.id.uuidString) {
-                context.delete(record)
-            }
+        for group in existingGroups where deletedGroupSet.contains(group.id.uuidString) {
+            removal.removeGroup(group)
+            groupMap.removeValue(forKey: group.id.uuidString)
         }
 
-        // Upsert habits (skip any that were just deleted remotely)
+        // Habits.
         for remoteHabit in response.habits {
-            guard let uuid = UUID(uuidString: remoteHabit.id) else { continue }
+            guard let uuid = UUID(uuidString: remoteHabit.id),
+                  let parsed = stamps(remoteHabit.createdAt, remoteHabit.updatedAt)
+            else { continue }   // reported by validate
+            let (created, remoteStamp) = parsed
             let key = uuid.uuidString
             guard !deletedHabitSet.contains(key) else { continue }
+            if queuedHabitSet.contains(key) {
+                report.skippedQueuedDeletion.habits += 1
+                continue
+            }
 
             if let local = habitMap[key] {
-                local.name = remoteHabit.name
-                local.emoji = remoteHabit.emoji
-                local.colorHex = remoteHabit.colorHex
-                local.isArchived = remoteHabit.isArchived
-                local.sortOrder = Double(remoteHabit.sortOrder)
-                if let re = remoteHabit.reminderEnabled { local.reminderEnabled = re }
-                if let rh = remoteHabit.reminderHour { local.reminderHour = rh }
-                if let rm = remoteHabit.reminderMinute { local.reminderMinute = rm }
-                local.note = remoteHabit.note
-                local.kind = remoteHabit.kind ?? HabitKind.binary.rawValue
-                local.targetValue = remoteHabit.targetValue ?? 1
-                local.unit = remoteHabit.unit
-                local.scheduleKind = remoteHabit.scheduleKind ?? HabitSchedule.daily.rawValue
-                local.timesPerWeek = remoteHabit.timesPerWeek ?? 7
-                local.activeDaysMask = remoteHabit.activeDaysMask ?? 127
-                local.groupId = remoteHabit.groupId.flatMap { UUID(uuidString: $0) }
-                // Adopt the server's timestamp so applying remote state doesn't
-                // make this habit look locally-modified and re-push as "newer".
-                local.updatedAt = SyncTimestamp.parse(remoteHabit.updatedAt) ?? local.updatedAt
+                // Edited here after this device's push went out (a tap mid-sync, or a row fetched
+                // again through the cursor's overlap): the local value is newer and goes up with
+                // the next push — it stays pending, since its stamp is not the one delivered.
+                if SyncTimestamp.isNewer(local.stamp, than: remoteStamp) {
+                    report.keptLocalNewer.append(SyncRowRef(kind: .habit, id: key))
+                    continue
+                }
+                assign(remoteHabit, to: local)
+                local.updatedAt = remoteStamp
+                local.adoptRemoteState()
+                report.applied.habits += 1
             } else {
                 let habit = Habit(name: remoteHabit.name, emoji: remoteHabit.emoji, colorHex: remoteHabit.colorHex)
                 habit.id = uuid
-                habit.isArchived = remoteHabit.isArchived
-                habit.sortOrder = Double(remoteHabit.sortOrder)
+                assign(remoteHabit, to: habit)
                 habit.reminderEnabled = remoteHabit.reminderEnabled ?? false
                 habit.reminderHour = remoteHabit.reminderHour ?? 20
                 habit.reminderMinute = remoteHabit.reminderMinute ?? 0
-                habit.note = remoteHabit.note
-                habit.kind = remoteHabit.kind ?? HabitKind.binary.rawValue
-                habit.targetValue = remoteHabit.targetValue ?? 1
-                habit.unit = remoteHabit.unit
-                habit.scheduleKind = remoteHabit.scheduleKind ?? HabitSchedule.daily.rawValue
-                habit.timesPerWeek = remoteHabit.timesPerWeek ?? 7
-                habit.activeDaysMask = remoteHabit.activeDaysMask ?? 127
-                habit.groupId = remoteHabit.groupId.flatMap { UUID(uuidString: $0) }
-                if let created = SyncTimestamp.parse(remoteHabit.createdAt) {
-                    habit.createdAt = created
-                }
-                habit.updatedAt = SyncTimestamp.parse(remoteHabit.updatedAt) ?? habit.createdAt
+                habit.createdAt = created
+                habit.updatedAt = remoteStamp
+                habit.adoptRemoteState()
                 context.insert(habit)
                 // Register it: the same id appearing again in this response, in either
                 // case, must update this row rather than insert a second one.
                 habitMap[key] = habit
+                report.applied.habits += 1
             }
         }
 
-        // On full pull, remove local habits not present on server
-        if isFullPull {
-            let remoteHabitIds = Set(response.habits.map { canonicalID($0.id) })
-            for local in existingHabits {
-                let key = local.id.uuidString
-                if !remoteHabitIds.contains(key) && !deletedHabitSet.contains(key) {
-                    context.delete(local)
-                }
-            }
-        }
-
-        let updatedHabits = try context.fetch(FetchDescriptor<Habit>())
-        let updatedMap = Dictionary(updatedHabits.map { ($0.id.uuidString, $0) }, uniquingKeysWith: { first, _ in first })
-
-        // Build a set of remote entry IDs for full-pull reconciliation
-        let remoteEntryIds = Set(response.entries.map { canonicalID($0.id) })
-
+        // Entries.
         for remoteEntry in response.entries {
-            guard let entryUUID = UUID(uuidString: remoteEntry.id) else { continue }
+            guard let entryUUID = UUID(uuidString: remoteEntry.id),
+                  let entryDate = dateOnly.date(from: remoteEntry.date),
+                  let remoteStamp = entryStamp(remoteEntry)
+            else { continue }   // reported by validate
             guard !deletedEntrySet.contains(entryUUID.uuidString) else { continue }
-            guard let habit = updatedMap[canonicalID(remoteEntry.habitId)] else { continue }
-            guard let entryDate = dateOnly.date(from: remoteEntry.date) else { continue }
-            let remoteEdited = SyncTimestamp.parse(remoteEntry.updatedAt)
+            // Before the habit lookup: an entry of a habit deleted here is no missing habit, and
+            // on a full pull a `missing_habit` issue would skip the whole deletion pass.
+            if queuedEntrySet.contains(entryUUID.uuidString) || queuedHabitSet.contains(canonicalID(remoteEntry.habitId)) {
+                report.skippedQueuedDeletion.entries += 1
+                continue
+            }
+            guard let habit = habitMap[canonicalID(remoteEntry.habitId)] else {
+                // A full pull's validate already said so; an incremental one's entry for a habit
+                // deleted here (or skipped above) is a skip all the same.
+                if !report.issues.contains(where: { $0.id == remoteEntry.id && $0.reason == .missingHabit }) {
+                    report.issues.append(SyncPullIssue(kind: .entry, id: remoteEntry.id, reason: .missingHabit))
+                }
+                continue
+            }
 
-            if let existingRecord = habit.records.first(where: { HabitCalendar.utc.isDate($0.date, inSameDayAs: entryDate) }) {
+            // Never a record a deletion in this same pull has reached. Another device that
+            // untapped and re-tapped a day sends `deletedEntryIds: [X]` and the new entry Y
+            // together; matched to X, Y's values went onto the object `removal.commit` then
+            // deleted, and the device had no record for the day until a full pull (M2 slice
+            // review). Y is inserted instead, and X goes (to the recovery log first if pending).
+            if let existingRecord = habit.records.first(where: {
+                !removal.touches($0) && HabitCalendar.utc.isDate($0.date, inSameDayAs: entryDate)
+            }) {
                 // Align local ID to server ID so full-pull reconciliation won't delete it
                 existingRecord.id = entryUUID
-                // Edited here after this sync's push (a tap mid-sync, or a row fetched again
-                // through the cursor's overlap): the local value is the newer one, and it goes
-                // up with the next push. Compared at whole seconds, the wire's precision.
-                if let localEdited = existingRecord.updatedAt, let remoteEdited,
-                   localEdited.timeIntervalSince1970.rounded(.down) > remoteEdited.timeIntervalSince1970 {
+                // The local-newer guard, at milliseconds, strictly: see the type's comment. Only
+                // against an edit stamp the server actually sent: a server before 2026-09-15 sent
+                // none, and its `createdAt` (the day) says nothing about when the value changed.
+                if remoteEntry.updatedAt != nil, SyncTimestamp.isNewer(existingRecord.stamp, than: remoteStamp) {
+                    report.keptLocalNewer.append(SyncRowRef(kind: .entry, id: entryUUID.uuidString))
                     continue
                 }
                 existingRecord.note = remoteEntry.note
                 existingRecord.value = remoteEntry.value ?? 1
-                existingRecord.updatedAt = remoteEdited ?? existingRecord.updatedAt
+                existingRecord.updatedAt = remoteStamp
+                existingRecord.adoptRemoteState()
             } else {
                 let record = HabitRecord(date: entryDate, note: remoteEntry.note, value: remoteEntry.value ?? 1)
                 record.id = entryUUID
                 // Keep the edit time it was downloaded with. Left at init's Date(), a check-in
                 // this device merely received would look freshly edited here and beat a genuinely
                 // newer edit still waiting to sync on another device.
-                record.updatedAt = remoteEdited
+                record.updatedAt = remoteStamp
                 // entryDate is already a UTC day-key parsed from the server's
                 // yyyy-MM-dd; store it verbatim rather than re-deriving it from
                 // the local calendar (which would shift it in non-UTC zones).
                 record.date = HabitCalendar.startOfKey(entryDate)
+                record.adoptRemoteState()
                 habit.records.append(record)
             }
+            report.applied.entries += 1
         }
 
-        // On full pull, remove local entries not present on server.
-        // Safe because we aligned local IDs to remote IDs above.
-        if isFullPull {
-            for habit in updatedHabits {
-                for record in habit.records where !remoteEntryIds.contains(record.id.uuidString) {
-                    context.delete(record)
-                }
-            }
-        }
-
-        // Reconcile habit groups
-        let remoteGroups = response.groups ?? []
-        let deletedGroupSet = Set((response.deletedGroupIds ?? []).map(canonicalID))
-        let existingGroups = try context.fetch(FetchDescriptor<HabitGroup>())
-        var groupMap = Dictionary(existingGroups.map { ($0.id.uuidString, $0) }, uniquingKeysWith: { first, _ in first })
-
-        for deletedId in deletedGroupSet {
-            if let local = groupMap[deletedId] { context.delete(local) }
-        }
-        for remoteGroup in remoteGroups {
-            guard let uuid = UUID(uuidString: remoteGroup.id) else { continue }
+        // Groups.
+        for remoteGroup in response.groups ?? [] {
+            guard let uuid = UUID(uuidString: remoteGroup.id),
+                  let parsed = stamps(remoteGroup.createdAt, remoteGroup.updatedAt)
+            else { continue }   // reported by validate
+            let (created, remoteStamp) = parsed
             let key = uuid.uuidString
             guard !deletedGroupSet.contains(key) else { continue }
+            if queuedGroupSet.contains(key) {
+                report.skippedQueuedDeletion.groups += 1
+                continue
+            }
             if let local = groupMap[key] {
+                if SyncTimestamp.isNewer(local.stamp, than: remoteStamp) {
+                    report.keptLocalNewer.append(SyncRowRef(kind: .group, id: key))
+                    continue
+                }
                 local.name = remoteGroup.name
                 local.colorHex = remoteGroup.colorHex
                 local.sortOrder = remoteGroup.sortOrder
-                local.updatedAt = SyncTimestamp.parse(remoteGroup.updatedAt) ?? local.updatedAt
+                local.updatedAt = remoteStamp
+                local.adoptRemoteState()
             } else {
                 let group = HabitGroup(name: remoteGroup.name, colorHex: remoteGroup.colorHex, sortOrder: remoteGroup.sortOrder)
                 group.id = uuid
-                if let created = SyncTimestamp.parse(remoteGroup.createdAt) { group.createdAt = created }
-                group.updatedAt = SyncTimestamp.parse(remoteGroup.updatedAt) ?? group.createdAt
+                group.createdAt = created
+                group.updatedAt = remoteStamp
+                group.adoptRemoteState()
                 context.insert(group)
                 groupMap[key] = group
             }
+            report.applied.groups += 1
         }
-        if isFullPull {
-            let remoteGroupIds = Set(remoteGroups.map { canonicalID($0.id) })
-            for local in existingGroups where !remoteGroupIds.contains(local.id.uuidString) && !deletedGroupSet.contains(local.id.uuidString) {
-                context.delete(local)
+
+        // The full-pull absence pass: only on a snapshot validated and applied whole. A skip in
+        // the upserts above lands in `issues` too, so this one condition covers both.
+        if isFullPull, report.issues.isEmpty {
+            report.deletionPassRan = true
+            let remoteHabitIds = Set(response.habits.map { canonicalID($0.id) })
+            let remoteEntryIds = Set(response.entries.map { canonicalID($0.id) })
+            let remoteGroupIds = Set((response.groups ?? []).map { canonicalID($0.id) })
+
+            for habit in existingHabits where !remoteHabitIds.contains(habit.id.uuidString) {
+                if absentRowIsKept(habit) { continue }
+                removal.removeHabit(habit)
+            }
+            // Records of every surviving local habit — duplicates of one id included, and one kept
+            // above as held or never delivered. A habit this pull inserted has only pulled records.
+            for habit in existingHabits where !removal.isRemoving(habit) {
+                for record in habit.records where !remoteEntryIds.contains(record.id.uuidString) {
+                    if absentRowIsKept(record) { continue }
+                    removal.removeRecord(record, of: habit)
+                }
+            }
+            for group in existingGroups where !remoteGroupIds.contains(group.id.uuidString) {
+                if absentRowIsKept(group) { continue }
+                removal.removeGroup(group)
             }
         }
 
+        // On disk before the delete (review 2). If the append fails, this pull's deletions are
+        // not applied: the caller's catch rolls the context back and writes no cursor.
+        if !removal.archive.isEmpty, let recoveryLog {
+            do {
+                try recoveryLog.archive(removal.archive, accountID: accountID)
+            } catch {
+                throw SyncReconcileError.recoveryLogFailed(String(describing: error))
+            }
+        }
+        removal.commit(in: context)
+        report.deleted = removal.deleted
+        report.archived = removal.archive.count
+        report.heldTombstoned = removal.heldTombstoned
+
         try context.save()
+    }
+
+    /// A local row a validated full pull lacks is kept if held (the server refused it, so of
+    /// course it lacks it) or never delivered (`syncedAt == nil`: a partially failed first
+    /// upload, or a restore followed by a full pull, must not delete it). One restored with its
+    /// ids is never deleted either: it is held `tombstoned` for the restore-as-copies choice.
+    /// Everything else was delivered and the server no longer has it — another device deleted
+    /// it — so it goes, `needsResend` or not: after a sweep a resend would be a new insert.
+    /// (The `restoredAt` hold is `SyncLocalRemoval`'s, shared with every other deletion path.)
+    private static func absentRowIsKept<Row: SyncDeliverable>(_ row: Row) -> Bool {
+        row.isHeld || !row.hasBeenDelivered
+    }
+
+    private static func assign(_ remote: SyncHabit, to local: Habit) {
+        local.name = remote.name
+        local.emoji = remote.emoji
+        local.colorHex = remote.colorHex
+        local.isArchived = remote.isArchived
+        local.sortOrder = Double(remote.sortOrder)
+        if let re = remote.reminderEnabled { local.reminderEnabled = re }
+        if let rh = remote.reminderHour { local.reminderHour = rh }
+        if let rm = remote.reminderMinute { local.reminderMinute = rm }
+        local.note = remote.note
+        local.kind = remote.kind ?? HabitKind.binary.rawValue
+        local.targetValue = remote.targetValue ?? 1
+        local.unit = remote.unit
+        local.scheduleKind = remote.scheduleKind ?? HabitSchedule.daily.rawValue
+        local.timesPerWeek = remote.timesPerWeek ?? 7
+        local.activeDaysMask = remote.activeDaysMask ?? 127
+        local.groupId = remote.groupId.flatMap { UUID(uuidString: $0) }
+    }
+}
+
+// MARK: - Report
+
+/// Something in a pull the reconciler could not apply whole. Ids as the server sent them and a
+/// reason code — never a name, note or value: this is what a Sentry report carries.
+struct SyncPullIssue: Equatable, Hashable {
+    enum Reason: String {
+        case totalsMissing = "totals_missing"
+        case totalsMismatch = "totals_mismatch"
+        case invalidID = "invalid_id"
+        case duplicateID = "duplicate_id"
+        case missingHabit = "missing_habit"
+        case invalidDate = "invalid_date"
+        case duplicateDay = "duplicate_day"
+    }
+
+    var kind: SyncRowKind?
+    var id: String?
+    var reason: Reason
+}
+
+struct SyncRowCounts: Equatable {
+    var groups = 0
+    var habits = 0
+    var entries = 0
+
+    var total: Int { groups + habits + entries }
+}
+
+/// What one pull did, for the engine's summary and its reports.
+struct SyncReconcileReport: Equatable {
+    var isFullPull = false
+    /// Validation failures and rows the upserts skipped. On a full pull, any of these skips the
+    /// deletion pass; the upserts still applied.
+    var issues: [SyncPullIssue] = []
+    var deletionPassRan = false
+    var applied = SyncRowCounts()
+    /// Rows deleted (a habit's cascaded records counted as entries).
+    var deleted = SyncRowCounts()
+    /// Lines written to the recovery log.
+    var archived = 0
+    /// Rows restored with their ids that a deletion reached: held `tombstoned`, not deleted.
+    var heldTombstoned: [SyncRowRef] = []
+    /// Remote values not applied because the local stamp is strictly newer; those rows stay
+    /// pending.
+    var keptLocalNewer: [SyncRowRef] = []
+    /// Remote rows not applied because this device has queued their deletion (or, for an entry,
+    /// its habit's) and not yet delivered it.
+    var skippedQueuedDeletion = SyncRowCounts()
+
+    var deletionPassSkipped: Bool { isFullPull && !deletionPassRan }
+
+    /// The report for Sentry when the pull had issues: ids and reason codes, counts per reason.
+    var diagnostic: SyncDiagnosticReport? {
+        guard !issues.isEmpty else { return nil }
+        var counts: [String: Int] = [:]
+        var reasons: [String: String] = [:]
+        for issue in issues {
+            counts[issue.reason.rawValue, default: 0] += 1
+            if let id = issue.id { reasons[id] = issue.reason.rawValue }
+        }
+        counts["deletion_pass_skipped"] = deletionPassSkipped ? 1 : 0
+        return SyncDiagnosticReport(event: isFullPull ? "full_pull_invalid" : "pull_rows_skipped",
+                                    code: nil, status: 200, counts: counts, reasons: reasons)
+    }
+}
+
+enum SyncReconcileError: Error, Equatable {
+    /// The recovery log could not be written (disk full; file protection during a locked
+    /// background sync). Nothing was deleted and nothing saved.
+    case recoveryLogFailed(String)
+}
+
+// MARK: - Local removal (every deletion path)
+
+/// Deletes local rows the server says are gone — a pull's `deleted*Ids`, full-pull absence, a
+/// push answered `tombstoned` — by the one rule all of those paths share (DEV-PLAN-1.3.md M2,
+/// "Deletions", review 2):
+///
+/// - every affected row that is pending or held is archived to the recovery log first, a
+///   deleted habit's records one by one (checking only the habit missed an offline edit to a
+///   check-in of a habit nobody touched);
+/// - a row carrying `restoredAt` is never deleted: it is held `tombstoned`, as a push answered
+///   `tombstoned` holds it — otherwise the restore-as-copies choice would be decided by whichever
+///   request came back first. A habit with restored records is held with them: the records
+///   cannot outlive their habit.
+///
+/// Collects first and mutates only in `commit`, after the caller has put `archive` on disk.
+@MainActor
+struct SyncLocalRemoval {
+    let reason: SyncRecoveryReason
+    let archivedAt: Date
+
+    private(set) var archive: [SyncRecoveryItem] = []
+    private(set) var deleted = SyncRowCounts()
+    private(set) var heldTombstoned: [SyncRowRef] = []
+
+    private var seen = Set<PersistentIdentifier>()
+    private var habits: [Habit] = []
+    private var records: [HabitRecord] = []
+    private var groups: [HabitGroup] = []
+    private var holds: [any SyncDeliverable] = []
+    private var removingHabits = Set<PersistentIdentifier>()
+
+    init(reason: SyncRecoveryReason, archivedAt: Date) {
+        self.reason = reason
+        self.archivedAt = archivedAt
+    }
+
+    var isEmpty: Bool { habits.isEmpty && records.isEmpty && groups.isEmpty && holds.isEmpty }
+
+    /// Whether `habit` is about to be deleted (its records need no pass of their own).
+    func isRemoving(_ habit: Habit) -> Bool { removingHabits.contains(habit.persistentModelID) }
+
+    /// Whether a deletion has reached `record` — to be deleted, or held `tombstoned` — so no
+    /// remote entry may be matched onto it by day.
+    func touches(_ record: HabitRecord) -> Bool { seen.contains(record.persistentModelID) }
+
+    mutating func removeHabit(_ habit: Habit) {
+        guard seen.insert(habit.persistentModelID).inserted else { return }
+        let restoredRecords = habit.records.filter { $0.restoredAt != nil }
+        if habit.restoredAt != nil || !restoredRecords.isEmpty {
+            hold(habit, ref: SyncRowRef(kind: .habit, id: habit.id.uuidString))
+            for record in restoredRecords where seen.insert(record.persistentModelID).inserted {
+                hold(record, ref: SyncRowRef(kind: .entry, id: record.id.uuidString))
+            }
+            return
+        }
+        if habit.isPending || habit.isHeld { archive.append(item(habit)) }
+        for record in habit.records.sorted(by: { $0.date < $1.date }) {
+            guard seen.insert(record.persistentModelID).inserted else { continue }
+            if record.isPending || record.isHeld { archive.append(item(record, of: habit)) }
+            deleted.entries += 1
+        }
+        habits.append(habit)
+        removingHabits.insert(habit.persistentModelID)
+        deleted.habits += 1
+    }
+
+    /// `habit` is the record's owner, for the archived line (`Habit.records` has no inverse).
+    mutating func removeRecord(_ record: HabitRecord, of habit: Habit?) {
+        guard seen.insert(record.persistentModelID).inserted else { return }
+        if record.restoredAt != nil {
+            hold(record, ref: SyncRowRef(kind: .entry, id: record.id.uuidString)); return
+        }
+        if record.isPending || record.isHeld { archive.append(item(record, of: habit)) }
+        records.append(record)
+        deleted.entries += 1
+    }
+
+    mutating func removeGroup(_ group: HabitGroup) {
+        guard seen.insert(group.persistentModelID).inserted else { return }
+        if group.restoredAt != nil {
+            hold(group, ref: SyncRowRef(kind: .group, id: group.id.uuidString)); return
+        }
+        // An offline rename of a group deleted elsewhere is an edit too (review 2).
+        if group.isPending || group.isHeld { archive.append(item(group)) }
+        groups.append(group)
+        deleted.groups += 1
+    }
+
+    /// Applies the holds and deletions. Call only once `archive` is on disk. Does not save.
+    func commit(in context: ModelContext) {
+        for row in holds { row.hold(.tombstoned) }
+        // Records first: a record the habit's cascade would also take is not in `records`
+        // (`seen`), so nothing is deleted twice.
+        for record in records { context.delete(record) }
+        for habit in habits { context.delete(habit) }   // `.cascade` takes its records
+        for group in groups { context.delete(group) }
+    }
+
+    private mutating func hold(_ row: any SyncDeliverable, ref: SyncRowRef) {
+        holds.append(row)
+        heldTombstoned.append(ref)
+    }
+
+    // The v2 backup shapes (DataBackup), so the log reads like a backup and merge-import (M6)
+    // can take it. A habit line holds the habit without its records; they get lines of their
+    // own, so one line is one row.
+
+    private func item(_ habit: Habit) -> SyncRecoveryItem {
+        SyncRecoveryItem(archivedAt: archivedAt, reason: reason, row: .habit(BackupHabit(
+            id: habit.id, name: habit.name, emoji: habit.emoji, colorHex: habit.colorHex,
+            createdAt: habit.createdAt, updatedAt: habit.updatedAt, isArchived: habit.isArchived,
+            sortOrder: habit.sortOrder, reminderEnabled: habit.reminderEnabled,
+            reminderHour: habit.reminderHour, reminderMinute: habit.reminderMinute, note: habit.note,
+            kind: habit.kind, targetValue: habit.targetValue, unit: habit.unit,
+            scheduleKind: habit.scheduleKind, timesPerWeek: habit.timesPerWeek,
+            activeDaysMask: habit.activeDaysMask, groupId: habit.groupId, records: [])))
+    }
+
+    /// A record carries its habit's id and name, so the line reads on its own.
+    private func item(_ record: HabitRecord, of habit: Habit?) -> SyncRecoveryItem {
+        SyncRecoveryItem(archivedAt: archivedAt, reason: reason, row: .record(
+            BackupRecord(id: record.id,
+                         date: HabitCalendar.dayStringFormatter.string(from: HabitCalendar.startOfKey(record.date)),
+                         value: record.value, note: record.note, updatedAt: record.updatedAt),
+            habitID: habit?.id, habitName: habit?.name))
+    }
+
+    private func item(_ group: HabitGroup) -> SyncRecoveryItem {
+        SyncRecoveryItem(archivedAt: archivedAt, reason: reason, row: .group(BackupGroup(
+            id: group.id, name: group.name, colorHex: group.colorHex, sortOrder: group.sortOrder,
+            createdAt: group.createdAt, updatedAt: group.updatedAt)))
     }
 }

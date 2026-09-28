@@ -14,6 +14,12 @@ struct StrideApp: App {
         // Re-anchor legacy local-midnight records to UTC day-keys before any
         // streak math or sync runs (idempotent — see SharedModelContainer).
         SharedModelContainer.migrateRecordDayKeysIfNeeded(modelContainer)
+        // Before any sync: the 1.3.1 migrated-rows rule (rows a 1.3.0 snapshot already pushed
+        // count as delivered, so a full pull may delete them if another device did) and the
+        // owner-unknown note. Once per install each; the Keychain read is the one AuthService
+        // makes anyway. See SyncService.prepareLaunch.
+        SyncService.prepareLaunch(context: modelContainer.mainContext, defaults: .standard,
+                                  hasStoredSession: KeychainSessionTokenStore().read() != nil)
         #if DEBUG
         // DEBUG-only, like `-paywall`: populate() erases the store (habits, check-ins, groups)
         // without queueing tombstones, and this file is compiled into StrideMac too, where
@@ -126,7 +132,9 @@ struct StrideApp: App {
         await AuthService.shared.waitForSessionRestore()
         guard AuthService.shared.isLoggedIn else { return }
         let context = modelContainer.mainContext
-        await SyncService.shared.sync(context: context)
+        // Automatic: skipped while the server has asked this device to wait, or failures are
+        // backing off. Sync Now in Settings still goes at once.
+        await SyncService.shared.sync(context: context, trigger: .automatic)
     }
 
     /// Signs in from a login link when signed out, then syncs — the same sync SettingsView runs

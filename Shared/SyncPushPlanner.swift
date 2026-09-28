@@ -1,0 +1,647 @@
+import Foundation
+import SwiftData
+
+// The incremental, chunked push (DEV-PLAN-1.3.md M2: "Shared/SyncPushPlanner.swift", "Chunks
+// are bounded by rows and by bytes", "Acknowledge per chunk").
+//
+// Up to 1.3.0, `SyncService.pushLocal` serialised every row on every sync — a full snapshot,
+// growing without bound, that 413'd the old 10 kb body limit within three weeks of daily use and
+// killed both directions. From 1.3.1 the push carries only pending rows (`SyncDeliverable`), in
+// chunks sent in sequence, and each chunk's answer acknowledges exactly the rows the server
+// wrote.
+//
+// Network-free: the planner reads a store and returns chunks, the resolver applies an answer to
+// a store. In Shared/ so the host-less StrideTests and scripts/sync_rehearsal.sh run the real
+// code — the move that fixed the reconciler in 72ccb74. Testing a hand-copied replica is how the
+// reconciler drifted before 1.2.3.
+
+/// The three row types a push carries.
+enum SyncRowKind: String, CaseIterable, Hashable {
+    case group
+    case habit
+    case entry
+}
+
+/// One row, by type and canonical id (`SyncReconciler.canonicalID` — the uppercase
+/// `uuidString`; the server echoes ids as it received them, and server-made ids are lowercase).
+struct SyncRowRef: Hashable {
+    let kind: SyncRowKind
+    let id: String
+}
+
+/// A hold the planner decided without asking the server.
+struct SyncPlannedHold: Equatable {
+    let ref: SyncRowRef
+    let reason: SyncHoldReason
+    /// The stamp the row had when planned: the hold is at this stamp, so an edit since lifts it.
+    let stamp: Date
+}
+
+/// One element of a push body: a row with the stamp it was sent at, or a queued deletion id.
+struct SyncPushItem {
+    enum Body {
+        case deletedHabit(String)
+        case deletedEntry(String)
+        case deletedGroup(String)
+        case group(SyncGroup)
+        case habit(SyncHabit)
+        case entry(SyncEntry)
+    }
+
+    let body: Body
+    /// Bytes this element adds to its JSON array, measured with the encoder that sends it
+    /// (separators excluded; `SyncPushPlanner.pack` adds those).
+    let encodedSize: Int
+    /// The row this is; nil for a deletion id.
+    let ref: SyncRowRef?
+    /// The stamp that was SENT (`updatedAt` on the wire), captured when the row was encoded — the
+    /// value an acknowledgement writes to `syncedAt`, even if the row is edited while its chunk
+    /// is in flight.
+    let sentStamp: Date?
+
+    var isRow: Bool { ref != nil }
+}
+
+/// Per-request bounds. The server's row caps (routes/sync.js `ROW_LIMITS`: 500 / 5,000 / 200)
+/// are wider on purpose: these sit inside them. The server does not cap deletion lists or the
+/// size of a note — only the 5 MB body does — so 2,000 entries with multi-KB notes, or a big
+/// deletion queue (deleting a multi-year habit queues one id per check-in), would 413 without
+/// the byte bound.
+struct SyncPushBounds: Equatable {
+    var groups = 200
+    var habits = 500
+    var entries = 2_000
+    /// Encoded JSON per request, deletion ids included. Decimal megabytes, so "no request over
+    /// 1 MB" holds whichever megabyte the reader means.
+    var bytes = 1_000_000
+    /// An item whose encoding alone exceeds this is never sent: held `too_large`. The 5 MB body
+    /// limit (body-parser's `5mb`, 5 × 1,024²) less the envelope, in decimal — generous room.
+    var maxItemBytes = 4_500_000
+
+    static let standard = SyncPushBounds()
+
+    /// After `400 too_many_rows`: never more rows per type than the server says it takes.
+    func clamped(to limits: SyncRowLimits?) -> SyncPushBounds {
+        guard let limits else { return self }
+        var b = self
+        b.groups = max(1, min(groups, limits.groups))
+        b.habits = max(1, min(habits, limits.habits))
+        b.entries = max(1, min(entries, limits.entries))
+        return b
+    }
+
+    /// After a 413 on a multi-item chunk: half the byte bound, once.
+    func halvingBytes() -> SyncPushBounds {
+        var b = self
+        b.bytes = max(1, bytes / 2)
+        return b
+    }
+
+    fileprivate func rowLimit(_ kind: SyncRowKind) -> Int {
+        switch kind {
+        case .group: return groups
+        case .habit: return habits
+        case .entry: return entries
+        }
+    }
+}
+
+/// One request's worth of the push.
+struct SyncPushChunk {
+    let items: [SyncPushItem]
+    let payload: SyncPushPayload
+    /// The exact bytes to send — `payload` through `SyncPushPlanner.makeEncoder()`, the
+    /// measurement the bounds were checked against. A transport that encodes `payload` itself
+    /// must use that same encoder.
+    let body: Data
+    /// The deletion ids this chunk carries, exactly as queued: what `SyncDeletionQueue.acknowledge`
+    /// removes once the chunk is answered 200.
+    let deletions: SyncDeletionQueue.Batch
+
+    var rowCount: Int { payload.groups.count + payload.habits.count + payload.entries.count }
+    var deletionCount: Int { deletions.count }
+    var shape: SyncChunkShape { SyncChunkShape(items: items.count, rows: rowCount) }
+
+    /// Submitted rows and the stamps they were sent at, in body order.
+    var submitted: [(ref: SyncRowRef, sentStamp: Date)] {
+        items.compactMap { item in
+            guard let ref = item.ref, let stamp = item.sentStamp else { return nil }
+            return (ref, stamp)
+        }
+    }
+
+    /// Counts only — what a Sentry report about this chunk may carry.
+    func diagnostic(for answer: SyncHTTPAnswer) -> SyncDiagnosticReport {
+        .answer(answer, groups: payload.groups.count, habits: payload.habits.count,
+                entries: payload.entries.count, deletions: deletionCount)
+    }
+}
+
+/// Everything one sync would push, in order.
+struct SyncPushPlan {
+    var chunks: [SyncPushChunk] = []
+    /// Rows the planner holds without sending: `too_large` (alone over `maxItemBytes`) and
+    /// `invalid_value` (a number JSON cannot carry — NaN or infinity — which the encoder refuses,
+    /// and which the server would refuse as `invalid_value` anyway). Apply with
+    /// `SyncPushResolver.apply(_:in:)` before or alongside the first chunk.
+    var holds: [SyncPlannedHold] = []
+
+    var isEmpty: Bool { chunks.isEmpty }
+    var rowCount: Int { chunks.reduce(0) { $0 + $1.rowCount } }
+    var deletionCount: Int { chunks.reduce(0) { $0 + $1.deletionCount } }
+}
+
+@MainActor
+enum SyncPushPlanner {
+    /// The encoder every push body goes through, and the one the bounds are measured with.
+    ///
+    /// It MUST stay the configuration `APIClient` uses: a plain `JSONEncoder` — no key strategy
+    /// (the backend speaks camelCase in both directions; `.convertToSnakeCase` silently broke
+    /// every push from 3829085 until 1.2.2), no output formatting (pretty-printing would change
+    /// every measured size). `StrideTests/SyncPushPlannerTests` pins the keys.
+    nonisolated static func makeEncoder() -> JSONEncoder {
+        JSONEncoder()
+    }
+
+    // Day-only dates are UTC day-keys, matching the stored representation (HabitCalendar) —
+    // never the device's current zone, which would shift check-ins across day boundaries.
+    private static let dateOnly: DateFormatter = HabitCalendar.dayStringFormatter
+
+    // MARK: Plan
+
+    /// Plans the push: queued deletions, then pending groups, habits, entries — chunked.
+    ///
+    /// Never plans a held row, nor the entries of a held habit (including one this plan holds).
+    /// Reads the store; mutates nothing.
+    static func plan(
+        in context: ModelContext,
+        deletions: SyncDeletionQueue.Batch,
+        bounds: SyncPushBounds = .standard
+    ) throws -> SyncPushPlan {
+        let encoder = makeEncoder()
+        var holds: [SyncPlannedHold] = []
+        var items: [SyncPushItem] = []
+
+        items += deletionItems(deletions)
+
+        // Groups.
+        let groups = try context.fetch(FetchDescriptor<HabitGroup>())
+            .sorted { ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString) }
+        var seen = Set<SyncRowRef>()
+        for group in groups where group.isPending {
+            let ref = SyncRowRef(kind: .group, id: group.id.uuidString)
+            guard seen.insert(ref).inserted else { continue }
+            let stamp = SyncTimestamp.floorToMillisecond(group.stamp)
+            let wire = wireGroup(group, stamp: stamp)
+            guard let size = measure(wire, encoder) else {
+                holds.append(SyncPlannedHold(ref: ref, reason: .invalidValue, stamp: stamp)); continue
+            }
+            items.append(SyncPushItem(body: .group(wire), encodedSize: size, ref: ref, sentStamp: stamp))
+        }
+
+        // Habits. A habit held now, or held by this plan, keeps its entries back too: the server
+        // would skip them as unknown_habit (or not_owned_habit) and they would come back pending.
+        let habits = try context.fetch(FetchDescriptor<Habit>())
+            .sorted { ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString) }
+        var blockedHabits = Set<String>()
+        for habit in habits {
+            let ref = SyncRowRef(kind: .habit, id: habit.id.uuidString)
+            if habit.isHeld { blockedHabits.insert(ref.id); continue }
+            guard habit.isPending, seen.insert(ref).inserted else { continue }
+            let stamp = SyncTimestamp.floorToMillisecond(habit.stamp)
+            let wire = wireHabit(habit, stamp: stamp)
+            guard let size = measure(wire, encoder) else {
+                holds.append(SyncPlannedHold(ref: ref, reason: .invalidValue, stamp: stamp))
+                blockedHabits.insert(ref.id)
+                continue
+            }
+            if size > bounds.maxItemBytes {
+                holds.append(SyncPlannedHold(ref: ref, reason: .tooLarge, stamp: stamp))
+                blockedHabits.insert(ref.id)
+                continue
+            }
+            items.append(SyncPushItem(body: .habit(wire), encodedSize: size, ref: ref, sentStamp: stamp))
+        }
+
+        // Entries. `HabitRecord` has no `habitId` and `Habit.records` has no inverse, so the
+        // planner walks each habit's records; fine at these sizes.
+        for habit in habits where !blockedHabits.contains(habit.id.uuidString) {
+            let records = habit.records
+                .sorted { ($0.date, $0.id.uuidString) < ($1.date, $1.id.uuidString) }
+            for record in records where record.isPending {
+                let ref = SyncRowRef(kind: .entry, id: record.id.uuidString)
+                guard seen.insert(ref).inserted else { continue }
+                let stamp = SyncTimestamp.floorToMillisecond(record.stamp)
+                let wire = wireEntry(record, habitID: habit.id.uuidString, stamp: stamp)
+                guard let size = measure(wire, encoder) else {
+                    holds.append(SyncPlannedHold(ref: ref, reason: .invalidValue, stamp: stamp)); continue
+                }
+                items.append(SyncPushItem(body: .entry(wire), encodedSize: size, ref: ref, sentStamp: stamp))
+            }
+        }
+
+        let packed = try pack(items, bounds: bounds, encoder: encoder)
+        return SyncPushPlan(chunks: packed.chunks, holds: holds + packed.holds)
+    }
+
+    /// Re-plans chunks that have not been answered yet under new bounds (`400 too_many_rows`'s
+    /// `limits`, or half the bytes after a 413), keeping their order and their sent stamps: the
+    /// rows are the same rows as planned, so the acknowledgement still records what was sent.
+    static func repack(_ chunks: some Sequence<SyncPushChunk>, bounds: SyncPushBounds) throws -> SyncPushPlan {
+        let packed = try pack(chunks.flatMap(\.items), bounds: bounds, encoder: makeEncoder())
+        return SyncPushPlan(chunks: packed.chunks, holds: packed.holds)
+    }
+
+    /// Whether any row waits on a forced resend. A sync that finds one pulls before it pushes
+    /// ("Forced resend waits until deletions are settled").
+    static func hasForcedResend(in context: ModelContext) throws -> Bool {
+        func any<Row: SyncDeliverable>(_ rows: [Row]) -> Bool { rows.contains { $0.needsResend && !$0.isHeld } }
+        if any(try context.fetch(FetchDescriptor<HabitGroup>())) { return true }
+        if any(try context.fetch(FetchDescriptor<Habit>())) { return true }
+        return any(try context.fetch(FetchDescriptor<HabitRecord>()))
+    }
+
+    // MARK: Pack
+
+    /// Packs items, in order, into chunks. A chunk closes when the next item would pass any
+    /// bound, and the next chunk carries on from there. An item that alone exceeds the byte
+    /// bound goes in a chunk by itself; one over `maxItemBytes` is never sent (held `too_large`,
+    /// or left out and reported if it is a deletion id — no real id is megabytes long).
+    ///
+    /// Sizes add up exactly: a compact JSON array is `[` + elements joined by `,` + `]`, and an
+    /// element encodes to the same bytes inside the array as on its own. Each finished chunk is
+    /// still encoded for real (that is its `body`); should the sum and the encoding ever
+    /// disagree past the bound, the chunk is split rather than sent over it.
+    static func pack(
+        _ items: [SyncPushItem],
+        bounds: SyncPushBounds,
+        encoder: JSONEncoder
+    ) throws -> (chunks: [SyncPushChunk], holds: [SyncPlannedHold]) {
+        let envelope = try emptyEnvelopeSize(encoder)
+        var chunks: [SyncPushChunk] = []
+        var holds: [SyncPlannedHold] = []
+        var current = Builder(envelope: envelope)
+
+        func close() throws {
+            guard !current.items.isEmpty else { return }
+            chunks += try finish(current.items, bounds: bounds, encoder: encoder)
+            current = Builder(envelope: envelope)
+        }
+
+        for item in items {
+            if item.encodedSize > bounds.maxItemBytes {
+                if let ref = item.ref, let stamp = item.sentStamp {
+                    holds.append(SyncPlannedHold(ref: ref, reason: .tooLarge, stamp: stamp))
+                }
+                continue
+            }
+            if !current.items.isEmpty, !current.fits(item, bounds: bounds) { try close() }
+            current.add(item)
+            // Over the byte bound on its own: it travels alone.
+            if envelope + item.encodedSize > bounds.bytes { try close() }
+        }
+        try close()
+        return (chunks, holds)
+    }
+
+    /// The bytes one chunk occupies, tracked as items are added.
+    private struct Builder {
+        let envelope: Int
+        var items: [SyncPushItem] = []
+        var bytes: Int
+        var perArray: [Slot: Int] = [:]
+
+        init(envelope: Int) {
+            self.envelope = envelope
+            self.bytes = envelope
+        }
+
+        enum Slot: Hashable { case deletedHabits, deletedEntries, deletedGroups, groups, habits, entries }
+
+        static func slot(_ item: SyncPushItem) -> Slot {
+            switch item.body {
+            case .deletedHabit: return .deletedHabits
+            case .deletedEntry: return .deletedEntries
+            case .deletedGroup: return .deletedGroups
+            case .group: return .groups
+            case .habit: return .habits
+            case .entry: return .entries
+            }
+        }
+
+        func added(_ item: SyncPushItem) -> Int {
+            let n = perArray[Self.slot(item)] ?? 0
+            return bytes + item.encodedSize + (n > 0 ? 1 : 0)   // the comma before it
+        }
+
+        func fits(_ item: SyncPushItem, bounds: SyncPushBounds) -> Bool {
+            if let kind = item.ref?.kind, (perArray[Self.slot(item)] ?? 0) + 1 > bounds.rowLimit(kind) {
+                return false
+            }
+            return added(item) <= bounds.bytes
+        }
+
+        mutating func add(_ item: SyncPushItem) {
+            bytes = added(item)
+            perArray[Self.slot(item), default: 0] += 1
+            items.append(item)
+        }
+    }
+
+    private static func finish(_ items: [SyncPushItem], bounds: SyncPushBounds, encoder: JSONEncoder) throws -> [SyncPushChunk] {
+        var groups: [SyncGroup] = [], habits: [SyncHabit] = [], entries: [SyncEntry] = []
+        var deletions = SyncDeletionQueue.Batch()
+        for item in items {
+            switch item.body {
+            case .deletedHabit(let id): deletions.habits.append(id)
+            case .deletedEntry(let id): deletions.entries.append(id)
+            case .deletedGroup(let id): deletions.groups.append(id)
+            case .group(let g): groups.append(g)
+            case .habit(let h): habits.append(h)
+            case .entry(let e): entries.append(e)
+            }
+        }
+        // Every one of the six arrays is present even when empty: the payload's fields are not
+        // optional, so a chunk of one entry still says "no deletions", never "field missing".
+        let payload = SyncPushPayload(
+            habits: habits, entries: entries, groups: groups,
+            deletedHabitIds: deletions.habits, deletedEntryIds: deletions.entries, deletedGroupIds: deletions.groups
+        )
+        let body = try encoder.encode(payload)
+        if body.count > bounds.bytes, items.count > 1 {
+            // The arithmetic in `Builder` said it fit. It should never be wrong — a test pins
+            // the two equal — but a request over the bound is the failure this type exists to
+            // prevent, so split rather than send it.
+            let mid = items.count / 2
+            let head = try finish(Array(items[..<mid]), bounds: bounds, encoder: encoder)
+            let tail = try finish(Array(items[mid...]), bounds: bounds, encoder: encoder)
+            return head + tail
+        }
+        return [SyncPushChunk(items: items, payload: payload, body: body, deletions: deletions)]
+    }
+
+    // MARK: Items
+
+    private static func deletionItems(_ batch: SyncDeletionQueue.Batch) -> [SyncPushItem] {
+        // Exact strings, de-duplicated: the widget's queue and the app's can both hold one id,
+        // and `acknowledge` removes by exact string, so every copy goes with the one sent.
+        func items(_ ids: [String], _ make: (String) -> SyncPushItem.Body) -> [SyncPushItem] {
+            var seen = Set<String>()
+            return ids.compactMap { id in
+                guard seen.insert(id).inserted else { return nil }
+                return SyncPushItem(body: make(id), encodedSize: encodedStringSize(id), ref: nil, sentStamp: nil)
+            }
+        }
+        return items(batch.habits, SyncPushItem.Body.deletedHabit)
+            + items(batch.entries, SyncPushItem.Body.deletedEntry)
+            + items(batch.groups, SyncPushItem.Body.deletedGroup)
+    }
+
+    /// JSON size of a string as `JSONEncoder` writes it. The queue holds `uuidString`s — hex and
+    /// hyphens, which encode as themselves plus two quotes — so the encoder is asked only about
+    /// anything else (30,000 queued ids should not mean 30,000 encoder round trips).
+    private static func encodedStringSize(_ s: String) -> Int {
+        let plain = s.utf8.allSatisfy { b in
+            (b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x5A) || (b >= 0x61 && b <= 0x7A) || b == 0x2D
+        }
+        if plain { return s.utf8.count + 2 }
+        return (try? makeEncoder().encode([s]).count - 2) ?? s.utf8.count * 6 + 2
+    }
+
+    /// nil when the encoder refuses the row (a non-finite Double): it can never be sent.
+    private static func measure<T: Encodable>(_ value: T, _ encoder: JSONEncoder) -> Int? {
+        try? encoder.encode(value).count
+    }
+
+    private static func emptyEnvelopeSize(_ encoder: JSONEncoder) throws -> Int {
+        try encoder.encode(SyncPushPayload(habits: [], entries: [], groups: [],
+                                           deletedHabitIds: [], deletedEntryIds: [], deletedGroupIds: [])).count
+    }
+
+    // MARK: Wire mapping
+    //
+    // What 1.3.0's `SyncService.pushLocal` sent, except the stamps: `createdAt` / `updatedAt`
+    // go out with three fractional digits (`millisecondString`), exactly the stamp the store
+    // holds, so an acknowledgement and this device's own echo compare equal to it.
+
+    static func wireHabit(_ habit: Habit, stamp: Date) -> SyncHabit {
+        SyncHabit(
+            id: habit.id.uuidString,
+            name: habit.name,
+            emoji: habit.emoji,
+            colorHex: habit.colorHex,
+            isArchived: habit.isArchived,
+            // `Int(sortOrder)` traps on NaN or ±infinity; the clamp keeps every finite value the
+            // same as before and lets the server refuse the rest as `invalid_value`.
+            sortOrder: SafeNumber.wholeNumber(habit.sortOrder, in: Int.min...Int.max),
+            reminderEnabled: habit.reminderEnabled,
+            reminderHour: habit.reminderHour,
+            reminderMinute: habit.reminderMinute,
+            note: habit.note,
+            kind: habit.kind,
+            targetValue: habit.targetValue,
+            unit: habit.unit,
+            scheduleKind: habit.scheduleKind,
+            timesPerWeek: habit.timesPerWeek,
+            activeDaysMask: habit.activeDaysMask,
+            groupId: habit.groupId?.uuidString,
+            createdAt: SyncTimestamp.millisecondString(from: habit.createdAt),
+            updatedAt: SyncTimestamp.millisecondString(from: stamp)
+        )
+    }
+
+    /// A record has no `createdAt`; the push has always sent its `date` in that place, and its
+    /// stamp is `updatedAt ?? date`.
+    static func wireEntry(_ record: HabitRecord, habitID: String, stamp: Date) -> SyncEntry {
+        SyncEntry(
+            id: record.id.uuidString,
+            habitId: habitID,
+            date: dateOnly.string(from: record.date),
+            note: record.note,
+            value: record.value,
+            createdAt: SyncTimestamp.millisecondString(from: record.date),
+            updatedAt: SyncTimestamp.millisecondString(from: stamp)
+        )
+    }
+
+    static func wireGroup(_ group: HabitGroup, stamp: Date) -> SyncGroup {
+        SyncGroup(
+            id: group.id.uuidString,
+            name: group.name,
+            colorHex: group.colorHex,
+            sortOrder: group.sortOrder,
+            createdAt: SyncTimestamp.millisecondString(from: group.createdAt),
+            updatedAt: SyncTimestamp.millisecondString(from: stamp)
+        )
+    }
+}
+
+// MARK: - Per-chunk acknowledgement
+
+/// What one chunk's 200 did to the store, for the engine to finish and report.
+struct SyncChunkOutcome: Equatable {
+    var acknowledged: [SyncRowRef] = []
+    /// Holds applied, at the sent stamp — for the Sentry report (`SyncHoldReason.reportsToSentry`)
+    /// and the sync diagnostics count.
+    var holds: [SyncPlannedHold] = []
+    /// Rows the server tombstoned: the engine archives each one to the recovery log, then deletes
+    /// it (delete wins). Not deleted here — the archive must be on disk first.
+    var drops: [SyncRowRef] = []
+    /// Neither acknowledged nor held; sent again next sync.
+    var keptPending: [SyncRowRef] = []
+    /// Skipped with a reason this build does not know (kept pending) — worth a report.
+    var unrecognisedReasons: [SyncRowRef: String] = [:]
+    /// The deletion ids this chunk delivered, now removed from the queue.
+    var deliveredDeletions = SyncDeletionQueue.Batch()
+}
+
+@MainActor
+enum SyncPushResolver {
+    /// The ids the server reported as not written, canonicalised, with the reason where it gave
+    /// one. An id in `skippedReasons` but missing from `skipped` counts as skipped too: either
+    /// list naming it is the server saying it did not write it.
+    static func skippedIDs(in response: SyncPushResponse) -> [SyncRowRef: String?] {
+        var out: [SyncRowRef: String?] = [:]
+        func add(_ kind: SyncRowKind, _ ids: [String], _ reasons: [String: String]) {
+            for id in ids { out[SyncRowRef(kind: kind, id: SyncReconciler.canonicalID(id))] = .some(nil) }
+            for (id, reason) in reasons {
+                let ref = SyncRowRef(kind: kind, id: SyncReconciler.canonicalID(id))
+                // The first reason wins, as on the server, when two spellings of one id differ.
+                if case .some(.some) = out[ref] { continue }
+                out[ref] = .some(reason)
+            }
+        }
+        let skipped = response.skipped ?? .init()
+        let reasons = response.skippedReasons ?? .init()
+        add(.group, skipped.groups, reasons.groups)
+        add(.habit, skipped.habits, reasons.habits)
+        add(.entry, skipped.entries, reasons.entries)
+        return out
+    }
+
+    /// The acknowledged rows: the chunk's submitted ids (canonical, de-duplicated) minus every id
+    /// in `skipped`. Never derived from `applied`, which holds counts per type, not ids
+    /// (routes/sync.js). With the stamp each was sent at.
+    static func acknowledged(_ chunk: SyncPushChunk, response: SyncPushResponse) -> [SyncRowRef: Date] {
+        let skipped = skippedIDs(in: response)
+        var out: [SyncRowRef: Date] = [:]
+        for (ref, stamp) in chunk.submitted where skipped[ref] == nil && out[ref] == nil {
+            out[ref] = stamp
+        }
+        return out
+    }
+
+    /// Applies a chunk's 200 to the store: acknowledgements, holds, `unknown_habit` strikes and
+    /// the deletion queue. Returns the drops for the engine (recovery log, then delete).
+    ///
+    /// Call only for an answer `SyncAnswers.action` mapped to `.proceed`, and only after the run
+    /// has re-checked that its owner, token and state generation are still current — an
+    /// acknowledgement is true only for the account that gave it. Does not save: the engine saves
+    /// once per chunk, so a failure at chunk k leaves chunks < k acknowledged.
+    ///
+    /// A row deleted locally while its chunk was in flight is simply not found; there is nothing
+    /// to acknowledge. Rows sharing a canonical id (`Habit.id` has no uniqueness constraint, and
+    /// old id-case bugs made duplicates) are all updated: the server holds one row for that id.
+    static func resolve(
+        _ chunk: SyncPushChunk,
+        response: SyncPushResponse,
+        in context: ModelContext,
+        deletionQueue: SyncDeletionQueue,
+        strikes: SyncUnknownHabitStrikes
+    ) throws -> SyncChunkOutcome {
+        let skipped = skippedIDs(in: response)
+        let index = try RowIndex(context, kinds: Set(chunk.submitted.map(\.ref.kind)).union(
+            chunk.payload.entries.isEmpty ? [] : [.habit]))
+        var outcome = SyncChunkOutcome()
+        var handled = Set<SyncRowRef>()
+        var clearedStrikes: [String] = []
+
+        for item in chunk.items {
+            guard let ref = item.ref, let sent = item.sentStamp, handled.insert(ref).inserted else { continue }
+            let rows = index.rows(ref)
+            let wasSkipped = skipped[ref] != nil
+            let reason = skipped[ref] ?? nil
+
+            var facts = SyncRowFacts(isRestored: rows.contains { $0.restoredAt != nil })
+            if ref.kind == .entry, case let .entry(entry) = item.body {
+                let habitRef = SyncRowRef(kind: .habit, id: SyncReconciler.canonicalID(entry.habitId))
+                facts.habitAcknowledged = index.rows(habitRef).contains { $0.hasBeenDelivered }
+                facts.priorUnknownHabitStrikes = strikes.strikes(for: ref.id)
+            }
+
+            switch SyncAnswers.rowAction(skipped: wasSkipped, reason: reason, facts: facts) {
+            case .acknowledge:
+                rows.forEach { $0.acknowledge(sentStamp: sent) }
+                outcome.acknowledged.append(ref)
+                if ref.kind == .entry { clearedStrikes.append(ref.id) }
+            case .hold(let holdReason):
+                // At the SENT stamp: an edit made while the chunk was in flight is a new value
+                // and gets its own chance.
+                rows.forEach { $0.hold(holdReason, sentStamp: sent) }
+                outcome.holds.append(SyncPlannedHold(ref: ref, reason: holdReason, stamp: sent))
+                if ref.kind == .entry { clearedStrikes.append(ref.id) }
+            case .drop:
+                outcome.drops.append(ref)
+                if ref.kind == .entry { clearedStrikes.append(ref.id) }
+            case .keepPending:
+                outcome.keptPending.append(ref)
+                if ref.kind == .entry {
+                    if SyncAnswers.countsUnknownHabitStrike(reason: reason, facts: facts) {
+                        strikes.record(ref.id)
+                    } else if reason != SyncSkipReason.unknownHabit.rawValue {
+                        // The streak is "three syncs in a row"; any other answer ends it.
+                        clearedStrikes.append(ref.id)
+                    }
+                }
+                if let reason, SyncSkipReason(rawValue: reason) == nil {
+                    outcome.unrecognisedReasons[ref] = reason
+                } else if wasSkipped, reason == nil {
+                    outcome.unrecognisedReasons[ref] = ""
+                }
+            }
+        }
+
+        strikes.clear(clearedStrikes)
+        // Only the deletion ids this chunk carried, and only now that it was answered 200. A
+        // deletion queued while it was in flight stays for the next sync.
+        deletionQueue.acknowledge(chunk.deletions)
+        outcome.deliveredDeletions = chunk.deletions
+        return outcome
+    }
+
+    /// Applies holds the planner decided (`SyncPushPlan.holds`) or a one-row 413
+    /// (`holdTooLarge(_:in:)`). Does not save.
+    static func apply(_ holds: [SyncPlannedHold], in context: ModelContext) throws {
+        guard !holds.isEmpty else { return }
+        let index = try RowIndex(context, kinds: Set(holds.map(\.ref.kind)))
+        for hold in holds {
+            index.rows(hold.ref).forEach { $0.hold(hold.reason, sentStamp: hold.stamp) }
+        }
+    }
+
+    /// `413` on a one-row chunk: hold that row `too_large` at the stamp that was sent. Returns
+    /// the hold (empty if the chunk carried no row).
+    @discardableResult
+    static func holdTooLarge(_ chunk: SyncPushChunk, in context: ModelContext) throws -> [SyncPlannedHold] {
+        let holds = chunk.submitted.map { SyncPlannedHold(ref: $0.ref, reason: .tooLarge, stamp: $0.sentStamp) }
+        try apply(holds, in: context)
+        return holds
+    }
+
+    /// The store's rows by canonical id, for the kinds a chunk touched.
+    private struct RowIndex {
+        private var byRef: [SyncRowRef: [any SyncDeliverable]] = [:]
+
+        init(_ context: ModelContext, kinds: Set<SyncRowKind>) throws {
+            if kinds.contains(.group) { add(.group, try context.fetch(FetchDescriptor<HabitGroup>())) }
+            if kinds.contains(.habit) { add(.habit, try context.fetch(FetchDescriptor<Habit>())) }
+            if kinds.contains(.entry) { add(.entry, try context.fetch(FetchDescriptor<HabitRecord>())) }
+        }
+
+        private mutating func add<Row: SyncDeliverable>(_ kind: SyncRowKind, _ rows: [Row]) {
+            for row in rows { byRef[SyncRowRef(kind: kind, id: row.id.uuidString), default: []].append(row) }
+        }
+
+        func rows(_ ref: SyncRowRef) -> [any SyncDeliverable] { byRef[ref] ?? [] }
+    }
+}

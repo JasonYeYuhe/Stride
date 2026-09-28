@@ -74,4 +74,95 @@ struct SyncPullResponse: Decodable {
     let deletedEntryIds: [String]?
     let deletedGroupIds: [String]?
     let serverTime: String
+    /// The rows the server holds for this account (full-pull scope), on every pull since M0.
+    /// Necessary, not sufficient, for the full-pull deletion pass: a truncated body or a
+    /// timed-out query must never purge the local store. Optional and last, so older servers'
+    /// responses parse and existing memberwise call sites compile unchanged.
+    var totals: SyncTotals? = nil
+}
+
+struct SyncTotals: Codable, Equatable {
+    let habits: Int
+    let entries: Int
+    let groups: Int
+}
+
+/// The `/v1/sync/push` answer (routes/sync.js, "The incremental-push contract"). Before 1.3.1
+/// the apps decoded only `ok`; from 1.3.1 it is what acknowledges rows.
+///
+/// `applied` holds COUNTS per type, not ids. The acknowledged ids are therefore the chunk's
+/// submitted ids minus every id in `skipped` — never derived from `applied`.
+struct SyncPushResponse: Decodable {
+    // The three per-type structs decode a missing key as empty (a synthesised Decodable would
+    // ignore the defaults and throw), and keep memberwise inits with defaults for tests.
+
+    struct Applied: Decodable, Equatable {
+        var habits = 0
+        var entries = 0
+        var groups = 0
+
+        init(habits: Int = 0, entries: Int = 0, groups: Int = 0) {
+            (self.habits, self.entries, self.groups) = (habits, entries, groups)
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: PerType.self)
+            habits = try c.decodeIfPresent(Int.self, forKey: .habits) ?? 0
+            entries = try c.decodeIfPresent(Int.self, forKey: .entries) ?? 0
+            groups = try c.decodeIfPresent(Int.self, forKey: .groups) ?? 0
+        }
+    }
+
+    struct Skipped: Decodable, Equatable {
+        var habits: [String] = []
+        var entries: [String] = []
+        var groups: [String] = []
+
+        init(habits: [String] = [], entries: [String] = [], groups: [String] = []) {
+            (self.habits, self.entries, self.groups) = (habits, entries, groups)
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: PerType.self)
+            habits = try c.decodeIfPresent([String].self, forKey: .habits) ?? []
+            entries = try c.decodeIfPresent([String].self, forKey: .entries) ?? []
+            groups = try c.decodeIfPresent([String].self, forKey: .groups) ?? []
+        }
+    }
+
+    /// id -> reason code, per type (`SyncHoldReason` raw values, plus `tombstoned_habit`,
+    /// `not_owned_habit`, `skipped_habit`, `unknown_habit`). Ids are as the server echoes them;
+    /// compare through `SyncReconciler.canonicalID`.
+    struct SkippedReasons: Decodable, Equatable {
+        var habits: [String: String] = [:]
+        var entries: [String: String] = [:]
+        var groups: [String: String] = [:]
+
+        init(habits: [String: String] = [:], entries: [String: String] = [:], groups: [String: String] = [:]) {
+            (self.habits, self.entries, self.groups) = (habits, entries, groups)
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: PerType.self)
+            habits = try c.decodeIfPresent([String: String].self, forKey: .habits) ?? [:]
+            entries = try c.decodeIfPresent([String: String].self, forKey: .entries) ?? [:]
+            groups = try c.decodeIfPresent([String: String].self, forKey: .groups) ?? [:]
+        }
+    }
+
+    private enum PerType: String, CodingKey { case habits, entries, groups }
+
+    let ok: Bool
+    /// Optional throughout: a server before M0's contract answers `{ok: true}` alone.
+    var applied: Applied? = nil
+    var skipped: Skipped? = nil
+    var skippedReasons: SkippedReasons? = nil
+}
+
+/// The `limits` a `400 too_many_rows` answer carries (routes/sync.js `ROW_LIMITS`), so the
+/// planner can re-chunk against what the server actually enforces.
+struct SyncRowLimits: Decodable, Equatable {
+    let habits: Int
+    let entries: Int
+    let groups: Int
 }
