@@ -3,7 +3,13 @@
 
     scripts/release.py prepare 1.2.1     # create the version records + What's New
     scripts/release.py finish  1.2.1 15  # attach build N, then submit for review
+    scripts/release.py release 1.2.1     # after approval + the device check: go live
     scripts/release.py show    1.2.1     # report state without changing anything
+
+Versions are created with releaseType MANUAL: an approved version waits in
+PENDING_DEVELOPER_RELEASE until `release` is run. It used to be AFTER_APPROVAL, so an
+approval could publish a build before anyone had tapped a sign-in link on a real device —
+1.3.0 was switched to MANUAL while already in review (2026-09-28) for exactly that.
 
 Why this exists: scripts/asc_api.py is platform-blind (it grabs versions[0] and
 hopes) and still posts to appStoreVersionSubmissions, which Apple replaced with
@@ -276,7 +282,7 @@ def ensure_version(app_id, platform, version_string):
     r = a.post("/appStoreVersions", {"data": {
         "type": "appStoreVersions",
         "attributes": {"platform": platform, "versionString": version_string,
-                       "releaseType": "AFTER_APPROVAL"},
+                       "releaseType": "MANUAL"},   # see the module docstring
         "relationships": {"app": {"data": {"type": "apps", "id": app_id}}},
     }})
     return r["data"]["id"]
@@ -418,6 +424,25 @@ def main():
         for p in PLATFORMS:
             vid = ensure_version(app_id, p, version_string)
             ensure_localizations(app_id, p, vid, version_string)
+        return 0
+
+    if cmd == "release":
+        # Only an approved, held version can be released; anything else is reported, not forced.
+        not_released = []
+        for p, v in versions(app_id, version_string).items():
+            state = v["attributes"]["appStoreState"]
+            if state == "READY_FOR_SALE":
+                print(f"  [{p}] already live"); continue
+            if state != "PENDING_DEVELOPER_RELEASE":
+                print(f"  [{p}] {state} — not approved and held, so not released")
+                not_released.append(p); continue
+            a.post("/appStoreVersionReleaseRequests", {"data": {
+                "type": "appStoreVersionReleaseRequests",
+                "relationships": {"appStoreVersion": {"data": {"type": "appStoreVersions", "id": v["id"]}}},
+            }})
+            print(f"  [{p}] release requested")
+        if not_released:
+            print(f"NOT released: {', '.join(not_released)}"); return 1
         return 0
 
     if cmd == "finish":
