@@ -412,6 +412,15 @@ from what it took, and record the new number in the progress log before building
   strings localized in one pass), **D** ship (full review, Product Interaction manifest, device
   checks, What's New, rehearsal + demo check, submit). Nothing from this branch reaches users
   before phase D.
+- 2026-09-29 — phase A done (`1e9d293`, `ba39421`, `d9c98c7`): the first-full-pull proof rule
+  as built; large-account performance (quiet sync 10 habits × 2 y 1.22 s → 0.008 s; a 54,750-entry
+  join 175.6 → 7.0 s); 1.3.1 (19→20); the demo check compiles all of Shared/; the pre-push hook
+  builds the pushed commit. **Phase A also found a shipped bug** — once a habit is unchecked it
+  cannot be re-checked that day until relaunch (`HabitCheckIn` read a deleted record that
+  `Habit.records` still held; confirmed on the submitted 1.3.0 in a simulator). The owner chose to
+  pull 1.3.0 from review and resubmit it as build 19 with only that fix, so M2 builds from 20.
+  The Gemini review of the slice failed (agy headless denied its file-reading tool); Codex is
+  queued after its usage reset.
 - 2026-09-28 — owner decision on the migrated-marks question (review R1 of the slice): **the first
   full pull proves the account.** A 1.3.0 session that expires keeps `stride_last_sync_time`, so
   "the device signed out" cannot be inferred from the key. The migration marks a store's rows

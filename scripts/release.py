@@ -4,6 +4,7 @@
     scripts/release.py prepare 1.2.1     # create the version records + What's New
     scripts/release.py finish  1.2.1 15  # attach build N, then submit for review
     scripts/release.py release 1.2.1     # after approval + the device check: go live
+    scripts/release.py cancel  1.2.1     # pull a version out of review (e.g. to swap its build)
     scripts/release.py show    1.2.1     # report state without changing anything
 
 Versions are created with releaseType MANUAL: an approved version waits in
@@ -161,7 +162,8 @@ WHATS_NEW_BY_VERSION = {
              "\u2022 Text fixes: \u201c1 day\u201d and \u201c1 check-in\u201d instead of \u201c1 "
              "days\u201d and \u201c1 check-ins\u201d; the \u201cweeks\u201d label in Stats and "
              "the widget gallery are translated in every language; and choosing English in "
-             "Stride\u2019s language setting now applies everywhere.",
+             "Stride\u2019s language setting now applies everywhere."
+             "\n\u2022 Checking a habit again right after unchecking it works the first time. Before, it stayed unchecked until Stride was reopened.",
     "zh-Hans": "本次更新带来备份与恢复、大尺寸小组件、一键登录，并修正了各语言的文字问题。\n\n"
                "\u2022 「导出为 JSON」现在会保存完整备份：每个习惯、分组、重复周期、目标、备注和打卡记录。"
                "在没有任何习惯的设备上，用设置里的「从备份恢复」即可全部找回；如有需要，可先用"
@@ -174,7 +176,8 @@ WHATS_NEW_BY_VERSION = {
                "这类提醒从未送达。\n"
                "\u2022 图表标签、热力图和「今天」页面会随更大的字体一起放大，在最大字号下也清晰可读。\n"
                "\u2022 文字修正：统计中的「周」单位和小组件库中的预览不再显示英文；在 Stride 的语言设置中"
-               "选择英语后，所有文字都会切换为英语。",
+               "选择英语后，所有文字都会切换为英语。"
+               "\n\u2022 取消打卡后立即再次打卡，现在会马上生效。此前需要重新打开 Stride 才能打卡。",
     "zh-Hant": "本次更新帶來備份與恢復、大型小工具、一鍵登入，並修正了各語言的文字問題。\n\n"
                "\u2022 「匯出為 JSON」現在會儲存完整備份：每個習慣、分組、排程、目標、備註和打卡紀錄。"
                "在沒有任何習慣的裝置上，用設定裡的「從備份恢復」即可全部找回；如有需要，可先用"
@@ -187,7 +190,8 @@ WHATS_NEW_BY_VERSION = {
                "這類提醒從未送達。\n"
                "\u2022 圖表標籤、熱力圖和「今天」頁面會隨更大的字級一起放大，在最大字級下也清晰易讀。\n"
                "\u2022 文字修正：統計中的「週」單位和小工具庫中的預覽不再顯示英文；在 Stride 的語言設定中"
-               "選擇英文後，所有文字都會切換為英文。",
+               "選擇英文後，所有文字都會切換為英文。"
+               "\n\u2022 取消打卡後立即再次打卡，現在會馬上生效。先前需要重新開啟 Stride 才能打卡。",
     "ja": "バックアップと復元、大きいウィジェット、ワンタップでのログイン、そして各言語の表記を"
           "直した更新です。\n\n"
           "\u2022 「JSON で書き出す」で、習慣・グループ・スケジュール・目標・メモ・チェックインを"
@@ -205,7 +209,8 @@ WHATS_NEW_BY_VERSION = {
           "\u2022 グラフのラベル、ヒートマップ、「今日」の画面が大きな文字サイズに合わせて拡大し、"
           "最大サイズでも読みやすくなりました。\n"
           "\u2022 表記の修正：統計の「週」の単位とウィジェットギャラリーのプレビューが英語のまま"
-          "表示されなくなりました。Stride の言語設定で英語を選ぶと、すべての表示が英語になります。",
+          "表示されなくなりました。Stride の言語設定で英語を選ぶと、すべての表示が英語になります。"
+          "\n\u2022 チェックを外した直後に同じ習慣をもう一度チェックすると、すぐに記録されるようになりました。これまではアプリを開き直すまでチェックされないままでした。",
     "ko": "백업과 복원, 대형 위젯, 탭 한 번으로 로그인, 그리고 모든 언어의 문구를 바로잡은 "
           "업데이트입니다.\n\n"
           "\u2022 \u2018JSON으로 내보내기\u2019가 이제 습관, 그룹, 반복 주기, 목표, 메모, 체크인을 모두 "
@@ -221,7 +226,8 @@ WHATS_NEW_BY_VERSION = {
           "\u2022 차트 레이블, 히트맵, \u2018오늘\u2019 화면이 큰 텍스트 크기에 맞춰 커지며, 가장 큰 "
           "크기에서도 읽기 쉽습니다.\n"
           "\u2022 문구 수정: 통계의 \u2018주\u2019 단위와 위젯 갤러리 미리 보기가 더 이상 영어로 표시되지 "
-          "않습니다. Stride의 언어 설정에서 영어를 고르면 모든 문구가 영어로 바뀝니다.",
+          "않습니다. Stride의 언어 설정에서 영어를 고르면 모든 문구가 영어로 바뀝니다."
+          "\n\u2022 체크를 해제한 직후 같은 습관을 다시 체크하면 바로 체크됩니다. 이전에는 Stride를 다시 열 때까지 체크되지 않았습니다.",
     "es-ES": "Copias de seguridad que se pueden restaurar, un widget grande, inicio de sesión con un "
              "toque y textos correctos en todos los idiomas.\n\n"
              "\u2022 \u201cExportar como JSON\u201d guarda ahora una copia de seguridad completa: "
@@ -243,7 +249,8 @@ WHATS_NEW_BY_VERSION = {
              "\u2022 Textos corregidos: \u201cRacha de 1 día\u201d y \u201c1 registro\u201d en lugar "
              "de \u201c1 días\u201d y \u201c1 registros\u201d; la unidad \u201csemanas\u201d de "
              "Estadísticas y la galería de widgets ya no aparecen en inglés; y elegir inglés en el "
-             "idioma de Stride se aplica en toda la app.",
+             "idioma de Stride se aplica en toda la app."
+             "\n\u2022 Volver a marcar un hábito justo después de desmarcarlo funciona a la primera. Antes seguía sin marcar hasta volver a abrir Stride.",
   },
 }
 
@@ -424,6 +431,39 @@ def main():
         for p in PLATFORMS:
             vid = ensure_version(app_id, p, version_string)
             ensure_localizations(app_id, p, vid, version_string)
+        return 0
+
+    if cmd == "cancel":
+        # Only a submission that holds THIS version is cancelled — never "the first open one"
+        # (the mistake `submit` used to make, see its docstring).
+        not_cancelled = []
+        for p, v in versions(app_id, version_string).items():
+            d = a.get("/reviewSubmissions", params={
+                "filter[app]": app_id, "filter[platform]": p,
+                "filter[state]": "READY_FOR_REVIEW,WAITING_FOR_REVIEW,IN_REVIEW,UNRESOLVED_ISSUES",
+                "limit": 10})
+            hit = [sub for sub in d["data"] if v["id"] in submission_versions(sub["id"])]
+            if not hit:
+                print(f"  [{p}] no open submission holds {version_string} "
+                      f"({v['attributes']['appStoreState']})")
+                continue
+            for sub in hit:
+                a.patch(f"/reviewSubmissions/{sub['id']}", {"data": {
+                    "type": "reviewSubmissions", "id": sub["id"], "attributes": {"canceled": True}}})
+                print(f"  [{p}] cancel requested for submission {sub['id']} "
+                      f"(was {sub['attributes']['state']})")
+        for _ in range(20):                  # cancelling is asynchronous on Apple's side
+            states = {p: v["attributes"]["appStoreState"]
+                      for p, v in versions(app_id, version_string).items()}
+            if not any(st in ("WAITING_FOR_REVIEW", "IN_REVIEW") for st in states.values()):
+                break
+            time.sleep(15)
+        for p, st in states.items():
+            print(f"  [{p}] {version_string} now {st}")
+            if st in ("WAITING_FOR_REVIEW", "IN_REVIEW"):
+                not_cancelled.append(p)
+        if not_cancelled:
+            print(f"STILL IN REVIEW: {', '.join(not_cancelled)}"); return 1
         return 0
 
     if cmd == "release":
