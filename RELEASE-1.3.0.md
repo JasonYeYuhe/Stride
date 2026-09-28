@@ -2,7 +2,8 @@
 
 App ID `6761262334`, bundle `yyh.stride.habittracker`. **In progress**: M0 (server, CI, ops)
 is done and the server half is live. The 1.3.0 client (DEV-PLAN-1.3.md M1) is built — `0a59bf3`
-plus the completion round `3fed14b` — and **submitted for review on 2026-09-28**: build 18 on
+plus the completion round `3fed14b` — and **resubmitted on 2026-09-29 as build 19** with one
+shipped-bug fix (below; build 18 was pulled). Originally submitted 2026-09-28: build 18 on
 iOS (review submission `c15dd36b-3144-4695-846e-4a9e6408222d`) and macOS
 (`13f289d2-0fdf-4c62-a554-7fba8a8e97b6`), both `WAITING_FOR_REVIEW`. The owner chose to submit
 without the TestFlight device checks; they stay listed below as post-release checks, and the
@@ -512,6 +513,66 @@ Completion round, each agent on its own derived data while the others edited the
   completion round, with its test.
 - The Mac shows "Go to Settings → Stride" for notifications, as it did before; "System
   Settings" would be a new key.
+
+## Build 18 pulled, build 19 resubmitted (2026-09-29)
+
+M2's hardening (1.3.1 branch) found, and a simulator run of the **submitted** build 18 confirmed,
+that once a habit is unchecked it cannot be checked again that day until the app is relaunched:
+uncheck Morning Run → 4/5; tap again → still 4/5; tap a third time → still 4/5. `Habit.records`
+has no inverse, and a habit already loaded keeps the deleted record in that array after the
+save; `HabitCheckIn` found it and "deleted" it again on every tap. The same code is in the live
+1.2.3. Count habits lost a +1 the same way, and Siri's "complete" could do nothing.
+
+Fix `fed7665` (a cherry-pick of `1e9d293`): `HabitCheckIn` asks the store which of the day's
+records still exist. Six ghost tests, including a deletion saved by the widget's context. On the
+same build path in the simulator: uncheck → 4/5, re-tap → 5/5, streak back to 4.
+
+The owner chose to pull 1.3.0 from review (iOS was waiting; **macOS was already in review**) and
+resubmit it as build 19 = build 18 + this fix + one What's New line in six languages (`01c6612`).
+`release.py cancel <version>` was added for it — it cancels only a submission that holds that
+version. Before resubmitting: both platforms archived and exported through every gate (1.3.0 (19),
+Distribution-signed, no `get-task-allow`, associated domains present), `check_demo_account.sh`
+green (0 rows rejected). **Resubmitted 2026-09-29**: iOS `ed4cf26e-1103-42ce-9edf-626cbbc06ba1`,
+macOS `f703917a-366a-4475-b885-80c71bdfae1f`, both `WAITING_FOR_REVIEW`, release type still
+`MANUAL`. 1.3.1 (M2) builds from 20.
+
+## After submission — external review and the owner's decisions (2026-09-28)
+
+The state and ten decisions above were put to Codex (gpt-6-astra) and Gemini 3.8 Flash
+independently (same brief, `agy` / `codex exec`, read-only on the repo), and every factual
+claim either made was checked against the code. Codex's code claims held up almost without
+exception; Gemini had the operational picture right and several specifics wrong (offsite
+backups are not Mac-only — the VM pushes to Blob every 6 h; there is no `SyncPushPlanner.swift`
+yet; restoring a backup is not a way to move data between accounts). What changed:
+
+- **Release held.** `release.py` created every version with `releaseType: AFTER_APPROVAL`, so an
+  approval would have published 1.3.0 before any device check. Both platforms were switched to
+  `MANUAL` while `WAITING_FOR_REVIEW` (the submission was not disturbed), `release.py` now
+  creates versions `MANUAL`, and `release.py release <version>` publishes a held version.
+  Before running it: the Mail/Gmail link, a fresh-install reminder and the large widget on a
+  device (TestFlight build 18).
+- **Privacy policy published** (stride-site `422d22e`, and this repo's Pages copy via #5) — but
+  version-aware: the draft said Sentry reports carry no network data and no record of screens
+  or taps, which is true from 1.3.0 and false for the live 1.2.1–1.2.3 (their Sentry attaches
+  UI and network breadcrumbs). The page says which versions send that trail.
+- **"Product Interaction" stays declared** in App Store Connect (reversing the earlier plan to
+  remove it): Sentry session records are per app launch and are used to count devices per
+  version. 1.3.1 re-declares it in `PrivacyInfo.xcprivacy`.
+- **Server Sentry made safe before the DSN goes in** (1.3.1 branch): tracing off by default, a
+  scrubber for tokens, cookies, bodies and addresses, failed magic-link emails reported, a
+  `/health` that reads a real table.
+- **A 1.3.0 limitation found by the fact-check:** a backup made under account A, restored on a
+  device that then signs into account B, is skipped by the server as `not_owned` and removed
+  from the device by the first full pull (the file still has it). M2 adds "restore as new
+  copies".
+- **M2 revised** before implementation (DEV-PLAN-1.3.md "## M2"): account switch is "start from
+  this account's data" only; quarantine is its own state and is never deleted by a full pull;
+  an offline edit displaced by a delete goes to a recoverable local archive; millisecond edit
+  times for ≥ 1.3.1; chunks bounded by bytes too; per-reason handling instead of 400
+  bisection; the retirement cohort is ≤ 1.3.0 (1.3.0 has no `cursor_expired` handler either);
+  restore into another account as new copies. The safe core ships together in 1.3.1.
+
+Raw material: the brief, both answers and the fact-check were kept with the session's notes.
 
 ## TODO — before 1.3.0 is submitted (M1)
 
