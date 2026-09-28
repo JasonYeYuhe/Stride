@@ -469,7 +469,7 @@ from what it took, and record the new number in the progress log before building
      the destructive row — inside the flow the user started, so no new interruption.
   4. **RestoreHandoverView's headline** gets the caption + address layout UI-5 gave the account
      screen: no email inside a sentence.
-- 2026-09-29 — **phase D prep done**: decisions 2–4 as built (`SyncSessionSource.localDataErased()`
+- 2026-09-29 — **phase D prep done** (`7181628`, `933fec9`): decisions 2–4 as built (`SyncSessionSource.localDataErased()`
   clears "Sign in again" after an erase; Delete Account → Continue opens a sheet with Export as
   JSON / Recovered Edits before the final button; the restore hand-over uses the shared
   `AccountAddressLine` under a "Changes from" caption). Product Interaction is re-declared in the

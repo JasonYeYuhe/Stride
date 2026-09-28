@@ -189,7 +189,7 @@ StrideMac pass.
 4. **RestoreHandoverView's headline** gets the account screen's caption + address layout, with
    no email inside a sentence.
 
-Items 2–4 are implemented in the round after `aa0362c`; record their commit here. Item 3's
+Items 2–4 are implemented in `7181628`. Item 3's
 final button follows the F4 rule: it waits out a sync in flight and counts the recovered edits
 again, and lines archived after Continue update the sheet ("New recovered edits arrived…") and
 delete nothing (review M2-1).
