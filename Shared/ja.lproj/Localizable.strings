@@ -449,7 +449,6 @@
 "The recovered edits on this device are erased too. Export them first if you might need them." = "このデバイスの復旧した編集も消去されます。必要になりそうなら、先に書き出してください。";
 "Before You Restore" = "復元する前に";
 "This device still holds changes from another account that restoring this backup leaves behind." = "このデバイスには、別のアカウントの変更がまだ残っています。このバックアップを復元すると、それらは置き去りになります。";
-"This device still holds changes from %@ that restoring this backup leaves behind." = "このデバイスには、%@ の変更がまだ残っています。このバックアップを復元すると、それらは置き去りになります。";
 "If you restore, the deletions are dropped, and the recovered edits are shown again only when that account uses this device. To send the deletions instead, cancel, sign in to that account and sync first." = "復元すると削除は破棄され、復旧した編集はそのアカウントがこのデバイスを使うときにだけ再び表示されます。削除を送信するには、キャンセルしてそのアカウントにログインし、先に同期してください。";
 "Restore Anyway" = "それでも復元";
 
@@ -474,3 +473,8 @@
 "New recovered edits arrived. Export them, then try again." = "新しい復旧した編集が追加されました。書き出してから、もう一度お試しください。";
 "All your habits, records, and account information will be permanently removed from our servers. The habits, check-ins and groups on this device are deleted too; export a backup first if you want to keep a copy." = "すべての習慣、記録、アカウント情報がサーバーから完全に削除されます。このデバイスの習慣・チェックイン・グループも削除されます。コピーを残すには、先にバックアップを書き出してください。";
 "Not Syncing" = "同期していません";
+
+/* The phase C leftovers (1.3.1): the restore hand-over's caption above the previous owner's
+   address, on a line of its own like the account screen's "Habits from" (no address inside a
+   sentence). */
+"Changes from" = "変更元のアカウント";

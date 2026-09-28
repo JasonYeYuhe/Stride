@@ -158,6 +158,26 @@ final class LocalDataFlowTests: XCTestCase {
         XCTAssertTrue(server.requests.isEmpty)
     }
 
+    /// A session found gone at launch leaves the device signed out with Today's "Sign in again to
+    /// keep syncing" (`AuthService.sessionExpired`, persisted). Erasing the device leaves nothing
+    /// to keep syncing, so the erase ends the row too (phase C leftovers, the owner's decision 2):
+    /// it used to stay, on an empty device, until a sign-in.
+    func testASignedOutEraseEndsTheSignInAgainRow() async throws {
+        local.defaults.set(true, forKey: AuthService.sessionExpiredKey)
+        try seedStore()
+        let auth = makeAuth()
+        XCTAssertTrue(auth.sessionExpired, "precondition: the row a revoked session left")
+        XCTAssertFalse(auth.hasStoredSession)
+
+        let outcome = await DataExportService.eraseLocalData(in: context, auth: auth, sync: sync)
+
+        XCTAssertEqual(outcome, .erased)
+        XCTAssertFalse(auth.sessionExpired)
+        XCTAssertFalse(local.defaults.bool(forKey: AuthService.sessionExpiredKey), "and not back at the next launch")
+        XCTAssertFalse(makeAuth().sessionExpired)
+        XCTAssertTrue(server.requests.isEmpty)
+    }
+
     /// A launch or foreground sync already in flight when Erase is tapped: erase waits for it,
     /// then runs its own sync, and signs out only after that one succeeded.
     func testEraseWaitsForASyncInFlightAndRunsItsOwn() async throws {

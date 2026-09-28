@@ -449,7 +449,6 @@
 "The recovered edits on this device are erased too. Export them first if you might need them." = "此裝置上找回的編輯也會被清除。如果之後可能需要，請先匯出。";
 "Before You Restore" = "恢復之前";
 "This device still holds changes from another account that restoring this backup leaves behind." = "此裝置上仍有另一個帳號的變更，恢復此備份後這些變更將被擱置。";
-"This device still holds changes from %@ that restoring this backup leaves behind." = "此裝置上仍有 %@ 的變更，恢復此備份後這些變更將被擱置。";
 "If you restore, the deletions are dropped, and the recovered edits are shown again only when that account uses this device. To send the deletions instead, cancel, sign in to that account and sync first." = "如果恢復，這些刪除將被丟棄，找回的編輯只有在那個帳號使用此裝置時才會再次顯示。若要傳送這些刪除，請取消，登入那個帳號並先同步。";
 "Restore Anyway" = "仍要恢復";
 
@@ -474,3 +473,8 @@
 "New recovered edits arrived. Export them, then try again." = "新增了找回的編輯。請先匯出，然後重試。";
 "All your habits, records, and account information will be permanently removed from our servers. The habits, check-ins and groups on this device are deleted too; export a backup first if you want to keep a copy." = "你的所有習慣、紀錄和帳號資訊都將從我們的伺服器中永久刪除。此裝置上的習慣、打卡和分組也會被刪除；如需保留副本，請先匯出備份。";
 "Not Syncing" = "未同步";
+
+/* The phase C leftovers (1.3.1): the restore hand-over's caption above the previous owner's
+   address, on a line of its own like the account screen's "Habits from" (no address inside a
+   sentence). */
+"Changes from" = "變更所屬帳號";

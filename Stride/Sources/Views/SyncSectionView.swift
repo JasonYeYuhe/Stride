@@ -165,13 +165,13 @@ struct SyncSectionView: View {
         if !content.isEmpty {
             Section {
                 if content.needsOwnerChoice { ownerChoiceRow }
-                if content.isPaused { pausedRow }
-                if content.heldCount > 0 { heldSummaryRow(content) }
+                if content.isPaused { pausedRow.sweepAnchor("syncPaused") }
+                if content.heldCount > 0 { heldSummaryRow(content).sweepAnchor("syncHeld") }
                 ForEach(content.convertible, id: \.reason) { group in
                     convertibleRows(group)
                 }
                 if content.recoveredEdits > 0 { recoveredEditsRows(count: content.recoveredEdits) }
-                if content.offersFullResync { fullResyncRow }
+                if content.offersFullResync { fullResyncRow.sweepAnchor("syncFullResync") }
             } header: {
                 Text("Sync")
             } footer: {
@@ -279,6 +279,7 @@ struct SyncSectionView: View {
                 .foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .combine)
+        .sweepAnchor("syncConvertible-\(group.reason.rawValue)")
 
         Button {
             Task { await restoreAsCopies(group.reason) }
@@ -361,6 +362,7 @@ struct SyncSectionView: View {
             Image(systemName: "arrow.uturn.backward.circle")
         }
         .accessibilityElement(children: .combine)
+        .sweepAnchor("syncRecovered")
 
         RecoveredEditsShareLink(sync: sync)
 
@@ -548,8 +550,12 @@ struct SettingsInlineError: View {
 /// - `recoveredEdits`: three recovery-log lines for the store's owner (or for no owner).
 /// - `syncPaused`: the paused row (drawn, nothing written).
 /// - `syncAll`: all of the above, plus the Full Resync row even when signed out.
+/// - `deleteAccount`: Delete Account's last step (the export offer and the final button) for a
+///   fake signed-in owner with two recovered edits; its buttons only close it.
+/// - `restoreHandover`: the restore's hand-over step ("Before You Restore") for a fake previous
+///   owner with one queued deletion and two recovered edits; Restore Anyway only closes it.
 enum SyncSectionDemo: String {
-    case heldRows, recoveredEdits, syncPaused, syncAll
+    case heldRows, recoveredEdits, syncPaused, syncAll, deleteAccount, restoreHandover
 
     static let current: SyncSectionDemo? = {
         let arguments = CommandLine.arguments
@@ -557,6 +563,10 @@ enum SyncSectionDemo: String {
               idx + 1 < arguments.count else { return nil }
         return SyncSectionDemo(rawValue: arguments[idx + 1])
     }()
+
+    /// The fake accounts the two sheet scenarios name (the account screen's demo uses the same).
+    static let demoSignedIn = "sam@example.com"
+    static let demoPreviousOwner = "alex@example.com"
 
     var showsPaused: Bool { self == .syncPaused || self == .syncAll }
     var showsFullResync: Bool { self == .syncAll }
@@ -612,4 +622,49 @@ enum SyncSectionDemo: String {
         sync.refreshRecoveredEdits()
     }
 }
+
+/// `-scrollTo <anchor>`: the screen that has that anchor scrolls to it once, on launch, so
+/// scripts/a11y_sweep.sh can capture what sits below the fold at accessibility sizes — the
+/// `-statsScrollTo` idea (StatsView) for Settings' Sync rows, the account screen and the two
+/// sheets. `simctl` has no touch input; the phase C frames under the fold were swiped by hand and
+/// went stale with the first fix after them. Every screen with anchors asks; a proxy that has no
+/// view with that id does nothing.
+enum SweepScroll {
+    static let anchor: String? = {
+        let arguments = CommandLine.arguments
+        guard let idx = arguments.firstIndex(of: "-scrollTo"), idx + 1 < arguments.count else { return nil }
+        return arguments[idx + 1]
+    }()
+
+    private static let bottomSuffix = "@bottom"
+
+    @MainActor
+    static func scroll(_ proxy: ScrollViewProxy) async {
+        guard let anchor else { return }
+        // After the first layout pass (and a sheet's presentation): a scrollTo issued before the
+        // target has a frame does nothing, silently.
+        try? await Task.sleep(for: .milliseconds(800))
+        // `<anchor>@bottom` puts the row at the bottom edge instead, so what sits just above it
+        // is in the frame: Delete Account's "Signed in as" line, above its first export row, is
+        // part of a row whose message fills the screen at accessibility sizes.
+        if anchor.hasSuffix(bottomSuffix) {
+            proxy.scrollTo(String(anchor.dropLast(bottomSuffix.count)), anchor: .bottom)
+        } else {
+            proxy.scrollTo(anchor, anchor: .top)
+        }
+    }
+}
 #endif
+
+extension View {
+    /// A scroll target for `-scrollTo` (`SweepScroll`). Release builds return the view untouched,
+    /// so the anchor cannot change identity or layout there.
+    @ViewBuilder
+    func sweepAnchor(_ name: String) -> some View {
+        #if DEBUG
+        id(name)
+        #else
+        self
+        #endif
+    }
+}

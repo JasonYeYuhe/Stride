@@ -56,29 +56,34 @@ struct AccountSwitchView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                header
-                if let holdings { holdingsSummary(holdings) }
-                explanation
-                exportButtons
-                choiceButtons
-                if let failure {
-                    Label {
-                        Text(verbatim: failure)
-                    } icon: {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    header
+                    if let holdings { holdingsSummary(holdings).sweepAnchor("accountHoldings") }
+                    explanation
+                    exportButtons.sweepAnchor("accountExport")
+                    choiceButtons.sweepAnchor("accountChoices")
+                    if let failure {
+                        Label {
+                            Text(verbatim: failure)
+                        } icon: {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                        }
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                     }
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    cancelNote
                 }
-                cancelNote
+                .padding(24)
+                // A readable measure on the Mac and on iPad sheets; phones use the full width.
+                .frame(maxWidth: 560, alignment: .leading)
+                .frame(maxWidth: .infinity)
             }
-            .padding(24)
-            // A readable measure on the Mac and on iPad sheets; phones use the full width.
-            .frame(maxWidth: 560, alignment: .leading)
-            .frame(maxWidth: .infinity)
+            #if DEBUG
+            .task { await SweepScroll.scroll(proxy) }
+            #endif
         }
         .navigationTitle("This Device's Habits")
         #if os(iOS)
@@ -128,26 +133,10 @@ struct AccountSwitchView: View {
             // and broken mid-address in Japanese even at the default size — the one thing this
             // screen asks the user to recognise, misprinted (phase C review, UI-5 / L6).
             if let owner = conflict.owner {
-                accountLine(Text("Habits from"), email: owner.email)
+                AccountAddressLine(caption: Text("Habits from"), email: owner.email)
             }
-            accountLine(Text("Signed in as"), email: conflict.signedIn.email)
+            AccountAddressLine(caption: Text("Signed in as"), email: conflict.signedIn.email)
         }
-    }
-
-    /// A caption and an email address that never wraps: one line, shrunk to fit rather than
-    /// broken or hyphenated. One VoiceOver stop ("Habits from, alex@example.com").
-    private func accountLine(_ caption: Text, email: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            caption
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(verbatim: email)
-                .font(.subheadline.weight(.semibold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.4)
-                .truncationMode(.middle)
-        }
-        .accessibilityElement(children: .combine)
     }
 
     /// What Start would erase, so the choice is made knowing it. Counts use the plural keys.
@@ -333,6 +322,29 @@ struct AccountSwitchView: View {
         h.queuedDeletions = conflict.isOwnerUnknown ? 0 : 1
         h.recoveredEdits = conflict.isOwnerUnknown ? 0 : 2
         return h
+    }
+}
+
+/// A caption and an email address that never wraps: one line, shrunk to fit rather than broken
+/// or hyphenated. One VoiceOver stop ("Habits from, alex@example.com"). The account screen's
+/// header, and every other screen that names an account (the restore hand-over, Delete Account):
+/// an address inside a sentence was hyphenated at accessibility sizes (phase C review, UI-5).
+struct AccountAddressLine: View {
+    let caption: Text
+    let email: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            caption
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(verbatim: email)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.4)
+                .truncationMode(.middle)
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 

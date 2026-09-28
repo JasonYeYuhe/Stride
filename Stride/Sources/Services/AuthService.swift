@@ -23,7 +23,8 @@ final class AuthService {
     /// Persisted, unlike `needsReauth`: a 401 flags the run in memory, but the next COLD launch's
     /// session check is what then meets the dead token, deletes it and leaves the device looking
     /// merely signed out — no row, only "Sign In" in Settings, the 1.3.0 state the row exists to
-    /// end. Cleared by a sign-in, a Log Out and an account deletion.
+    /// end. Cleared by a sign-in, a Log Out, an account deletion and Erase Local Data (nothing
+    /// is left to sync then — `localDataErased`).
     private(set) var sessionExpired = false
     static let sessionExpiredKey = "stride_session_expired"
 
@@ -374,6 +375,15 @@ extension AuthService: SyncSessionSource {
         guard let token = tokenStore.read() else { return nil }
         guard let account = currentUser.map(SyncAccount.init) ?? rememberedSessionAccount else { return nil }
         return SyncSession(token: token, account: account)
+    }
+
+    /// Erase Local Data (`SyncService.resetSyncState`): the store is empty and no account's sync
+    /// state is left, so "Sign in again to keep syncing" has nothing to keep syncing. A signed-in
+    /// erase has already cleared it through `logout()`; this is the signed-out erase after a
+    /// session was found gone, which kept the row on an empty device (phase C leftovers, the
+    /// owner's decision 2). The next sign-in is an ordinary one.
+    func localDataErased() {
+        setSessionExpired(false)
     }
 
     /// Waits out the launch session check, and asks the server once more when a token is stored

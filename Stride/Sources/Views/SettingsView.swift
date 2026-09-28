@@ -15,7 +15,9 @@ struct SettingsView: View {
     @State private var showingDeleteAlert = false
     @State private var habitToDelete: Habit?
     @State private var showingDeleteAccountAlert = false
-    @State private var showingDeleteAccountConfirm = false
+    /// Delete Account's last step, after "Delete Account?" → Continue: the export offer and the
+    /// final button (`DeleteAccountView`). Fixed when Continue is tapped.
+    @State private var deleteAccountStep: DeleteAccountStep?
     @State private var isDeletingAccount = false
     @State private var deleteAccountError: String?
     @State private var showSaveError = false
@@ -80,7 +82,13 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        settingsContent
+        ScrollViewReader { proxy in
+            settingsContent
+                #if DEBUG
+                // `-scrollTo syncHeld` etc.: the Sync rows below the fold (SweepScroll).
+                .task { await SweepScroll.scroll(proxy) }
+                #endif
+        }
     }
 
     private var settingsContent: some View {
@@ -662,25 +670,25 @@ struct SettingsView: View {
             .alert("Delete Account?", isPresented: $showingDeleteAccountAlert) {
                 Button("Cancel", role: .cancel) {}
                 Button("Continue", role: .destructive) {
-                    showingDeleteAccountConfirm = true
+                    deleteAccountStep = DeleteAccountStep.current(
+                        auth: auth, sync: sync, hasLocalData: !isStoreEmpty || storeHasHiddenRows)
                 }
             } message: {
                 Text("This will permanently delete your account and all synced data. This action cannot be undone.")
             }
-            .alert("Are you sure?", isPresented: $showingDeleteAccountConfirm) {
-                Button("Cancel", role: .cancel) {}
-                Button("Delete My Account", role: .destructive) {
-                    Task { await performAccountDeletion() }
-                }
-            } message: {
-                // Since 1.3.1 deleting the account that owns this store erases the store too
-                // (M2; AuthService.deleteAccount → SyncService.accountDeleted), including changes
-                // that never synced — the confirmation must say so, not only "our servers".
-                if deleteAccountErasesDevice {
-                    Text("All your habits, records, and account information will be permanently removed from our servers. The habits, check-ins and groups on this device are deleted too; export a backup first if you want to keep a copy.")
-                } else {
-                    Text("All your habits, records, and account information will be permanently removed from our servers.")
-                }
+            // The second confirmation is a sheet, not an alert: since 1.3.1 deleting the account
+            // that owns this store erases the store too (AuthService.deleteAccount →
+            // SyncService.accountDeleted), changes that never synced included, and an alert
+            // cannot hold the export that has to come first (phase C leftovers, the owner's
+            // decision 3). It continues the deletion the user started; nothing new interrupts.
+            .sheet(item: $deleteAccountStep) { step in
+                DeleteAccountView(
+                    step: step, sync: sync,
+                    onDelete: {
+                        guard !step.isDemo else { deleteAccountStep = nil; return }
+                        Task { await confirmAccountDeletion(step) }
+                    },
+                    onCancel: { deleteAccountStep = nil })
             }
             .alert("Unable to Delete Account", isPresented: Binding(
                 get: { deleteAccountError != nil },
@@ -728,6 +736,7 @@ struct SettingsView: View {
                     handover: pending.handover, sync: sync,
                     onRestore: {
                         pendingHandover = nil
+                        guard !pending.isDemo else { return }
                         Task { await restore(pending.document, plan: pending.plan) }
                     },
                     onCancel: { pendingHandover = nil })
@@ -748,6 +757,7 @@ struct SettingsView: View {
             .task {
                 #if DEBUG
                 SyncSectionDemo.seedIfNeeded(context: modelContext, sync: sync)
+                presentDemoSheet()
                 #endif
                 // The recovered-edits count is read when Settings asks, not at launch
                 // (SyncService.refreshRecoveredEdits); a run that archives refreshes it too.
@@ -773,6 +783,9 @@ struct SettingsView: View {
         let document: BackupDocument
         let plan: RestorePlan
         let handover: RestoreHandover
+        /// The DEBUG screenshot scenario (`SyncSectionDemo.restoreHandover`): Restore Anyway only
+        /// closes the sheet.
+        var isDemo = false
     }
 
     private func readBackup(at url: URL) async {
@@ -963,13 +976,6 @@ struct SettingsView: View {
     /// nothing is offered and nothing is cleared).
     private var recoveredEditLines: Int { sync.recoveredEdits?.lines ?? 0 }
 
-    /// Whether Delete Account erases this device's store: only when the signed-in account owns
-    /// it (`SyncOwnership.accountDeleted` leaves another owner's rows alone).
-    private var deleteAccountErasesDevice: Bool {
-        guard let user = auth.currentUser else { return false }
-        return sync.storeOwner?.id == SyncAccount(user).id
-    }
-
     /// "Synced" only while it is true: signed in over another account's store (the account
     /// screen was left without a choice), nothing syncs until the Sync section's row is used.
     private var dataStorageValue: String {
@@ -1035,6 +1041,45 @@ struct SettingsView: View {
         return relative.localizedString(for: date, relativeTo: Date())
     }
 
+    #if DEBUG
+    /// `-demo -demoScenario deleteAccount | restoreHandover`: the two sheets no launch can reach
+    /// otherwise (one needs a signed-in owner, the other a restore over a previous owner's
+    /// queue), with fake accounts, for scripts/a11y_sweep.sh. Their buttons only close them.
+    private func presentDemoSheet() {
+        switch SyncSectionDemo.current {
+        case .deleteAccount:
+            deleteAccountStep = DeleteAccountStep(email: SyncSectionDemo.demoSignedIn, erasesDevice: true,
+                                                  hasLocalData: true, recoveredEdits: 2, isDemo: true)
+        case .restoreHandover:
+            let owner = BackupAccount(id: "demo-owner", email: SyncSectionDemo.demoPreviousOwner)
+            pendingHandover = PendingHandover(
+                document: BackupDocument(schemaVersion: 2, exportedAt: Date(), groups: [], habits: []),
+                plan: RestorePlan(identity: .newCopies, owner: nil),
+                handover: RestoreHandover(previousOwner: owner, queuedDeletions: 1, recoveredEdits: 2),
+                isDemo: true)
+        default:
+            break
+        }
+    }
+    #endif
+
+    /// Delete My Account: the count check first (`DeleteAccountStep.recheck`), with the sheet
+    /// still up. A count that moved updates the sheet in place (same account, so the same sheet)
+    /// to offer the new lines, and nothing is deleted — Erase's `.recoveredEditsChanged`, here.
+    private func confirmAccountDeletion(_ step: DeleteAccountStep) async {
+        guard !isDeletingAccount else { return }
+        isDeletingAccount = true
+        if let changed = await step.recheck(sync: sync) {
+            isDeletingAccount = false
+            deleteAccountStep = changed
+            AccessibilityNotification.Announcement(
+                appLocalized("New recovered edits arrived. Export them, then try again.")).post()
+            return
+        }
+        deleteAccountStep = nil
+        await performAccountDeletion()
+    }
+
     private func performAccountDeletion() async {
         isDeletingAccount = true
         do {
@@ -1095,6 +1140,186 @@ struct SettingsView: View {
         let status = await NotificationService.shared.checkPermission()
         if status == .denied && reminderEnabled {
             notificationDenied = true
+        }
+    }
+}
+
+// MARK: - Delete Account
+
+/// What Delete Account's last step offers (the phase C leftovers, the owner's decision 3). Pure,
+/// so the hosted tests pin it without rendering the sheet.
+///
+/// Deleting the account that owns this store erases the store too (`SyncOwnership.accountDeleted`),
+/// its recovered edits included, and those may hold changes that never reached the server: the
+/// step offers the JSON backup and the recovered edits before the final button, as Erase Local
+/// Data offers them above its own. A store another account owns is left alone, so nothing is
+/// offered then — only the confirmation.
+struct DeleteAccountStep: Identifiable, Equatable {
+    var id: String { email }
+    /// The signed-in account, the one being deleted.
+    let email: String
+    /// The signed-in account owns this store: the deletion erases it.
+    let erasesDevice: Bool
+    /// "Export as JSON": the device is erased and has something to keep.
+    let offersBackup: Bool
+    /// "Export Recovered Edits": the device is erased and the owner's log has lines — or could
+    /// not be counted (nil), since then no one can say it is empty (RestoreHandoverView's rule).
+    let offersRecoveredEdits: Bool
+    /// The owner's line count the step was built from (nil: it could not be counted).
+    let recoveredEditLines: Int?
+    /// Rebuilt by `recheck`: lines arrived after Continue, so the sheet says so over the export.
+    var recoveredEditsChanged = false
+    /// The DEBUG screenshot scenario (`SyncSectionDemo.deleteAccount`): the final button only
+    /// closes the sheet.
+    var isDemo = false
+    private let hasLocalData: Bool
+
+    init(email: String, erasesDevice: Bool, hasLocalData: Bool, recoveredEdits: Int?, isDemo: Bool = false) {
+        self.email = email
+        self.erasesDevice = erasesDevice
+        self.hasLocalData = hasLocalData
+        offersBackup = erasesDevice && hasLocalData
+        offersRecoveredEdits = erasesDevice && recoveredEdits != 0
+        recoveredEditLines = recoveredEdits
+        self.isDemo = isDemo
+    }
+
+    /// The F4 rule at the final button. `accountDeleted` clears the owner's recovery log without
+    /// asking, so the count this step offered must still be the count on disk: a sync since
+    /// Continue — the foreground sync after the user saved the JSON in Files, or one already
+    /// running — can archive a line nobody counted or offered. Then this returns the step rebuilt
+    /// with the new count and the account must not be deleted yet; nil means go ahead. It waits
+    /// out a sync in flight first. A log that now reads 0 has nothing to lose, and a store
+    /// another account owns loses none of its lines, so neither stops the deletion. (A sync that
+    /// starts after this check and finishes inside the deletion request is not covered; one still
+    /// running when the request returns is stopped by the sign-out, `SyncService.signedOut`.)
+    @MainActor
+    func recheck(sync: SyncService) async -> DeleteAccountStep? {
+        guard erasesDevice else { return nil }
+        await sync.waitUntilIdle()
+        sync.refreshRecoveredEdits()
+        let now = sync.recoveredEdits?.lines
+        guard now != recoveredEditLines, now != 0 else { return nil }
+        var step = DeleteAccountStep(email: email, erasesDevice: true, hasLocalData: hasLocalData,
+                                     recoveredEdits: now)
+        step.recoveredEditsChanged = true
+        return step
+    }
+
+    /// The step for whoever is signed in now, or nil when nobody is. Counts the recovery log again
+    /// (a file read, on the tap): a sync since Settings appeared may have archived more lines.
+    @MainActor
+    static func current(auth: AuthService, sync: SyncService, hasLocalData: Bool) -> DeleteAccountStep? {
+        guard let user = auth.currentUser else { return nil }
+        sync.refreshRecoveredEdits()
+        return DeleteAccountStep(email: user.email,
+                                 erasesDevice: sync.storeOwner?.id == SyncAccount(user).id,
+                                 hasLocalData: hasLocalData,
+                                 recoveredEdits: sync.recoveredEdits?.lines)
+    }
+}
+
+/// Delete Account's last step: what goes, the account's address on a line of its own, the export
+/// when this device is erased too, and the final button. Cancel changes nothing. A sheet in the
+/// flow the user started ("Delete Account?" → Continue), never one that appears on its own
+/// (acceptance 10).
+struct DeleteAccountView: View {
+    let step: DeleteAccountStep
+    let sync: SyncService
+    let onDelete: () -> Void
+    let onCancel: () -> Void
+
+    @Environment(\.modelContext) private var modelContext
+
+    var body: some View {
+        NavigationStack {
+            ScrollViewReader { proxy in
+                List {
+                    Section {
+                        VStack(alignment: .leading, spacing: 8) {
+                            message
+                                .fixedSize(horizontal: false, vertical: true)
+                            AccountAddressLine(caption: Text("Signed in as"), email: step.email)
+                        }
+                        .padding(.vertical, 2)
+                    }
+
+                    if step.offersBackup || step.offersRecoveredEdits {
+                        Section {
+                            if step.offersBackup {
+                                ShareLink(
+                                    item: BackupJSONFile(container: modelContext.container),
+                                    subject: Text("Stride Habits Export"),
+                                    message: Text("JSON export of all habits"),
+                                    preview: SharePreview(DataExportService.fileName("Stride-Backup", extension: "json"))
+                                ) {
+                                    Label("Export as JSON", systemImage: "curlybraces")
+                                }
+                                .sweepAnchor("deleteExport")
+                            }
+                            if step.offersRecoveredEdits {
+                                RecoveredEditsShareLink(sync: sync)
+                                    .sweepAnchor("deleteRecoveredEdits")
+                            }
+                        } header: {
+                            Text("Export Data")
+                        } footer: {
+                            VStack(alignment: .leading, spacing: 6) {
+                                if step.recoveredEditsChanged {
+                                    SettingsInlineError(message: appLocalized("New recovered edits arrived. Export them, then try again."))
+                                }
+                                if step.offersBackup {
+                                    Text("Export as JSON saves a complete backup, which can be restored on a device with no habits.")
+                                }
+                                if step.offersRecoveredEdits {
+                                    Text("The recovered edits on this device are erased too. Export them first if you might need them.")
+                                }
+                            }
+                        }
+                    }
+
+                    Section {
+                        Button(role: .destructive) {
+                            onDelete()
+                        } label: {
+                            // Red icon as well as title, as the Sync section's destructive rows.
+                            // Dimmed by hand while disabled: an explicit style overrides the system's.
+                            Label("Delete My Account", systemImage: "person.crop.circle.badge.minus")
+                                .foregroundStyle(.red.opacity(sync.isSyncing ? 0.4 : 1))
+                        }
+                        // As the Erase row: a sync running now may be archiving a line this step
+                        // never offered (`DeleteAccountStep.recheck` checks again on the tap).
+                        .disabled(sync.isSyncing)
+                        .sweepAnchor("deleteConfirm")
+                    }
+                }
+                #if DEBUG
+                .task { await SweepScroll.scroll(proxy) }
+                #endif
+            }
+            .navigationTitle("Delete Account")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { onCancel() }
+                }
+            }
+        }
+        #if os(macOS)
+        .frame(minWidth: 420, minHeight: 380)
+        #endif
+    }
+
+    /// The server half always; the device half only when this account owns the store — another
+    /// owner's rows are left alone, and saying they go would be false.
+    @ViewBuilder
+    private var message: some View {
+        if step.erasesDevice {
+            Text("All your habits, records, and account information will be permanently removed from our servers. The habits, check-ins and groups on this device are deleted too; export a backup first if you want to keep a copy.")
+        } else {
+            Text("All your habits, records, and account information will be permanently removed from our servers.")
         }
     }
 }

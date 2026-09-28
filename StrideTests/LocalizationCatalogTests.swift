@@ -260,8 +260,8 @@ final class LocalizationCatalogTests: XCTestCase {
             XCTAssertEqual(loc("\(n) changes waiting to sync", "ja"), "\(n)件の変更が同期待ち")
         }
         // Plain keys with an argument: the email stays where each language puts it.
-        XCTAssertEqual(loc("This device still holds changes from \("a@example.com") that restoring this backup leaves behind.", "ja"),
-                       "このデバイスには、a@example.com の変更がまだ残っています。このバックアップを復元すると、それらは置き去りになります。")
+        XCTAssertEqual(loc("This backup is from another account (\("a@example.com")). Its habits will be added to this account as new copies.", "ja"),
+                       "このバックアップは別のアカウント（a@example.com）のものです。習慣は新しいコピーとしてこのアカウントに追加されます。")
         XCTAssertEqual(loc("Synced \("hace 2 minutos")", "es"), "Sincronizado hace 2 minutos")
     }
 

@@ -449,7 +449,6 @@
 "The recovered edits on this device are erased too. Export them first if you might need them." = "También se borran las ediciones recuperadas de este dispositivo. Si puedes necesitarlas, expórtalas primero.";
 "Before You Restore" = "Antes de restaurar";
 "This device still holds changes from another account that restoring this backup leaves behind." = "Este dispositivo todavía guarda cambios de otra cuenta que no se enviarán si restauras esta copia de seguridad.";
-"This device still holds changes from %@ that restoring this backup leaves behind." = "Este dispositivo todavía guarda cambios de %@ que no se enviarán si restauras esta copia de seguridad.";
 "If you restore, the deletions are dropped, and the recovered edits are shown again only when that account uses this device. To send the deletions instead, cancel, sign in to that account and sync first." = "Si restauras, las eliminaciones se descartan y las ediciones recuperadas solo volverán a mostrarse cuando esa cuenta use este dispositivo. Para enviar las eliminaciones, cancela, inicia sesión en esa cuenta y sincroniza primero.";
 "Restore Anyway" = "Restaurar de todos modos";
 
@@ -474,3 +473,8 @@
 "New recovered edits arrived. Export them, then try again." = "Han llegado nuevas ediciones recuperadas. Expórtalas y vuelve a intentarlo.";
 "All your habits, records, and account information will be permanently removed from our servers. The habits, check-ins and groups on this device are deleted too; export a backup first if you want to keep a copy." = "Todos tus hábitos, registros y datos de la cuenta se eliminarán de forma permanente de nuestros servidores. También se eliminan los hábitos, registros y grupos de este dispositivo; exporta primero una copia de seguridad si quieres conservarlos.";
 "Not Syncing" = "Sin sincronizar";
+
+/* The phase C leftovers (1.3.1): the restore hand-over's caption above the previous owner's
+   address, on a line of its own like the account screen's "Habits from" (no address inside a
+   sentence). */
+"Changes from" = "Cambios de";

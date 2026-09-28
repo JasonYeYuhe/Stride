@@ -41,10 +41,26 @@
 				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
 			</array>
 		</dict>
-		<!-- No ProductInteraction since 1.3.0. Through 1.2.3 it was declared for AnalyticsService
-		     (TelemetryDeck), whose appID was never set: every send was guarded off, so the
-		     declared collection never happened. The service and its Settings toggle were
-		     deleted rather than kept dormant. CrashData / OtherDiagnosticData below are Sentry. -->
+		<!-- Sentry's release-health session record: one per app launch, no content, not tied
+		     to the account (sendDefaultPii off, SentryBootstrap.swift). It is the crash-free-rate
+		     denominator and is used to count devices per version, which is analytics. 1.3.0
+		     dropped this entry with AnalyticsService (TelemetryDeck, never configured, now
+		     deleted); App Store Connect kept the label declared (RELEASE-1.3.0.md, "After
+		     submission"), and 1.3.1 re-declares it here so the manifest matches. Both app targets
+		     ship this file; the widget starts no Sentry and its manifest stays as it is. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeProductInteraction</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
+			</array>
+		</dict>
+		<!-- CrashData / OtherDiagnosticData below are Sentry. -->
 		<dict>
 			<key>NSPrivacyCollectedDataType</key>
 			<string>NSPrivacyCollectedDataTypeCrashData</string>

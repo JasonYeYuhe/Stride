@@ -317,9 +317,13 @@ final class SyncService {
     /// clears that owner's log after signing out and erasing). Only once the caller has offered
     /// their export — the log is the only copy of edits a deletion took — so the default keeps
     /// them, under the owner's key, shown again when that account owns the store.
+    ///
+    /// Also ends Today's "Sign in again to keep syncing" (`SyncSessionSource.localDataErased`):
+    /// a signed-out erase after a revoked session used to keep it, persisted, on an empty device.
     func resetSyncState(clearingRecoveryLog: Bool = false) {
         let previousOwner = owners.owner
         signedOut()
+        sessions.localDataErased()
         defaults.removeObject(forKey: SyncDefaultsCursorStore.key)
         defaults.removeObject(forKey: SyncDefaultsCursorStore.legacyKey)
         owners.clear()
@@ -713,6 +717,15 @@ protocol SyncSessionSource: AnyObject {
     /// Before a run: may wait for the launch session check or ask the server who a stored token
     /// belongs to.
     func resolveSyncSession() async -> SyncSession?
+    /// Erase Local Data has emptied the store and forgotten every account's sync state
+    /// (`resetSyncState`): nothing is left to sync, so a lost session is no longer a reason to
+    /// ask the user to sign in again (`AuthService.sessionExpired`; the phase C leftovers, the
+    /// owner's decision 2).
+    func localDataErased()
+}
+
+extension SyncSessionSource {
+    func localDataErased() {}
 }
 
 // `SyncAccount`, `SyncOwner`, `SyncOwnerConflict`, `SyncOwnerStore` and the owner rule itself

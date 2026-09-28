@@ -20,34 +20,44 @@ struct RestoreHandoverView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                Section {
-                    headline
-                    if handover.queuedDeletions > 0 {
-                        let count = handover.queuedDeletions
-                        // The account screen's key for the same queue: one wording, one plural entry.
-                        Label("\(count) deletions not yet synced", systemImage: "trash")
-                    }
-                    if let count = handover.recoveredEdits, count > 0 {
-                        Label("\(count) recovered edits", systemImage: "arrow.uturn.backward.circle")
-                    }
-                } footer: {
-                    footer
-                }
-
-                if offersExport {
+            ScrollViewReader { proxy in
+                List {
                     Section {
-                        RecoveredEditsShareLink(sync: sync)
+                        headline
+                        if handover.queuedDeletions > 0 {
+                            let count = handover.queuedDeletions
+                            // The account screen's key for the same queue: one wording, one plural entry.
+                            Label("\(count) deletions not yet synced", systemImage: "trash")
+                        }
+                        if let count = handover.recoveredEdits, count > 0 {
+                            Label("\(count) recovered edits", systemImage: "arrow.uturn.backward.circle")
+                        }
+                    } footer: {
+                        footer
                     }
-                }
 
-                Section {
-                    Button(role: .destructive) {
-                        onRestore()
-                    } label: {
-                        Label("Restore Anyway", systemImage: "clock.arrow.circlepath")
+                    if offersExport {
+                        Section {
+                            RecoveredEditsShareLink(sync: sync)
+                                .sweepAnchor("handoverExport")
+                        }
+                    }
+
+                    Section {
+                        Button(role: .destructive) {
+                            onRestore()
+                        } label: {
+                            // Red icon as well as title, as the Sync section's destructive rows
+                            // (phase C review, UI-6): the role colours the title only.
+                            Label("Restore Anyway", systemImage: "clock.arrow.circlepath")
+                                .foregroundStyle(.red)
+                        }
+                        .sweepAnchor("handoverRestore")
                     }
                 }
+                #if DEBUG
+                .task { await SweepScroll.scroll(proxy) }
+                #endif
             }
             .navigationTitle("Before You Restore")
             #if os(iOS)
@@ -80,13 +90,19 @@ struct RestoreHandoverView: View {
         }
     }
 
-    @ViewBuilder
+    /// The sentence, then the owner's address on a line of its own, as the account screen's
+    /// header (`AccountAddressLine`): inside the sentence the address was hyphenated at
+    /// accessibility sizes (phase C review, UI-5; the owner's decision 4 for this screen). An
+    /// owner recorded without an email keeps the sentence alone.
     private var headline: some View {
-        let email = handover.previousOwner.email
-        if email.isEmpty {
+        VStack(alignment: .leading, spacing: 8) {
             Text("This device still holds changes from another account that restoring this backup leaves behind.")
-        } else {
-            Text("This device still holds changes from \(email) that restoring this backup leaves behind.")
+                .fixedSize(horizontal: false, vertical: true)
+            let email = handover.previousOwner.email
+            if !email.isEmpty {
+                AccountAddressLine(caption: Text("Changes from"), email: email)
+            }
         }
+        .padding(.vertical, 2)
     }
 }

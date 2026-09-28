@@ -530,6 +530,95 @@ final class AccountSwitchTests: XCTestCase {
         XCTAssertNil(sync.ownerConflict)
     }
 
+    /// Delete Account's last step (phase C leftovers, the owner's decision 3): the account that
+    /// owns this store is about to erase it, recovered edits included, so the step offers the
+    /// backup and the recovered edits before its button — the export an alert could not hold.
+    func testDeleteAccountStepOffersTheExportWhenTheAccountOwnsTheStore() async throws {
+        try seedAsStore()
+        await signIn("magic-A")
+
+        let step = try XCTUnwrap(DeleteAccountStep.current(auth: auth, sync: sync, hasLocalData: true))
+
+        XCTAssertEqual(step.email, "a@example.com")
+        XCTAssertTrue(step.erasesDevice)
+        XCTAssertTrue(step.offersBackup)
+        XCTAssertTrue(step.offersRecoveredEdits, "A's log has a line, and the deletion clears it")
+
+        // The log is counted again when the step opens, not taken from Settings' last read.
+        try recovery.log.clear(accountID: accountA.id)
+        let again = try XCTUnwrap(DeleteAccountStep.current(auth: auth, sync: sync, hasLocalData: true))
+        XCTAssertFalse(again.offersRecoveredEdits)
+        XCTAssertTrue(again.offersBackup)
+    }
+
+    /// B signed in over A's store (the account screen left without a choice): B's deletion
+    /// leaves A's rows and A's log alone (`testDeletingAnAccountThatDoesNotOwnTheStoreLeavesItsRows`),
+    /// so the step neither says this device is erased nor offers an export of A's data.
+    func testDeleteAccountStepOffersNothingForAnotherOwnersStore() async throws {
+        try seedAsStore()
+        await signIn("magic-B")
+        _ = try conflict(after: sync.settleSignIn(in: context))
+
+        let step = try XCTUnwrap(DeleteAccountStep.current(auth: auth, sync: sync, hasLocalData: true))
+
+        XCTAssertEqual(step.email, "b@example.com")
+        XCTAssertFalse(step.erasesDevice)
+        XCTAssertFalse(step.offersBackup)
+        XCTAssertFalse(step.offersRecoveredEdits)
+    }
+
+    /// The step's rules on their own: an empty store has no backup to offer; a log that could not
+    /// be counted (nil) is offered, as on the restore hand-over; signed out there is no step.
+    func testDeleteAccountStepRules() {
+        let empty = DeleteAccountStep(email: "a@example.com", erasesDevice: true, hasLocalData: false, recoveredEdits: 0)
+        XCTAssertFalse(empty.offersBackup)
+        XCTAssertFalse(empty.offersRecoveredEdits)
+        let unreadable = DeleteAccountStep(email: "a@example.com", erasesDevice: true, hasLocalData: false, recoveredEdits: nil)
+        XCTAssertTrue(unreadable.offersRecoveredEdits)
+        let otherOwner = DeleteAccountStep(email: "b@example.com", erasesDevice: false, hasLocalData: true, recoveredEdits: nil)
+        XCTAssertFalse(otherOwner.offersBackup)
+        XCTAssertFalse(otherOwner.offersRecoveredEdits)
+
+        XCTAssertFalse(auth.isLoggedIn, "precondition")
+        XCTAssertNil(DeleteAccountStep.current(auth: auth, sync: sync, hasLocalData: true))
+    }
+
+    /// The F4 window on Delete Account (review M2-1): the step counted A's log on Continue; a sync
+    /// before Delete My Account archives another line. The deletion clears the log unasked, so the
+    /// tap must not delete — the step comes back with the new count and its export — until the
+    /// count it offered is the count on disk again.
+    func testDeleteAccountStepRechecksTheRecoveredEditsBeforeTheDeletion() async throws {
+        try seedAsStore()
+        await signIn("magic-A")
+        let step = try XCTUnwrap(DeleteAccountStep.current(auth: auth, sync: sync, hasLocalData: true))
+        XCTAssertEqual(step.recoveredEditLines, 1)
+        let unchanged = await step.recheck(sync: sync)
+        XCTAssertNil(unchanged, "the count it offered is still on disk: delete")
+
+        let row = DataBackup.snapshot(habits: [Habit(name: "Archived after Continue")], groups: []).habits[0]
+        try recovery.log.append([SyncRecoveryItem(archivedAt: Date(), reason: .deletedElsewhere, row: .habit(row))],
+                                accountID: accountA.id)
+
+        let rebuilt = await step.recheck(sync: sync)
+        let changed = try XCTUnwrap(rebuilt, "a line nobody offered: do not delete")
+        XCTAssertEqual(changed.recoveredEditLines, 2)
+        XCTAssertTrue(changed.recoveredEditsChanged)
+        XCTAssertTrue(changed.offersRecoveredEdits)
+        XCTAssertTrue(changed.offersBackup)
+        XCTAssertEqual(changed.id, step.id, "the same sheet, updated in place")
+        XCTAssertEqual(sync.recoveredEdits?.lines, 2)
+        let confirmed = await changed.recheck(sync: sync)
+        XCTAssertNil(confirmed, "shown the two lines: delete")
+
+        // A log emptied meanwhile has nothing to lose; another owner's store loses no lines.
+        try recovery.log.clear(accountID: accountA.id)
+        let emptied = await changed.recheck(sync: sync)
+        XCTAssertNil(emptied)
+        let otherOwner = DeleteAccountStep(email: "b@example.com", erasesDevice: false, hasLocalData: true, recoveredEdits: 0)
+        let untouched = await otherOwner.recheck(sync: sync)
+        XCTAssertNil(untouched)
+    }
+
     /// Erase Local Data's API: the owner's recovered edits go only when the caller asks (after
     /// offering their export); by default they stay under the owner's key.
     func testResetSyncStateClearsTheOwnersRecoveryLogOnlyWhenAsked() throws {

@@ -44,8 +44,19 @@
 #   12_settings_sync_<s>   Settings' Sync section, `-demoScenario heldRows | recoveredEdits |
 #                          syncPaused | syncAll` (SyncSectionDemo; seeds held rows and recovery-
 #                          log lines into the demo store when Settings appears).
+#   13_settings_deleteAccount  Delete Account's last step (export offer + final button),
+#                          `-demoScenario deleteAccount` (a fake signed-in owner; buttons only close).
+#   14_restore_handover    the restore's hand-over step "Before You Restore",
+#                          `-demoScenario restoreHandover` (a fake previous owner).
+#   *_at_<anchor>          at accessibility sizes only: the same screen scrolled to a row with the
+#                          DEBUG-only `-scrollTo <anchor>` (SweepScroll in SyncSectionView.swift) —
+#                          the account screen's holdings / export / choice buttons, every Sync row
+#                          of `syncAll`, and the lower rows of the two sheets (`<anchor>@bottom`
+#                          scrolls a row to the bottom edge instead of the top). These replace the
+#                          `*_scrollN` frames phase C swiped by hand, which went stale with the
+#                          first fix after them and could not be re-taken by the script.
 # Not reachable from a launch argument, so not captured: the Settings row that reopens the account
-# screen (needs a real signed-in owner conflict) and RestoreHandoverView (needs a restore).
+# screen (needs a real signed-in owner conflict).
 # The recovery log lives outside the SwiftData store, so `-demo` does not erase it: lines a
 # `recoveredEdits` run seeded used to stay on the device and draw "Recovered Edits (3)" into the
 # next 03_settings and into the App Store screenshots taken on the same simulator. The sweep
@@ -72,9 +83,10 @@
 #     spinner where the price cards go — raise STRIDE_A11Y_SETTLE or review them in Xcode.
 #   - `-demo` REPLACES the app's data on that simulator with the demo set (DemoData.populate:
 #     habits, check-ins AND groups — a leftover group once drew a header into the default set).
-#   - The account screen and the Settings Sync section are also captured top-only. At
-#     accessibility sizes the account screen's buttons, and in the heldRows/syncAll states the
-#     Restore as New Copies / Discard rows, are below the fold.
+#   - At the default size the account screen and the Settings Sync section are captured top-only
+#     (the `*_at_<anchor>` frames are taken at accessibility sizes, where the fold matters). In the
+#     heldRows state the Discard rows are below the fold at every size; `syncAll`'s anchors show
+#     them.
 #
 # Environment:
 #   STRIDE_A11Y_DERIVED_DATA  derived data for the build (default build/a11y/DerivedData)
@@ -259,8 +271,18 @@ if [[ "$SET" != core ]]; then
     for state in signInAgain paused offline waiting held synced justSynced; do
         capture "10_today_sync_$state.png" -tab 0 -syncStatus "$state"
     done
-    capture 11_account_conflict.png     -tab 0 -demoScenario accountConflict
-    capture 11_account_unknownOwner.png -tab 0 -demoScenario accountUnknownOwner
+    # Below the fold only where there is one: accessibility sizes.
+    SCROLLED=0
+    [[ "$SIZE" == accessibility-* ]] && SCROLLED=1
+    for case in conflict unknownOwner; do
+        scenario="account$(tr '[:lower:]' '[:upper:]' <<<"${case:0:1}")${case:1}"
+        capture "11_account_$case.png" -tab 0 -demoScenario "$scenario"
+        if [[ $SCROLLED -eq 1 ]]; then
+            for anchor in accountHoldings accountExport accountChoices; do
+                capture "11_account_${case}_at_$anchor.png" -tab 0 -demoScenario "$scenario" -scrollTo "$anchor"
+            done
+        fi
+    done
     for scenario in heldRows recoveredEdits syncPaused syncAll; do
         # Each state on its own: `recoveredEdits` otherwise leaves its three lines for the
         # `syncPaused` capture after it (the first run drew "Recovered Edits (3)" there).
@@ -268,6 +290,27 @@ if [[ "$SET" != core ]]; then
         clear_recovery_log
         capture "12_settings_sync_$scenario.png" -tab 2 -demoScenario "$scenario"
     done
+    if [[ $SCROLLED -eq 1 ]]; then
+        # `syncAll` re-seeds the same three lines on every launch (it clears them first).
+        for anchor in syncPaused syncHeld syncConvertible-not_owned syncConvertible-tombstoned \
+                      syncRecovered syncFullResync; do
+            capture "12_settings_sync_syncAll_at_$anchor.png" -tab 2 -demoScenario syncAll -scrollTo "$anchor"
+        done
+    fi
+    # The two sheets, over a Settings with no seeded rows behind them.
+    xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
+    clear_recovery_log
+    capture 13_settings_deleteAccount.png -tab 2 -demoScenario deleteAccount
+    capture 14_restore_handover.png       -tab 2 -demoScenario restoreHandover
+    if [[ $SCROLLED -eq 1 ]]; then
+        # deleteExport is taken bottom-aligned (`@bottom`): the message fills the first frame, and
+        # what sits between it and the export rows is the "Signed in as" address line.
+        capture 13_settings_deleteAccount_at_deleteExport.png -tab 2 -demoScenario deleteAccount -scrollTo deleteExport@bottom
+        for anchor in deleteRecoveredEdits deleteConfirm; do
+            capture "13_settings_deleteAccount_at_$anchor.png" -tab 2 -demoScenario deleteAccount -scrollTo "$anchor"
+        done
+        capture 14_restore_handover_at_handoverRestore.png -tab 2 -demoScenario restoreHandover -scrollTo handoverRestore
+    fi
     # Put the store back to the plain demo set (the scenarios above seeded held rows into it),
     # then drop the seeded recovery log: the next screenshot run on this device starts clean.
     xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
