@@ -2,10 +2,11 @@
 
 App ID `6761262334`, bundle `yyh.stride.habittracker`. **In progress**: M0 (server, CI, ops)
 is done and the server half is live. The 1.3.0 client (DEV-PLAN-1.3.md M1) is built — `0a59bf3`
-plus the completion round `3fed14b` — and **build 18 is uploaded for iOS and macOS**, with the
-1.3.0 version records, What's New and descriptions in App Store Connect (2026-09-27). **Not
-submitted**: the device checks, the privacy-page publication and the owner's go are open
-([TODO](#todo--before-130-is-submitted-m1)).
+plus the completion round `3fed14b` — and **submitted for review on 2026-09-28**: build 18 on
+iOS (review submission `c15dd36b-3144-4695-846e-4a9e6408222d`) and macOS
+(`13f289d2-0fdf-4c62-a554-7fba8a8e97b6`), both `WAITING_FOR_REVIEW`. The owner chose to submit
+without the TestFlight device checks; they stay listed below as post-release checks, and the
+privacy-page publication is still open ([TODO](#todo--before-130-is-submitted-m1)).
 
 1.2.3 (build 17) has been `READY_FOR_SALE` on iOS and macOS since 2026-09-17. This release
 follows [DEV-PLAN-1.3.md](DEV-PLAN-1.3.md): M0 lands everything the incremental-push client
@@ -588,7 +589,10 @@ All six items found after `0a59bf3` are closed in the completion round:
 - [x] `scripts/release.py prepare 1.3.0` — both version records `PREPARE_FOR_SUBMISSION`, What's
   New in six locales; `build-appstore.sh all --upload` — build 18 uploaded on both platforms
   (iOS `VALID` in TestFlight the same evening).
-- [ ] **`scripts/release.py finish 1.3.0 18` — only with the owner's go**, after the device checks.
+- [x] **`scripts/release.py finish 1.3.0 18`** on the owner's go (2026-09-28, without the
+  TestFlight device checks). Just before: both builds `VALID`; `check_demo_account.sh` green —
+  180 entries, all six habits on a live streak (1–5), 30-day rates 43–90 % — after the first
+  unattended night on the host (backup integrity ok, top-up +4 check-ins, restore drill ok).
   ⚠️ `push_metadata.py` used to submit for review as a side effect (and cancel any waiting
   submission); since `d66d200` it only pushes metadata, so `finish` is the one submitting step. The sign-in line in What's New assumes the device check above passes; if the link
   does not open the app in Mail, drop that bullet before `prepare`.
