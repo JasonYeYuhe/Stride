@@ -361,5 +361,182 @@
 			<string>week streak</string>
 		</dict>
 	</dict>
+	<!-- Sync, M2 (1.3.1): Settings > Sync, the account screen, the restore hand-over and Today's status line. -->
+	<key>%lld deletions not yet synced</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld deletion not yet synced</string>
+			<key>other</key>
+			<string>%lld deletions not yet synced</string>
+		</dict>
+	</dict>
+	<key>%lld recovered edits</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld recovered edit</string>
+			<key>other</key>
+			<string>%lld recovered edits</string>
+		</dict>
+	</dict>
+	<key>%lld changes can't sync</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld change can't sync</string>
+			<key>other</key>
+			<string>%lld changes can't sync</string>
+		</dict>
+	</dict>
+	<key>%lld restored habits were deleted on another device</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld restored habit was deleted on another device</string>
+			<key>other</key>
+			<string>%lld restored habits were deleted on another device</string>
+		</dict>
+	</dict>
+	<key>%lld restored items were deleted on another device</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld restored item was deleted on another device</string>
+			<key>other</key>
+			<string>%lld restored items were deleted on another device</string>
+		</dict>
+	</dict>
+	<key>%lld habits belong to another account</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld habit belongs to another account</string>
+			<key>other</key>
+			<string>%lld habits belong to another account</string>
+		</dict>
+	</dict>
+	<key>%lld items belong to another account</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld item belongs to another account</string>
+			<key>other</key>
+			<string>%lld items belong to another account</string>
+		</dict>
+	</dict>
+	<key>Recovered Edits (%lld)</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>Recovered Edits (%lld)</string>
+			<key>other</key>
+			<string>Recovered Edits (%lld)</string>
+		</dict>
+	</dict>
+	<key>Offline — %lld changes waiting</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>Offline — %lld change waiting</string>
+			<key>other</key>
+			<string>Offline — %lld changes waiting</string>
+		</dict>
+	</dict>
+	<key>%lld changes waiting to sync</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld change waiting to sync</string>
+			<key>other</key>
+			<string>%lld changes waiting to sync</string>
+		</dict>
+	</dict>
+	<key>%lld changes can't sync — see Settings</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld change can't sync — see Settings</string>
+			<key>other</key>
+			<string>%lld changes can't sync — see Settings</string>
+		</dict>
+	</dict>
 </dict>
 </plist>

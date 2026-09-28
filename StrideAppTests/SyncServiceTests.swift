@@ -273,11 +273,11 @@ final class SyncServiceTests: XCTestCase {
 
     // MARK: - Answers and the Settings footer
 
-    /// `syncError` is the Settings footer. The server answers this build (it sends
-    /// X-Stride-Client) with the machine code in `error` — `{error:"rate_limited", code, message}`
-    /// — and the footer must read as a sentence, not "rate_limited". The server's
-    /// `retryAfterSeconds` sets the automatic-retry window; Sync Now still goes at once.
-    func testRateLimitedSyncShowsASentenceAndWaitsAsTheServerAsked() async {
+    /// A rate limit is "Sync paused" inline (Today's line, the Settings sync section — both read
+    /// `backoff`), never the red `syncError` footer (M2 answer table: 429 → "sync paused" inline;
+    /// never `syncError`). The server's `retryAfterSeconds` sets the automatic-retry window; Sync
+    /// Now still goes at once.
+    func testRateLimitedSyncShowsSyncPausedAndWaitsAsTheServerAsked() async {
         seedOwnerAndCursor()
         queue.trackHabit("gone")
         server.on("POST", "/v1/sync/push", respond: .init(status: 429, body: #"""
@@ -287,9 +287,9 @@ final class SyncServiceTests: XCTestCase {
 
         await sync.sync(context: context)
 
-        let shown = sync.syncError
-        XCTAssertEqual(shown, appLocalized("Too many sync requests. Please try again in a few minutes."))
-        XCTAssertFalse(shown?.contains("rate_limited") ?? true)
+        XCTAssertNil(sync.syncError, "a rate limit is not an error to show")
+        XCTAssertEqual(sync.backoff?.reason, .rateLimited)
+        XCTAssertTrue(sync.backoff?.reason.showsSyncPaused ?? false, "the inline rows say \"Sync paused\"")
         let wait = sync.nextAutomaticSync.map { $0.timeIntervalSinceNow } ?? 0
         XCTAssertEqual(wait, 30, accuracy: 5)
         XCTAssertFalse(sync.isPaused, "a rate limit is not the pause switch")
@@ -302,7 +302,8 @@ final class SyncServiceTests: XCTestCase {
         XCTAssertEqual(syncRequests.count, 2, "Sync Now retries at once")
     }
 
-    /// 503 `sync_paused` with only a `Retry-After` header: the header reaches the engine.
+    /// 503 `sync_paused` with only a `Retry-After` header: the header reaches the engine, and the
+    /// pause is "Sync paused" inline with no error (acceptance (9)).
     func testSyncPausedReadsRetryAfterFromTheHeader() async {
         seedOwnerAndCursor()
         server.on("GET", "/v1/sync/pull", respond: .init(
@@ -313,7 +314,7 @@ final class SyncServiceTests: XCTestCase {
 
         XCTAssertTrue(sync.isPaused)
         XCTAssertEqual(sync.nextAutomaticSync.map { $0.timeIntervalSinceNow } ?? 0, 120, accuracy: 5)
-        XCTAssertEqual(sync.syncError, appLocalized("Sync is paused for maintenance. Your data is safe on this device and will sync when the pause ends."))
+        XCTAssertNil(sync.syncError, "the pause switch is not an error to show")
     }
 
     /// A code this build has no sentence for shows the server's `message`. `invalid_payload` is a
@@ -413,14 +414,16 @@ final class SyncServiceTests: XCTestCase {
 
     private var marks: SyncMarksProof { SyncMarksProof(defaults: local.defaults) }
 
-    /// The first full pull proves the account (owner decision, 2026-09-28). A dormant 1.3.0
-    /// device whose session EXPIRED (1.3.0 deletes the token and keeps `stride_last_sync_time`)
-    /// updates, and the user signs back into the same account. Its snapshot holds a habit this
-    /// device delivered, so the migrated marks are this account's and stand: nothing is deleted,
-    /// and only the row made after the last 1.3.0 sync goes up.
-    func testAnExpiredSessionsStoreSignedIntoTheSameAccountIsProvenAndUploadsOnlyTheNewerRow() async throws {
+    /// The first full pull proves the account (owner decision, 2026-09-28). A 1.3.0 device still
+    /// holding a session at its first 1.3.1 launch adopts no owner-unknown flag — but a stored
+    /// token is not evidence that its account is the one the marks were inferred for, so they
+    /// wait for the proof. Its snapshot holds a habit this device delivered, so the marks are this
+    /// account's and stand: nothing is deleted, and only the row made after the last 1.3.0 sync
+    /// goes up. (A device whose session EXPIRED reaches 1.3.1 signed out: owner unknown, and its
+    /// next sign-in goes through the account screen — AccountSwitchTests.)
+    func testAStoreSignedInAtItsFirstLaunchIsProvenAndUploadsOnlyTheNewerRow() async throws {
         let (oldID, newID) = try seedMigratedStore()
-        SyncService.prepareLaunch(context: context, defaults: local.defaults, hasStoredSession: false)
+        SyncService.prepareLaunch(context: context, defaults: local.defaults, hasStoredSession: true)
         XCTAssertTrue(marks.isAwaited, "the migration stamped a row: its marks wait for the proof")
         let old = try XCTUnwrap(try context.fetch(FetchDescriptor<Habit>()).first { $0.id == oldID })
         let snapshot = SyncStubBodies.pull(habits: [SyncStubBodies.habit(old)])
@@ -465,7 +468,9 @@ final class SyncServiceTests: XCTestCase {
     /// automatic, and even with a cursor stored for the owner by then — is a full pull again.
     func testTheProofWaitsForAFullPullThatCameBack() async throws {
         let (oldID, _) = try seedMigratedStore()
-        SyncService.prepareLaunch(context: context, defaults: local.defaults, hasStoredSession: false)
+        // Signed in at the first launch: an owner-unknown store would wait for the account
+        // screen instead (AccountSwitchTests), and this test is about the proof.
+        SyncService.prepareLaunch(context: context, defaults: local.defaults, hasStoredSession: true)
         server.on("GET", "/v1/sync/pull", respond: .init(status: 503, body: #"{"error":"server_error"}"#))
 
         let failed = await sync.sync(context: context)
@@ -631,7 +636,7 @@ final class SyncServiceTests: XCTestCase {
 
         XCTAssertFalse(ran)
         XCTAssertTrue(server.requests.isEmpty)
-        XCTAssertEqual(sync.ownerConflict?.owner.id, owner)
+        XCTAssertEqual(sync.ownerConflict?.owner?.id, owner)
     }
 
     // MARK: - Held rows (phase B API; the rows are phase C UI)

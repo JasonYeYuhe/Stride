@@ -17,6 +17,11 @@ struct TodayView: View {
     @State private var selectionAnchor = Date()
     @Environment(\.scenePhase) private var scenePhase
     @State private var collapsedGroups: Set<UUID> = []
+    /// Pending and held counts for the sync line, read from the store when it changes — not on
+    /// every render (`SyncStatusCounts`). Zero while signed out, when nothing reads them.
+    @State private var syncCounts = SyncStatusCounts.Counts()
+    private var auth = AuthService.shared
+    private var sync = SyncService.shared
 
     /// Habits split into ordered sections by group; falls back to a single flat
     /// section when the user has no groups.
@@ -59,12 +64,25 @@ struct TodayView: View {
                 WeekStripView(selectedDate: $selectedDate)
                     .padding(.horizontal)
 
+                // The sync line sits under the progress card (M2, "Sync status where the user
+                // works"); with no habits there is no card, and only the reauth row can show.
+                // `syncStatus` is nil when signed out, so a signed-out Today — the store
+                // screenshots — is laid out exactly as before: the card alone in its stack.
+                let syncStatus = SyncStatusLine.today(auth: auth, sync: sync, counts: syncCounts)
                 if !habits.isEmpty {
-                    ProgressSummaryCard(
-                        completed: completedCount,
-                        total: habits.count
-                    )
+                    VStack(spacing: 8) {
+                        ProgressSummaryCard(
+                            completed: completedCount,
+                            total: habits.count
+                        )
+                        if let syncStatus {
+                            SyncStatusRow(line: syncStatus)
+                        }
+                    }
                     .padding(.horizontal)
+                } else if let syncStatus, syncStatus == .signInAgain {
+                    SyncStatusRow(line: syncStatus)
+                        .padding(.horizontal)
                 }
 
                 if habits.isEmpty {
@@ -113,10 +131,39 @@ struct TodayView: View {
         }
         // Coming back to the app the next morning, and midnight passing while it is open.
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { reanchorSelection() }
+            if phase == .active {
+                reanchorSelection()
+                // The widget saves check-ins and queues deletions in its own process.
+                refreshSyncCounts()
+            }
         }
+        // The counts change with every save (an edit makes a row pending), when a sync ends (it
+        // acknowledged or held rows), and at sign-in and sign-out.
+        .task { refreshSyncCounts() }
+        .onReceive(
+            NotificationCenter.default.publisher(for: ModelContext.didSave)
+                .throttle(for: .seconds(1), scheduler: DispatchQueue.main, latest: true)
+        ) { _ in
+            refreshSyncCounts()
+        }
+        .onChange(of: sync.isSyncing) { _, syncing in
+            if !syncing { refreshSyncCounts() }
+        }
+        .onChange(of: auth.isLoggedIn) { _, _ in refreshSyncCounts() }
         .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged).receive(on: DispatchQueue.main)) { _ in
             reanchorSelection()
+        }
+    }
+
+    /// Reads the store only while signed in: signed out, Today shows no sync line, and a store of
+    /// years of check-ins is not walked for nothing. A read that fails keeps the last counts.
+    private func refreshSyncCounts() {
+        guard auth.isLoggedIn else {
+            syncCounts = SyncStatusCounts.Counts()
+            return
+        }
+        if let counts = try? SyncStatusCounts.read(in: modelContext, deletions: SyncDeletionQueue.live.pending()) {
+            syncCounts = counts
         }
     }
 

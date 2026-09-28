@@ -383,3 +383,94 @@
 "Complete Habit" = "Completar hábito";
 "Check Streak" = "Consultar racha";
 "List Habits" = "Ver hábitos";
+
+/* Sync, M2 (1.3.1): the account screen that continues a sign-in on a device holding another
+   account's habits (AccountSwitchView, LoginView). "Start from This Account's Data" is the title-case
+   button, "Start from this account's data?" the confirmation title: two keys on purpose. */
+"This Device's Habits" = "Hábitos de este dispositivo";
+"This device has habits that aren't linked to an account." = "Este dispositivo tiene hábitos que no están vinculados a ninguna cuenta.";
+"Stride can't tell which account these habits came from. Upload them to this account, or start from this account's data instead." = "Stride no puede saber de qué cuenta proceden estos hábitos. Súbelos a esta cuenta o, en su lugar, empieza con los datos de esta cuenta.";
+"Stride keeps each account's habits separate. Starting from this account's data removes these habits from this device and downloads this account's habits. Anything already synced stays in the other account." = "Stride mantiene separados los hábitos de cada cuenta. Empezar con los datos de esta cuenta elimina estos hábitos de este dispositivo y descarga los hábitos de esta cuenta. Todo lo que ya se sincronizó sigue en la otra cuenta.";
+"Changes that never synced exist only on this device. Export a backup first to keep a copy." = "Los cambios que nunca se sincronizaron solo existen en este dispositivo. Exporta primero una copia de seguridad para conservarlos.";
+"Export a Backup" = "Exportar una copia de seguridad";
+"Upload These Habits to This Account" = "Subir estos hábitos a esta cuenta";
+"Start from This Account's Data" = "Empezar con los datos de esta cuenta";
+"Start from this account's data?" = "¿Empezar con los datos de esta cuenta?";
+"Every habit, check-in and group on this device will be deleted, and this account's habits will be downloaded. Changes that were never synced can't be recovered unless you exported a backup." = "Se eliminarán todos los hábitos, registros y grupos de este dispositivo, y se descargarán los hábitos de esta cuenta. Los cambios que nunca se sincronizaron no se podrán recuperar a menos que hayas exportado una copia de seguridad.";
+
+/* Sync, M2 (1.3.1): Settings > Sync (SyncSectionView). "Recovered edits" are edits made here to
+   rows deleted on another device, kept in a log; ja/zh render them as 復旧した編集 / 找回的编辑 so they
+   never read as "restored" (復元 / 恢复 is Restore). */
+"Sync" = "Sincronización";
+"Choose What Happens to This Device's Habits…" = "Elegir qué hacer con los hábitos de este dispositivo…";
+"Syncing starts once you choose." = "La sincronización empezará cuando elijas.";
+"Sync paused" = "Sincronización en pausa";
+"The server asked devices to wait. Stride will try again automatically." = "El servidor pidió a los dispositivos que esperen. Stride volverá a intentarlo automáticamente.";
+"Editing a change sends it again." = "Si editas un cambio, se vuelve a enviar.";
+"Server error" = "Error del servidor";
+"A value the server doesn't accept" = "Un valor que el servidor no acepta";
+"Missing information" = "Falta información";
+"Its habit isn't on the server yet" = "Su hábito aún no está en el servidor";
+"Too large to upload" = "Demasiado grande para subirlo";
+"Restore as New Copies" = "Restaurar como copias nuevas";
+"Discard…" = "Descartar…";
+"Discard These Items?" = "¿Descartar estos elementos?";
+"Discard" = "Descartar";
+"Restore them as new copies to bring them back to your account, or discard them. Your backup file keeps them either way." = "Restáuralos como copias nuevas para devolverlos a tu cuenta, o descártalos. Tu archivo de copia de seguridad los conserva en ambos casos.";
+"They came from another account's data, so this account can't sync them as they are. Restore them as new copies to add them to this account." = "Proceden de los datos de otra cuenta, así que esta cuenta no puede sincronizarlos tal como están. Restáuralos como copias nuevas para añadirlos a esta cuenta.";
+"Changes made on this device to items that were deleted on another device. Export them to keep a copy." = "Cambios hechos en este dispositivo a elementos que se eliminaron en otro dispositivo. Expórtalos para guardar una copia.";
+"Export Recovered Edits" = "Exportar ediciones recuperadas";
+"Clear Recovered Edits…" = "Borrar ediciones recuperadas…";
+"Clear Recovered Edits?" = "¿Borrar las ediciones recuperadas?";
+"Clear" = "Borrar";
+"This is the only copy of these edits. Export them first if you might need them." = "Esta es la única copia de estas ediciones. Si puedes necesitarlas, expórtalas primero.";
+"Full Resync…" = "Resincronización completa…";
+"Sends everything on this device to your account again." = "Vuelve a enviar a tu cuenta todo lo que hay en este dispositivo.";
+"Full Resync?" = "¿Hacer una resincronización completa?";
+"Resync Everything" = "Resincronizar todo";
+"Stride first downloads your account's latest changes, then sends every habit, check-in and group on this device to your account again. Use it when another device is missing something." = "Stride primero descarga los últimos cambios de tu cuenta y luego vuelve a enviar a tu cuenta todos los hábitos, registros y grupos de este dispositivo. Úsalo cuando a otro dispositivo le falte algo.";
+"They're removed from this device. Your backup file still has them." = "Se eliminan de este dispositivo. Tu archivo de copia de seguridad todavía los tiene.";
+"They're removed from this device, and they may not exist anywhere else. Export a backup first if you might want them." = "Se eliminan de este dispositivo y puede que no existan en ningún otro sitio. Si puedes necesitarlos, exporta primero una copia de seguridad.";
+"Restored as new copies." = "Restaurados como copias nuevas.";
+"Discarded." = "Descartados.";
+"Recovered edits cleared." = "Ediciones recuperadas borradas.";
+"Full resync finished." = "Resincronización completa terminada.";
+
+/* Sync, M2 (1.3.1): Settings > Export Data, restoring a backup that names an account (or none),
+   and the hand-over step before a restore leaves another account's changes behind
+   (RestoreHandoverView). */
+"Restore as It Was" = "Restaurar tal como estaba";
+"This backup is from another account. Its habits will be added to this account as new copies." = "Esta copia de seguridad es de otra cuenta. Sus hábitos se añadirán a esta cuenta como copias nuevas.";
+"This backup is from another account (%@). Its habits will be added to this account as new copies." = "Esta copia de seguridad es de otra cuenta (%@). Sus hábitos se añadirán a esta cuenta como copias nuevas.";
+"This backup doesn't say which account it came from. If it's this account's own backup, restore it as it was; otherwise restore it as new copies." = "Esta copia de seguridad no indica de qué cuenta procede. Si es una copia de esta cuenta, restáurala tal como estaba; si no, restáurala como copias nuevas.";
+"This backup doesn't say which account it came from. If you'll sign in to that account on this device, restore it as it was; otherwise restore it as new copies." = "Esta copia de seguridad no indica de qué cuenta procede. Si vas a iniciar sesión en esa cuenta en este dispositivo, restáurala tal como estaba; si no, restáurala como copias nuevas.";
+"This backup is from a Stride account. If you'll sign in to that account on this device, restore it as it was; otherwise restore it as new copies." = "Esta copia de seguridad es de una cuenta de Stride. Si vas a iniciar sesión en esa cuenta en este dispositivo, restáurala tal como estaba; si no, restáurala como copias nuevas.";
+"This backup is from %@. If you'll sign in to that account on this device, restore it as it was; otherwise restore it as new copies." = "Esta copia de seguridad es de %@. Si vas a iniciar sesión en esa cuenta en este dispositivo, restáurala tal como estaba; si no, restáurala como copias nuevas.";
+"The recovered edits on this device are erased too. Export them first if you might need them." = "También se borran las ediciones recuperadas de este dispositivo. Si puedes necesitarlas, expórtalas primero.";
+"Before You Restore" = "Antes de restaurar";
+"This device still holds changes from another account that restoring this backup leaves behind." = "Este dispositivo todavía guarda cambios de otra cuenta que no se enviarán si restauras esta copia de seguridad.";
+"This device still holds changes from %@ that restoring this backup leaves behind." = "Este dispositivo todavía guarda cambios de %@ que no se enviarán si restauras esta copia de seguridad.";
+"If you restore, the deletions are dropped, and the recovered edits are shown again only when that account uses this device. To send the deletions instead, cancel, sign in to that account and sync first." = "Si restauras, las eliminaciones se descartan y las ediciones recuperadas solo volverán a mostrarse cuando esa cuenta use este dispositivo. Para enviar las eliminaciones, cancela, inicia sesión en esa cuenta y sincroniza primero.";
+"Restore Anyway" = "Restaurar de todos modos";
+
+/* Sync, M2 (1.3.1): Today's inline sync status and the reauth row (SyncStatusRow). "Synced %@"
+   takes a RelativeDateTimeFormatter phrase already in the app language ("2 minutes ago", "2分前"). */
+"Sign in again to keep syncing" = "Inicia sesión de nuevo para seguir sincronizando";
+"Opens sign-in" = "Abre el inicio de sesión";
+"Synced just now" = "Sincronizado hace un momento";
+"Synced %@" = "Sincronizado %@";
+
+/* Sync, M2 (1.3.1), phase C review fixes: the account screen shows each address on a line of
+   its own (a sentence around it hyphenated or broke it mid-address); the restore hand-over's
+   footer per what it lists; Delete Account says this device's copy goes too; "Not Syncing" for
+   Data Storage while the account choice waits; Clear / Erase stop when new recovered edits
+   arrived after the confirmation was built. */
+"This device holds another account's habits." = "Este dispositivo tiene hábitos de otra cuenta.";
+"Habits from" = "Hábitos de";
+"Signed in as" = "Sesión iniciada como";
+"Cancel signs you out of this account and leaves this device as it is." = "Cancelar cierra tu sesión en esta cuenta y deja este dispositivo como está.";
+"If you restore, the deletions are dropped. To send them instead, cancel, sign in to that account and sync first." = "Si restauras, las eliminaciones se descartan. Para enviarlas, cancela, inicia sesión en esa cuenta y sincroniza primero.";
+"If you restore, the recovered edits are shown again only when that account uses this device." = "Si restauras, las ediciones recuperadas solo volverán a mostrarse cuando esa cuenta use este dispositivo.";
+"New recovered edits arrived. Export them, then try again." = "Han llegado nuevas ediciones recuperadas. Expórtalas y vuelve a intentarlo.";
+"All your habits, records, and account information will be permanently removed from our servers. The habits, check-ins and groups on this device are deleted too; export a backup first if you want to keep a copy." = "Todos tus hábitos, registros y datos de la cuenta se eliminarán de forma permanente de nuestros servidores. También se eliminan los hábitos, registros y grupos de este dispositivo; exporta primero una copia de seguridad si quieres conservarlos.";
+"Not Syncing" = "Sin sincronizar";

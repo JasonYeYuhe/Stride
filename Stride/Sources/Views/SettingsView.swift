@@ -32,17 +32,29 @@ struct SettingsView: View {
     /// Reading the picked file, or waiting for a sync in flight before restoring it.
     @State private var isRestoring = false
     @State private var pendingRestore: PendingRestore?
+    /// The restore's hand-over step, when the chosen restore would leave the previous owner's
+    /// queued deletions or recovered edits behind (`DataExportService.restoreHandover`).
+    @State private var pendingHandover: PendingHandover?
     @State private var restoreError: String?
     /// Set when a restore was refused as `storeNotEmpty` although no habit or group is listed:
     /// check-ins orphaned by an old bug. Offers the erase that clears them.
     @State private var storeHasHiddenRows = false
     @State private var showingEraseConfirm = false
+    /// Whether the erase confirmed on screen said the recovered edits go too: fixed when Erase
+    /// is tapped, so a count that changes under the dialog cannot clear lines it did not name.
+    @State private var eraseClearsRecoveredEdits = false
+    /// The recovered-edit count that confirmation was built from; the erase stops if its own
+    /// pre-erase sync archives more (`DataExportService.eraseLocalData`).
+    @State private var eraseRecoveredEditLines = 0
     @State private var isErasing = false
     @State private var eraseError: String?
 
     // Store
     @State private var showingPaywall = false
     @State private var showingLogin = false
+    /// The account screen, reopened from the sync section's row after a sign-in was left
+    /// without a choice (the app quit on it). Only on that tap: never presented on its own.
+    @State private var accountChoice: SyncOwnerConflict?
     private var store = StoreService.shared
     private var auth = AuthService.shared
     private var sync = SyncService.shared
@@ -250,6 +262,10 @@ struct SettingsView: View {
                             .accessibilityLabel("Sync error: \(error)")
                     }
                 }
+
+                // Held rows, recovered edits, "Sync paused", Full Resync (M2 phase C). Absent
+                // when there is nothing to show.
+                SyncSectionView(onChooseAccount: { accountChoice = $0 })
 
                 // Reminders section
                 Section {
@@ -517,7 +533,7 @@ struct SettingsView: View {
                             }
                         }
                         // Not under a sync either: its full pull would land after the restore
-                        // and remove what it restored (performRestore also waits it out).
+                        // and remove what it restored (`restore(_:plan:)` also waits it out).
                         .disabled(isRestoring || sync.isSyncing)
                     }
                 } header: {
@@ -541,8 +557,15 @@ struct SettingsView: View {
                 // first, so nothing unsynced is lost and the next sync cannot pull it all back.
                 if !isStoreEmpty || storeHasHiddenRows {
                     Section {
+                        // Offered first (phase C): the erase clears the recovered edits too, and
+                        // they are the only copy of the edits a deletion took.
+                        if recoveredEditLines > 0 {
+                            RecoveredEditsShareLink(sync: sync)
+                        }
                         Button(role: .destructive) {
                             eraseError = nil
+                            eraseClearsRecoveredEdits = recoveredEditLines > 0
+                            eraseRecoveredEditLines = recoveredEditLines
                             showingEraseConfirm = true
                         } label: {
                             HStack {
@@ -579,7 +602,7 @@ struct SettingsView: View {
                         Text("iOS")
                         #endif
                     }
-                    LabeledContent("Data Storage", value: auth.isLoggedIn ? appLocalized("Synced") : appLocalized("On Device"))
+                    LabeledContent("Data Storage", value: dataStorageValue)
                 }
 
                 Section("Legal") {
@@ -629,6 +652,13 @@ struct SettingsView: View {
             .sheet(isPresented: $showingLogin) {
                 LoginView()
             }
+            // In AccountChoiceSheet, as StrideApp presents it: the screen's title and its Cancel
+            // live in a navigation bar, and a sheet has none of its own. Presented bare, the iOS
+            // sheet had no Cancel and no title, and it cannot be swiped away — the destructive
+            // Start was the only way out (phase C review, UI-1).
+            .sheet(item: $accountChoice) { conflict in
+                AccountChoiceSheet(request: AccountChoiceRequest(conflict: conflict)) { accountChoice = nil }
+            }
             .alert("Delete Account?", isPresented: $showingDeleteAccountAlert) {
                 Button("Cancel", role: .cancel) {}
                 Button("Continue", role: .destructive) {
@@ -643,7 +673,14 @@ struct SettingsView: View {
                     Task { await performAccountDeletion() }
                 }
             } message: {
-                Text("All your habits, records, and account information will be permanently removed from our servers.")
+                // Since 1.3.1 deleting the account that owns this store erases the store too
+                // (M2; AuthService.deleteAccount → SyncService.accountDeleted), including changes
+                // that never synced — the confirmation must say so, not only "our servers".
+                if deleteAccountErasesDevice {
+                    Text("All your habits, records, and account information will be permanently removed from our servers. The habits, check-ins and groups on this device are deleted too; export a backup first if you want to keep a copy.")
+                } else {
+                    Text("All your habits, records, and account information will be permanently removed from our servers.")
+                }
             }
             .alert("Unable to Delete Account", isPresented: Binding(
                 get: { deleteAccountError != nil },
@@ -682,12 +719,18 @@ struct SettingsView: View {
                 ),
                 presenting: pendingRestore
             ) { pending in
-                Button("Cancel", role: .cancel) {}
-                Button("Restore") {
-                    Task { await performRestore(pending.document) }
-                }
+                restoreButtons(pending)
             } message: { pending in
-                Text(verbatim: pending.summary)
+                Text(verbatim: pending.message)
+            }
+            .sheet(item: $pendingHandover) { pending in
+                RestoreHandoverView(
+                    handover: pending.handover, sync: sync,
+                    onRestore: {
+                        pendingHandover = nil
+                        Task { await restore(pending.document, plan: pending.plan) }
+                    },
+                    onCancel: { pendingHandover = nil })
             }
             .confirmationDialog("Erase Local Data?", isPresented: $showingEraseConfirm, titleVisibility: .visible) {
                 Button("Erase", role: .destructive) {
@@ -695,11 +738,7 @@ struct SettingsView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                if eraseSignsOut {
-                    Text("Stride syncs one last time, signs you out, then deletes every habit, check-in and group on this device. Your account's data on the server is not touched: sign in again to download it.")
-                } else {
-                    Text("Every habit, check-in and group on this device will be deleted. This cannot be undone.")
-                }
+                eraseConfirmMessage
             }
             .onChange(of: auth.isLoggedIn) { _, loggedIn in
                 if loggedIn {
@@ -707,6 +746,12 @@ struct SettingsView: View {
                 }
             }
             .task {
+                #if DEBUG
+                SyncSectionDemo.seedIfNeeded(context: modelContext, sync: sync)
+                #endif
+                // The recovered-edits count is read when Settings asks, not at launch
+                // (SyncService.refreshRecoveredEdits); a run that archives refreshes it too.
+                sync.refreshRecoveredEdits()
                 await checkNotificationStatus()
                 await store.refreshPurchasedProducts()
             }
@@ -716,8 +761,18 @@ struct SettingsView: View {
 
     private struct PendingRestore {
         let document: BackupDocument
-        /// Built once when the file is read, not on every render of the alert.
-        let summary: String
+        /// What the alert offers for this file here (`DataExportService.restoreChoices`).
+        let choices: RestoreChoices
+        /// The file's summary, then the choice explained. Built once when the file is read, not
+        /// on every render of the alert.
+        let message: String
+    }
+
+    private struct PendingHandover: Identifiable {
+        let id = UUID()
+        let document: BackupDocument
+        let plan: RestorePlan
+        let handover: RestoreHandover
     }
 
     private func readBackup(at url: URL) async {
@@ -729,7 +784,12 @@ struct SettingsView: View {
                 try DataExportService.readBackup(at: url)
             }.value
             restoreError = nil
-            pendingRestore = PendingRestore(document: document, summary: backupSummary(document))
+            let choices = DataExportService.restoreChoices(for: document)
+            var message = backupSummary(document)
+            if let explanation = restoreExplanation(choices.kind) {
+                message += "\n\n" + explanation
+            }
+            pendingRestore = PendingRestore(document: document, choices: choices, message: message)
         } catch let error as DataBackupError {
             showRestoreError(error.userMessage)
         } catch {
@@ -760,12 +820,69 @@ struct SettingsView: View {
         return lines.joined(separator: "\n")
     }
 
-    private func performRestore(_ document: BackupDocument) async {
+    /// M2 "Restore into another account" (phase C): the file's ids only for this account's own
+    /// backup; another account's file comes back as new copies; a file that names no account (a
+    /// 1.3.0 backup) — or, signed out, one naming an account — lets the user say whether it is
+    /// the account this device syncs with ("Restore as It Was") or not (new copies).
+    @ViewBuilder
+    private func restoreButtons(_ pending: PendingRestore) -> some View {
+        let choices = pending.choices
+        switch choices.kind {
+        case .sameAccount:
+            Button("Restore") { confirmRestore(pending.document, plan: choices.primary) }
+        case .otherAccount:
+            Button("Restore as New Copies") { confirmRestore(pending.document, plan: choices.primary) }
+        case .noAccount, .namedAccountWhileSignedOut:
+            Button("Restore as New Copies") { confirmRestore(pending.document, plan: choices.primary) }
+            if let keep = choices.keepIDs {
+                Button("Restore as It Was") { confirmRestore(pending.document, plan: keep) }
+            }
+        }
+        Button("Cancel", role: .cancel) {}
+    }
+
+    /// The choice in words, under the file's summary; nil for this account's own backup, where
+    /// "Restore" needs no explanation. Whole sentences per case, so each is one key.
+    private func restoreExplanation(_ kind: RestoreChoices.Kind) -> String? {
+        switch kind {
+        case .sameAccount:
+            return nil
+        case .otherAccount(let email):
+            guard let email else {
+                return appLocalized("This backup is from another account. Its habits will be added to this account as new copies.")
+            }
+            return appLocalized("This backup is from another account (\(email)). Its habits will be added to this account as new copies.")
+        case .noAccount(let signedIn):
+            if signedIn {
+                return appLocalized("This backup doesn't say which account it came from. If it's this account's own backup, restore it as it was; otherwise restore it as new copies.")
+            }
+            return appLocalized("This backup doesn't say which account it came from. If you'll sign in to that account on this device, restore it as it was; otherwise restore it as new copies.")
+        case .namedAccountWhileSignedOut(let email):
+            guard let email else {
+                return appLocalized("This backup is from a Stride account. If you'll sign in to that account on this device, restore it as it was; otherwise restore it as new copies.")
+            }
+            return appLocalized("This backup is from \(email). If you'll sign in to that account on this device, restore it as it was; otherwise restore it as new copies.")
+        }
+    }
+
+    /// The phase B rule: a restore that would leave the previous owner's queued deletions or
+    /// recovered edits behind goes through the hand-over step first (export offered, a second
+    /// confirmation) — never dropped silently. Anything else restores at once.
+    private func confirmRestore(_ document: BackupDocument, plan: RestorePlan) {
+        if let handover = DataExportService.restoreHandover(for: plan, sync: sync) {
+            pendingHandover = PendingHandover(document: document, plan: plan, handover: handover)
+            return
+        }
+        Task { await restore(document, plan: plan) }
+    }
+
+    private func restore(_ document: BackupDocument, plan: RestorePlan) async {
         isRestoring = true
         defer { isRestoring = false }
         do {
-            // Waits for a sync in flight first; see DataExportService.restore.
-            try await DataExportService.restore(document, into: modelContext)
+            // Waits for a sync in flight first, then sets the store's owner to `plan.owner`; see
+            // DataExportService.restore.
+            try await DataExportService.restore(document, into: modelContext, plan: plan, sync: sync)
         } catch DataBackupError.storeNotEmpty {
             // No habit or group, yet not empty: check-ins orphaned by an old bug — offer the
             // erase. (A sync that finished during the wait may instead have brought the
@@ -802,11 +919,17 @@ struct SettingsView: View {
         // fails — the user was promised the account keeps everything; then sign out, which
         // resets the cursor so signing back in re-downloads the account. See
         // DataExportService.eraseLocalData for why "a session" includes a stored token.
-        switch await DataExportService.eraseLocalData(in: modelContext) {
+        switch await DataExportService.eraseLocalData(in: modelContext,
+                                                      clearingRecoveredEdits: eraseClearsRecoveredEdits,
+                                                      recoveredEditLinesShown: eraseRecoveredEditLines) {
         case .erased:
             break
         case .syncFailed:
             showEraseError(appLocalized("Couldn't sync, so nothing was erased. Check your connection and try again, or log out first to erase without syncing."))
+            return
+        case .recoveredEditsChanged:
+            // The export row above Erase now shows the new count.
+            showEraseError(appLocalized("New recovered edits arrived. Export them, then try again."))
             return
         case .saveFailed:
             showEraseError(appLocalized("Unable to save changes. Please try again."))
@@ -833,15 +956,34 @@ struct SettingsView: View {
     }
 
     private func inlineError(_ message: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 4) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
-                .font(.caption)
-                .accessibilityHidden(true)
-            Text(verbatim: message)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
+        SettingsInlineError(message: message)
+    }
+
+    /// The owner's recovery-log lines (0 when none, or when the log could not be read — then
+    /// nothing is offered and nothing is cleared).
+    private var recoveredEditLines: Int { sync.recoveredEdits?.lines ?? 0 }
+
+    /// Whether Delete Account erases this device's store: only when the signed-in account owns
+    /// it (`SyncOwnership.accountDeleted` leaves another owner's rows alone).
+    private var deleteAccountErasesDevice: Bool {
+        guard let user = auth.currentUser else { return false }
+        return sync.storeOwner?.id == SyncAccount(user).id
+    }
+
+    /// "Synced" only while it is true: signed in over another account's store (the account
+    /// screen was left without a choice), nothing syncs until the Sync section's row is used.
+    private var dataStorageValue: String {
+        guard auth.isLoggedIn else { return appLocalized("On Device") }
+        return sync.ownerConflict == nil ? appLocalized("Synced") : appLocalized("Not Syncing")
+    }
+
+    private var eraseConfirmMessage: Text {
+        let base = eraseSignsOut
+            ? Text("Stride syncs one last time, signs you out, then deletes every habit, check-in and group on this device. Your account's data on the server is not touched: sign in again to download it.")
+            : Text("Every habit, check-in and group on this device will be deleted. This cannot be undone.")
+        guard eraseClearsRecoveredEdits else { return base }
+        return base + Text(verbatim: "\n\n")
+            + Text("The recovered edits on this device are erased too. Export them first if you might need them.")
     }
 
     // MARK: - Notification Logic
@@ -885,6 +1027,10 @@ struct SettingsView: View {
     private func formatSyncTime(_ iso: String) -> String {
         guard let date = SyncTimestamp.parse(iso) else { return iso }
         let relative = RelativeDateTimeFormatter()
+        // The in-app language, as Today's "Synced …" line (SyncStatusRow.SyncedText): without it
+        // a Japanese-picked app on an English device read "最終同期：2 min. ago" next to Today's
+        // "2 分前に同期済み".
+        relative.locale = LanguageManager.shared.stringLocale
         relative.unitsStyle = .abbreviated
         return relative.localizedString(for: date, relativeTo: Date())
     }

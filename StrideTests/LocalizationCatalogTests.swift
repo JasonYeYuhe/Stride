@@ -209,6 +209,62 @@ final class LocalizationCatalogTests: XCTestCase {
         XCTAssertEqual(resolve(Text("\(1) of \(1) habits completed", bundle: bundle), "en"), "1 of 1 habit completed")
     }
 
+    /// The M2 (1.3.1) sync counts — Today's status line, Settings > Sync, the account screen and the
+    /// restore hand-over — through both paths the app uses: `String(localized:bundle:locale:)` as
+    /// `appLocalized` calls it, and SwiftUI's own `Text` resolution. Each one is an inline row a
+    /// user reads with a count of 1 most of the time ("1 change can't sync"), which is exactly the
+    /// case a missing plural entry gets wrong ("1 changes").
+    @MainActor
+    func testSyncCountsResolveOneAndOtherInEnglishAndSpanish() throws {
+        let bundles = ["en": try lproj("en"), "es": try lproj("es"), "ja": try lproj("ja")]
+        func loc(_ value: String.LocalizationValue, _ language: String) -> String {
+            String(localized: value, bundle: bundles[language]!, locale: Locale(identifier: language))
+        }
+        let testBundle = Bundle(for: Self.self)
+        func text(_ text: Text, _ language: String) -> String {
+            var environment = EnvironmentValues()
+            environment.locale = Locale(identifier: language)
+            return text._resolveText(in: environment)
+        }
+        for n in [1, 2] {
+            let one = n == 1
+            // Today (SyncStatusRow).
+            XCTAssertEqual(loc("Offline — \(n) changes waiting", "en"), one ? "Offline — 1 change waiting" : "Offline — 2 changes waiting")
+            XCTAssertEqual(loc("Offline — \(n) changes waiting", "es"), one ? "Sin conexión — 1 cambio pendiente" : "Sin conexión — 2 cambios pendientes")
+            XCTAssertEqual(loc("\(n) changes waiting to sync", "en"), one ? "1 change waiting to sync" : "2 changes waiting to sync")
+            XCTAssertEqual(loc("\(n) changes can't sync — see Settings", "es"),
+                           one ? "1 cambio no se puede sincronizar — consulta Ajustes" : "2 cambios no se pueden sincronizar — consulta Ajustes")
+            XCTAssertEqual(text(Text("\(n) changes can't sync — see Settings", bundle: testBundle), "en"),
+                           one ? "1 change can't sync — see Settings" : "2 changes can't sync — see Settings")
+            XCTAssertEqual(text(Text("Offline — \(n) changes waiting", bundle: testBundle), "es"),
+                           one ? "Sin conexión — 1 cambio pendiente" : "Sin conexión — 2 cambios pendientes")
+            // Settings > Sync (SyncSectionView).
+            XCTAssertEqual(loc("\(n) changes can't sync", "en"), one ? "1 change can't sync" : "2 changes can't sync")
+            XCTAssertEqual(text(Text("\(n) changes can't sync", bundle: testBundle), "es"),
+                           one ? "1 cambio no se puede sincronizar" : "2 cambios no se pueden sincronizar")
+            XCTAssertEqual(text(Text("\(n) habits belong to another account", bundle: testBundle), "en"),
+                           one ? "1 habit belongs to another account" : "2 habits belong to another account")
+            XCTAssertEqual(loc("\(n) restored items were deleted on another device", "es"),
+                           one ? "1 elemento restaurado se eliminó en otro dispositivo" : "2 elementos restaurados se eliminaron en otro dispositivo")
+            XCTAssertEqual(text(Text("Recovered Edits (\(n))", bundle: testBundle), "en"), "Recovered Edits (\(n))")
+            // The account screen and the restore hand-over.
+            XCTAssertEqual(text(Text("\(n) deletions not yet synced", bundle: testBundle), "en"),
+                           one ? "1 deletion not yet synced" : "2 deletions not yet synced")
+            XCTAssertEqual(loc("\(n) recovered edits", "en"), one ? "1 recovered edit" : "2 recovered edits")
+            XCTAssertEqual(text(Text("\(n) recovered edits", bundle: testBundle), "es"),
+                           one ? "1 edición recuperada" : "2 ediciones recuperadas")
+            // The restore hand-over counts the same queue with the account screen's key.
+            XCTAssertEqual(loc("\(n) deletions not yet synced", "es"),
+                           one ? "1 eliminación aún sin sincronizar" : "2 eliminaciones aún sin sincronizar")
+            // A single form, the number inside the sentence.
+            XCTAssertEqual(loc("\(n) changes waiting to sync", "ja"), "\(n)件の変更が同期待ち")
+        }
+        // Plain keys with an argument: the email stays where each language puts it.
+        XCTAssertEqual(loc("This device still holds changes from \("a@example.com") that restoring this backup leaves behind.", "ja"),
+                       "このデバイスには、a@example.com の変更がまだ残っています。このバックアップを復元すると、それらは置き去りになります。")
+        XCTAssertEqual(loc("Synced \("hace 2 minutos")", "es"), "Sincronizado hace 2 minutos")
+    }
+
     /// Every plural entry in every language renders for 1 and 2 without leaving a specifier or
     /// "(null)" behind — a malformed entry fails here rather than on a user's screen.
     func testEveryPluralEntryFormats() throws {
@@ -263,7 +319,10 @@ final class LocalizationCatalogTests: XCTestCase {
         let ja = try lproj("ja")
         for key in ["Measurable", "Times per week", "Weekly Review", "Habit Templates", "Welcome to Stride",
                     "Delete Account?", "%lld week streak", "Drink Water", "Health & Fitness",
-                    "weeks (unit after %lld)", "Restore from Backup…", "Sync is paused for maintenance. Your data is safe on this device and will sync when the pause ends."] {
+                    "weeks (unit after %lld)", "Restore from Backup…", "Sync is paused for maintenance. Your data is safe on this device and will sync when the pause ends.",
+                    // M2 (1.3.1): the sync rows and the account screen.
+                    "Sync paused", "Sign in again to keep syncing", "%lld changes can't sync — see Settings",
+                    "This Device's Habits", "Start from This Account's Data", "Recovered Edits (%lld)", "Before You Restore"] {
             let value = ja.localizedString(forKey: key, value: "MISSING", table: nil)
             XCTAssertNotEqual(value, "MISSING", "no ja entry for \"\(key)\"")
             XCTAssertNotEqual(value, key, "ja \"\(key)\" is still English")

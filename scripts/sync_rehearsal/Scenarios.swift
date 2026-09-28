@@ -2,9 +2,10 @@ import Foundation
 import SwiftData
 
 // M2's rehearsal scenarios — DEV-PLAN-1.3.md M2, Acceptance (1), (6) and the non-UI half of (9)
-// — each on fresh accounts against the local server, each asserted, none relaxed. What needs
-// the phase C UI (the account screen of Acceptance (5), Today's reauth row and "sync paused"
-// line) is reported SKIPPED with the reason, never as PASS. Since phase B the devices keep the
+// — each on fresh accounts against the local server, each asserted, none relaxed. The account
+// screen of Acceptance (5) is driven at the engine level (S21/S22, AccountScenarios.swift: its
+// buttons' operations are Shared/ code). What needs the phase C UI itself (Today's reauth row
+// and "sync paused" line) is reported SKIPPED with the reason, never as PASS. Since phase B the devices keep the
 // app's recovery-log FILE and per-owner backoff, and the server runs with its test hooks (the
 // swept-tombstone switch).
 
@@ -1111,8 +1112,6 @@ struct Scenarios {
 
     func skipped() {
         report.current = "phase C (UI)"
-        report.skip("sign-in to another account → no request until the choice; Export first; Start from this account's data",
-                    "the account screen (Acceptance 5) is phase C UI; the gate and SyncService.startFromSignedInAccountsData are covered by StrideAppTests/SyncServiceTests")
         report.skip("revoked session → Today's reauth row; pause switch → the \"sync paused\" line",
                     "the rows themselves are phase C UI; S20 checks what they read (needsReauth, the paused backoff)")
     }

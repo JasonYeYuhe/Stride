@@ -121,9 +121,65 @@ enum DataExportService {
         return preview
     }
 
-    /// 1.3.0's restore, which Settings still calls until the phase C restore screen: the file's
-    /// ids, every row marked `restoredAt` (so no pull deletes it — a tombstoned one is held for
-    /// "Restore as new copies"), and no owner change.
+    /// What the restore confirmation offers for `document` here and now: `restoreDecision` as
+    /// the screen needs it, one case per wording (M2, "Restore into another account"; phase C).
+    ///
+    /// Signed out, the decision is asked twice when the file names an account: `restoreDecision`
+    /// can keep the ids only for the account the user says this device will use next, and the
+    /// screen asks exactly that ("Restore as It Was" = yes, that account; copies = no). Asking
+    /// only when the file names one keeps a 1.3.0 file's question the same signed in or out.
+    @MainActor
+    static func restoreChoices(for document: BackupDocument, sync: SyncService? = nil) -> RestoreChoices {
+        let sync = sync ?? .shared   // see `restore` for the optionals
+        let decision = restoreDecision(for: document, sync: sync)
+        guard decision.offersCopies else {
+            return RestoreChoices(kind: .sameAccount, primary: decision.plan, keepIDs: nil)
+        }
+        let email = document.account.map(\.email).flatMap { $0.isEmpty ? nil : $0 }
+        let signedIn: Bool
+        if case .signedIn = sync.restoreDevice() { signedIn = true } else { signedIn = false }
+        if !signedIn, let account = document.account {
+            let named = restoreDecision(for: document, next: account, sync: sync)
+            return RestoreChoices(kind: .namedAccountWhileSignedOut(email: email),
+                                  primary: decision.plan, keepIDs: named.plan)
+        }
+        if let keep = decision.keepIDsInstead {
+            return RestoreChoices(kind: .noAccount(signedIn: signedIn), primary: decision.plan, keepIDs: keep)
+        }
+        return RestoreChoices(kind: .otherAccount(email: email), primary: decision.plan, keepIDs: nil)
+    }
+
+    /// The phase B rule for the restore screen (DEV-PLAN-1.3.md M2 progress log, 2026-09-29): a
+    /// restore with `plan` that would move the store away from an owner who still has queued
+    /// deletions or recovery-log lines must not drop them silently. `restore(_:into:plan:…)`
+    /// hands the store over through `SyncService.adoptRestoredStore`, which clears the previous
+    /// owner's deletion queue (a queue is true only for its account) and leaves that owner's
+    /// recovered edits on disk where only that owner, owning the store again, is shown them.
+    ///
+    /// nil when nothing is left behind: no owner, the same owner, or an owner with an empty
+    /// queue and log. Otherwise the screen shows what goes and offers the export first (the
+    /// account screen's "This device holds … from <owner>", in the restore's words), and restores
+    /// only on a second, explicit confirmation.
+    ///
+    /// A log that cannot be read counts as something to lose (`recoveredEdits == nil`), as in
+    /// `SyncService.hasSomethingToLose`: asking once too often is cheap, dropping lines is not.
+    @MainActor
+    static func restoreHandover(for plan: RestorePlan, sync: SyncService? = nil,
+                                deletionQueue: SyncDeletionQueue = .live,
+                                defaults: UserDefaults = .standard) -> RestoreHandover? {
+        let sync = sync ?? .shared
+        guard let owner = storeOwnerAccount(defaults: defaults), plan.owner?.id != owner.id else { return nil }
+        let queued = deletionQueue.pending().count
+        let lines = try? sync.recoveryLog.lineCount(accountID: owner.id)
+        guard queued > 0 || (lines ?? 1) > 0 else { return nil }
+        return RestoreHandover(previousOwner: owner, queuedDeletions: queued, recoveredEdits: lines)
+    }
+
+    /// 1.3.0's restore: the file's ids, every row marked `restoredAt` (so no pull deletes it — a
+    /// tombstoned one is held for "Restore as new copies"), and no owner change. Settings no
+    /// longer calls it (phase C restores through `restoreChoices` and `restore(_:into:plan:…)`);
+    /// LocalDataFlowTests still pins the wait and the withdrawn deletion through it, which are
+    /// the same code in both.
     @MainActor
     @discardableResult
     static func restore(_ document: BackupDocument, into context: ModelContext,
@@ -140,6 +196,10 @@ enum DataExportService {
         case erased
         /// A device with a session could not sync first, so nothing was erased.
         case syncFailed
+        /// The pre-erase sync archived recovered edits the confirmation never counted (a row
+        /// edited here was deleted on another device meanwhile). Nothing was erased and the device
+        /// is still signed in: the new count is on screen with its export, and Erase asks again.
+        case recoveredEditsChanged
         case saveFailed
     }
 
@@ -159,23 +219,48 @@ enum DataExportService {
     ///
     /// Signed out, the cursor is reset anyway: it can only belong to an account that synced
     /// here before, and after an erase no incremental pull from it is right.
+    ///
+    /// `clearingRecoveredEdits`: the owner's recovery log goes too. Settings passes true only
+    /// when it showed the lines' count and offered "Export Recovered Edits" above the Erase
+    /// button (phase C: "offer the recovery-log export first"), and its confirmation said they go;
+    /// a log it could not count is kept. Kept, the lines would stay on disk under the old owner's
+    /// key, shown again only if that account ever owns the store — for a user who asked to erase
+    /// this device, a copy of their edits nobody can see.
+    ///
+    /// `recoveredEditLinesShown`: the count the confirmation was built from. The pre-erase sync
+    /// can archive more — an edit here to a row another device deleted — and those lines were
+    /// never counted, shown or offered for export; clearing them with the rest (or hiding them
+    /// under the old owner's key) would lose the only copy of an edit the user never saw. So when
+    /// the count moved, nothing is erased (`.recoveredEditsChanged`) and Settings asks again.
     @MainActor
     static func eraseLocalData(in context: ModelContext,
+                               clearingRecoveredEdits: Bool = false,
+                               recoveredEditLinesShown: Int? = nil,
                                auth: AuthService? = nil,
                                sync: SyncService? = nil) async -> EraseOutcome {
         let auth = auth ?? .shared, sync = sync ?? .shared   // see `restore` for the optionals
         if auth.isLoggedIn || auth.hasStoredSession {
             guard await sync.syncAfterInFlight(context: context) else { return .syncFailed }
+            if let shown = recoveredEditLinesShown {
+                sync.refreshRecoveredEdits()
+                guard (sync.recoveredEdits?.lines ?? 0) == shown else { return .recoveredEditsChanged }
+            }
             await auth.logout()
         }
         // Also what stops a sync that started during logout's request from writing into the
         // store or the cursor after this point (SyncService.stateGeneration).
-        sync.resetSyncState()
+        sync.signedOut()
+        // The rows first, THEN the sync state. Cleared first, a failed save left the rows with
+        // their `syncedAt` marks and no owner: the next account signed into adopted them without
+        // the account screen, its first full pull deleted every delivered row as "deleted
+        // elsewhere", and the never-pushed ones went up into it (phase C review, F5). Nothing
+        // suspends between the two, so no sync can run in between.
         do {
             try DataBackup.eraseLocalData(in: context)
         } catch {
             return .saveFailed
         }
+        sync.resetSyncState(clearingRecoveryLog: clearingRecoveredEdits)
         return .erased
     }
 
@@ -186,6 +271,40 @@ enum DataExportService {
         f.timeZone = TimeZone.current
         return f
     }()
+}
+
+// MARK: - The restore screen
+
+/// What the restore confirmation offers (`DataExportService.restoreChoices`).
+struct RestoreChoices: Equatable {
+    enum Kind: Equatable {
+        /// The signed-in account's own backup: its ids are kept. One button, "Restore".
+        case sameAccount
+        /// Signed in, a file from another account: new copies only — kept ids would be answered
+        /// `not_owned`. `email` is the file's, when it recorded one.
+        case otherAccount(email: String?)
+        /// A file that names no account (every 1.3.0 backup): new copies, or "Restore as It Was"
+        /// for the user who knows it is the account this device syncs with (or will).
+        case noAccount(signedIn: Bool)
+        /// Signed out, a file naming an account: "Restore as It Was" says this device will sign
+        /// in to that account next; new copies say it will not.
+        case namedAccountWhileSignedOut(email: String?)
+    }
+
+    var kind: Kind
+    /// New copies, or — for `.sameAccount` — the file's ids.
+    var primary: RestorePlan
+    /// "Restore as It Was": the file's ids. nil when the screen must not offer them.
+    var keepIDs: RestorePlan?
+}
+
+/// A restore that would leave the previous owner's queued deletions or recovered edits behind
+/// (`DataExportService.restoreHandover`).
+struct RestoreHandover: Equatable {
+    var previousOwner: BackupAccount
+    var queuedDeletions: Int
+    /// nil when the log could not be read.
+    var recoveredEdits: Int?
 }
 
 // MARK: - Share sheet items

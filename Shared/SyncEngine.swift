@@ -859,3 +859,327 @@ private final class SyncRun {
         }
     }
 }
+
+// MARK: - The owner (account isolation)
+
+// Here rather than in the app's SyncService (where phase B kept it) so that one rule serves the
+// app, StrideTests and scripts/sync_rehearsal.sh: the rehearsal drives the account screen's
+// choices at the engine level — it has no UI — and must run the code the app runs, not a copy of
+// it (DEV-PLAN-1.3.md M2, "Account isolation"; Acceptance (5)). `SyncService` keeps what needs the
+// app: the session source, the UI state (`ownerConflict`), and the sync that follows a choice.
+
+/// A server account: `APIUser.id` as a string (the owner key everywhere sync stores per-account
+/// state) and its email, for display.
+struct SyncAccount: Equatable, Sendable {
+    var id: String
+    var email: String
+
+    init(id: String, email: String) {
+        self.id = id
+        self.email = email
+    }
+}
+
+/// The account whose data this store holds (M2 account isolation). Its id is the key of the
+/// per-owner cursor (`SyncDefaultsCursorStore`); the email is for the account screen.
+struct SyncOwner: Equatable, Sendable {
+    var id: String
+    var email: String
+
+    init(_ account: SyncAccount) {
+        id = account.id
+        email = account.email
+    }
+}
+
+/// Signed in as `signedIn` on a store that holds something to lose and is not that account's:
+/// the account screen's question. No sync runs until it is answered.
+struct SyncOwnerConflict: Equatable, Identifiable, Sendable {
+    /// The store's owner. nil = **owner unknown**: a device that reached 1.3.1 signed out with
+    /// rows (`SyncOwnerStore.ownerUnknown`) — 1.3.0 recorded no account, so they may be a
+    /// previous account's or nobody's, and the screen offers "Upload these habits to this
+    /// account" as well as "Start from this account's data" (sub-decision (e)).
+    var owner: SyncOwner?
+    var signedIn: SyncAccount
+
+    var isOwnerUnknown: Bool { owner == nil }
+    /// For `.sheet(item:)`: one screen per (owner, account) pair.
+    var id: String { "\(owner?.id ?? "-")→\(signedIn.id)" }
+}
+
+/// The owner record, in the same defaults as the cursors (`UserDefaults.standard` in the app).
+struct SyncOwnerStore {
+    static let ownerKey = "stride_sync_owner"
+    /// Set once, at the first 1.3.1 launch, when the device was signed out with rows and no
+    /// owner: 1.3.0 records no account and clears its cursor on sign-out, so those rows may be a
+    /// previous account's or nobody's (M2, "Owner unknown").
+    static let ownerUnknownKey = "stride_sync_owner_unknown"
+    static let firstLaunchNotedKey = "stride_sync_owner_first_launch_noted"
+    /// The first 1.3.1 launch found rows, no owner and a stored session token — which is not yet
+    /// evidence of being signed in: a 1.2.3 device keeps a dead token (only 1.3.0 started
+    /// deleting them), and a device that auto-updated while dormant still holds the one that
+    /// expired meanwhile. Settled by the first answer about that token
+    /// (`storedSessionConfirmed` / `storedSessionEnded`).
+    static let ownerUnknownPendingKey = "stride_sync_owner_unknown_pending"
+
+    let defaults: UserDefaults
+
+    var owner: SyncOwner? {
+        guard let dict = defaults.dictionary(forKey: Self.ownerKey),
+              let id = dict["id"] as? String, let email = dict["email"] as? String else { return nil }
+        return SyncOwner(SyncAccount(id: id, email: email))
+    }
+
+    var ownerUnknown: Bool { defaults.bool(forKey: Self.ownerUnknownKey) }
+
+    func set(_ owner: SyncOwner) {
+        defaults.set(["id": owner.id, "email": owner.email], forKey: Self.ownerKey)
+        defaults.removeObject(forKey: Self.ownerUnknownKey)
+        defaults.removeObject(forKey: Self.ownerUnknownPendingKey)
+    }
+
+    func clear() {
+        defaults.removeObject(forKey: Self.ownerKey)
+        defaults.removeObject(forKey: Self.ownerUnknownKey)
+        defaults.removeObject(forKey: Self.ownerUnknownPendingKey)
+    }
+
+    /// Once per install, at the first 1.3.1 launch: a store with rows and no owner is owner-unknown
+    /// if the device is signed out (M2, "Owner unknown"). With a session token stored it is
+    /// signed in only if that token is still alive, which the launch check has not answered yet,
+    /// so the question waits for it (`ownerUnknownPendingKey`). Deciding on "a token is stored"
+    /// let a dead token skip the account screen: the check deleted it, the device was signed out
+    /// with rows, no owner and no flag, and the next account signed into adopted the rows silently
+    /// and received the previous account's never-pushed habits (phase C review, F1).
+    func noteFirstLaunch(hasStoredSession: Bool, hasRows: Bool) {
+        guard !defaults.bool(forKey: Self.firstLaunchNotedKey) else { return }
+        defaults.set(true, forKey: Self.firstLaunchNotedKey)
+        guard owner == nil, hasRows else { return }
+        defaults.set(true, forKey: hasStoredSession ? Self.ownerUnknownPendingKey : Self.ownerUnknownKey)
+    }
+
+    /// The server named the stored token's user: the device was signed in at its first 1.3.1
+    /// launch, and that account adopts the store at its first sync (its marks still wait for the
+    /// proof — a live token is not evidence that its account is the one the marks were inferred
+    /// for).
+    func storedSessionConfirmed() {
+        defaults.removeObject(forKey: Self.ownerUnknownPendingKey)
+    }
+
+    /// The stored token turned out dead (`{user: null}`), or a new sign-in replaced it before the
+    /// server ever named its user: the device reached 1.3.1 signed out after all. Rows that are
+    /// still ownerless are owner-unknown, and the next sign-in asks (sub-decision (e)). Does
+    /// nothing unless the first launch left the question open.
+    func storedSessionEnded() {
+        guard defaults.bool(forKey: Self.ownerUnknownPendingKey) else { return }
+        defaults.removeObject(forKey: Self.ownerUnknownPendingKey)
+        guard owner == nil else { return }
+        defaults.set(true, forKey: Self.ownerUnknownKey)
+    }
+}
+
+/// What "Start from this account's data" would take from the device: its rows, the deletions
+/// queued for the owner, and the owner's recovery-log lines. The account screen lists it.
+struct SyncOwnerHoldings: Equatable, Sendable {
+    var habits = 0
+    var checkIns = 0
+    var groups = 0
+    var queuedDeletions = 0
+    /// nil when the log could not be read — which counts as something to lose: asking once too
+    /// often is cheap, clearing lines nobody saw is not.
+    var recoveredEdits: Int? = 0
+
+    var isEmpty: Bool {
+        habits == 0 && checkIns == 0 && groups == 0 && queuedDeletions == 0 && recoveredEdits == 0
+    }
+}
+
+enum SyncOwnershipError: Error, Equatable {
+    /// "Upload these habits" asked for a store whose owner is known.
+    case uploadNeedsUnknownOwner
+}
+
+/// What a sign-in finds, decided before any request (`SyncOwnership.decide`).
+enum SyncSignInDecision: Equatable, Sendable {
+    /// The owner signed in again: the cursor, the queue and every row's delivery state resume,
+    /// and nothing is re-uploaded (M2, "Same account again").
+    case resume
+    /// No owner, nothing unknown about the rows (a fresh install, an erased store, or an
+    /// owner-unknown store emptied since): the account adopts the store (M2, "No owner").
+    case adopt
+    /// Another account's store with nothing to lose: it changes hands silently.
+    case switchSilently(from: SyncOwner)
+    /// The account screen: another account's rows (or rows of unknown origin) are here.
+    case choose(SyncOwnerConflict)
+}
+
+/// The owner rule and the account screen's operations, over the stores a device keeps: the owner
+/// record, the per-owner cursors and backoff, the deletion queue, the `unknown_habit` strikes,
+/// the marks proof (all in `defaults`) and the recovery-log file.
+///
+/// Every operation that moves the store to another account clears what was true only for the
+/// previous one — an acknowledgement, a cursor, a queued deletion and a server's "wait" are true
+/// only for the account that gave them — and none merges one account's rows into another.
+@MainActor
+struct SyncOwnership {
+    let defaults: UserDefaults
+    let deletionQueue: SyncDeletionQueue
+    let recoveryLog: SyncRecoveryLog
+
+    var owners: SyncOwnerStore { SyncOwnerStore(defaults: defaults) }
+    private var cursors: SyncDefaultsCursorStore { SyncDefaultsCursorStore(defaults: defaults) }
+
+    /// What the device holds for `owner` (nil = the unknown owner). A store that cannot be counted
+    /// reports a habit, so it is never taken for empty.
+    func holdings(owner: SyncOwner?, in context: ModelContext) -> SyncOwnerHoldings {
+        var h = SyncOwnerHoldings()
+        h.queuedDeletions = deletionQueue.pending().count
+        h.recoveredEdits = try? recoveryLog.lineCount(accountID: owner?.id)
+        do {
+            h.habits = try context.fetchCount(FetchDescriptor<Habit>())
+            h.checkIns = try context.fetchCount(FetchDescriptor<HabitRecord>())
+            h.groups = try context.fetchCount(FetchDescriptor<HabitGroup>())
+        } catch {
+            h.habits = max(h.habits, 1)
+        }
+        return h
+    }
+
+    /// The owner rule, for `account` signed in now. Changes nothing (`settle` applies it).
+    ///
+    /// - The owner signed in → resume.
+    /// - No owner → adopt, unless the store is owner-unknown and still holds something: then the
+    ///   screen offers Upload and Start (sub-decision (e)). A store adopted without the screen
+    ///   keeps its migrated marks only provisionally — the first full pull proves or forgets them
+    ///   (`SyncMarksProof`).
+    /// - Another owner, nothing to lose → switch silently; something to lose → the screen.
+    func decide(for account: SyncAccount, in context: ModelContext) -> SyncSignInDecision {
+        guard let owner = owners.owner else {
+            if owners.ownerUnknown, !holdings(owner: nil, in: context).isEmpty {
+                return .choose(SyncOwnerConflict(owner: nil, signedIn: account))
+            }
+            return .adopt
+        }
+        if owner.id == account.id { return .resume }
+        if holdings(owner: owner, in: context).isEmpty { return .switchSilently(from: owner) }
+        return .choose(SyncOwnerConflict(owner: owner, signedIn: account))
+    }
+
+    /// Applies `decide`: returns the conflict when the user must choose (nothing changed), nil
+    /// when `account` owns the store now.
+    @discardableResult
+    func settle(for account: SyncAccount, in context: ModelContext) -> SyncOwnerConflict? {
+        switch decide(for: account, in: context) {
+        case .resume:
+            // The email can change server-side; the screen shows the current one.
+            if owners.owner?.email != account.email { owners.set(SyncOwner(account)) }
+            return nil
+        case .adopt:
+            owners.set(SyncOwner(account))
+            return nil
+        case .switchSilently(let previous):
+            // What "Start from this account's data" clears, minus the rows (there are none) and
+            // the recovery log (it has no lines, or this would be a conflict).
+            handOver(to: SyncOwner(account), from: previous)
+            return nil
+        case .choose(let conflict):
+            return conflict
+        }
+    }
+
+    /// The store changes hands while it holds nothing of `previous`'s (it is empty, or was just
+    /// erased or restored into): what belonged to `previous` goes — its queued deletions, the
+    /// `unknown_habit` strikes, its backoff and its cursor — and `next` becomes the owner.
+    ///
+    /// The cursor goes with the queue because it is only true together with it: "this device
+    /// holds the account's state as of C, minus the deletions still queued". A restore into an
+    /// empty store drops a queue that may not be empty (rows deleted while signed out, then a
+    /// backup restored naming no account), and if `previous` later adopts the store again, an
+    /// incremental pull from C never returns those rows — they were not changed since C — while
+    /// their deletions never reach the server: the device and the account drift apart until the
+    /// cursor ages out (phase B review, R1). Without a cursor that return is a full pull, and the
+    /// device converges on what the account holds. So a cursor exists only for the store's
+    /// owner; `next`'s is cleared too, in case one outlived an earlier hand-over.
+    func handOver(to next: SyncOwner?, from previous: SyncOwner?) {
+        if let previous, previous.id != next?.id {
+            deletionQueue.clearAll()
+            SyncUnknownHabitStrikes(defaults: defaults).clearAll()
+            SyncBackoffStore(defaults: defaults).clear(for: previous.id)
+            cursors.setCursor(nil, for: previous.id)
+            if let next { cursors.setCursor(nil, for: next.id) }
+        }
+        if let next { owners.set(next) } else { owners.clear() }
+    }
+
+    /// Whether `conflict` is still the question the device is asking: `signedIn` is who the
+    /// caller says is signed in now. A sign-out, another sign-in or a settled owner since the
+    /// screen appeared must not erase or upload anything.
+    func isCurrent(_ conflict: SyncOwnerConflict, signedIn: SyncAccount?) -> Bool {
+        guard signedIn == conflict.signedIn, owners.owner == conflict.owner else { return false }
+        return conflict.owner != nil || owners.ownerUnknown
+    }
+
+    /// "Start from this account's data" (M2, "Different account, something to lose"; and the
+    /// owner-unknown store's second choice). In order: erase the local rows
+    /// (`DataBackup.eraseLocalData`, which queues no deletion); clear the deletion queue, the
+    /// strikes, and the previous owner's cursor, backoff and recovery log; clear the new owner's
+    /// cursor too — an erased store pulled incrementally from an old cursor would come back
+    /// without the account's older rows (the 1.2.3 "signed in, no habits" bug); settle the marks
+    /// proof (an empty store has no marks); make the signed-in account the owner. The caller then
+    /// syncs: with no cursor, that is a full pull.
+    ///
+    /// The previous owner's log is cleared only once the erase has saved: past it, the lines are
+    /// not "something to lose" for the screen — the user exported them or chose not to. A clear
+    /// that fails leaves them under the old owner's key, never read for the new one. A failed
+    /// erase throws and changes nothing else.
+    func startFromAccountsData(_ conflict: SyncOwnerConflict, in context: ModelContext) throws {
+        try DataBackup.eraseLocalData(in: context)
+        try? recoveryLog.clear(accountID: conflict.owner?.id)
+        deletionQueue.clearAll()
+        SyncUnknownHabitStrikes(defaults: defaults).clearAll()
+        if let previous = conflict.owner { SyncBackoffStore(defaults: defaults).clear(for: previous.id) }
+        SyncMarksProof(defaults: defaults).settle()
+        handOver(to: SyncOwner(conflict.signedIn), from: conflict.owner)
+        cursors.setCursor(nil, for: conflict.signedIn.id)
+    }
+
+    /// "Upload these habits to this account" — the owner-unknown store only (sub-decision (e)).
+    /// Every delivery mark is forgotten FIRST (`SyncMarksProof.forgetMarks`), even for the marks'
+    /// own account: the user said these rows go up, so the adoption's full pull keeps them all
+    /// and the push uploads them — rows the server knows as another account's come back
+    /// `not_owned` and are held, rows that account deleted come back `tombstoned` and are
+    /// archived; none is deleted by absence. The queued deletions stay: they were made on these
+    /// rows, and the server applies a deletion only to a row the account owns. A cursor left for
+    /// the account is dropped, so the first pull is full. Throws — adopting nothing — when the
+    /// marks cannot be saved.
+    func uploadLocalHabits(_ conflict: SyncOwnerConflict, in context: ModelContext) throws {
+        // Never for a known owner: that would be the keep-and-add 1.3.1 deliberately does not
+        // offer (M2, "Why no keep-and-add").
+        guard conflict.isOwnerUnknown else { throw SyncOwnershipError.uploadNeedsUnknownOwner }
+        try SyncMarksProof(defaults: defaults).forgetMarks(in: context)
+        cursors.setCursor(nil, for: conflict.signedIn.id)
+        owners.set(SyncOwner(conflict.signedIn))
+    }
+
+    /// The account `accountID` was deleted on the server (AuthService.deleteAccount, after its
+    /// sign-out). If it owned this store, the store is erased and everything sync kept for it
+    /// goes: the owner, every cursor, the queue, the strikes, the backoff and the marks proof —
+    /// the next account signed into adopts an empty store. Its recovery log goes either way: its
+    /// lines hold that account's names and notes, and nobody can sign into it again. A store
+    /// owned by ANOTHER account (the deleted one was signed in while the account screen was
+    /// pending) keeps its rows and owner: they were never the deleted account's.
+    func accountDeleted(_ accountID: String, in context: ModelContext) throws {
+        try? recoveryLog.clear(accountID: accountID)
+        SyncBackoffStore(defaults: defaults).clear(for: accountID)
+        cursors.setCursor(nil, for: accountID)
+        guard owners.owner?.id == accountID else { return }
+        try DataBackup.eraseLocalData(in: context)
+        defaults.removeObject(forKey: SyncDefaultsCursorStore.key)
+        defaults.removeObject(forKey: SyncDefaultsCursorStore.legacyKey)
+        owners.clear()
+        deletionQueue.clearAll()
+        SyncUnknownHabitStrikes(defaults: defaults).clearAll()
+        SyncBackoffStore(defaults: defaults).clearAll()
+        SyncMarksProof(defaults: defaults).settle()
+    }
+}

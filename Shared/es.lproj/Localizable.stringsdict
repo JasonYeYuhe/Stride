@@ -361,5 +361,182 @@
 			<string>semanas de racha</string>
 		</dict>
 	</dict>
+	<!-- Sync, M2 (1.3.1): Settings > Sync, the account screen, the restore hand-over and Today's status line. -->
+	<key>%lld deletions not yet synced</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld eliminación aún sin sincronizar</string>
+			<key>other</key>
+			<string>%lld eliminaciones aún sin sincronizar</string>
+		</dict>
+	</dict>
+	<key>%lld recovered edits</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld edición recuperada</string>
+			<key>other</key>
+			<string>%lld ediciones recuperadas</string>
+		</dict>
+	</dict>
+	<key>%lld changes can't sync</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld cambio no se puede sincronizar</string>
+			<key>other</key>
+			<string>%lld cambios no se pueden sincronizar</string>
+		</dict>
+	</dict>
+	<key>%lld restored habits were deleted on another device</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld hábito restaurado se eliminó en otro dispositivo</string>
+			<key>other</key>
+			<string>%lld hábitos restaurados se eliminaron en otro dispositivo</string>
+		</dict>
+	</dict>
+	<key>%lld restored items were deleted on another device</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld elemento restaurado se eliminó en otro dispositivo</string>
+			<key>other</key>
+			<string>%lld elementos restaurados se eliminaron en otro dispositivo</string>
+		</dict>
+	</dict>
+	<key>%lld habits belong to another account</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld hábito pertenece a otra cuenta</string>
+			<key>other</key>
+			<string>%lld hábitos pertenecen a otra cuenta</string>
+		</dict>
+	</dict>
+	<key>%lld items belong to another account</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld elemento pertenece a otra cuenta</string>
+			<key>other</key>
+			<string>%lld elementos pertenecen a otra cuenta</string>
+		</dict>
+	</dict>
+	<key>Recovered Edits (%lld)</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>Ediciones recuperadas (%lld)</string>
+			<key>other</key>
+			<string>Ediciones recuperadas (%lld)</string>
+		</dict>
+	</dict>
+	<key>Offline — %lld changes waiting</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>Sin conexión — %lld cambio pendiente</string>
+			<key>other</key>
+			<string>Sin conexión — %lld cambios pendientes</string>
+		</dict>
+	</dict>
+	<key>%lld changes waiting to sync</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld cambio pendiente de sincronizar</string>
+			<key>other</key>
+			<string>%lld cambios pendientes de sincronizar</string>
+		</dict>
+	</dict>
+	<key>%lld changes can't sync — see Settings</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld cambio no se puede sincronizar — consulta Ajustes</string>
+			<key>other</key>
+			<string>%lld cambios no se pueden sincronizar — consulta Ajustes</string>
+		</dict>
+	</dict>
 </dict>
 </plist>

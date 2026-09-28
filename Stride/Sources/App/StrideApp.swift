@@ -6,6 +6,8 @@ import WidgetKit
 struct StrideApp: App {
     let modelContainer: ModelContainer
     private var languageManager = LanguageManager.shared
+    /// The account screen for a one-tap sign-in with no login sheet open (AccountChoiceRouter).
+    private var accountRouter = AccountChoiceRouter.shared
     @State private var showOnboarding = !UserDefaults.standard.bool(forKey: "stride_onboarding_completed")
 
     init() {
@@ -30,6 +32,9 @@ struct StrideApp: App {
             // `-demoScenario plurals|weekly` picks the plural acceptance data set.
             DemoData.populate(container: modelContainer, scenario: .fromLaunchArguments())
         }
+        // `-demoScenario accountConflict | accountUnknownOwner`: the account screen with fake
+        // accounts and no network sign-in, for screenshots (AccountChoiceRouter.demoRequest).
+        AccountChoiceRouter.shared.request = AccountChoiceRouter.demoRequest()
         #endif
         // Instantiate StoreService now so its Transaction.updates listener is running before any
         // network work. It used to be created lazily, and on macOS the default Today tab never
@@ -92,6 +97,11 @@ struct StrideApp: App {
                 // Deliver links to the window that is already open. Without this, macOS opens a
                 // second main window for every incoming URL (WindowGroup's default).
                 .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
+                // The account screen as the continuation of a one-tap sign-in (handleLoginLink).
+                // Never presented by a launch or foreground sync: those block silently.
+                .sheet(item: Bindable(accountRouter).request) { request in
+                    AccountChoiceSheet(request: request) { accountRouter.request = nil }
+                }
                 #if os(iOS)
                 .fullScreenCover(isPresented: $showOnboarding) {
                     OnboardingView(isPresented: $showOnboarding)
@@ -139,13 +149,24 @@ struct StrideApp: App {
 
     /// Signs in from a login link when signed out, then syncs — the same sync SettingsView runs
     /// when `isLoggedIn` turns true, needed here because Settings may not be on screen (or, on
-    /// macOS, open at all). SyncService ignores the second of two overlapping syncs. The login
-    /// sheet, if it is open waiting for a pasted token, closes itself on the sign-in.
+    /// macOS, open at all). SyncService ignores the second of two overlapping syncs.
+    ///
+    /// Between the two, the owner is settled (`SyncService.settleSignIn`) exactly as a typed
+    /// code settles it in LoginView: a link into an account that does not own this device's
+    /// habits continues with the account screen, and the sync after it is blocked until the
+    /// choice (it makes no request). If the login sheet is open — waiting on "Check your email"
+    /// — it shows the screen itself, in its own sheet; otherwise it is presented here.
     @MainActor
     private func handleLoginLink(_ url: URL) {
         Task { @MainActor in
             guard await AuthService.shared.handleLoginLink(url) == .signedIn else { return }
-            await SyncService.shared.sync(context: modelContainer.mainContext)
+            let context = modelContainer.mainContext
+            if accountRouter.loginFlowsOpen == 0,
+               case .chooseAccountData(let conflict) = SyncService.shared.settleSignIn(in: context) {
+                accountRouter.request = AccountChoiceRequest(conflict: conflict)
+                return
+            }
+            await SyncService.shared.sync(context: context)
         }
     }
 

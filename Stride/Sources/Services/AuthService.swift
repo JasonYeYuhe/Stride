@@ -15,6 +15,18 @@ final class AuthService {
     /// True once the initial session check from Keychain has completed (success or failure).
     private(set) var isSessionRestored = false
 
+    /// The stored session was found gone — `{user: null}` for the stored token: expired after 30
+    /// days unused, revoked, or signed out elsewhere — rather than ended here by Log Out. Today's
+    /// "Sign in again to keep syncing" row reads it with `SyncService.needsReauth` (M2, "Sign-in
+    /// that stays"; acceptance (9)).
+    ///
+    /// Persisted, unlike `needsReauth`: a 401 flags the run in memory, but the next COLD launch's
+    /// session check is what then meets the dead token, deletes it and leaves the device looking
+    /// merely signed out — no row, only "Sign In" in Settings, the 1.3.0 state the row exists to
+    /// end. Cleared by a sign-in, a Log Out and an account deletion.
+    private(set) var sessionExpired = false
+    static let sessionExpiredKey = "stride_session_expired"
+
     var isLoggedIn: Bool { currentUser != nil }
 
     /// A session token is in the Keychain, whether or not its user is loaded. The two differ
@@ -45,6 +57,10 @@ final class AuthService {
     /// the marks (`SyncMarksProof`) — needs no sign-in hook. TODO(M2): remove it together with
     /// the argument StrideAppTests/AuthServiceTests.swift passes.
     private let onSignIn: @MainActor () -> Void
+    /// After `deleteAccount` has signed out: the deleted account's local traces go
+    /// (`SyncService.accountDeleted` — its rows if it owned the store, its owner record, recovery
+    /// log and backoff). A closure for the same reason as `onSignOut`; tests pass their own.
+    private let onAccountDeleted: @MainActor (SyncAccount) -> Void
 
     /// The defaults are what `shared` has always used. StrideAppTests passes an APIClient over a
     /// stubbed URLSession and the same in-memory token store it gave that client — the two must
@@ -55,13 +71,16 @@ final class AuthService {
         tokenStore: SessionTokenStore = KeychainSessionTokenStore(),
         defaults: UserDefaults = .standard,
         onSignOut: @escaping @MainActor () -> Void = { SyncService.shared.signedOut() },
-        onSignIn: @escaping @MainActor () -> Void = {}
+        onSignIn: @escaping @MainActor () -> Void = {},
+        onAccountDeleted: @escaping @MainActor (SyncAccount) -> Void = { AuthService.eraseAfterAccountDeletion($0) }
     ) {
         self.api = api
         self.tokenStore = tokenStore
         self.defaults = defaults
         self.onSignOut = onSignOut
         self.onSignIn = onSignIn
+        self.onAccountDeleted = onAccountDeleted
+        self.sessionExpired = defaults.bool(forKey: Self.sessionExpiredKey)
         // Check session on init if we have a stored token
         if tokenStore.read() != nil {
             Task { await checkSession() }
@@ -112,18 +131,40 @@ final class AuthService {
         // is not deleted.
         guard tokenStore.read() == sentToken else { return }
         setUser(response.user)
-        if response.user == nil, sentToken != nil {
+        guard sentToken != nil else { return }
+        // The first 1.3.1 launch left "signed in or not?" open for a store with rows and no
+        // owner until this answer (SyncOwnerStore.noteFirstLaunch). Same defaults as SyncService's
+        // owner record: `.standard` in the app, the test's suite in tests.
+        let owners = SyncOwnerStore(defaults: defaults)
+        if response.user == nil {
             tokenStore.delete()
             rememberSessionAccount(nil)
+            owners.storedSessionEnded()
+            setSessionExpired(true)
+        } else {
+            owners.storedSessionConfirmed()
         }
     }
 
     /// `currentUser`, and the account the stored session belongs to (`sessionAccountKey`), which
     /// outlives a launch whose session check fails. Clearing the user (a failed check) does not
-    /// forget the account: the token is still that account's.
+    /// forget the account: the token is still that account's. A user loaded means signed in, so
+    /// the "Sign in again" row's reason is gone.
     private func setUser(_ user: APIUser?) {
         currentUser = user
-        if let user { rememberSessionAccount(SyncAccount(user)) }
+        if let user {
+            rememberSessionAccount(SyncAccount(user))
+            setSessionExpired(false)
+        }
+    }
+
+    private func setSessionExpired(_ expired: Bool) {
+        sessionExpired = expired
+        if expired {
+            defaults.set(true, forKey: Self.sessionExpiredKey)
+        } else {
+            defaults.removeObject(forKey: Self.sessionExpiredKey)
+        }
     }
 
     func requestMagicLink(email: String) async -> Bool {
@@ -145,6 +186,10 @@ final class AuthService {
         error = nil
         do {
             let response = try await api.verifyToken(token)
+            // A stored token the server never named a user for (the first 1.3.1 launch's check
+            // failed offline, and a typed code replaced it) settles the owner question as signed
+            // out: that token's account is unknown, so the store's rows are too.
+            SyncOwnerStore(defaults: defaults).storedSessionEnded()
             setUser(response.user)
             onSignIn()
             isLoading = false
@@ -175,10 +220,11 @@ final class AuthService {
     /// `.onContinueUserActivity`). Signs in only when this device is signed out; the caller runs
     /// the post-login sync on `.signedIn`.
     ///
-    /// Signed in already, the link is ignored rather than switching accounts. Switching now would
-    /// keep this device's habits and push them into the other account on the next sync — M2
-    /// builds the choice (keep, merge, discard) that makes a switch safe. A link opened by
-    /// accident, or a second person's link forwarded to this device, must not do that.
+    /// Signed in already, the link is ignored rather than switching accounts: a link opened by
+    /// accident, or a second person's link forwarded to this device, must not sign the device out
+    /// of its account. Signed out, a link into an account that does not own this device's habits
+    /// continues with the same account screen as a typed code (StrideApp → `SyncService
+    /// .settleSignIn` → AccountSwitchView), and nothing syncs until its choice.
     ///
     /// The token never reaches a log, analytics or Sentry: it is sent in the verify request's
     /// body, which Sentry's request stripping and network breadcrumbs (URL only) never carry,
@@ -243,24 +289,51 @@ final class AuthService {
         currentUser = nil
         tokenStore.delete()
         rememberSessionAccount(nil)
+        // Signed out on purpose: nothing to ask the user to sign back into.
+        setSessionExpired(false)
         onSignOut()
     }
 
-    /// TODO(M2 account screen): the spec also erases local data and clears the store's owner
-    /// here ("`deleteAccount` erases local data and clears the owner"), which needs the
-    /// confirmation text to say so. When it lands, the deleted account's recovery log
-    /// (`SyncService.clearRecoveredEdits` — its lines hold that account's names and notes) and
-    /// backoff go with it: `SyncService.resetSyncState` clears the backoff, not the log. Until then the owner stays the deleted account, so the next
-    /// account signed into on this device finds rows it does not own and is not synced until
-    /// that screen settles it — blocked, never merged. Clearing the owner alone would be worse:
-    /// the rows keep `syncedAt` from the deleted account, and the next account's first full pull
-    /// would delete them as "delivered, then deleted elsewhere".
+    /// Deletes the account on the server, signs out, and then clears what this device kept for
+    /// it (M2: "`deleteAccount` erases local data and clears the owner"): its habits, check-ins
+    /// and groups if it owned the store, the owner record, its recovery log (its lines hold that
+    /// account's names and notes, and nobody can sign into it again to see them) and its backoff
+    /// (`onAccountDeleted` → `SyncService.accountDeleted`). Settings' confirmation says the
+    /// device's copy goes too.
+    ///
+    /// Why the erase and not only clearing the owner: the rows keep `syncedAt` from the deleted
+    /// account, so the next account's first full pull would delete them as "delivered, then
+    /// deleted elsewhere" — and they were that account's data, which the user just asked to have
+    /// removed. A store owned by ANOTHER account (the deleted one was signed in while the account
+    /// screen waited) is left alone.
+    ///
+    /// Throws only when the server refused: nothing local changed then.
     func deleteAccount() async throws {
+        // Before the sign-out forgets it: whose data to clear.
+        let account = currentSyncSession()?.account ?? currentUser.map(SyncAccount.init)
         try await api.deleteAccount()
         currentUser = nil
         tokenStore.delete()
         rememberSessionAccount(nil)
+        setSessionExpired(false)
         onSignOut()
+        if let account { onAccountDeleted(account) }
+    }
+
+    /// The app's `onAccountDeleted`: the store and the sync state through SyncService, then what
+    /// hangs off the store — reminders of habits that no longer exist, the badge, the widgets —
+    /// as Erase Local Data does. An erase that cannot be saved leaves the rows under the deleted
+    /// owner, and the next account signed into is shown the account screen for them (blocked,
+    /// never merged); the account itself is already gone, so this is not reported as a failed
+    /// deletion.
+    static func eraseAfterAccountDeletion(_ account: SyncAccount) {
+        let container = SharedModelContainer.modelContainer
+        do {
+            try SyncService.shared.accountDeleted(account, in: container.mainContext)
+        } catch {
+            logger.error("Local erase after account deletion failed: \(error.localizedDescription, privacy: .public)")
+        }
+        AccountDataRefresh.afterLocalChange(in: container)
     }
 
     // MARK: - The sync session (SyncService's run binding)
