@@ -18,7 +18,13 @@ function getResend() {
  * @param {{ loginUrl: string, expiresInMinutes: number }} opts
  */
 async function sendMagicLinkEmail(to, { loginUrl, expiresInMinutes }) {
-  await getResend().emails.send({
+  // resend 3.x never throws on a failed send: fetchRequest catches everything and RETURNS
+  // `{ data: null, error }` — for a revoked key, an unverified domain, a quota, a 5xx, or no
+  // network at all. This result was ignored, so /request-link answered {ok:true} for mail that
+  // was never sent, with no log line and no Sentry event, and the magic link is the only way to
+  // sign in. Throw instead, so the route's catch answers 500 and reports it. The message names
+  // Resend's error, never the recipient: it goes to the log and to Sentry.
+  const { error } = await getResend().emails.send({
     from: FROM_EMAIL,
     to,
     subject: "Log in to Stride",
@@ -33,6 +39,9 @@ async function sendMagicLinkEmail(to, { loginUrl, expiresInMinutes }) {
       </div>
     `,
   });
+  if (error) {
+    throw new Error(`Resend ${error.name || "error"}: ${error.message || "send failed"}`);
+  }
 }
 
 module.exports = { sendMagicLinkEmail };

@@ -23,6 +23,12 @@ function serverEnv(port, extra = {}) {
     "SYNC_AUTH_FAILURE_LIMIT_PER_15MIN", "GLOBAL_RATE_LIMIT_PER_15MIN"]) {
     if (!(k in extra)) delete env[k];
   }
+  // Empty rather than deleted: dotenv never overrides a variable that is present, so this also
+  // wins over a server/.env. A shell with the production DSN or mail key exported must not
+  // make the suite report its 500s to Sentry or send real mail from request-link.
+  for (const k of ["SENTRY_DSN", "SENTRY_TRACES_SAMPLE_RATE", "RESEND_API_KEY"]) {
+    if (!(k in extra)) env[k] = "";
+  }
   return env;
 }
 
@@ -9380,5 +9386,441 @@ describe("Push bounds: a number no app can produce is skipped as invalid_value",
     } finally {
       m0.cleanup(b.userId);
     }
+  });
+});
+
+// ----------------------------------------------------------------
+// Sentry: what may leave the process (lib/sentryScrub.js, index.js, routes/auth.js)
+// ----------------------------------------------------------------
+
+describe("Sentry scrubber: realistic @sentry/node 8.x events lose every secret", () => {
+  const scrub = require("../lib/sentryScrub");
+  const TOKEN = crypto.randomBytes(32).toString("hex");
+  const EMAIL = "jason.private+stride@example.com";
+  const IP = "203.0.113.77";
+  const HABIT = "Therapy session — do not share";
+  const NOTE = "private note about medication";
+  /** The strings none of which may appear anywhere in what is sent. */
+  const SECRETS = [TOKEN, EMAIL, IP, HABIT, NOTE, "stride_session=", "demo-review-token-2026"];
+  const assertClean = (out) => {
+    const text = JSON.stringify(out);
+    for (const s of SECRETS) assert.ok(!text.includes(s), `leaked ${s}: ${text}`);
+    assert.ok(!/Bearer\s+(?!\[Filtered\])/.test(text), `leaked a bearer credential: ${text}`);
+  };
+
+  /** A thrown error inside POST /v1/sync/push, as 8.x assembles it (RequestData from the
+   * isolation scope's normalizedRequest, user from req.user, console breadcrumbs). */
+  function pushErrorEvent() {
+    const body = {
+      habits: [{ id: "A1", name: HABIT, note: NOTE, kind: "binary" }],
+      entries: [], groups: [], deletedHabitIds: [], deletedEntryIds: [], deletedGroupIds: [],
+    };
+    return {
+      event_id: "0123456789abcdef0123456789abcdef",
+      level: "error", platform: "node", environment: "production", server_name: "stride-vm",
+      transaction: "POST /v1/sync/push",
+      exception: { values: [{
+        type: "SqliteError",
+        value: `FOREIGN KEY constraint failed (session ${TOKEN}, account ${EMAIL})`,
+        mechanism: { type: "generic", handled: true, data: { sessionToken: TOKEN } },
+        stacktrace: { frames: [{
+          filename: "/root/stride-server/routes/sync.js", function: "applyPush", lineno: 412,
+          vars: { body, token: TOKEN, user: { id: 42, email: EMAIL } },
+        }] },
+      }] },
+      request: {
+        method: "POST",
+        url: `https://stride-api.colorarchive.me/v1/sync/push?since=2026-09-01T00:00:00Z&token=${TOKEN}`,
+        query_string: `since=2026-09-01T00:00:00Z&token=${TOKEN}`,
+        headers: {
+          host: "stride-api.colorarchive.me",
+          authorization: `Bearer ${TOKEN}`,
+          cookie: `stride_session=${TOKEN}`,
+          "x-forwarded-for": IP, "x-real-ip": IP,
+          "content-type": "application/json", "content-length": "412",
+          "user-agent": "Stride/19 CFNetwork/3826 Darwin/25.0.0",
+          "x-stride-client": "ios/1.3.1(19)",
+        },
+        cookies: { stride_session: TOKEN },
+        data: JSON.stringify(body),
+        env: { REMOTE_ADDR: IP },
+      },
+      user: { id: 42, email: EMAIL, ip_address: IP, username: EMAIL },
+      contexts: {
+        trace: {
+          trace_id: "0123456789abcdef0123456789abcdef", span_id: "0123456789abcdef",
+          data: { "http.target": `/v1/sync/push?token=${TOKEN}`, "url.query": `token=${TOKEN}`,
+            "url.full": `https://stride-api.colorarchive.me/v1/sync/push?token=${TOKEN}` },
+        },
+        runtime: { name: "node", version: "v22.12.0" },
+      },
+      extra: { sessionToken: TOKEN, detail: `pushed by ${EMAIL}`, nested: { Authorization: `Bearer ${TOKEN}` } },
+      tags: { area: "sync" },
+      breadcrumbs: [
+        { category: "console", level: "log",
+          message: `[2026-09-28T01:00:00.000Z] INFO GET /login?token=${TOKEN} 200 3ms client=-`,
+          data: { arguments: [`[2026-09-28T01:00:00.000Z] INFO GET /login?token=${TOKEN} 200 3ms client=-`], logger: "console" } },
+        { category: "http", type: "http",
+          data: { url: `https://api.resend.com/emails?to=${EMAIL}`, method: "POST", status_code: 422, "http.query": `to=${EMAIL}` } },
+      ],
+    };
+  }
+
+  it("a thrown error inside /v1/sync/push: no header, cookie, body, query, email, IP or token survives", () => {
+    const out = scrub.scrubEvent(pushErrorEvent());
+    assertClean(out);
+    // What is kept is what debugging needs.
+    assert.deepEqual(out.request, {
+      method: "POST",
+      url: "https://stride-api.colorarchive.me/v1/sync/push",
+      headers: {
+        "content-type": "application/json", "content-length": "412",
+        "user-agent": "Stride/19 CFNetwork/3826 Darwin/25.0.0", "x-stride-client": "ios/1.3.1(19)",
+      },
+    });
+    assert.deepEqual(out.user, { id: 42 });
+    assert.equal(out.exception.values[0].type, "SqliteError");
+    assert.match(out.exception.values[0].value, /^FOREIGN KEY constraint failed/);
+    assert.equal(out.contexts.trace.trace_id, "0123456789abcdef0123456789abcdef", "32-hex trace ids are not tokens");
+    assert.equal(out.tags.area, "sync");
+    assert.equal(out.transaction, "POST /v1/sync/push");
+    // The console line is gone entirely (it could be any account's — see the module comment);
+    // the outgoing http breadcrumb stays, path only.
+    assert.deepEqual(out.breadcrumbs.map((b) => b.category), ["http"]);
+    assert.equal(out.breadcrumbs[0].data.url, "https://api.resend.com/emails");
+    assert.equal(out.breadcrumbs[0].data.status_code, 422);
+  });
+
+  it("an /v1/auth/verify error: the token in the body (hex or a demo token) is dropped with the body", () => {
+    for (const token of [TOKEN, "demo-review-token-2026"]) {
+      const out = scrub.scrubEvent({
+        level: "error",
+        exception: { values: [{ type: "TypeError", value: "Cannot read properties of undefined (reading 'id')" }] },
+        request: {
+          method: "POST", url: "https://stride-api.colorarchive.me/v1/auth/verify",
+          headers: { "content-type": "application/json", "x-forwarded-for": IP },
+          data: { token }, query_string: "",
+        },
+      });
+      assertClean(out);
+      assert.deepEqual(out.request, {
+        method: "POST", url: "https://stride-api.colorarchive.me/v1/auth/verify",
+        headers: { "content-type": "application/json" },
+      });
+    }
+  });
+
+  it("a request-link failure: the address is gone from the body and from the provider's message", () => {
+    const out = scrub.scrubEvent({
+      level: "error",
+      tags: { area: "magic-link" },
+      exception: { values: [{ type: "Error", value: `Resend: The gmail.com domain is not verified (to: ${EMAIL}, link https://stride-api.colorarchive.me/login?token=${TOKEN})` }] },
+      request: { method: "POST", url: "https://stride-api.colorarchive.me/v1/auth/request-link", data: `{"email":"${EMAIL}"}` },
+    });
+    assertClean(out);
+    assert.equal(out.tags.area, "magic-link");
+    assert.match(out.exception.values[0].value, /domain is not verified \(to: \[Filtered\], link https:\/\/stride-api\.colorarchive\.me\/login\?\[Filtered\]\)/);
+  });
+
+  it("beforeBreadcrumb: a URL carrying ?token= keeps only its path; a log line keeps only the path", () => {
+    const http = scrub.scrubBreadcrumb({
+      type: "http", category: "http",
+      data: { url: `https://stride-api.colorarchive.me/login?token=${TOKEN}`, method: "GET", status_code: 200, "http.query": `token=${TOKEN}` },
+    });
+    assertClean(http);
+    assert.equal(http.data.url, "https://stride-api.colorarchive.me/login");
+    assert.equal(http.data.method, "GET");
+
+    const log = scrub.scrubBreadcrumb({ category: "console", message: `request-link error: sending to ${EMAIL} Authorization: Bearer ${TOKEN}`, data: { arguments: [EMAIL] } });
+    assertClean(log);
+    assert.equal(log.message, "request-link error: sending to [Filtered] Authorization: Bearer [Filtered]");
+
+    // …but the hook Sentry.init gets drops console lines outright: with no per-request scope
+    // (index.js initializes after express) they are the whole process's log, other accounts'
+    // `sync user=<id>` lines included. Reproduced 2026-09-28 against a fake ingest.
+    const opts = scrub.sentryInitOptions({ SENTRY_DSN: "http://k@127.0.0.1:1/1", NODE_ENV: "production" });
+    assert.equal(opts.beforeBreadcrumb({ category: "console", level: "log", message: "sync user=41 pull 200" }), null);
+    assert.equal(opts.beforeBreadcrumb(http).data.url, "https://stride-api.colorarchive.me/login", "other breadcrumbs are kept");
+  });
+
+  it("routeTag: a 5xx is tagged with the route pattern — mount included, no id, no query", () => {
+    // What index.js's error handler sees: req.route.path is the router's own pattern and
+    // req.baseUrl is already "" (checked against express 4 on 2026-09-28).
+    assert.equal(scrub.routeTag("PUT", "/v1/habits/8F2C-A1?x=1", "/:id"), "PUT /v1/habits/:id");
+    assert.equal(scrub.routeTag("DELETE", "/habits/8F2C/entries/2026-09-01", "/:id/entries/:date"), "DELETE /habits/:id/entries/:date");
+    assert.equal(scrub.routeTag("POST", "/v1/sync/push", "/push"), "POST /v1/sync/push");
+    assert.equal(scrub.routeTag("GET", "/v1/habits/", "/"), "GET /v1/habits");
+    assert.equal(scrub.routeTag("GET", `/login?token=${TOKEN}`, "/login"), "GET /login");
+    assert.equal(scrub.routeTag("GET", `/nowhere/${TOKEN}?token=${TOKEN}`, undefined), "GET /nowhere/[Filtered]", "no route: the path, scrubbed");
+  });
+
+  it("an email address is redacted in any shape /auth/request-link accepts, not only ASCII", () => {
+    // routes/auth.js accepts /^[^\s@]+@[^\s@]+\.[^\s@]+$/, so these are all addresses the
+    // server would mail and a provider error could quote. The old ASCII-only pattern let the
+    // first three through and left `o'` of the fourth (2026-09-28 review).
+    const accepted = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    for (const address of ["josé@example.com", "user@bücher.de", "josé@bücher.de", "o'brien@example.com",
+      '"quoted"@example.com', "用户@例子.中国", EMAIL]) {
+      assert.ok(accepted.test(address), `request-link accepts ${address}`);
+      const out = scrub.scrubString(`Resend validation_error: cannot send to ${address}, giving up`);
+      assert.equal(out.includes("@"), false, `${address} -> ${out}`);
+      for (const part of address.split("@")) assert.equal(out.includes(part.replace(/^["']|["']$/g, "")), false, `${address} -> ${out}`);
+      assert.match(out, /^Resend validation_error: cannot send to \S*\[Filtered\], giving up$/, "the surrounding text survives");
+    }
+    assert.equal(scrub.scrubString("(to: o'brien@example.com)"), "(to: [Filtered])");
+  });
+
+  it("beforeSendTransaction: span descriptions and attributes lose query strings", () => {
+    const out = scrub.scrubEvent({
+      type: "transaction", transaction: "GET /login",
+      contexts: { trace: { trace_id: "0123456789abcdef0123456789abcdef", data: { "http.target": `/login?token=${TOKEN}` } } },
+      spans: [{ description: `GET https://api.resend.com/emails?to=${EMAIL}`, data: { "url.full": `https://x.test/login?token=${TOKEN}`, "http.query": `token=${TOKEN}` } }],
+      request: { method: "GET", url: `https://stride-api.colorarchive.me/login?token=${TOKEN}` },
+    });
+    assertClean(out);
+    assert.equal(out.spans[0].description, "GET https://api.resend.com/emails");
+    assert.equal(out.request.url, "https://stride-api.colorarchive.me/login");
+  });
+
+  it("init options: tracing off unless SENTRY_TRACES_SAMPLE_RATE is a real rate, sendDefaultPii off, all three hooks set", () => {
+    assert.equal(scrub.tracesSampleRate(undefined), 0);
+    assert.equal(scrub.tracesSampleRate(""), 0);
+    assert.equal(scrub.tracesSampleRate("abc"), 0, "never NaN");
+    assert.equal(scrub.tracesSampleRate("2"), 0, "out of range");
+    assert.equal(scrub.tracesSampleRate("0.05"), 0.05, "the override still works");
+    const opts = scrub.sentryInitOptions({ SENTRY_DSN: "http://k@127.0.0.1:1/1", NODE_ENV: "production" });
+    assert.equal(opts.tracesSampleRate, 0);
+    assert.equal(opts.sendDefaultPii, false);
+    for (const hook of ["beforeSend", "beforeSendTransaction", "beforeBreadcrumb"]) assert.equal(typeof opts[hook], "function", hook);
+    assert.deepEqual(opts.integrations.map((i) => i.name), ["RequestData"]);
+    assertClean(opts.beforeSend(pushErrorEvent()));
+  });
+});
+
+describe("Sentry end to end: a real magic-link failure reaches a (local, fake) Sentry scrubbed and tagged", () => {
+  // A second server with SENTRY_DSN pointing at a listener in this process, so the event goes
+  // through the SDK's whole pipeline (integrations, scopes, beforeSend, the transport) and what
+  // is asserted on is the envelope that would have left the machine. No external service.
+  const http = require("node:http");
+  const zlib = require("node:zlib");
+  const PORT2 = 3098, BASE2 = `http://localhost:${PORT2}`;
+  const TOKEN = crypto.randomBytes(32).toString("hex");
+  const EMAIL = `e2e-${crypto.randomUUID()}@stride-test.local`;
+  const IP = "198.51.100.23";
+  const envelopes = [];
+  let ingest, proc;
+
+  before(async () => {
+    ingest = http.createServer((req, res) => {
+      const chunks = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => {
+        let buf = Buffer.concat(chunks);
+        if (req.headers["content-encoding"] === "gzip") buf = zlib.gunzipSync(buf);
+        envelopes.push({ url: req.url, text: buf.toString("utf8") });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end("{}");
+      });
+    });
+    await new Promise((resolve) => ingest.listen(0, "127.0.0.1", resolve));
+    const dsn = `http://publickey@127.0.0.1:${ingest.address().port}/1`;
+    // RESEND_API_KEY stays empty (serverEnv), so sending the mail throws: the path under test.
+    proc = await m0.spawnServer(PORT2, { SENTRY_DSN: dsn });
+  });
+  after(async () => {
+    await m0.stopServer(proc);
+    await new Promise((resolve) => ingest.close(resolve));
+    const u = db.prepare("SELECT id FROM users WHERE email = ?").get(EMAIL);
+    if (u) m0.cleanup(u.id);
+  });
+
+  it("request-link still answers 500, and exactly one error event arrives, area=magic-link, with no address, token or IP", async () => {
+    // An unrelated request first. Its request-log line must not ride along on the magic-link
+    // event: with Sentry.init after express there is no per-request scope, and console
+    // breadcrumbs used to carry the whole process's recent log (2026-09-28 review).
+    const MARKER = `unrelated-${crypto.randomUUID()}`;
+    assert.equal((await fetch(`${BASE2}/${MARKER}`)).status, 404);
+    const res = await fetch(`${BASE2}/v1/auth/request-link?token=${TOKEN}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json", Authorization: `Bearer ${TOKEN}`,
+        Cookie: `stride_session=${TOKEN}`, "X-Forwarded-For": IP, "X-Stride-Client": "ios/1.3.1(19)",
+      },
+      body: JSON.stringify({ email: EMAIL }),
+    });
+    assert.equal(res.status, 500);
+    assert.deepEqual(await res.json(), { error: "Failed to send login link" });
+
+    const isEvent = (e) => e.text.split("\n").some((l) => /^\{"type":"event"/.test(l));
+    const deadline = Date.now() + 15000;
+    while (!envelopes.some(isEvent) && Date.now() < deadline) await m0.sleep(100);
+    const events = envelopes.filter(isEvent);
+    assert.equal(events.length, 1, `envelopes: ${envelopes.map((e) => e.text.slice(0, 200)).join("\n---\n")}`);
+
+    const lines = events[0].text.split("\n").filter(Boolean);
+    const event = JSON.parse(lines[lines.findIndex((l) => /^\{"type":"event"/.test(l)) + 1]);
+    assert.equal(event.tags.area, "magic-link");
+    assert.equal(event.level, "error");
+    assert.ok(event.exception.values.some((v) => /Missing API key/.test(v.value)), JSON.stringify(event.exception));
+    // What DEPLOY.md says an event carries: no request block and no user (no per-request
+    // scope — if Sentry.init ever moves above require("express") these appear, and the
+    // scrubber's allowlist, DEPLOY.md and this test all need revisiting), no console line.
+    assert.equal(event.request, undefined, JSON.stringify(event.request));
+    assert.equal(event.user, undefined, JSON.stringify(event.user));
+    assert.deepEqual((event.breadcrumbs || []).filter((b) => b.category === "console"), []);
+    for (const e of envelopes) {
+      // (Not "request-link error" itself: ContextLines ships the source around each frame,
+      // and that line of routes/auth.js is in it. The console filter above covers the log.)
+      for (const s of [EMAIL, TOKEN, IP, "stride_session", MARKER]) {
+        assert.ok(!e.text.includes(s), `envelope leaked ${s}: ${e.text}`);
+      }
+    }
+  });
+
+  it("a 400 (invalid email) is not reported", async () => {
+    const before = envelopes.length;
+    const r = await m0.req("POST", "/v1/auth/request-link", { base: BASE2, body: { email: "not-an-address" } });
+    assert.equal(r.status, 400);
+    await m0.sleep(1500);
+    assert.equal(envelopes.slice(before).filter((e) => e.text.includes('"type":"event"')).length, 0);
+  });
+});
+
+describe("/health reads the real tables (lib/health.js)", () => {
+  const { checkDatabase } = require("../lib/health");
+  const SCHEMA = [
+    "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT)",
+    "CREATE TABLE sessions (id INTEGER PRIMARY KEY, user_id INTEGER)",
+    "CREATE TABLE habits (id TEXT PRIMARY KEY, user_id INTEGER)",
+    "CREATE TABLE habit_entries (id TEXT PRIMARY KEY, habit_id TEXT)",
+  ];
+
+  it("passes on the schema, empty or not", () => {
+    const mem = new Database(":memory:");
+    for (const s of SCHEMA) mem.exec(s);
+    assert.doesNotThrow(() => checkDatabase(mem), "a fresh install has no rows and is healthy");
+    mem.prepare("INSERT INTO users (email) VALUES ('a@b.c')").run();
+    assert.doesNotThrow(() => checkDatabase(mem));
+    mem.close();
+  });
+
+  it("fails on a database that answers SELECT 1 but lacks a table — what the old check called healthy", () => {
+    for (const missing of ["users", "sessions", "habits", "habit_entries"]) {
+      const mem = new Database(":memory:");
+      for (const s of SCHEMA) if (!s.startsWith(`CREATE TABLE ${missing} `)) mem.exec(s);
+      assert.doesNotThrow(() => mem.prepare("SELECT 1").get(), "the old check passes");
+      assert.throws(() => checkDatabase(mem), new RegExp(`no such table: ${missing}`));
+      mem.close();
+    }
+  });
+
+  it("fails on a closed connection", () => {
+    const mem = new Database(":memory:");
+    for (const s of SCHEMA) mem.exec(s);
+    mem.close();
+    assert.throws(() => checkDatabase(mem));
+  });
+
+  it("stays O(1): each table is read with a LIMIT 1 scan, no sort, no full-table aggregate", () => {
+    const mem = new Database(":memory:");
+    for (const s of SCHEMA) mem.exec(s);
+    const { HEALTH_QUERY } = require("../lib/health");
+    const plan = mem.prepare(`EXPLAIN QUERY PLAN ${HEALTH_QUERY}`).all().map((r) => r.detail).join("\n");
+    assert.doesNotMatch(plan, /TEMP B-TREE|ORDER BY/i, plan);
+    assert.doesNotMatch(HEALTH_QUERY, /COUNT\(|ORDER BY/i);
+    mem.close();
+  });
+
+  it("the running server still answers the shape the tests and rehearsal expect", async () => {
+    const { status, json } = await api("GET", "/health");
+    assert.equal(status, 200);
+    assert.deepEqual(Object.keys(json).sort(), ["apiVersions", "ok", "uptime", "version"]);
+    assert.equal(json.ok, true);
+  });
+});
+
+describe("metrics flush after POST /v1/auth/delete-account in the same hour (second server)", () => {
+  // The real sequence: an account syncs (noteSyncClient queues its user_clients row), deletes
+  // itself through the API (the users row and its user_clients cascade away), and the next
+  // flush — here the one in shutdown() — runs with that row still queued. Before the WHERE
+  // EXISTS in metrics.js it hit the foreign key, the whole flush rolled back, and the counts
+  // were kept for a next flush that would fail the same way.
+  const PORT2 = 3098, BASE2 = `http://localhost:${PORT2}`;
+  const BUILD = 100000 + crypto.randomInt(800000);
+  const CLIENT = `ios/1.3.1(${BUILD})`;
+  const count = (name) => db.prepare("SELECT COALESCE(SUM(value), 0) AS n FROM usage_counters WHERE name = ?").get(name).n;
+  let proc, u, stdout = "", stderr = "", before0;
+
+  before(async () => {
+    u = m0.user();
+    before0 = count(`client.${CLIENT}`);
+    proc = await m0.spawnServer(PORT2, {});
+    proc.stdout.on("data", (d) => { stdout += d; });
+    proc.stderr.on("data", (d) => { stderr += d; });
+    assert.equal((await m0.req("GET", "/v1/sync/pull", { token: u.token, base: BASE2, client: CLIENT })).status, 200);
+    assert.equal((await m0.req("POST", "/v1/auth/delete-account", { token: u.token, base: BASE2, client: CLIENT })).status, 200);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM users WHERE id = ?").get(u.userId).n, 0, "account gone");
+    await m0.stopServer(proc);
+  });
+  after(async () => { await m0.stopServer(proc); m0.cleanup(u.userId); });
+
+  it("the flush succeeds: the counters land, the deleted account's cohort row is skipped", () => {
+    assert.doesNotMatch(stderr, /flush failed/);
+    assert.equal(count(`client.${CLIENT}`) - before0, 2, "the pull and the delete-account request");
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM user_clients WHERE user_id = ?").get(u.userId).n, 0);
+    const lines = stdout.split("\n").filter((l) => l.startsWith("[metrics] "));
+    assert.equal(lines.length, 1, stdout);
+    assert.equal(JSON.parse(lines[0].slice("[metrics] ".length)).userClients, 0, "counts rows written, not rows queued");
+  });
+});
+
+describe("Magic link: a failed Resend send is a 500, not {ok:true} (email.js)", () => {
+  // resend 3.x returns { data: null, error } instead of throwing, and this result was ignored:
+  // a revoked key, an unverified domain or a Resend outage answered {ok:true} for mail that was
+  // never sent — silently, on the only way to sign in. A fake Resend on RESEND_BASE_URL (read by
+  // the SDK itself) drives the real SDK path; nothing leaves this process.
+  const http = require("node:http");
+  const PORT2 = 3098;
+  const EMAIL = `resend-${crypto.randomUUID()}@stride-test.local`;
+  let fake, proc, reply = { status: 200, body: { id: "fake-email-id" } };
+  let stderr = "";
+
+  before(async () => {
+    fake = http.createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(reply.status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(reply.body));
+      });
+    });
+    await new Promise((resolve) => fake.listen(0, "127.0.0.1", resolve));
+    proc = await m0.spawnServer(PORT2, {
+      RESEND_API_KEY: "re_test_not_a_real_key",
+      RESEND_BASE_URL: `http://127.0.0.1:${fake.address().port}`,
+    });
+    proc.stderr.on("data", (d) => { stderr += d.toString(); });
+  });
+  after(async () => {
+    await m0.stopServer(proc);
+    await new Promise((resolve) => fake.close(resolve));
+    const u = db.prepare("SELECT id FROM users WHERE email = ?").get(EMAIL);
+    if (u) m0.cleanup(u.id);
+  });
+
+  it("Resend answers 422 → request-link answers 500, and the log names the Resend error, not the address", async () => {
+    reply = { status: 422, body: { name: "validation_error", message: "The stride.colorarchive.me domain is not verified." } };
+    const r = await m0.req("POST", "/v1/auth/request-link", { base: `http://localhost:${PORT2}`, body: { email: EMAIL } });
+    assert.equal(r.status, 500);
+    assert.deepEqual(r.json, { error: "Failed to send login link" });
+    await m0.sleep(200);
+    assert.match(stderr, /Resend validation_error: The stride\.colorarchive\.me domain is not verified\./);
+    assert.ok(!stderr.includes(EMAIL), "the recipient's address must not be logged");
+  });
+
+  it("Resend accepts the mail → request-link answers {ok:true}", async () => {
+    reply = { status: 200, body: { id: "fake-email-id" } };
+    const r = await m0.req("POST", "/v1/auth/request-link", { base: `http://localhost:${PORT2}`, body: { email: EMAIL } });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json, { ok: true });
   });
 });

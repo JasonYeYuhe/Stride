@@ -13,18 +13,21 @@ const cors = require("cors");
 const helmet = /** @type {any} */ (require("helmet"));
 const { createGlobalLimiter } = require("./lib/rateLimits");
 const Sentry = require("@sentry/node");
-const { requestLogger } = require("./logger");
+const { sentryInitOptions, routeTag } = require("./lib/sentryScrub");
+const { checkDatabase } = require("./lib/health");
+const { requestLogger, redactUrl } = require("./logger");
 const metrics = require("./metrics");
 const origins = require("./origins");
 const db = require("./db");
 
 // Error tracking — only active when a DSN is configured (so tests/dev stay quiet).
+// Errors only: tracing defaults to 0 (it used to default to 0.1, a transaction with URLs for
+// one request in ten, sync included), and every event, transaction and breadcrumb is scrubbed
+// of bodies, headers, query strings, emails and tokens first — see lib/sentryScrub.js for what
+// 8.x would otherwise send. dd-trace (above) instruments the same http calls but reports only
+// to a local Datadog agent; it adds nothing to Sentry events.
 if (process.env.SENTRY_DSN) {
-  Sentry.init({
-    dsn: process.env.SENTRY_DSN,
-    environment: process.env.NODE_ENV || "development",
-    tracesSampleRate: Number(process.env.SENTRY_TRACES_SAMPLE_RATE ?? 0.1),
-  });
+  Sentry.init(sentryInitOptions(process.env));
 }
 
 origins.warnIfUnset();
@@ -169,12 +172,14 @@ ${safeToken ? `<div class="token-box">${safeToken}</div>` : '<p style="color:#ff
 </div></body></html>`);
 });
 
-// Health check — also verifies DB connectivity so a locked/corrupt SQLite
-// reports unhealthy instead of falsely OK.
+// Health check — also reads the tables every sign-in and sync touches (lib/health.js), so a
+// locked, corrupt or wrong SQLite file reports unhealthy instead of falsely OK. Hit every
+// minute by the uptime monitor (DEPLOY.md), so it stays O(1) and reports to the log only.
 app.get("/health", (req, res) => {
   try {
-    db.prepare("SELECT 1").get();
+    checkDatabase(db);
   } catch (err) {
+    console.error(`[health] database check failed: ${err && err.message}`);
     return res.status(503).json({ ok: false, error: "database unavailable" });
   }
   res.json({ ok: true, version: "1.0.0", apiVersions: ["v1"], uptime: process.uptime() });
@@ -187,8 +192,15 @@ app.get("/health", (req, res) => {
 app.use((err, req, res, next) => {
   const status = err.status || err.statusCode || 500;
   if (status >= 500) {
-    console.error(`[ERROR] ${req.method} ${req.originalUrl}:`, err && err.stack ? err.stack : err);
-    if (process.env.SENTRY_DSN) Sentry.captureException(err);
+    // redactUrl: the same /login?token= leak the request log was fixed for (logger.js).
+    console.error(`[ERROR] ${req.method} ${redactUrl(req.originalUrl)}:`, err && err.stack ? err.stack : err);
+    // Sentry.init runs after express is loaded, so the SDK attaches no `request` to events (no
+    // per-request scope; lib/sentryScrub.js). The route PATTERN says which endpoint failed:
+    // `/v1/habits/:id`, never the id, never the query string.
+    if (process.env.SENTRY_DSN) {
+      const route = routeTag(req.method, req.originalUrl, req.route && req.route.path);
+      Sentry.captureException(err, { tags: { route } });
+    }
   }
   if (res.headersSent) return next(err);
   const message = status >= 500

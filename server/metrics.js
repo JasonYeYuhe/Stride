@@ -154,7 +154,11 @@ const addCounter = db.prepare(`
 `);
 
 // The account may have been deleted since the request (delete-account cascades user_clients
-// away); inserting its row now would violate the foreign key and fail the whole flush.
+// away); inserting its row now would violate the foreign key and fail the whole flush. And
+// because a failed flush keeps its counts for the next one, that one row would fail every
+// later flush too, until a restart dropped the hour's counts with it: one deleted account
+// would have stopped usage_counters and the cohort for good. The WHERE EXISTS skips the row
+// instead (tested through POST /v1/auth/delete-account in test/api.test.js).
 const touchUserClient = db.prepare(`
   INSERT INTO user_clients (user_id, platform, version, build, first_seen, last_seen)
   SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM users WHERE id = ?)
@@ -175,6 +179,7 @@ function flush() {
   const counters = {};
   for (const [hour, bucket] of pending) counters[hour] = Object.fromEntries(bucket);
   const clients = [...pendingClients.values()];
+  let userClients = 0;   // rows written; a deleted account's row is skipped, not counted
 
   try {
     db.transaction(() => {
@@ -182,7 +187,7 @@ function flush() {
         for (const [name, value] of bucket) addCounter.run(hour, name, value);
       }
       for (const c of clients) {
-        touchUserClient.run(c.userId, c.platform, c.version, c.build, c.first, c.last, c.userId);
+        userClients += touchUserClient.run(c.userId, c.platform, c.version, c.build, c.first, c.last, c.userId).changes;
       }
     })();
   } catch (err) {
@@ -193,7 +198,7 @@ function flush() {
   pending = new Map();
   pendingClients = new Map();
   pendingClientsPerAccount = new Map();
-  const flushed = { counters, userClients: clients.length };
+  const flushed = { counters, userClients };
   console.log(`[metrics] ${JSON.stringify(flushed)}`);
   return flushed;
 }

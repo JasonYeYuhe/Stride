@@ -258,8 +258,12 @@ unless you know nothing else sends as it.
   Mirrored into the ASC App Review sign-in fields; rotate in both places at once.
 - `SENTRY_DSN` — optional for the server, which reports errors to Sentry when it is set;
   `ops/restore-drill.js` reads it too and cannot alert without it. Not set on production
-  as of 2026-09-26 (no Sentry project for the server yet).
-- `SENTRY_TRACES_SAMPLE_RATE` — optional, default `0.1`.
+  as of 2026-09-28 (no Sentry project for the server yet) — see
+  [Error reporting (Sentry)](#error-reporting-sentry) for turning it on.
+- `SENTRY_TRACES_SAMPLE_RATE` — **leave unset.** The default is `0`: errors only, no
+  performance transactions. It used to default to `0.1` (and `.env.example` said so), which
+  would have sent a transaction for one request in ten, sync included, the day the DSN went in.
+  A malformed or out-of-range value also means `0`.
 - Datadog APM (`dd-trace`) auto-initializes when `NODE_ENV !== test`; configure
   via the standard `DD_*` env vars (no-op without a local agent).
 - Sync switches and limits, all optional and commented out in `.env.example` with their
@@ -268,6 +272,81 @@ unless you know nothing else sends as it.
   `SYNC_AUTH_FAILURE_LIMIT_PER_15MIN` (100, per IP, sync requests without a valid session),
   `GLOBAL_RATE_LIMIT_PER_15MIN` (100, per IP, everything except sync). None is set on
   production; the defaults are the intended values.
+
+### Error reporting (Sentry)
+
+What reaches Sentry once `SENTRY_DSN` is set: every 5xx through the global error handler in
+`index.js`, uncaught exceptions and unhandled rejections, and every failed
+`POST /auth/request-link` (tag `area=magic-link`) — the magic link is the only way to sign in,
+so a broken mail provider locks out every signed-out user and must page someone. 4xx answers
+are not reported. `GET /health` failures are not either (the uptime monitor below owns them;
+they go to the log as `[health] database check failed: …`).
+
+What an event actually carries (checked against a local fake ingest, 2026-09-28): the
+exception with its stack, the tags (`area=magic-link`, or `route=<METHOD> <route pattern>`
+such as `PUT /v1/habits/:id` on a 5xx — never an id or a query string), and at most
+scrubbed breadcrumbs of outgoing http calls (URL path, method, status). It carries
+**no `request` block and no `user`**: `Sentry.init` runs after express is loaded, so the SDK
+never gets a per-request scope to fill them from. The same missing scope made every
+console line of the whole process — other accounts' `sync user=<id>` lines included — ride
+along as breadcrumbs, so console breadcrumbs are dropped entirely.
+
+What does not reach it, by construction ([`lib/sentryScrub.js`](lib/sentryScrub.js), run on
+every event, transaction and breadcrumb, with its tests in `test/api.test.js`), should any
+of it ever be collected (for example if `Sentry.init` moves above `require("express")`):
+request bodies (push bodies hold habit names and notes; auth bodies hold emails and
+tokens), every request header except `Content-Type`, `Content-Length`, `User-Agent` and
+`X-Stride-Client` (so no `Authorization`, `Cookie` or `X-Forwarded-For`), cookies, query
+strings (the URL keeps its path only — `/login?token=` is a live login), the account's email
+and IP (`user` would be the account id only), console lines, and anything shaped like a
+64-hex token, an email address (any address `/auth/request-link` accepts, non-ASCII
+included) or a `Bearer …` credential in exception messages, extra data, tags and
+breadcrumbs. `sendDefaultPii` is `false`. dd-trace reports only to a local Datadog agent and
+adds nothing to Sentry events.
+
+**Turning it on (owner, once):**
+
+1. In sentry.io (org `jason-yeyuhe`) create project **`stride-server`**, platform
+   *Node.js / Express*, default alert "alert me on every new issue", email. (The apps report
+   to `stride-apple`; keep the server separate so a server alert is never muted with an app
+   one.) In the project's *Settings → Security & Privacy*, turn on **Prevent Storing of IP
+   Addresses** and keep **Data Scrubber** and **Use Default Scrubbers** on — a second line
+   behind the server's own scrubbing.
+2. Add one more alert rule: *An event is captured*, filter *tag `area` equals
+   `magic-link`*, action email, action interval 30 minutes. The default rule fires only when
+   an issue is first seen (or regresses); a mail outage is the same issue over and over and
+   must alert every time it recurs.
+3. Copy the project's DSN (*Settings → Client Keys*) into the host `.env` and restart:
+
+   ```bash
+   ssh -o IdentityAgent=none -i ~/.ssh/id_ed25519 azureuser@172.207.80.109
+   sudo nano /root/stride-server/.env        # SENTRY_DSN=https://…@….ingest.sentry.io/…
+   sudo grep -n '^SENTRY' /root/stride-server/.env
+   #   exactly one line, SENTRY_DSN=… — if SENTRY_TRACES_SAMPLE_RATE is there (copied from the
+   #   old .env.example, which said 0.1), delete that line
+   sudo pm2 restart stride-server --update-env
+   curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3002/health   # 200
+   ```
+
+4. Send a test event through the same init options and scrubbers the server uses:
+
+   ```bash
+   cd /root/stride-server && sudo node -e '
+     require("dotenv").config();
+     const Sentry = require("@sentry/node");
+     Sentry.init(require("./lib/sentryScrub").sentryInitOptions(process.env));
+     Sentry.captureMessage("stride-server: test event", { level: "info", tags: { area: "deploy-check" } });
+     Sentry.flush(10000).then((ok) => console.log(ok ? "sent" : "NOT sent (flush timed out)"));'
+   ```
+
+   It prints `sent`, and within a minute the issue *stride-server: test event* appears in the
+   project with `environment: production` — resolve it. The next 04:10 restore drill also
+   starts sending its cron check-in (monitor `stride-restore-drill`, see
+   [Restore drill](#restore-drill)); check it shows up the next morning.
+
+Until the DSN is set nothing is sent anywhere: `Sentry.init` and the magic-link report are
+both behind `if (process.env.SENTRY_DSN)`, and a failed request-link is only a
+`request-link error:` line in the pm2 error log.
 
 ## Sync contract — what a client can be told
 
