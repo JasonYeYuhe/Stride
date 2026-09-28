@@ -29,10 +29,10 @@
     <div class="container">
         <div class="app-name">Stride</div>
         <h1>Privacy Policy</h1>
-        <p class="last-updated">Last updated: April 10, 2026</p>
+        <p class="last-updated">Last updated: September 28, 2026</p>
 
         <div class="highlight">
-            <p>Your habit data is stored locally on your device by default. Optional features like cloud sync and anonymous analytics may transmit limited data as described below.</p>
+            <p>Your habit data is stored locally on your device by default. Stride contains no advertising code and no analytics service. Only two things ever leave your device: anonymous crash and diagnostic reports, and — if you choose to create an account — your email address and habits, for sync.</p>
         </div>
 
         <h2>Overview</h2>
@@ -43,24 +43,33 @@
         <p>Stride uses Apple's App Groups to share your habit data between the main app and the home screen widget. This data sharing happens entirely on your device.</p>
 
         <h2>Cloud Sync (Optional)</h2>
-        <p>If you choose to create an account and enable cloud sync, your habit data is transmitted securely (via HTTPS) to our server solely for the purpose of syncing across your devices. We do not access, analyze, or share your habit data. Sync is entirely optional — the app is fully functional without it.</p>
+        <p>If you choose to create an account, your habits are transmitted securely (via HTTPS) to our own server, operated by the developer, solely for the purpose of syncing them across your devices. This includes habit names, emoji, goals, schedules and reminder times, groups, notes, and your check-in history. It is stored with your account and is not shared with anyone. We do not analyze your habit data, use it for advertising, or sell it. Sync is entirely optional — the app is fully functional without it, and without an account none of your habit data leaves your device.</p>
 
         <h2>Account &amp; Authentication (Optional)</h2>
-        <p>Stride does not require you to create an account. If you choose to use the sync feature, you will need to sign in with your email address. Your email is stored securely on our server and is used only for authentication purposes. We do not send marketing emails or share your email with third parties.</p>
+        <p>Stride does not require you to create an account. If you choose to use the sync feature, you will need to sign in with your email address. Your email is stored securely on our server and is used only for authentication purposes. Sign-in emails are delivered through <a href="https://resend.com" target="_blank" rel="noopener">Resend</a>, an email delivery service, which receives your address only to deliver that message. We do not send marketing emails, and we do not sell or share your email with anyone else.</p>
 
-        <h2>Analytics</h2>
-        <p>Stride uses <a href="https://telemetrydeck.com" target="_blank" rel="noopener">TelemetryDeck</a>, a privacy-friendly analytics service, to collect anonymous usage data (such as app launches and feature usage). This helps us understand how the app is used and improve it.</p>
+        <h2>Crash Reports</h2>
+        <p>There is no analytics service in Stride. Earlier versions listed one, with an opt-out switch in Settings; it never sent any data, and version 1.3.0 removes it along with the switch.</p>
+        <p>Stride uses <a href="https://sentry.io" target="_blank" rel="noopener">Sentry</a>, a crash reporting service, so we can find and fix problems. The app sends it:</p>
         <ul>
-            <li>All analytics data is anonymous — your user identity is hashed with SHA-256 and cannot be traced back to you</li>
-            <li>No personally identifiable information (PII) is collected</li>
-            <li>Analytics is enabled by default but you can opt out at any time in Settings → "Share Anonymous Analytics"</li>
+            <li>A crash report when the app crashes, stops responding, or is shut down by the system</li>
+            <li>An error report when an App Store purchase cannot be verified, naming which product it was, so that a purchase that did not unlock can be fixed</li>
+            <li>A session record each time the app is opened — the app and operating system version, the device model, and whether the session ended normally or in a crash — so we can tell how often the app crashes and roughly how many devices use each version. It carries a random identifier created on your device, not your account, email address or any Apple or advertising identifier</li>
+        </ul>
+        <p>Versions 1.2.1 to 1.2.3 also attach to each crash or error report a short trail of what happened just before it: the screens that were opened, taps, and the addresses and status codes of recent requests to our sync server (not their contents). Version 1.3.0 and later do not collect this trail.</p>
+        <p>These reports contain technical information only — such as the app and operating system version, the device model, and where in the app's code the problem occurred.</p>
+        <ul>
+            <li>They are not linked to your account or your email address, and are not used to track you</li>
+            <li>They contain no personally identifiable information (PII), no habit names or notes, and no screenshots; from version 1.3.0 on, they also contain no network request data and no record of which screens you open or what you tap</li>
+            <li>They are used only to diagnose and fix problems in the app</li>
         </ul>
 
         <h2>Data We Do Not Collect</h2>
         <p>Stride does not collect any of the following:</p>
         <ul>
             <li>Personal information beyond your email (and only if you use sync)</li>
-            <li>Device identifiers or advertising tracking data</li>
+            <li>Records of which features you use or how you use them (beyond the anonymous session record and, in versions 1.2.1 to 1.2.3, the crash trail described above)</li>
+            <li>Advertising identifiers or any data used to track you across apps or websites</li>
             <li>Location data</li>
             <li>Health or fitness data</li>
             <li>Browsing history or contacts</li>
@@ -73,10 +82,10 @@
         <p>Stride offers optional subscriptions through Apple's App Store. All payment processing is handled entirely by Apple. We do not have access to your payment information, credit card details, or Apple ID. For information about how Apple handles your payment data, please refer to <a href="https://www.apple.com/legal/privacy/" target="_blank" rel="noopener">Apple's Privacy Policy</a>.</p>
 
         <h2>Data Deletion</h2>
-        <p>All local data can be deleted at any time by deleting the app from your device. If you have used the cloud sync feature and wish to delete your server-side data, you can use the "Delete Account" option in Settings. This will permanently remove your account and all synced data from our server.</p>
+        <p>All local data can be deleted at any time by deleting the app from your device, or, from version 1.3.0, with "Erase Local Data" in Settings. If you have used the cloud sync feature and wish to delete your server-side data, you can use the "Delete Account" option in Settings. This will permanently remove your account and all synced data from our server.</p>
 
         <h2>Children's Privacy</h2>
-        <p>Stride does not knowingly collect personal information from children under the age of 13. Since the app functions fully without an account or data collection, no special provisions are necessary for offline use.</p>
+        <p>Stride does not knowingly collect personal information from children under the age of 13. Since the app functions fully without an account, no special provisions are necessary for offline use.</p>
 
         <h2>Changes to This Policy</h2>
         <p>If we update this privacy policy, we will post the revised version on this page and update the "Last updated" date above.</p>
