@@ -86,7 +86,10 @@ The live process and database are never touched. The checks: `integrity_check` o
 migrated copy and the new tables present; `/health`; the AASA file; the demo token signs in;
 a full pull whose `totals` equal its arrays, every entry matched to a habit, every id upper
 case; a 1.2.3-shaped snapshot of the real account applying with nothing skipped and bumping
-no `updated_at`; an unknown-habit entry landing in `skipped.entries`; `cursor_expired` only
+no `updated_at` (which is also the LWW re-feed's negative case on real rows: the demo rows carry
+millisecond stamps, so the whole-second echo is strictly older with the same values); a pull
+with `ios/1.3.1(19)` serving fixed-width millisecond stamps for the same instants that
+`ios/1.3.0(18)` and a header-less pull serve in whole seconds; an unknown-habit entry landing in `skipped.entries`; `cursor_expired` only
 with a ≥ 1.3.1 header; a 20-day-old session sliding to 30 days; and the pause flag answering
 503 then 200.
 
@@ -135,6 +138,24 @@ bad answer outlives the fix. The rehearsal checks the app on `127.0.0.1`; only t
 checks the path through nginx.
 
 Then from the Mac, `scripts/check_demo_account.sh` should exit 0.
+
+After a deploy that changes the pull's timestamps (1.3.1's millisecond pull, DEV-PLAN-1.3.md
+M2 acceptance 7), check both forms through nginx as the demo account. The token is read from
+the host and never printed; the session is signed out at the end:
+
+```bash
+DEMO_TOKEN="$(ssh -o IdentityAgent=none -i ~/.ssh/id_ed25519 azureuser@172.207.80.109 \
+  'sudo grep "^DEMO_TOKEN=" /root/stride-server/.env | cut -d= -f2- | tr -d "\"\r"')"
+S="$(curl -s https://stride-api.colorarchive.me/v1/auth/verify -H 'Content-Type: application/json' \
+  -d "{\"token\":\"$DEMO_TOKEN\"}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["sessionToken"])')"
+pull() { curl -s https://stride-api.colorarchive.me/v1/sync/pull -H "Authorization: Bearer $S" \
+  -H "X-Stride-Client: $1" | python3 -c 'import sys,json;print(json.load(sys.stdin)["habits"][0]["updatedAt"])'; }
+pull 'ios/1.3.1(19)'   # …:SS.mmmZ
+pull 'ios/1.3.0(18)'   # …:SSZ
+pull ''                # …:SSZ — an empty header is a legacy app, like none at all
+curl -s -o /dev/null -X POST https://stride-api.colorarchive.me/v1/auth/logout \
+  -H "Authorization: Bearer $S" -H 'Content-Type: application/json' -d '{}'
+```
 
 ## Setup on the host
 
@@ -358,7 +379,9 @@ An app identifies itself with `X-Stride-Client: ios|macos/<version>(<build>)`, e
 `ios/1.3.1(19)`, sent from 1.3.0 on. **No header, or one that does not parse, means a shipped
 app ≤ 1.2.3**, and those are never sent anything they cannot handle: they push their whole
 history on every sync, cannot split a request, and have no handler for a cursor error — for
-them a 400 is as fatal as a 413 and a 409 would be an endless loop.
+them a 400 is as fatal as a 413 and a 409 would be an endless loop. **1.3.0 sends the header
+but is in the same position** — it still pushes a full snapshot and has no `cursor_expired`
+handler — so every gate below is ≥ 1.3.1, and 1.3.0 is treated exactly like the legacy apps.
 
 | Status | `code` | Who can get it | Meaning / what the app does |
 |---|---|---|---|
@@ -377,6 +400,24 @@ Error bodies added in 1.3 carry a machine `code` always. With a valid header the
 because 1.2.3 prints `error` verbatim in the Settings footer — a user should read "Too many
 sync requests, please try again later", not `rate_limited`. The older errors (401, the
 global 429, 413) are unchanged.
+
+**Timestamps on pull.** With a header ≥ 1.3.1, `createdAt` / `updatedAt` go out with
+milliseconds in `toISOString()`'s fixed-width form (`2026-09-15T17:33:18.700Z`); to 1.3.0 and
+to header-less apps, in whole seconds (`…:18Z`), because apps up to 1.2.2 parse them with a
+default `ISO8601DateFormatter` that returns nil on a fraction (the demo account's "created
+today" incident), and 1.2.3 / 1.3.0 were built against whole seconds. 1.3.1 needs the milliseconds: served truncated, a remote edit at :18.700
+would lose on that device to its own local :18.300. Pushed stamps are stored the same way,
+whatever their precision (`…:18Z` becomes `…:18.000Z`), so the edit-time comparison — a string
+comparison — stays chronological across old and new apps. An older app's edit is only as
+precise as its string: 1.2.3's :18.900 is stored as :18.000 and loses to 1.3.1's :18.400.
+
+**The LWW re-feed.** A push that loses to a stored edit is still `applied`. When the stored
+edit is strictly newer *and* the values differ (as an app would hold them), the push moves
+the stored row's `updated_at` to now, so the losing device's next pull brings the winner even
+though its cursor is past it (a slow clock stamped its edit earlier than the one it had
+already pulled). Both conditions matter: every 1.3.0 snapshot echoes a 1.3.1 millisecond stamp
+truncated to seconds with the same values, and must not re-feed. Counted as
+`lww_refeed.<habits|entries|groups>` and shown as `refed=` on the request line.
 
 Skipped rows are reported, never silently dropped: `skippedReasons` names why (`tombstoned`,
 `tombstoned_habit`, `missing_field`, `row_error`, `not_owned`, `not_owned_habit`,
@@ -398,11 +439,12 @@ refusing one would cost a restored habit — its entries come back `skipped_habi
 pull lacks it, and the reconciler deletes it and its check-ins on that device. Absent or `null` still means the column default. Still a 200 — one bad row
 never fails a push, for any client. **What a 1.3.1 client does with it (M2): quarantine** — keep
 the row locally, stop re-sending it, do not count it as delivered, and send it again only once
-the user edits it (a new `updatedAt`); mark it in the sync diagnostics. Entries of a quarantined
-*new* habit come back `skipped_habit`; hold them with their habit rather than retrying them.
+the user edits it (a new `updatedAt`); mark it in the sync diagnostics. The planner does not
+send the entries of a held habit; an entry that does come back `skipped_habit` or
+`unknown_habit` stays pending and is retried (its habit's chunk may not have landed).
 
 Rows already stored before this check are still served on pull (pull is not filtered: a
-≤ 1.2.3 app deletes whatever a full pull lacks). Before deploying, count them on the backup:
+≤ 1.3.0 app deletes whatever a full pull lacks). Before deploying, count them on the backup:
 
 ```sql
 SELECT 'entry', COUNT(*) FROM habit_entries WHERE typeof(value) NOT IN ('integer','real') OR abs(value) > 1e9
@@ -426,8 +468,8 @@ non-optional `Double` — the same whole-pull failure. Pushes can no longer chan
 (any re-send of it reads `invalid_value`), so it stays until it is repaired by hand.
 
 The request log line carries what an operator needs to answer "what did that device send":
-`client=<header or ->`, and for sync `user=… in=… applied=… skipped=… reasons=…` or
-`pull=full|since out=…`.
+`client=<header or ->`, and for sync `user=… in=… applied=… skipped=… refed=… reasons=…` or
+`pull=full|since out=…` (`refed` only when the LWW re-feed moved a row).
 
 ## Database Backups
 
@@ -646,12 +688,13 @@ A 6-hour timer (and one run at boot) sweeps expired sessions and magic links,
 `usage_counters` and `user_clients` rows older than 400 days, and snapshot requests
 answered more than 90 days ago (`db.sweepStaleData()` in `db.js`). No external cron needed.
 
-**Deletion tombstones are kept indefinitely.** Sweeping them would let a ≤ 1.2.3 app
+**Deletion tombstones are kept indefinitely.** Sweeping them would let a ≤ 1.3.0 app
 resurrect deleted rows: it cannot be told its cursor is too old (it has no
-`cursor_expired` handler), pulls past the swept window, and pushes the deleted rows back
-with its next full snapshot. Tombstones are about 100 bytes each. Sweeping returns — at 365
-days, `sweepStaleData({ tombstoneRetentionDays: 365 })` — only after a 426 minimum-version
-floor retires ≤ 1.2.3, and the [usage report](#usage-report) is what says when that is.
+`cursor_expired` handler — 1.3.0 included), pulls past the swept window, and pushes the
+deleted rows back with its next full snapshot. Tombstones are about 100 bytes each. Sweeping
+returns — at 365 days, `sweepStaleData({ tombstoneRetentionDays: 365 })` — only after a 426
+minimum-version floor retires ≤ 1.3.0, i.e. a floor of **at least 1.3.1**, and the
+[usage report](#usage-report)'s < 1.3.1 cohort is what says when that is.
 (Until 2026-09-27 this section said tombstones were swept at 90 days; they were, until M0.)
 
 The three tables M0 added — `sync_snapshot_requests`, `usage_counters`, `user_clients` —
@@ -706,7 +749,8 @@ cd /root/stride-server && sudo node ops/usage-report.js [--days N] [--db path]
 Active accounts by client version over 7 / 28 / 56 days, the legacy (no header) and < 1.3.1
 cohorts, and counter totals by UTC day: `snake_fallback.*` (the snake_case shim),
 `habit_without_kind`, `mount.*` (hits on the legacy `/sync`, `/auth`, `/habits` mounts),
-`client.*`. It opens the database read-only and runs no migrations, so it is safe on the live
+`client.*`, and `lww_refeed.*` (the LWW re-feed — not a shim counter; it should stay small, and
+one that climbs every day is a device that cannot hold the winner). It opens the database read-only and runs no migrations, so it is safe on the live
 host or on a copy. The process flushes its counters hourly and on SIGTERM, so the report
 trails live traffic by up to an hour. **These numbers, not a date, decide when the
 snake_case shim, the legacy mounts, the 426 floor and tombstone sweeping can go.**

@@ -12,8 +12,9 @@
  *      (accounts that synced from that build; `legacy` = no X-Stride-Client, i.e. <= 1.2.3).
  *   2. Accounts still on a client that is legacy or older than 1.3.1 — both "their most recent
  *      client is" (the brief's number) and "any of their clients is" (the one that gates the
- *      426 floor: one forgotten iPad on 1.2.3 still pushes full snapshots and would resurrect
- *      swept tombstones). Account ids only; look an id up by hand if support needs the email.
+ *      426 floor: one forgotten iPad on 1.2.3 or 1.3.0 still pushes full snapshots and would
+ *      resurrect swept tombstones; the floor must be >= 1.3.1). Account ids only; look an id
+ *      up by hand if support needs the email.
  *   3. Counter totals per UTC day for the last N days (default 56 — the M6 gate's eight
  *      weeks), from usage_counters.
  *

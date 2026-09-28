@@ -260,16 +260,18 @@ const ANSWERED_SNAPSHOT_RETENTION_DAYS = 90;
  *
  * Deletion tombstones are NOT swept unless a caller asks (`tombstoneRetentionDays`). They
  * were swept after 90 days until 1.3, and every sweep was a resurrection window: an app up to
- * 1.2.3 that pulls with a cursor older than the oldest remaining tombstone never learns about
+ * 1.3.0 that pulls with a cursor older than the oldest remaining tombstone never learns about
  * the deletions that were swept, keeps those rows, and pushes them straight back in its next
  * full snapshot — a habit deleted on the phone reappears from the iPad that was in a drawer
- * for four months. Those apps have no way to be told their cursor is too old (the 1.3.1
- * `cursor_expired` 409 is gated on the X-Stride-Client header they don't send). A tombstone
- * is ~100 bytes, so keeping all of them costs nothing.
+ * for four months. Those apps have no way to be told their cursor is too old: the
+ * `cursor_expired` 409 is gated on an X-Stride-Client header >= 1.3.1, which <= 1.2.3 does not
+ * send and 1.3.0 sends below the gate (it has no handler either). A tombstone is ~100 bytes,
+ * so keeping all of them costs nothing.
  *
- * What turns sweeping back on: a 426 minimum-version floor that retires the <= 1.2.3 apps
- * (decided from the legacy-client counters, not a date). After that, sweep at
- * CURSOR_RETENTION_DAYS (365, routes/sync.js) — every client left handles cursor_expired.
+ * What turns sweeping back on: a 426 minimum-version floor that retires every app <= 1.3.0,
+ * i.e. a floor of at least 1.3.1 (decided from the usage report's < 1.3.1 cohort, not a date).
+ * After that, sweep at CURSOR_RETENTION_DAYS (365, routes/sync.js) — every client left handles
+ * cursor_expired.
  *
  * Also drops usage counters and client-cohort rows (metrics.js) older than
  * USAGE_RETENTION_DAYS: long enough to compare a year against the year before, short enough

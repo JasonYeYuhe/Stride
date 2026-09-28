@@ -8,7 +8,8 @@
  *   - the legacy /sync, /auth and /habits mounts, and the REST /v1/habits routes the apps
  *     never call;
  *   - no 426 minimum-version floor, which is what keeps tombstones from being swept (db.js
- *     sweepStaleData) and the <= 1.2.3 full-snapshot push alive;
+ *     sweepStaleData) and the full-snapshot push of every app <= 1.3.0 alive (1.3.0 still
+ *     pushes its whole store and has no cursor_expired handler, so the floor must be >= 1.3.1);
  *   - habits pushed with no `kind` (the 1.1 field-wipe population, never measured).
  * **These numbers decide when each of them can go — not a date.** A shim is removed when its
  * counter has read zero for long enough (the M6 gate is eight weeks), and the floor is raised
@@ -25,6 +26,11 @@
  * Counter names:
  *   snake_fallback.<camelKey>  a field() read that found only the snake_case key (per row)
  *   habit_without_kind         a pushed habit with no `kind` key
+ *   lww_refeed.<kind>          a push that lost to a strictly newer edit with different values,
+ *                              whose winner was moved back into the feed (routes/sync.js, the
+ *                              LWW re-feed; kind = habits | entries | groups). Not a shim
+ *                              counter: it should stay small, and one that climbs sync after
+ *                              sync is a device that cannot hold the winner
  *   mount.<path>               a request on /sync, /auth, /habits or /v1/habits
  *   client.<label>             an API request from `ios/1.3.1(19)`-style label, `legacy`
  *                              (no or malformed X-Stride-Client), or `other` (label cap hit)

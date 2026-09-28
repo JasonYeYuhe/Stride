@@ -91,7 +91,39 @@ async function main() {
     check("every pulled entry matches a pulled habit", orphans === 0, `orphans=${orphans}`);
     check("all ids upper case", [...(p.habits || []), ...(p.entries || [])].every((r) => r.id === r.id.toUpperCase()));
 
+    // --- the millisecond pull (M2): only for >= 1.3.1, the same instants for everyone ---
+    // Real rows are where a stored stamp might not be the fixed-width toISOString() form (seed
+    // scripts, columns added by ALTER TABLE) — a row served raw here would show as a FAIL.
+    const MS = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/;
+    const WHOLE = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/;
+    /** Every served stamp, keyed "kind:id:field". @param {any} j */
+    const stampsOf = (j) => {
+      /** @type {[string, string][]} */
+      const out = [];
+      for (const [k, rows] of /** @type {[string, any[]][]} */ ([["h", j?.habits], ["e", j?.entries], ["g", j?.groups]])) {
+        for (const r of rows || []) out.push([`${k}:${r.id}:c`, r.createdAt], [`${k}:${r.id}:u`, r.updatedAt]);
+      }
+      return out;
+    };
+    const pull131 = await call("GET", "/v1/sync/pull", { token: session, headers: { "X-Stride-Client": "ios/1.3.1(19)" } });
+    const ms = stampsOf(pull131.json);
+    const notMs = ms.filter(([, v]) => !MS.test(v));
+    check("pull with ios/1.3.1(19) -> every createdAt/updatedAt in fixed-width milliseconds",
+      pull131.status === 200 && ms.length > 0 && notMs.length === 0,
+      `${pull131.status} stamps=${ms.length} bad=${notMs.length}${notMs.length ? " e.g. " + JSON.stringify(notMs[0]) : ""}`);
+    const pull130 = await call("GET", "/v1/sync/pull", { token: session, headers: { "X-Stride-Client": "ios/1.3.0(18)" } });
+    for (const [label, other] of /** @type {[string, typeof pull][]} */ ([["ios/1.3.0(18)", pull130], ["no header", pull]])) {
+      const whole = new Map(stampsOf(other.json));
+      const differ = ms.filter(([k, v]) => whole.get(k) !== wholeSecond(v) || !WHOLE.test(whole.get(k) ?? ""));
+      check(`pull with ${label} -> whole seconds, the same instants`,
+        other.status === 200 && whole.size === ms.length && differ.length === 0,
+        `${other.status} stamps=${whole.size}/${ms.length} differ=${differ.length}${differ.length ? " e.g. " + differ[0][0] : ""}`);
+    }
+
     // --- the mixed-fleet contract on real rows: a 1.2.3 snapshot push bumps nothing ---
+    // Also the LWW re-feed's negative case on real rows: the demo rows carry millisecond stamps
+    // (seeded with toISOString()), so this whole-second echo is strictly older with the same
+    // values, and must not move them back into the feed.
     const before = db.prepare(`SELECT
       (SELECT COUNT(*) FROM habits h JOIN users u ON u.id=h.user_id WHERE u.email='demo@stride-review.com') AS nh,
       (SELECT MAX(updated_at) FROM habits h JOIN users u ON u.id=h.user_id WHERE u.email='demo@stride-review.com') AS hmax,

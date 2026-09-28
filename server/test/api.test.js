@@ -9824,3 +9824,286 @@ describe("Magic link: a failed Resend send is a 500, not {ok:true} (email.js)", 
     assert.deepEqual(r.json, { ok: true });
   });
 });
+
+// ===========================================================================
+// M2 — the server half of 1.3.1 (DEV-PLAN-1.3.md M2, "Millisecond edit stamps from 1.3.1" and
+// "The LWW winner goes back to the device that lost"). Deployed before the 1.3.1 client is
+// submitted, so every case here also pins what the shipped apps (no header, 1.3.0) keep getting.
+// ===========================================================================
+
+const m2 = {
+  MS: /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/,
+  WHOLE: /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/,
+  pull: (token, client, since) => m0.req("GET", "/v1/sync/pull", { token, client, query: since ? { since } : undefined }),
+  /** Every createdAt / updatedAt in a pull. */
+  stamps: (json) => [...json.habits, ...json.entries, ...json.groups].flatMap((r) => [r.createdAt, r.updatedAt]),
+};
+
+describe("M2 millisecond pull: >= 1.3.1 gets milliseconds, 1.3.0 and header-less apps whole seconds", () => {
+  let u;
+  const H = m0.uuid(), H123 = m0.uuid(), E = m0.uuid(), G = m0.uuid();
+  before(async () => {
+    u = m0.user();
+    const r = await m0.push(u.token, {
+      groups: [m0.group(G, { createdAt: "2026-09-01T00:00:00.125Z", updatedAt: "2026-09-15T17:33:18.300Z" })],
+      habits: [m0.habit(H, { groupId: G, createdAt: "2026-09-01T00:00:00.250Z", updatedAt: "2026-09-15T17:33:18.700Z" })],
+      entries: [m0.entry(E, H, "2026-09-15", { createdAt: "2026-09-15T00:00:00Z", updatedAt: "2026-09-15T17:33:18.042Z" })],
+    });
+    assert.equal(r.status, 200);
+    // A habit a 1.2.3 phone wrote: whole seconds on the wire.
+    assert.equal((await api("POST", "/v1/sync/push", { token: u.token, body: m0.snapshot123({
+      habits: [{ ...m0.habit(H123, { name: "Stretch", updatedAt: "2026-09-15T17:33:19Z" }), note: null, unit: null, groupId: null }],
+      entries: [], groups: [],
+    }) })).status, 200);
+  });
+  after(() => m0.cleanup(u.userId));
+
+  for (const client of ["ios/1.3.1(19)", "macos/1.3.1(19)", "ios/1.4.0(30)"]) {
+    it(`${client}: fixed-width milliseconds, exactly the stored instants`, async () => {
+      const r = await m2.pull(u.token, client);
+      assert.equal(r.status, 200);
+      const h = r.json.habits.find((x) => x.id === H);
+      assert.equal(h.updatedAt, "2026-09-15T17:33:18.700Z");
+      assert.equal(h.createdAt, "2026-09-01T00:00:00.250Z");
+      const e = r.json.entries.find((x) => x.id === E);
+      assert.equal(e.updatedAt, "2026-09-15T17:33:18.042Z");
+      assert.equal(e.createdAt, "2026-09-15T00:00:00.000Z", "a whole-second createdAt goes out as .000Z");
+      const g = r.json.groups.find((x) => x.id === G);
+      assert.deepEqual([g.createdAt, g.updatedAt], ["2026-09-01T00:00:00.125Z", "2026-09-15T17:33:18.300Z"]);
+      assert.equal(r.json.habits.find((x) => x.id === H123).updatedAt, "2026-09-15T17:33:19.000Z",
+        "a 1.2.3 phone's whole-second edit reads as .000Z");
+      for (const t of m2.stamps(r.json)) assert.match(t, m2.MS);
+    });
+  }
+
+  it("an incremental pull (?since) from 1.3.1 carries milliseconds too", async () => {
+    const r = await m2.pull(u.token, m0.V131, "2026-01-01T00:00:00.000Z");
+    assert.equal(r.status, 200);
+    assert.ok(r.json.habits.length >= 2);
+    for (const t of m2.stamps(r.json)) assert.match(t, m2.MS);
+  });
+
+  for (const [label, client] of [["ios/1.3.0(18)", m0.V130], ["no header", undefined], ["a malformed header", "ios/1.3.1-beta(19)"]]) {
+    it(`${label}: whole seconds, the same instants truncated (a default ISO8601DateFormatter returns nil on a fraction)`, async () => {
+      const ms = (await m2.pull(u.token, m0.V131)).json;
+      const r = await m2.pull(u.token, client);
+      assert.equal(r.status, 200);
+      const h = r.json.habits.find((x) => x.id === H);
+      assert.equal(h.updatedAt, "2026-09-15T17:33:18Z");
+      assert.equal(h.createdAt, "2026-09-01T00:00:00Z");
+      for (const t of m2.stamps(r.json)) assert.match(t, m2.WHOLE);
+      assert.deepEqual(m2.stamps(r.json), m2.stamps(ms).map((t) => t.replace(/\.\d{3}Z$/, "Z")));
+    });
+  }
+});
+
+describe("M2 millisecond edit stamps: two edits in one second resolve by time, not push order", () => {
+  let u;
+  const H = m0.uuid();
+  before(async () => {
+    u = m0.user();
+    assert.equal((await m0.push(u.token, { habits: [m0.habit(H)] })).status, 200);
+  });
+  after(() => m0.cleanup(u.userId));
+
+  const stored = (date) => db.prepare("SELECT id, value, client_updated_at FROM habit_entries WHERE habit_id = ? AND date = ?").get(H, date);
+
+  for (const laterFirst of [true, false]) {
+    it(`an entry stamped :18.700 beats one stamped :18.300 (${laterFirst ? ":18.700 pushed first" : ":18.300 pushed first"})`, async () => {
+      const date = laterFirst ? "2026-09-21" : "2026-09-22";
+      const E = m0.uuid();
+      const later = m0.entry(E, H, date, { value: 7, updatedAt: `${date}T10:00:18.700Z` });
+      const earlier = m0.entry(E, H, date, { value: 3, updatedAt: `${date}T10:00:18.300Z` });
+      for (const row of laterFirst ? [later, earlier] : [earlier, later]) {
+        const r = await m0.push(u.token, { entries: [row] });
+        assert.equal(r.status, 200);
+        assert.deepEqual(r.json.skipped.entries, []);
+      }
+      assert.deepEqual({ ...stored(date) }, { id: E, value: 7, client_updated_at: `${date}T10:00:18.700Z` });
+      const pulled = (await m2.pull(u.token, m0.V131)).json.entries.find((x) => x.id === E);
+      assert.deepEqual([pulled.value, pulled.updatedAt], [7, `${date}T10:00:18.700Z`]);
+    });
+  }
+
+  it("a whole-second push after a millisecond one compares as .000Z, not as the raw string", async () => {
+    const date = "2026-09-23", E = m0.uuid();
+    await m0.push(u.token, { entries: [m0.entry(E, H, date, { value: 7, updatedAt: `${date}T10:00:18.700Z` })] });
+    // As raw strings "…:18Z" sorts AFTER "…:18.700Z" ('Z' > '.'), and would have won.
+    const old = await api("POST", "/v1/sync/push", { token: u.token, body: m0.snapshot123({
+      habits: [], groups: [], entries: [{ id: E, habitId: H, date, value: 1, note: null, updatedAt: `${date}T10:00:18Z` }],
+    }) });
+    assert.equal(old.status, 200);
+    assert.deepEqual({ ...stored(date) }, { id: E, value: 7, client_updated_at: `${date}T10:00:18.700Z` });
+
+    // A whole second later it is newer, and is stored in the same fixed-width form.
+    await api("POST", "/v1/sync/push", { token: u.token, body: m0.snapshot123({
+      habits: [], groups: [], entries: [{ id: E, habitId: H, date, value: 2, note: null, updatedAt: `${date}T10:00:19Z` }],
+    }) });
+    assert.deepEqual({ ...stored(date) }, { id: E, value: 2, client_updated_at: `${date}T10:00:19.000Z` });
+  });
+});
+
+describe("M2 LWW re-feed: the winner goes back to the device that lost", () => {
+  // The case: device A pulled the winner W (stamped :20), then made an edit L that its slow
+  // clock stamped :10. The guard keeps W and answers `applied`, so A acknowledges L — and W's
+  // updated_at is before A's cursor, so A's next pull would never bring W back.
+  const kinds = {
+    entries: {
+      // One day per id: entries conflict on (habit, day), and each case below uses a fresh id.
+      row: (id, habitId, stamp, v, day) => m0.entry(id, habitId, day, { value: v === "W" ? 8 : 2, note: v === "W" ? "evening" : null, updatedAt: stamp }),
+      read: (json, id) => json.entries.find((x) => x.id === id),
+      winner: (r) => r.value === 8 && r.note === "evening",
+    },
+    habits: {
+      row: (id, _h, stamp, v) => m0.habit(id, { name: v === "W" ? "Water (renamed)" : "Water", targetValue: v === "W" ? 10 : 8, updatedAt: stamp }),
+      read: (json, id) => json.habits.find((x) => x.id === id),
+      winner: (r) => r.name === "Water (renamed)" && r.targetValue === 10,
+    },
+    groups: {
+      row: (id, _h, stamp, v) => m0.group(id, { name: v === "W" ? "Health (renamed)" : "Health", sortOrder: v === "W" ? 5 : 1, updatedAt: stamp }),
+      read: (json, id) => json.groups.find((x) => x.id === id),
+      winner: (r) => r.name === "Health (renamed)" && r.sortOrder === 5,
+    },
+  };
+  const W = "2026-09-24T10:00:20.000Z", L = "2026-09-24T10:00:10.000Z";
+
+  for (const [kind, k] of Object.entries(kinds)) {
+    describe(kind, () => {
+      let u, H;
+      const one = (row) => ({ [kind]: [row] });
+      before(async () => {
+        u = m0.user();
+        H = m0.uuid();
+        assert.equal((await m0.push(u.token, { habits: [m0.habit(H)] })).status, 200);
+      });
+      after(() => m0.cleanup(u.userId));
+
+      it("a losing push with different values: applied, and the next pull since the cursor returns the winner", async () => {
+        const id = m0.uuid(), day = "2026-09-24";
+        assert.equal((await m0.push(u.token, one(k.row(id, H, W, "W", day)))).status, 200);
+        const cursor = (await m2.pull(u.token, m0.V131)).json.serverTime;
+        await m0.sleep(5);
+
+        const lost = await m0.push(u.token, one(k.row(id, H, L, "L", day)));
+        assert.equal(lost.status, 200);
+        assert.equal(lost.json.applied[kind], 1, "the guard's keep still counts as applied");
+        assert.deepEqual(lost.json.skipped[kind], []);
+
+        const inc = (await m2.pull(u.token, m0.V131, cursor)).json;
+        const back = k.read(inc, id);
+        assert.ok(back, "was absent: the winner's updated_at was before the cursor");
+        assert.ok(k.winner(back), JSON.stringify(back));
+        assert.equal(back.updatedAt, W, "the winner keeps its own edit stamp");
+      });
+
+      it("the same losing stamp with the winner's values re-feeds nothing", async () => {
+        const id = m0.uuid(), day = "2026-09-25";
+        await m0.push(u.token, one(k.row(id, H, W, "W", day)));
+        const before = m0.clocks(u.userId);
+        await m0.sleep(5);
+        assert.equal((await m0.push(u.token, one(k.row(id, H, L, "W", day)))).status, 200);
+        assert.deepEqual(m0.clocks(u.userId), before, "no updated_at may move");
+      });
+
+      it("a whole-second echo of a millisecond row (1.3.0 snapshot) re-feeds nothing", async () => {
+        const id = m0.uuid(), day = "2026-09-26";
+        const ms = "2026-09-24T10:00:30.700Z";
+        await m0.push(u.token, one(k.row(id, H, ms, "W", day)));
+        const before = m0.clocks(u.userId);
+        await m0.sleep(5);
+        // What 1.3.0 pulls (whole seconds) and pushes straight back: :30.000 < :30.700, same values.
+        const pulled = k.read((await m2.pull(u.token, m0.V130)).json, id);
+        assert.equal(pulled.updatedAt, "2026-09-24T10:00:30Z");
+        const echo = await m0.push(u.token, one(k.row(id, H, pulled.updatedAt, "W", day)), { client: m0.V130 });
+        assert.equal(echo.status, 200);
+        assert.deepEqual(m0.clocks(u.userId), before, "no updated_at may move");
+      });
+    });
+  }
+
+  describe("values are compared as an app holds them, so a device that pulled the winner is never re-fed", () => {
+    let u;
+    const H = m0.uuid();
+    before(async () => {
+      u = m0.user();
+      assert.equal((await m0.push(u.token, { habits: [m0.habit(H)] })).status, 200);
+    });
+    after(() => m0.cleanup(u.userId));
+
+    /** Push `rows` (if any) stamped with milliseconds, then echo what 1.2.3 would: the
+     * whole-second pull, as it holds it, which is strictly older than every stored stamp. */
+    async function echoMovesNothing(rows) {
+      if (rows) assert.equal((await m0.push(u.token, rows)).status, 200);
+      const before = m0.clocks(u.userId);
+      await m0.sleep(5);
+      const pulled = (await m2.pull(u.token)).json;
+      const echo = await api("POST", "/v1/sync/push", { token: u.token, body: m0.snapshot123(pulled) });
+      assert.equal(echo.status, 200);
+      assert.deepEqual(echo.json.skipped, { habits: [], entries: [], groups: [] });
+      assert.deepEqual(m0.clocks(u.userId), before, "no updated_at may move");
+    }
+
+    it("an empty note (served as null, echoed absent) is not a difference", async () => {
+      const H2 = m0.uuid();
+      await echoMovesNothing({
+        habits: [m0.habit(H2, { note: "", unit: "", updatedAt: "2026-09-25T10:00:40.700Z" })],
+        entries: [m0.entry(m0.uuid(), H, "2026-09-25", { note: "", updatedAt: "2026-09-25T10:00:40.700Z" })],
+      });
+    });
+
+    it("a habit still pointing at a deleted group (pushed as null, stored as the id) is not a difference", async () => {
+      const G = m0.uuid(), H3 = m0.uuid();
+      await m0.push(u.token, { groups: [m0.group(G)], habits: [m0.habit(H3, { groupId: G, updatedAt: "2026-09-25T10:00:50.700Z" })] });
+      await m0.push(u.token, { deletedGroupIds: [G] });
+      assert.equal(db.prepare("SELECT group_id FROM habits WHERE id = ?").get(H3).group_id, G,
+        "the stored habit keeps the reference (a group delete does not touch its habits)");
+      // The device kept the reference too; the push drops it to null. Same thing, as an app holds it.
+      // (No re-push at :50.700 first: at an equal stamp the guard would write the null.)
+      await echoMovesNothing(null);
+      assert.equal(db.prepare("SELECT group_id FROM habits WHERE id = ?").get(H3).group_id, G);
+    });
+
+    it("a 1.1 habit (no kind, schedule or group) is compared only on what that app holds", async () => {
+      const H4 = m0.uuid();
+      await m0.push(u.token, { habits: [m0.habit(H4, { kind: "count", targetValue: 12, updatedAt: "2026-09-25T10:00:55.700Z" })] });
+      const before = m0.clocks(u.userId);
+      await m0.sleep(5);
+      const old = { id: H4, name: "Water", emoji: "\u{1F4A7}", colorHex: "#007AFF", isArchived: false, sortOrder: 0,
+        reminderEnabled: false, reminderHour: 20, reminderMinute: 0, createdAt: "2026-09-01T00:00:00Z", updatedAt: "2026-09-25T10:00:55Z" };
+      assert.equal((await api("POST", "/v1/sync/push", { token: u.token, body: { habits: [old], entries: [] } })).status, 200);
+      assert.deepEqual(m0.clocks(u.userId), before, "it can never hold kind: re-feeding it would never end");
+
+      // A difference it does hold (the name) still re-feeds.
+      assert.equal((await api("POST", "/v1/sync/push", { token: u.token, body: { habits: [{ ...old, name: "Old name" }], entries: [] } })).status, 200);
+      assert.notEqual(m0.clocks(u.userId)[`h:${H4}`], before[`h:${H4}`]);
+      assert.equal(db.prepare("SELECT kind, target_value FROM habits WHERE id = ?").get(H4).kind, "count", "and the winner is untouched");
+    });
+  });
+
+  describe("counted in metrics and on the request line (second server)", () => {
+    const PORT2 = 3098, BASE2 = `http://localhost:${PORT2}`;
+    const count = (name) => db.prepare("SELECT COALESCE(SUM(value), 0) AS n FROM usage_counters WHERE name = ?").get(name).n;
+    let proc, u, stdout = "", before0;
+    const H = m0.uuid(), E = m0.uuid();
+
+    before(async () => {
+      u = m0.user();
+      before0 = count("lww_refeed.entries");
+      proc = await m0.spawnServer(PORT2, {});
+      proc.stdout.on("data", (d) => { stdout += d; });
+      const push = (body) => m0.push(u.token, body, { base: BASE2 });
+      assert.equal((await push({ habits: [m0.habit(H)], entries: [m0.entry(E, H, "2026-09-26", { value: 8, updatedAt: W })] })).status, 200);
+      assert.equal((await push({ entries: [m0.entry(E, H, "2026-09-26", { value: 2, updatedAt: L })] })).status, 200);
+      await m0.stopServer(proc);   // SIGTERM flushes the counters
+    });
+    after(async () => { await m0.stopServer(proc); m0.cleanup(u.userId); });
+
+    it("refed= on the losing push's log line, and lww_refeed.entries in usage_counters", () => {
+      const lines = stdout.split("\n").filter((l) => l.includes("POST /v1/sync/push"));
+      assert.equal(lines.length, 2, stdout);
+      assert.doesNotMatch(lines[0], /refed=/, "the winner's own push re-feeds nothing");
+      assert.match(lines[1], / refed=habits:0,entries:1,groups:0(\s|$)/);
+      assert.equal(count("lww_refeed.entries") - before0, 1);
+    });
+  });
+});

@@ -60,7 +60,9 @@ function field(obj, camelKey) {
  * A row's `updated_at` moves only when the push actually changes it. Every client up to 1.3.0
  * pushes a full snapshot on every sync, so bumping unchanged rows would put the whole dataset
  * back into every other device's incremental pull — and from 1.3.1, where a device pushes only
- * its changed rows, a 1.2.3 phone's snapshot of the same rows must still change nothing.
+ * its changed rows, a 1.2.3 or 1.3.0 device's snapshot of the same rows must still change
+ * nothing. The one deliberate exception is the LWW re-feed (the comment above habitValues): a push that
+ * lost to a strictly newer edit with different values moves the winner back into the feed.
  */
 
 /** Normalise a client timestamp to this server's own format, or null if it isn't one.
@@ -73,13 +75,16 @@ function isoOrNull(v) {
 }
 
 /**
- * Timestamps go out at whole-second precision.
+ * Timestamps go out at whole-second precision to apps before 1.3.1.
  *
- * Every shipped app parses them with a default ISO8601DateFormatter, which rejects
- * fractional seconds and returns nil. Anything this process stamps has milliseconds —
- * including the whole App Review demo account, seeded with toISOString() — and on nil the
- * app fell back to Date(), so a freshly signed-in device thought every demo habit was
- * created today: its 30-day rate, Weekly Review and trend chart all started from today.
+ * Apps up to 1.2.2 parse them with a default ISO8601DateFormatter, which rejects fractional
+ * seconds and returns nil. Anything this process stamps has milliseconds — including the whole
+ * App Review demo account, seeded with toISOString() — and on nil the app fell back to Date(),
+ * so a freshly signed-in device thought every demo habit was created today: its 30-day rate,
+ * Weekly Review and trend chart all started from today. No header may mean one of those apps.
+ * 1.2.3 and 1.3.0 read both forms in the reconciler (SyncTimestamp.parse), but were built and
+ * tested against whole seconds and gain nothing from a fraction (their entry guard floors to
+ * whole seconds), so the gate is the first version whose reconciler compares milliseconds.
  * @param {string|null|undefined} v
  */
 function wireTime(v) {
@@ -87,6 +92,82 @@ function wireTime(v) {
   const d = new Date(v);
   return Number.isNaN(d.getTime()) ? v : d.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
+
+/**
+ * Timestamps at full precision, for apps >= 1.3.1 (DEV-PLAN-1.3.md M2, "Millisecond edit
+ * stamps"): toISOString()'s fixed-width `…:18.700Z`, the form every stored stamp is compared in.
+ *
+ * Why the pull must carry them, not only the push: served truncated, a remote edit at :18.700
+ * arrives as :18.000, and a local edit at :18.300 looks newer to the 1.3.1 local-newer guard. It
+ * is kept and pushed, the server keeps :18.700 and reports the push applied, the device
+ * acknowledges it — and shows the losing value until the row changes again.
+ * @param {string|null|undefined} v
+ */
+function wireTimeMs(v) {
+  if (!v) return v;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? v : d.toISOString();
+}
+
+/*
+ * The LWW re-feed (DEV-PLAN-1.3.md M2, "The LWW winner goes back to the device that lost").
+ *
+ * A push the guard keeps as older counts as `applied`, and a 1.3.1 device acknowledges it. The
+ * winner reaches that device only if its `updated_at` is after the device's cursor, and in the
+ * case that matters it is not: the device pulled the winner, then made an edit its slow clock
+ * stamped earlier. From then on the device shows its own value and the server keeps another,
+ * until the row changes again. So when an upsert changes nothing because the stored edit is
+ * STRICTLY newer AND the values differ, the stored row's `updated_at` moves to now, and the
+ * losing device's next pull brings the winner (the refeedMismatchedEntry precedent below).
+ *
+ * Both conditions are needed. Every 1.3.0 snapshot echoes a 1.3.1 millisecond stamp truncated
+ * to whole seconds (:18.000 < :18.700) with the same values; re-feeding on the stamp alone
+ * would put that row back into every device's feed on every sync, forever.
+ *
+ * "Values differ" means differ as an app holds them, not as the columns hold them. The pull
+ * serves `note: ''` as null and `kind: ''` as "binary", the push stores an absent emoji as ⭐,
+ * and a habit's groupId pointing at a deleted group is pushed as null while the stored row
+ * keeps it (a group delete does not touch its habits here). A device that pulled the winner
+ * and echoes it back through those rules is not holding a different value, and a re-feed it
+ * cannot act on would repeat on every one of its syncs. So both sides go through the same
+ * normalisation before they are compared. For the same reason a habit pushed with no `kind`
+ * key is compared only on the fields that app has: `kind`, the schedule fields and `groupId`
+ * all arrived together in 1.2.0 (v2), so a 1.1 app (the `habit_without_kind` population) can
+ * never hold them, and re-feeding it the winner's would never end. Counted per kind (`lww_refeed.<kind>` in
+ * metrics.js, `refed=` on the request line): a count that keeps climbing for one account is a
+ * device that cannot hold the winner, which this reasoning says should not exist.
+ */
+
+/** @param {unknown} v */
+const text = (v) => (v === null || v === undefined || v === "" ? null : String(v));
+
+/**
+ * A habit's values as an app ends up holding them, from a stored row or from a pushed row
+ * after the push's own defaults (both keyed by column name). `v2Fields` false leaves out what
+ * a 1.1 app cannot hold.
+ * @param {Record<string, any>} v @param {Set<string>} deletedGroups @param {boolean} v2Fields
+ */
+function habitValues(v, deletedGroups, v2Fields) {
+  const always = [
+    text(v.name), text(v.emoji) ?? "⭐", text(v.color_hex) ?? "#34C759", v.is_archived ? 1 : 0,
+    Number(v.sort_order || 0), v.reminder_enabled ? 1 : 0, Number(v.reminder_hour ?? 20),
+    Number(v.reminder_minute ?? 0), text(v.note),
+  ];
+  if (!v2Fields) return always;
+  const group = text(v.group_id);
+  return [
+    ...always, text(v.kind) ?? "binary", Number(v.target_value ?? 1), text(v.unit),
+    text(v.schedule_kind) ?? "daily", Number(v.times_per_week ?? 7), Number(v.active_days_mask ?? 127),
+    group !== null && !deletedGroups.has(group) ? group : null,
+  ];
+}
+/** @param {Record<string, any>} v */
+const entryValues = (v) => [text(v.note), Number(v.value ?? 1)];
+/** @param {Record<string, any>} v */
+const groupValues = (v) => [text(v.name), text(v.color_hex) ?? "#34C759", Number(v.sort_order || 0)];
+
+/** @param {unknown[]} a @param {unknown[]} b */
+const sameValues = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
 
 
 /*
@@ -96,7 +177,9 @@ function wireTime(v) {
  * the server has accepted it. So the push response says, per row, what happened:
  *   applied — rows accepted. Includes rows the LWW guard kept as they were (the server already
  *             holds an edit at least as new) and identical re-sends: the device may treat them
- *             as delivered, and its next pull brings the newer version down.
+ *             as delivered, and its next pull brings the newer version down — even when the
+ *             device's cursor is past it, because a kept edit that is strictly newer and
+ *             differs is moved back into the feed (the LWW re-feed, above habitValues).
  *   skipped — ids that were not written, with the reason for each in `skippedReasons`
  *             (`{habits:{id:reason}, entries:{…}, groups:{…}}`). The reason is what tells the
  *             device whether to drop the row or send it again, so it must not be guessed from
@@ -114,16 +197,24 @@ function wireTime(v) {
  *               invalid_value     a number no app can produce: not finite, out of range, or a
  *                                 fraction where an app sends a whole number (PUSH_BOUNDS below)
  *                                 — never applies as sent; quarantine it, do not retry
- *             The two not_owned reasons are what "keep this device's habits and add them to
- *             this account" hits: those ids are the previous account's rows, so acknowledging
- *             them would lose the data the user chose to keep — they need new ids.
+ *             The two not_owned reasons are ids that exist under another account. With 1.3.1's
+ *             account isolation (the store has one owner; there is no "keep this device's
+ *             habits and add them to this account") only two paths reach them: a restore that
+ *             kept another account's ids, and a device whose owner was unknown when the user
+ *             chose to upload its habits. The device holds such a row — never acknowledges it
+ *             (its full-pull rule would then delete it), never drops it — and offers "Restore
+ *             as new copies", which gives it new ids.
  * Before 1.3.1 nothing read this — the apps decode only `ok` — and a dropped row was harmless
  * because the next snapshot re-sent it anyway. Once clients stop re-sending, a silent drop
  * becomes a row that is never synced, so it has to be visible.
  *
- * One malformed row must never fail the request. The 1.3.1 client bisects a chunk answered
- * 400 down to the one bad row and quarantines it, but backs off on 5xx; a row that made every
- * push of its chunk 500 would stop that account syncing, permanently.
+ * One malformed row must never fail the request: it is a 200 with a `skippedReasons` entry,
+ * and SQLite errors are caught per row as `row_error`. A push's only 400s are envelope errors
+ * (`invalid_payload`, `too_many_rows`), and the 1.3.1 client has one rule per answer, not
+ * bisection (DEV-PLAN-1.3.md M2, "One rule per push answer"): `too_many_rows` re-chunks against
+ * `limits`; `invalid_payload` stops the sync and backs off with every row still pending,
+ * holding nothing, because the rows are not what is wrong; 5xx backs off. So a bad row that
+ * failed its whole request — 400 or 500 — would stop that account syncing, permanently.
  */
 
 /**
@@ -131,10 +222,12 @@ function wireTime(v) {
  *
  * Rows only, not the deleted*Ids lists. The apps queue one deletedEntryId per check-in when a
  * habit is deleted (SettingsView: trackDeletedEntry for every record), so deleting a couple
- * of multi-year habits queues thousands of ids, and M2's planner sends all deletions in its
- * first chunk. A cap there would 400 that chunk on every sync — and bisecting its rows never
- * shrinks the deletion list, so the account would stop syncing. Each id is one indexed DELETE
- * and one tombstone INSERT; the 5 MB body limit bounds them, as it always has.
+ * of multi-year habits queues thousands of ids. M2's planner bounds each chunk by encoded
+ * bytes as well as rows (<= 1 MB, deletion ids included), so a big queue is spread over
+ * several chunks, but a count cap here would be one more limit every client must mirror
+ * exactly — and a 400 on a deletion-only chunk that re-chunking could not fix would stop the
+ * account syncing. Each id is one indexed DELETE and one tombstone INSERT; the 5 MB body limit
+ * bounds them, as it always has. The planner's row bounds (200 / 500 / 2,000) sit inside these.
  */
 const ROW_LIMITS = Object.freeze({ habits: 500, entries: 5000, groups: 200 });
 
@@ -215,9 +308,11 @@ const PUSH_ARRAYS = /** @type {const} */ ([
  * Change-feed cursors. Tombstones are kept forever for now (db.js sweepStaleData), so no
  * cursor is ever actually too old to be served correctly. The window is a contract with the
  * 1.3.1 client, enforced before sweeping comes back: once a 426 minimum-version floor has
- * retired the <= 1.2.3 apps, tombstones older than CURSOR_RETENTION_DAYS can be swept, and a
- * client whose cursor predates what the server still holds must do a full pull instead of
- * trusting an incremental one that silently lacks those deletions. The grace refuses cursors
+ * retired every app <= 1.3.0 — 1.3.0 still pushes full snapshots and has no cursor_expired
+ * handler, exactly like 1.2.3, so the floor must be at least 1.3.1 — tombstones older than
+ * CURSOR_RETENTION_DAYS can be swept, and a client whose cursor predates what the server
+ * still holds must do a full pull instead of trusting an incremental one that silently lacks
+ * those deletions. The grace refuses cursors
  * 10 days before the sweep line, so a cursor accepted today can never need a tombstone that a
  * sweep running between two syncs has just removed.
  */
@@ -434,6 +529,23 @@ router.post("/push", (req, res) => {
         OR habit_groups.sort_order IS NOT excluded.sort_order)
   `);
 
+  // The LWW re-feed (the comment above habitValues): the stored row, read only when an
+  // upsert of an own row changed nothing, and the bump that puts it back into the feed.
+  const storedHabit = db.prepare(`
+    SELECT name, emoji, color_hex, is_archived, sort_order, reminder_enabled, reminder_hour,
+           reminder_minute, note, kind, target_value, unit, schedule_kind, times_per_week,
+           active_days_mask, group_id, COALESCE(client_updated_at, updated_at, '') AS edited
+    FROM habits WHERE id = ? AND user_id = ?`);
+  const storedEntry = db.prepare(
+    "SELECT note, value, COALESCE(client_updated_at, updated_at, '') AS edited FROM habit_entries WHERE habit_id = ? AND date = ?"
+  );
+  const storedGroup = db.prepare(
+    "SELECT name, color_hex, sort_order, COALESCE(client_updated_at, updated_at, '') AS edited FROM habit_groups WHERE id = ? AND user_id = ?"
+  );
+  const refeedHabit = db.prepare("UPDATE habits SET updated_at = ? WHERE id = ? AND user_id = ?");
+  const refeedEntry = db.prepare("UPDATE habit_entries SET updated_at = ? WHERE habit_id = ? AND date = ?");
+  const refeedGroup = db.prepare("UPDATE habit_groups SET updated_at = ? WHERE id = ? AND user_id = ?");
+
   const deleteHabit = db.prepare("DELETE FROM habits WHERE id = ? AND user_id = ?");
   const deleteEntry = db.prepare(
     "DELETE FROM habit_entries WHERE id = ? AND habit_id IN (SELECT id FROM habits WHERE user_id = ?)"
@@ -462,6 +574,8 @@ router.post("/push", (req, res) => {
     new Set(/** @type {Record<string, string>[]} */ (stmt.all(userId)).map((r) => r[col]));
 
   const applied = { habits: 0, entries: 0, groups: 0 };
+  /** Rows the LWW re-feed moved back into the feed (counted in `applied` too). */
+  const refed = { habits: 0, entries: 0, groups: 0 };
   /** Skipped id -> reason, per kind; a Map keeps the order ids were skipped in. The first
    * reason wins when an id is sent twice. @type {{ habits: Map<string, string>, entries: Map<string, string>, groups: Map<string, string> }} */
   const skipped = { habits: new Map(), entries: new Map(), groups: new Map() };
@@ -523,13 +637,22 @@ router.post("/push", (req, res) => {
       if (!g.name) { skip("groups", id, "missing_field"); continue; }
       const num = boundedNumbers(g, PUSH_BOUNDS.groups);
       if (!num) { skip("groups", id, "invalid_value"); continue; }
+      const v = { name: g.name, color_hex: field(g, "colorHex") || "#34C759", sort_order: num.sortOrder || 0 };
+      const edited = isoOrNull(field(g, "updatedAt")) || now;
       try {
         const r = upsertGroup.run(
-          id, userId, g.name, field(g, "colorHex") || "#34C759", num.sortOrder || 0,
-          field(g, "createdAt") || now, now, isoOrNull(field(g, "updatedAt")) || now,
+          id, userId, v.name, v.color_hex, v.sort_order,
+          field(g, "createdAt") || now, now, edited,
           userId,
         );
-        if (r.changes === 0 && !ownGroups.has(id)) { skip("groups", id, "not_owned"); continue; }
+        if (r.changes === 0) {
+          if (!ownGroups.has(id)) { skip("groups", id, "not_owned"); continue; }
+          const stored = /** @type {any} */ (storedGroup.get(id, userId));
+          if (stored && stored.edited > edited && !sameValues(groupValues(stored), groupValues(v))) {
+            refeedGroup.run(now, id, userId);
+            refed.groups++;
+          }
+        }
         ownGroups.add(id);
         applied.groups++;
       } catch (err) {
@@ -552,19 +675,38 @@ router.post("/push", (req, res) => {
       // Drop a stale group reference (group deleted on another device)
       const rawGroupId = field(h, "groupId");
       const groupId = rawGroupId && !blockedGroups.has(rawGroupId) ? rawGroupId : null;
+      // The values as written, keyed by column, so the re-feed compares exactly these.
+      const v = {
+        name: h.name, emoji: h.emoji || "⭐", color_hex: field(h, "colorHex") || "#34C759",
+        is_archived: field(h, "isArchived") ? 1 : 0, sort_order: num.sortOrder || 0,
+        reminder_enabled: field(h, "reminderEnabled") ? 1 : 0,
+        reminder_hour: num.reminderHour ?? 20, reminder_minute: num.reminderMinute ?? 0,
+        note: h.note ?? null,
+        kind: h.kind || "binary", target_value: num.targetValue ?? 1, unit: h.unit ?? null,
+        schedule_kind: field(h, "scheduleKind") || "daily", times_per_week: num.timesPerWeek ?? 7,
+        active_days_mask: num.activeDaysMask ?? 127,
+        group_id: groupId,
+      };
+      const edited = isoOrNull(field(h, "updatedAt")) || now;
       try {
         const r = upsertHabit.run(
-          id, userId, h.name, h.emoji || "⭐", field(h, "colorHex") || "#34C759",
-          field(h, "isArchived") ? 1 : 0, num.sortOrder || 0,
-          field(h, "reminderEnabled") ? 1 : 0, num.reminderHour ?? 20, num.reminderMinute ?? 0,
-          h.note ?? null,
-          h.kind || "binary", num.targetValue ?? 1, h.unit ?? null,
-          field(h, "scheduleKind") || "daily", num.timesPerWeek ?? 7, num.activeDaysMask ?? 127,
-          groupId,
-          field(h, "createdAt") || now, now, isoOrNull(field(h, "updatedAt")) || now,
+          id, userId, v.name, v.emoji, v.color_hex, v.is_archived, v.sort_order,
+          v.reminder_enabled, v.reminder_hour, v.reminder_minute, v.note,
+          v.kind, v.target_value, v.unit, v.schedule_kind, v.times_per_week, v.active_days_mask,
+          v.group_id,
+          field(h, "createdAt") || now, now, edited,
           userId,
         );
-        if (r.changes === 0 && !ownHabitsSoFar.has(id)) { skip("habits", id, "not_owned"); continue; }
+        if (r.changes === 0) {
+          if (!ownHabitsSoFar.has(id)) { skip("habits", id, "not_owned"); continue; }
+          const stored = /** @type {any} */ (storedHabit.get(id, userId));
+          const v2 = h.kind !== undefined;
+          if (stored && stored.edited > edited
+            && !sameValues(habitValues(stored, blockedGroups, v2), habitValues(v, blockedGroups, v2))) {
+            refeedHabit.run(now, id, userId);
+            refed.habits++;
+          }
+        }
         ownHabitsSoFar.add(id);
         applied.habits++;
       } catch (err) {
@@ -598,13 +740,25 @@ router.post("/push", (req, res) => {
       // After the habit checks: an entry of a deleted habit is dropped, whatever its value.
       const num = boundedNumbers(e, PUSH_BOUNDS.entries);
       if (!num) { skip("entries", id, "invalid_value"); continue; }
+      const v = { note: e.note ?? null, value: num.value ?? 1 };
+      // Clients before 1.2.3 send no entry updatedAt; stamping those `now` keeps their
+      // last-push-wins behaviour rather than letting them lose every conflict (and, being
+      // `now`, never re-feeds).
+      const edited = isoOrNull(field(e, "updatedAt")) || now;
       try {
-        // Clients before 1.2.3 send no entry updatedAt; stamping those `now` keeps their
-        // last-push-wins behaviour rather than letting them lose every conflict.
-        const r = upsertEntry.run(id, entryHabitId, e.date, e.note ?? null, num.value ?? 1,
-          field(e, "createdAt") || now, now, isoOrNull(field(e, "updatedAt")) || now);
-        // A row this upsert changed already carries updated_at = now.
-        if (r.changes === 0) refeedMismatchedEntry.run(now, entryHabitId, e.date, id);
+        const r = upsertEntry.run(id, entryHabitId, e.date, v.note, v.value,
+          field(e, "createdAt") || now, now, edited);
+        // A row this upsert changed already carries updated_at = now. The entry's habit is
+        // this account's (checked above), so the row at (habit, day) is too.
+        if (r.changes === 0) {
+          const stored = /** @type {any} */ (storedEntry.get(entryHabitId, e.date));
+          if (stored && stored.edited > edited && !sameValues(entryValues(stored), entryValues(v))) {
+            refeedEntry.run(now, entryHabitId, e.date);
+            refed.entries++;
+          } else {
+            refeedMismatchedEntry.run(now, entryHabitId, e.date, id);
+          }
+        }
         applied.entries++;
       } catch (err) {
         if (!isRowError(err)) throw err;
@@ -614,6 +768,11 @@ router.post("/push", (req, res) => {
   });
 
   transaction();
+
+  // After the commit: a push whose transaction threw re-fed nothing.
+  for (const kind of /** @type {const} */ (["habits", "entries", "groups"])) {
+    if (refed[kind] > 0) metrics.count(`lww_refeed.${kind}`, refed[kind]);
+  }
 
   if (noId > 0) console.warn(`[sync] push user=${userId} dropped ${noId} row(s) with no usable id`);
   if (rowErrors > MAX_ROW_ERROR_LOG_LINES) {
@@ -627,6 +786,7 @@ router.post("/push", (req, res) => {
     },
     applied,
     skipped: { habits: skipped.habits.size, entries: skipped.entries.size, groups: skipped.groups.size },
+    ...(refed.habits + refed.entries + refed.groups > 0 ? { refed } : {}),
     ...(Object.keys(reasons).length > 0 ? { reasons } : {}),
     ...(noId > 0 ? { noId } : {}),
   };
@@ -664,10 +824,10 @@ router.get("/pull", (req, res) => {
 
   if (answerSnapshotRequest(req, res)) return;
 
-  // Only for clients that know what to do with it (a full pull, then push). A <= 1.2.3 app has
-  // no handler: it would show the error and retry the same cursor on every sync, forever — it
-  // keeps getting 200, which is correct for as long as tombstones are never swept. A full pull
-  // (no since) is never refused.
+  // Only for clients that know what to do with it (a full pull, then push). An app <= 1.3.0 has
+  // no handler (1.3.0 sends the header but is below the gate): it would show the error and
+  // retry the same cursor on every sync, forever — it keeps getting 200, which is correct for as
+  // long as tombstones are never swept. A full pull (no since) is never refused.
   if (sinceIso && clientAtLeast(req, "1.3.1")) {
     const oldest = Date.now() - (CURSOR_RETENTION_DAYS - CURSOR_GRACE_DAYS) * 86400000;
     if (new Date(sinceIso).getTime() < oldest) {
@@ -733,6 +893,10 @@ router.get("/pull", (req, res) => {
   });
   const { totals, habits, entries, groups, deletedHabitIds, deletedEntryIds, deletedGroupIds } = read();
 
+  // One branch, on the header: >= 1.3.1 compares milliseconds and needs them (wireTimeMs);
+  // everything older keeps the whole seconds it can parse (wireTime).
+  const stamp = clientAtLeast(req, "1.3.1") ? wireTimeMs : wireTime;
+
   res.locals.syncStats = {
     user: userId,
     pull: since ? "since" : "full",
@@ -750,15 +914,15 @@ router.get("/pull", (req, res) => {
       kind: row.kind || "binary", targetValue: row.target_value, unit: row.unit || null,
       scheduleKind: row.schedule_kind || "daily", timesPerWeek: row.times_per_week,
       activeDaysMask: row.active_days_mask, groupId: row.group_id || null,
-      createdAt: wireTime(row.created_at), updatedAt: wireTime(row.updated_at),
+      createdAt: stamp(row.created_at), updatedAt: stamp(row.updated_at),
     }; }),
     entries: entries.map((e) => { const row = /** @type {EntryRow} */ (e); return {
       id: row.id, habitId: row.habit_id, date: row.date, note: row.note || null,
-      value: row.value, createdAt: wireTime(row.created_at), updatedAt: wireTime(row.updated_at),
+      value: row.value, createdAt: stamp(row.created_at), updatedAt: stamp(row.updated_at),
     }; }),
     groups: groups.map((g) => { const row = /** @type {GroupRow} */ (g); return {
       id: row.id, name: row.name, colorHex: row.color_hex, sortOrder: row.sort_order,
-      createdAt: wireTime(row.created_at), updatedAt: wireTime(row.updated_at),
+      createdAt: stamp(row.created_at), updatedAt: stamp(row.updated_at),
     }; }),
     deletedHabitIds,
     deletedEntryIds,
