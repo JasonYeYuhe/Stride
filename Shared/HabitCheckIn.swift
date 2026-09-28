@@ -36,7 +36,7 @@ enum HabitCheckIn {
     static func tap(_ habit: Habit, on date: Date, in context: ModelContext) -> Result {
         switch habit.habitKind {
         case .binary:
-            if let existing = habit.record(on: date) {
+            if let existing = liveRecord(of: habit, on: date, in: context) {
                 let id = existing.id.uuidString
                 context.delete(existing)
                 // Stated rather than recomputed: until the context saves, `habit.records` can
@@ -47,23 +47,68 @@ enum HabitCheckIn {
             return Result(deletedRecordID: nil, isCompleted: true, loggedValue: 1)
 
         case .count:
-            if let existing = habit.record(on: date) {
+            let record: HabitRecord
+            if let existing = liveRecord(of: habit, on: date, in: context) {
                 existing.value += 1
                 existing.touch()
+                record = existing
             } else {
-                habit.records.append(HabitRecord(date: date, value: 1))
+                record = HabitRecord(date: date, value: 1)
+                habit.records.append(record)
             }
+            // From the record itself, not `habit.isCompletedOn`: that reads `habit.records`, which
+            // can still hold the deleted record ahead of this one (see `liveRecord`).
             return Result(deletedRecordID: nil,
-                          isCompleted: habit.isCompletedOn(date),
-                          loggedValue: habit.loggedValue(on: date))
+                          isCompleted: habit.targetValue > 0 && record.value >= habit.targetValue,
+                          loggedValue: record.value)
         }
+    }
+
+    /// The day's record as the store has it — not as `habit.records` remembers it.
+    ///
+    /// `records` has no inverse relationship, and a Habit already loaded in a context keeps a
+    /// deleted record in that array after the deletion is saved, until something fetches the
+    /// habit again (the M2 sync rehearsal hit it as CoreData's "repairing missing delete
+    /// propagation"). Measured 2026-09-28 (HabitCheckInTests, the ghost tests): after untap →
+    /// save, the same Habit still listed the record — `isDeleted` false, `modelContext` nil —
+    /// and `habit.record(on:)` returned it. Before this (shipped in 1.2.3 and 1.3.0):
+    /// - a yes/no re-tap "deleted" the ghost again instead of checking the day: the day stayed
+    ///   unchecked, and a second tombstone for the old id was queued;
+    /// - a count tap after "remove one" took the day to zero added its unit to the ghost, which
+    ///   no save writes, and reported the ghost's old value plus one.
+    /// A deletion saved by ANOTHER context (the widget's intent runs in its own process) leaves
+    /// a ghost that looks entirely live — context set, not deleted — so only the store can say.
+    /// One small fetch per tap; the tap is a user gesture, not a loop.
+    private static func liveRecord(of habit: Habit, on date: Date, in context: ModelContext) -> HabitRecord? {
+        let sameDay = habit.records.filter {
+            !$0.isDeleted && HabitCalendar.record($0.date, isOnSameDayAs: date)
+        }
+        guard !sameDay.isEmpty else { return nil }
+        let ids = sameDay.map(\.id)
+        // Pending changes included (the default): a record appended but not yet saved counts,
+        // one deleted but not yet saved does not.
+        let descriptor = FetchDescriptor<HabitRecord>(predicate: #Predicate { ids.contains($0.id) })
+        guard let stored = try? context.fetch(descriptor) else {
+            // Cannot ask the store: the best local answer. It still skips a same-context ghost.
+            return sameDay.first { $0.modelContext != nil }
+        }
+        let live = Set(stored.map(\.id))
+        // First in `records` order, like `habit.record(on:)`, should an old store hold two.
+        return sameDay.first { live.contains($0.id) }
     }
 
     /// "Complete this habit" — Siri and Shortcuts. Unlike `tap`, it never removes anything:
     /// returns nil and changes nothing when the habit is already complete for the day;
     /// otherwise it is a `tap` (checks a yes/no habit, adds one unit to a count habit).
     static func markDone(_ habit: Habit, on date: Date, in context: ModelContext) -> Result? {
-        guard !habit.isCompletedOn(date) else { return nil }
+        // Not `habit.isCompletedOn`: a ghost of an unchecked day would read as done (liveRecord).
+        let record = liveRecord(of: habit, on: date, in: context)
+        let isComplete: Bool
+        switch habit.habitKind {
+        case .binary: isComplete = record != nil
+        case .count: isComplete = habit.targetValue > 0 && (record?.value ?? 0) >= habit.targetValue
+        }
+        guard !isComplete else { return nil }
         return tap(habit, on: date, in: context)
     }
 }

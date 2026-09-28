@@ -152,4 +152,139 @@ final class HabitCheckInTests: XCTestCase {
         XCTAssertEqual(habit.loggedValue(on: today), 4)
         XCTAssertEqual(habit.loggedValue(on: yesterday), 1)
     }
+
+    // MARK: - A deleted record still listed in habit.records (the ghost)
+
+    /// Every record of this habit that the STORE holds for today, asked through a fresh context
+    /// so nothing this test's context remembers can answer for it.
+    private func storedToday(_ habit: Habit) throws -> [HabitRecord] {
+        let id = habit.id
+        let fresh = ModelContext(container)
+        let stored = try fresh.fetch(FetchDescriptor<Habit>(predicate: #Predicate { $0.id == id })).first
+        return stored?.records.filter { HabitCalendar.record($0.date, isOnSameDayAs: today) } ?? []
+    }
+
+    /// Uncheck, save, check again — on the SAME Habit object, as TodayView's row does when the
+    /// second tap comes before anything refetches the habit. Measured before the fix: after the
+    /// save `habit.records` still listed the deleted record, so the re-tap "deleted" it again,
+    /// answered unchecked, handed back the old id for a second tombstone, and the store kept no
+    /// record — the check-in the user just made was silently not there.
+    func testABinaryReTapAfterASavedUntapChecksTheDayAgain() throws {
+        let habit = Habit(name: "Meditate")
+        context.insert(habit)
+        HabitCheckIn.tap(habit, on: today, in: context)
+        try context.save()
+
+        let untap = HabitCheckIn.tap(habit, on: today, in: context)
+        let untappedID = try XCTUnwrap(untap.deletedRecordID)
+        try context.save()
+        XCTAssertTrue(try storedToday(habit).isEmpty)
+
+        let retap = HabitCheckIn.tap(habit, on: today, in: context)
+        XCTAssertEqual(retap, .init(deletedRecordID: nil, isCompleted: true, loggedValue: 1),
+                       "the re-tap checks the day; it must not delete the old record a second time")
+        try context.save()
+
+        let stored = try storedToday(habit)
+        XCTAssertEqual(stored.count, 1, "the re-tap's check-in is in the store")
+        XCTAssertNotEqual(stored.first?.id.uuidString, untappedID, "a new record, not the deleted one")
+
+        // And the next tap unchecks THAT record.
+        let third = HabitCheckIn.tap(habit, on: today, in: context)
+        XCTAssertEqual(third.deletedRecordID, stored.first?.id.uuidString)
+        try context.save()
+        XCTAssertTrue(try storedToday(habit).isEmpty)
+    }
+
+    /// A count day taken to zero by "remove one" (TodayView deletes the record at 1), saved, then
+    /// "+1". Before the fix the unit went onto the deleted record — nothing saved it — and the
+    /// tap reported the old value plus one.
+    func testACountTapAfterTheDayWasRemovedStartsAgainAtOne() throws {
+        let habit = try countHabit(target: 8, logged: 1)
+        let removed = try XCTUnwrap(habit.record(on: today))
+        let removedID = removed.id
+        context.delete(removed)   // TodayView.decrementCount at 1 / resetCount
+        try context.save()
+
+        let result = HabitCheckIn.tap(habit, on: today, in: context)
+        XCTAssertEqual(result, .init(deletedRecordID: nil, isCompleted: false, loggedValue: 1))
+        try context.save()
+
+        let stored = try storedToday(habit)
+        XCTAssertEqual(stored.map(\.value), [1], "the unit is in the store, on one record")
+        XCTAssertNotEqual(stored.first?.id, removedID)
+    }
+
+    /// Same after a reset at 6 of 8, where the ghost's stale value is far from the truth.
+    func testACountTapAfterAResetReportsTheNewValueNotTheOldOne() throws {
+        let habit = try countHabit(target: 8, logged: 6)
+        context.delete(try XCTUnwrap(habit.record(on: today)))
+        try context.save()
+
+        let result = HabitCheckIn.tap(habit, on: today, in: context)
+        XCTAssertEqual(result.loggedValue, 1, "not 7: the six units were reset")
+        try context.save()
+        XCTAssertEqual(try storedToday(habit).map(\.value), [1])
+    }
+
+    /// Siri after an untap on the same object: the ghost read as "already done", so nothing was
+    /// checked.
+    func testMarkDoneAfterASavedUntapChecksTheDay() throws {
+        let habit = Habit(name: "Meditate")
+        context.insert(habit)
+        HabitCheckIn.tap(habit, on: today, in: context)
+        try context.save()
+        HabitCheckIn.tap(habit, on: today, in: context)
+        try context.save()
+
+        let result = try XCTUnwrap(HabitCheckIn.markDone(habit, on: today, in: context),
+                                   "the day is not done, so markDone must act")
+        XCTAssertTrue(result.isCompleted)
+        try context.save()
+        XCTAssertEqual(try storedToday(habit).count, 1)
+    }
+
+    /// The widget's pattern: its intent untaps in a context of its own and saves; the app's
+    /// context still holds the Habit it loaded before. There the ghost looks entirely live (in a
+    /// context, not deleted — measured), so only the store can tell. The app's next tap acts on
+    /// what the store holds: it checks the day, instead of "deleting" a record that is gone and
+    /// queueing its tombstone a second time.
+    func testAnUntapSavedInTheWidgetsContextDoesNotLeaveAGhostForTheApp() throws {
+        let habit = Habit(name: "Meditate")
+        context.insert(habit)
+        HabitCheckIn.tap(habit, on: today, in: context)
+        try context.save()
+        XCTAssertNotNil(habit.record(on: today))   // loaded here, as the app's list has it
+
+        let widget = ModelContext(container)
+        let habitID = habit.id
+        let widgetHabit = try XCTUnwrap(widget.fetch(FetchDescriptor<Habit>(predicate: #Predicate { $0.id == habitID })).first)
+        XCTAssertNotNil(HabitCheckIn.tap(widgetHabit, on: today, in: widget).deletedRecordID)
+        try widget.save()
+
+        let appTap = HabitCheckIn.tap(habit, on: today, in: context)
+        XCTAssertEqual(appTap, .init(deletedRecordID: nil, isCompleted: true, loggedValue: 1))
+        try context.save()
+        XCTAssertEqual(try storedToday(habit).count, 1)
+    }
+
+    /// Widget to widget: each intent opens a fresh context, so an untap then a tap check the day.
+    func testWidgetUntapThenTapInFreshContextsChecksTheDay() throws {
+        let habit = Habit(name: "Meditate")
+        context.insert(habit)
+        HabitCheckIn.tap(habit, on: today, in: context)
+        try context.save()
+        let habitID = habit.id
+
+        func widgetTap() throws -> HabitCheckIn.Result {
+            let widget = ModelContext(container)
+            let found = try XCTUnwrap(widget.fetch(FetchDescriptor<Habit>(predicate: #Predicate { $0.id == habitID })).first)
+            let result = HabitCheckIn.tap(found, on: today, in: widget)
+            try widget.save()
+            return result
+        }
+        XCTAssertFalse(try widgetTap().isCompleted)
+        XCTAssertEqual(try widgetTap(), .init(deletedRecordID: nil, isCompleted: true, loggedValue: 1))
+        XCTAssertEqual(try storedToday(habit).count, 1)
+    }
 }
