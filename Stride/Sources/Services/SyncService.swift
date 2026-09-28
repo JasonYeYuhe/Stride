@@ -14,14 +14,17 @@ import os.log
 /// - the run gate: the signed-in account (AuthService) and the store's **owner**, so a push or
 ///   pull runs only while the signed-in account is the owner — checked by the engine at the
 ///   start of a run and again before every request and after every await;
-/// - the UI state Settings shows (`isSyncing`, `syncError`, `lastSyncTime`) and the automatic
-///   retry window.
+/// - the UI state Settings shows (`isSyncing`, `syncError`, `lastSyncTime`), mirrors of the
+///   per-owner backoff (`backoff`, `nextAutomaticSync`, `isPaused`);
+/// - what the phase C screens call, none of which has UI yet: the recovery log's count, export
+///   and clear (`recoveredEdits`, `exportRecoveredEdits`, `clearRecoveredEdits`); the held rows
+///   and their two actions (`heldRows`, `restoreHeldRowsAsNewCopies`, `discardHeldRows`); the
+///   restore's owner (`restoreDevice`, `adoptRestoredStore`, used by DataExportService); and the
+///   account screen's "Start from this account's data" (`startFromSignedInAccountsData`).
 ///
-/// Not in this slice, with their hooks: the account screen reads `ownerConflict` and settles
-/// ownership (`settleOwner`); the "Sign in again" row reads `needsReauth`; the sync-status
-/// line reads `isPaused` / `nextAutomaticSync`; the recovery-log file replaces
-/// `SyncMemoryRecoveryLog` (`recoveryLog`); Full resync calls `sync(context:options:)` with
-/// `.fullResync`.
+/// Still phase C, with their hooks: the account screen reads `ownerConflict`; the "Sign in again"
+/// row reads `needsReauth`; the sync-status line reads `backoff`; Full resync calls
+/// `sync(context:options:)` with `.fullResync`.
 @MainActor
 @Observable
 final class SyncService {
@@ -36,14 +39,28 @@ final class SyncService {
     /// resumes. The inline "Sign in again to keep syncing" row on Today reads this (not in this
     /// slice; until it exists the Settings footer says "Please log in again", as 1.3.0 did).
     private(set) var needsReauth = false
+    /// The owner's backoff as last read from `SyncBackoffStore` — why automatic syncs wait
+    /// (`reason`: offline, server error, rate limited, paused, client bug) and since when. The
+    /// phase C status line reads it. A mirror: the store (UserDefaults, per owner) is the truth,
+    /// and survives a relaunch, which the slice's in-memory window did not — a paused server was
+    /// asked again by every device that was opened.
+    private(set) var backoff: SyncBackoffState?
     /// The server's pause switch (503 `sync_paused`) answered the last sync. For the "sync
     /// paused" line.
-    private(set) var isPaused = false
+    var isPaused: Bool { backoff?.reason == .paused }
     /// Automatic syncs (launch, foreground) before this are skipped: the server asked this
     /// device to wait (429 / 503 with `Retry-After`), or the last syncs failed and are backing off
     /// (doubling 1 min → 6 h, jittered — `SyncBackoffPolicy`). "Sync Now" and a sign-in always
-    /// go at once. In memory: a relaunch tries again.
-    private(set) var nextAutomaticSync: Date?
+    /// go at once. nil once the window is over.
+    var nextAutomaticSync: Date? {
+        guard let backoff, backoff.isWaiting(at: Date()) else { return nil }
+        return backoff.retryAt
+    }
+    /// The owner's recovery log, in counts only (`SyncRecoveryLog.Summary`): "Recovered edits (N)"
+    /// reads `lines`. nil until first read — Settings calls `refreshRecoveredEdits()` when it
+    /// appears; a run that archived and an owner change refresh it too — and nil when the file
+    /// could not be read (Settings then shows no count rather than a wrong one).
+    private(set) var recoveredEdits: SyncRecoveryLog.Summary?
     /// Signed in as an account that is not this store's owner while the device holds something
     /// to lose (rows, queued deletions, recovery-log lines): no sync runs until the choice is
     /// made. The account screen (M2, not in this slice) reads this and settles ownership.
@@ -52,8 +69,11 @@ final class SyncService {
     enum Trigger {
         /// Sync Now, a sign-in, Erase's pre-erase sync: goes at once, backoff or not.
         case userInitiated
-        /// Launch and foreground: skipped while `nextAutomaticSync` is in the future.
+        /// Launch and foreground (and M3's background refresh, and any post-edit sync): skipped
+        /// while the owner's backoff window is open.
         case automatic
+
+        var backoff: SyncBackoffTrigger { self == .automatic ? .automatic : .manual }
     }
 
     private let lastSyncKey = SyncDeliveryMigration.lastSyncTimeKey
@@ -62,11 +82,12 @@ final class SyncService {
     private let defaults: UserDefaults
     private let deletionQueue: SyncDeletionQueue
     private let sessionsOverride: (any SyncSessionSource)?
-    private let recoveryLog: any SyncRecoveryLogSink
+    /// The file log (per owner, in Application Support). Never the in-memory sink: 1.3.1 promises
+    /// that an edit a deletion takes is on disk before the row goes.
+    let recoveryLog: SyncRecoveryLog
     private let bounds: SyncPushBounds
     private let report: (SyncDiagnosticReport) -> Void
     private let afterSyncRequest: APISyncTransport.Hook?
-    @ObservationIgnored private var consecutiveFailures = 0
 
     /// The defaults are what `shared` uses. StrideAppTests passes an APIClient over a stubbed
     /// URLSession, a throwaway defaults suite and a queue on it, and its own session source, so
@@ -75,10 +96,9 @@ final class SyncService {
     /// - Parameters:
     ///   - sessions: who is signed in, with which token. nil = `AuthService.shared`, looked up
     ///     only when needed (a default argument is evaluated off the main actor).
-    ///   - recoveryLog: where rows a deletion displaces go before they are deleted. nil = an
-    ///     in-memory log. TODO(M2 recovery log): `Shared/SyncRecoveryLog.swift`, the file in
-    ///     Application Support, flushed before returning — 1.3.1 must not ship with the
-    ///     in-memory one, whose lines are gone when the app exits.
+    ///   - recoveryLog: where rows a deletion displaces go before they are deleted. nil = the file
+    ///     log in the app's Application Support (`SyncRecoveryLog.defaultDirectory`). Tests pass
+    ///     one over a temporary directory, so they never write into the host app's.
     ///   - bounds: the planner's chunk bounds; tests shrink them to make several chunks.
     ///   - report: sync diagnostics (ids, codes, counts only). nil = the unified log; see
     ///     `logDiagnostic` for why not Sentry yet.
@@ -89,7 +109,7 @@ final class SyncService {
         defaults: UserDefaults = .standard,
         deletionQueue: SyncDeletionQueue = .live,
         sessions: (any SyncSessionSource)? = nil,
-        recoveryLog: (any SyncRecoveryLogSink)? = nil,
+        recoveryLog: SyncRecoveryLog? = nil,
         bounds: SyncPushBounds = .standard,
         report: ((SyncDiagnosticReport) -> Void)? = nil,
         afterSyncRequest: APISyncTransport.Hook? = nil
@@ -98,11 +118,16 @@ final class SyncService {
         self.defaults = defaults
         self.deletionQueue = deletionQueue
         self.sessionsOverride = sessions
-        self.recoveryLog = recoveryLog ?? SyncMemoryRecoveryLog()
+        self.recoveryLog = recoveryLog ?? SyncRecoveryLog()
         self.bounds = bounds
         self.report = report ?? Self.logDiagnostic
         self.afterSyncRequest = afterSyncRequest
         lastSyncTime = defaults.string(forKey: lastSyncKey)
+        // The window a previous launch left (a paused server's Retry-After): shown at once, and
+        // the next automatic sync honours it. The recovered-edits count is read when Settings
+        // asks (`refreshRecoveredEdits`), not here: `shared` is made at launch, and a file read
+        // on that path buys nothing.
+        refreshBackoff()
     }
 
     private var sessions: any SyncSessionSource { sessionsOverride ?? AuthService.shared }
@@ -110,6 +135,7 @@ final class SyncService {
     private var cursors: SyncDefaultsCursorStore { SyncDefaultsCursorStore(defaults: defaults) }
     private var strikes: SyncUnknownHabitStrikes { SyncUnknownHabitStrikes(defaults: defaults) }
     private var marks: SyncMarksProof { SyncMarksProof(defaults: defaults) }
+    private var backoffStore: SyncBackoffStore { SyncBackoffStore(defaults: defaults) }
 
     // MARK: - Deletion Tracking
 
@@ -141,7 +167,17 @@ final class SyncService {
         // Claimed before the first suspension, so a caller that saw `isSyncing == false` and
         // calls in the same main-actor turn (syncAfterInFlight) is never the one turned away.
         guard !isSyncing else { return false }
-        if trigger == .automatic, let next = nextAutomaticSync, Date() < next { return false }
+        // The fast path of the engine's own check (`SyncEngine.run(trigger:)`): an automatic sync
+        // inside the owner's window does not even flip `isSyncing`, so Settings shows no spinner
+        // for a sync that is not going to happen. Only while the owner is the one signed in: B
+        // signing into a device A owned may be about to adopt it (`settleOwner`), and A's window
+        // is not B's. The engine asks the same store again with the run's binding — the rule.
+        if trigger == .automatic, let owner = owners.owner,
+           sessions.currentSyncSession()?.account.id == owner.id,
+           !backoffStore.mayRun(.automatic, ownerID: owner.id) {
+            refreshBackoff()
+            return false
+        }
         isSyncing = true
         defer { isSyncing = false }
 
@@ -164,8 +200,9 @@ final class SyncService {
         let transport = APISyncTransport(api: api, afterExchange: afterSyncRequest)
         let engine = SyncEngine(
             transport: transport, gate: self, cursorStore: cursors, deletionQueue: deletionQueue,
-            strikes: strikes, marks: marks, recoveryLog: recoveryLog, report: report, bounds: bounds)
-        let outcome = await engine.run(in: context, options: options)
+            strikes: strikes, marks: marks, recoveryLog: recoveryLog, backoff: backoffStore,
+            report: report, bounds: bounds)
+        let outcome = await engine.run(in: context, options: options, trigger: trigger.backoff)
         return finish(outcome, transport: transport)
     }
 
@@ -190,15 +227,17 @@ final class SyncService {
     /// sentence, or this build's own for the codes it knows (`APIError.displayMessage`) — never
     /// a raw code.
     private func finish(_ outcome: SyncRunOutcome, transport: APISyncTransport) -> Bool {
+        // The engine wrote the outcome to the store under the run's owner; mirror it. Not after
+        // a run a sign-out ended: the engine wrote nothing for it, and `signedOut()` has just
+        // cleared the mirror for a device that is now signed out.
+        if case .stopped(.bindingChanged, _) = outcome {} else { refreshBackoff() }
+        if (outcome.summary?.archived ?? 0) > 0 { refreshRecoveredEdits() }
         switch outcome {
         case .synced:
             let now = SyncTimestamp.string(from: Date())
             lastSyncTime = now
             defaults.set(now, forKey: lastSyncKey)
             needsReauth = false
-            isPaused = false
-            consecutiveFailures = 0
-            nextAutomaticSync = nil
             return true
 
         case .blocked:
@@ -215,14 +254,11 @@ final class SyncService {
                 syncError = appLocalized("Please log in again")
             case .upgradeRequired:
                 syncError = transport.displayMessage
-            case .backOff(let kind, _):
-                consecutiveFailures += 1
-                nextAutomaticSync = Date().addingTimeInterval(SyncBackoffPolicy.delay(
-                    for: kind, consecutiveFailures: consecutiveFailures, unitRandom: .random(in: 0...1)))
-                if case .serverAsked(_, let paused) = kind { isPaused = paused } else { isPaused = false }
+            case .backOff:
+                // The window itself is the engine's (`SyncBackoffStore`, per owner, persisted).
                 // Spec: a rate limit or a pause is shown inline as "sync paused", never as
-                // `syncError`. That line is not in this slice, so until it lands the footer keeps
-                // 1.3.0's sentence for both (they are calm, translated sentences, not codes).
+                // `syncError`. That line is phase C, so until it lands the footer keeps 1.3.0's
+                // sentence for both (they are calm, translated sentences, not codes).
                 syncError = transport.displayMessage
             case .recoveryLogFailed, .localFailure:
                 // The store (or the recovery log) refused a write. Nothing was deleted, no cursor
@@ -243,19 +279,19 @@ final class SyncService {
 
     /// Sign-out (AuthService.logout, deleteAccount): ends any run in flight, and nothing more.
     ///
-    /// The cursor, the deletion queue, the owner and every row's `syncedAt` and holds stay, so
-    /// signing back into the same account resumes and re-uploads nothing (M2, "Same account
-    /// again"). 1.3.0 cleared the cursor here and pushed everything on the next sign-in —
-    /// into whichever account that was.
+    /// The cursor, the deletion queue, the owner, the backoff, the recovery log and every row's
+    /// `syncedAt` and holds stay, so signing back into the same account resumes and re-uploads
+    /// nothing (M2, "Same account again"). 1.3.0 cleared the cursor here and pushed everything on
+    /// the next sign-in — into whichever account that was. The backoff is stored with the owner
+    /// like the cursor; the sign-in's own sync is user-initiated and goes whatever it says.
     func signedOut() {
         stateGeneration += 1
         lastSyncTime = nil
         defaults.removeObject(forKey: lastSyncKey)
         needsReauth = false
-        isPaused = false
-        consecutiveFailures = 0
-        nextAutomaticSync = nil
         ownerConflict = nil
+        // Nothing to show while signed out; the store keeps the window for the owner.
+        backoff = nil
     }
 
     /// Erase Local Data (DataExportService), after its sign-out: the store is about to be empty,
@@ -264,8 +300,14 @@ final class SyncService {
     /// Every cursor goes, so the next sign-in full-pulls and the account comes back; before
     /// 1.2.3 an incremental pull from the old cursor left an erased device "Signed in" with no
     /// habits. The owner goes too — an erased store has none, and the next account signed into
-    /// adopts it (M2, "No owner") — and with it the deletion queue and the `unknown_habit`
-    /// strikes, which belong to that owner. An empty store has no delivery marks to prove.
+    /// adopts it (M2, "No owner") — and with it the deletion queue, the `unknown_habit`
+    /// strikes and every owner's backoff, which belong to the server state it described. An
+    /// empty store has no delivery marks to prove.
+    ///
+    /// The recovery log stays. It is not server state but the only copy of edits a deletion
+    /// took, and Erase offers no export of it (the account screen's "Start from this account's
+    /// data" does, and clears it); it has its own Clear. Its lines are the owner's, so they show
+    /// again when that account owns the store.
     func resetSyncState() {
         signedOut()
         defaults.removeObject(forKey: SyncDefaultsCursorStore.key)
@@ -273,7 +315,9 @@ final class SyncService {
         owners.clear()
         deletionQueue.clearAll()
         strikes.clearAll()
+        backoffStore.clearAll()
         marks.settle()
+        refreshRecoveredEdits()
     }
 
     // MARK: - The owner (account isolation)
@@ -296,7 +340,7 @@ final class SyncService {
     ///   it becomes the owner silently.
     /// - Another account with something to lose → no: `ownerConflict` is set and every sync entry
     ///   point stays blocked, by construction, until the account screen settles it (Export,
-    ///   then "Start from this account's data"; Cancel signs out). TODO(M2 account screen).
+    ///   then `startFromSignedInAccountsData`; Cancel signs out). The screen is phase C.
     ///
     /// Never merges one account's rows into another: an acknowledgement, a cursor and a queued
     /// deletion are true only for the account that gave them.
@@ -312,11 +356,10 @@ final class SyncService {
             ownerConflict = nil
             return true
         }
-        guard hasSomethingToLose(in: context) else {
-            // What "Start from this account's data" clears, minus the rows (there are none).
-            deletionQueue.clearAll()
-            strikes.clearAll()
-            owners.set(SyncOwner(session.account))
+        guard hasSomethingToLose(in: context, owner: owner) else {
+            // What "Start from this account's data" clears, minus the rows (there are none) and
+            // the recovery log (it has no lines, or this would be a conflict).
+            switchOwner(to: SyncOwner(session.account), from: owner)
             ownerConflict = nil
             return true
         }
@@ -324,11 +367,40 @@ final class SyncService {
         return false
     }
 
-    /// Rows, queued deletions or recovery-log lines: what "Start from this account's data" would
-    /// erase. A store that cannot be counted counts as something to lose.
-    private func hasSomethingToLose(in context: ModelContext) -> Bool {
+    /// The store changes hands while it holds nothing of `previous`'s (it is empty, or was just
+    /// erased or restored into): what belonged to `previous` goes — its queued deletions, the
+    /// `unknown_habit` strikes, its backoff and its cursor — and `next` becomes the owner. An
+    /// acknowledgement, a queued deletion and a server's "wait" are true only for the account
+    /// that gave them.
+    ///
+    /// The cursor goes with the queue because it is only true together with it: "this device
+    /// holds the account's state as of C, minus the deletions still queued". A restore into an
+    /// empty store drops a queue that may not be empty (rows deleted while signed out, then a
+    /// backup restored naming no account), and if `previous` later adopts the store again, an
+    /// incremental pull from C never returns those rows — they were not changed since C — while
+    /// their deletions never reach the server: the device and the account drift apart until the
+    /// cursor ages out (phase B review, R1). Without a cursor that return is a full pull, and the
+    /// device converges on what the account holds. So a cursor exists only for the store's
+    /// owner; `next`'s is cleared too, in case one outlived an earlier hand-over.
+    private func switchOwner(to next: SyncOwner?, from previous: SyncOwner?) {
+        if let previous, previous.id != next?.id {
+            deletionQueue.clearAll()
+            strikes.clearAll()
+            backoffStore.clear(for: previous.id)
+            let cursors = self.cursors
+            cursors.setCursor(nil, for: previous.id)
+            if let next { cursors.setCursor(nil, for: next.id) }
+        }
+        if let next { owners.set(next) } else { owners.clear() }
+        refreshBackoff()
+        refreshRecoveredEdits()
+    }
+
+    /// Rows, queued deletions or the owner's recovery-log lines: what "Start from this account's
+    /// data" would erase. A store — or a log — that cannot be counted counts as something to lose.
+    private func hasSomethingToLose(in context: ModelContext, owner: SyncOwner) -> Bool {
         if !deletionQueue.pending().isEmpty { return true }
-        if let log = recoveryLog as? SyncMemoryRecoveryLog, !log.lines.isEmpty { return true }
+        if ((try? recoveryLog.lineCount(accountID: owner.id)) ?? 1) > 0 { return true }
         do {
             return try context.fetchCount(FetchDescriptor<Habit>()) > 0
                 || context.fetchCount(FetchDescriptor<HabitRecord>()) > 0
@@ -336,6 +408,172 @@ final class SyncService {
         } catch {
             return true
         }
+    }
+
+    // MARK: - Backoff mirror
+
+    /// Reads the owner's backoff into `backoff`. The owner, not whoever is signed in: the window
+    /// belongs to the account whose server state the runs were about, and a signed-in account
+    /// that is not the owner cannot sync anyway.
+    private func refreshBackoff() {
+        backoff = owners.owner.flatMap { backoffStore.state(for: $0.id) }
+    }
+
+    // MARK: - Recovered edits (phase C: Settings → sync section → "Recovered edits (N)")
+
+    // Every call names the store's OWNER: the engine archives under the run's owner, which is
+    // the store's owner (a run only goes while they are the same). While another account is
+    // signed in and the account screen is up, the owner's lines are exactly what that screen
+    // offers to export before "Start from this account's data" clears them.
+
+    /// Re-reads the count (Settings' onAppear). A file that cannot be read leaves nil — no count
+    /// rather than a wrong one; the hold-nothing rule means a failed read never loses a line.
+    func refreshRecoveredEdits() {
+        recoveredEdits = try? recoveryLog.summary(accountID: owners.owner?.id)
+    }
+
+    /// Export as JSON: the owner's log as one document (`SyncRecoveryExport`), for a ShareLink
+    /// (`RecoveredEditsJSONFile` in DataExportService) or the account screen's Export. Local
+    /// only — it holds names and notes, so it never goes near a diagnostic report.
+    func exportRecoveredEdits(exportedAt: Date = Date()) throws -> Data {
+        try recoveryLog.exportData(accountID: owners.owner?.id, exportedAt: exportedAt)
+    }
+
+    /// The export as a ShareLink item, named `Stride-RecoveredEdits-<date>.json`.
+    var recoveredEditsFile: RecoveredEditsJSONFile {
+        RecoveredEditsJSONFile(log: recoveryLog, accountID: owners.owner?.id)
+    }
+
+    /// Clear: the owner's lines and dropped count are gone. The UI confirms first — this is the
+    /// only copy of those edits.
+    func clearRecoveredEdits() throws {
+        defer { refreshRecoveredEdits() }
+        try recoveryLog.clear(accountID: owners.owner?.id)
+    }
+
+    // MARK: - Held rows (phase C: the sync section's inline rows)
+
+    /// One inline row: the rows held for `reason`, counted (a held habit stands for all of its
+    /// check-ins, which are not counted again — `SyncCopies.heldRows`).
+    struct HeldRows: Equatable {
+        var reason: SyncHoldReason
+        var counts: SyncRowCounts
+        /// "Restore as new copies" / "Discard" apply: the id itself is what the server refused
+        /// (`not_owned`, `tombstoned`). The other reasons are about the row's content, which a
+        /// new id would re-send into the same refusal; an edit lifts those, and they are only
+        /// counted ("2 changes can't sync").
+        var canRestoreAsCopies: Bool { SyncCopies.convertibleReasons.contains(reason) }
+    }
+
+    /// Every hold reason with at least one held row, in `SyncHoldReason`'s order. `tombstoned`
+    /// is "N restored habits were deleted on another device"; `not_owned` is a restore that kept
+    /// another account's ids, or an owner-unknown device's upload.
+    func heldRows(in context: ModelContext) throws -> [HeldRows] {
+        try SyncHoldReason.allCases.compactMap { reason in
+            let held = try SyncCopies.heldRows(in: context, reasons: [reason])
+            return held.isEmpty ? nil : HeldRows(reason: reason, counts: held.counts)
+        }
+    }
+
+    /// "Restore as new copies" for the rows held for `reason`: fresh ids in place
+    /// (`SyncCopies.reidentify`), then a sync, so the copies reach the account without a second
+    /// tap. Waits out a sync in flight first — a run acknowledging an old id while it is
+    /// re-identified would mark the NEW row delivered. Nothing suspends between the wait and the
+    /// conversion (both on the main actor), so no run can start in between.
+    ///
+    /// The caller reschedules reminders and reloads widgets (`Outcome.habitIDs` maps a widget
+    /// configured on a converted habit), as it does after a restore. A reason that is not
+    /// `canRestoreAsCopies` converts nothing: its rows come back in `Outcome.ignored`.
+    @discardableResult
+    func restoreHeldRowsAsNewCopies(_ reason: SyncHoldReason, in context: ModelContext) async throws -> SyncCopies.Outcome {
+        await waitUntilIdle()
+        let outcome = try SyncCopies.reidentify(try SyncCopies.heldRows(in: context, reasons: [reason]), in: context)
+        if outcome.rows.total > 0 { await sync(context: context) }
+        return outcome
+    }
+
+    /// "Discard" for the rows held for `reason`: deleted on this device, nothing queued, nothing
+    /// archived (the user chose it on rows the list showed; a restored row's backup file still
+    /// has it — but a `not_owned` row from an owner-unknown upload may exist nowhere else, which
+    /// the confirmation must say). Same wait as `restoreHeldRowsAsNewCopies`.
+    @discardableResult
+    func discardHeldRows(_ reason: SyncHoldReason, in context: ModelContext) async throws -> SyncCopies.Outcome {
+        await waitUntilIdle()
+        return try SyncCopies.discard(try SyncCopies.heldRows(in: context, reasons: [reason]), in: context)
+    }
+
+    // MARK: - Restore's owner (DataExportService.restoreDecision / restore)
+
+    /// Where a restore happens, for `DataBackup.restoreDecision`: signed in as an account this
+    /// device knows, or signed out — with `next`, the account the user says this device will use
+    /// next (the restore screen asks only when the file names one).
+    func restoreDevice(next: BackupAccount? = nil) -> RestoreDevice {
+        guard let session = sessions.currentSyncSession() else { return .signedOut(next: next) }
+        return .signedIn(BackupAccount(id: session.account.id, email: session.account.email))
+    }
+
+    /// After a restore has saved: the store's owner becomes `owner` (`RestorePlan.owner`).
+    ///
+    /// - Copies restored while signed into B, or B's own backup with its ids → B owns the store,
+    ///   so the next sync pushes them with no second sign-in (review 2: the first draft left no
+    ///   owner, and the gate then blocked every sync until a sign-in that never came).
+    /// - Restored while signed out without naming an account → no owner: the next account signed
+    ///   into adopts the rows (M2, "No owner").
+    ///
+    /// The store was empty (restore refuses any other), so it holds nothing of a previous
+    /// owner's rows: its queued deletions, strikes, backoff and cursor go, as in the silent
+    /// switch. Deletions queued while signed out are dropped with the rest, so if that account
+    /// adopts the store again its first sync is a full pull, and the habits those deletions named
+    /// come back from the account (visible, never a silent drift — `switchOwner`). A restore that
+    /// keeps the store's own owner changes nothing.
+    func adoptRestoredStore(owner: BackupAccount?) {
+        let next = owner.map { SyncOwner(SyncAccount(id: $0.id, email: $0.email)) }
+        let previous = owners.owner
+        if let next, next == previous { return }
+        switchOwner(to: next, from: previous)
+        ownerConflict = nil
+    }
+
+    // MARK: - The account screen (phase C)
+
+    /// "Start from this account's data" (M2, "Different account, something to lose"): the
+    /// device drops the previous owner's rows and everything that was true only for that owner,
+    /// and the signed-in account's data comes down in a full pull. The screen offers Export (a
+    /// v2 backup, plus `exportRecoveredEdits` when `recoveredEdits` has lines) BEFORE this.
+    ///
+    /// In order: wait out a sync in flight; erase the local rows (`DataBackup.eraseLocalData`);
+    /// clear the deletion queue, the strikes, and the previous owner's cursor, backoff and
+    /// recovery log; clear the new owner's cursor too — an erased store pulled incrementally from
+    /// an old cursor would come back without the account's older rows (the 1.2.3 "signed in, no
+    /// habits" bug); settle the marks proof (an empty store has no marks); make the signed-in
+    /// account the owner; sync (a full pull, since it has no cursor).
+    ///
+    /// Returns false — changing nothing — unless the conflict it resolves is still the one on
+    /// screen: signed into `conflict.signedIn` on a store owned by `conflict.owner`. A sign-out
+    /// or another sign-in since then must not erase anything. Otherwise returns whether the sync
+    /// ran (the erase stands either way; a failed pull is retried like any other).
+    @discardableResult
+    func startFromSignedInAccountsData(_ conflict: SyncOwnerConflict, in context: ModelContext) async -> Bool {
+        await waitUntilIdle()
+        guard ownerConflict == conflict, owners.owner == conflict.owner,
+              sessions.currentSyncSession()?.account == conflict.signedIn else { return false }
+        do {
+            try DataBackup.eraseLocalData(in: context)
+        } catch {
+            syncError = appLocalized("Unable to save changes. Please try again.")
+            return false
+        }
+        // Past the erase: the previous owner's log is not "something to lose" any more for the
+        // screen's purposes — the user exported it or chose not to. A clear that fails leaves the
+        // lines under the old owner's key, never read for the new one.
+        try? recoveryLog.clear(accountID: conflict.owner.id)
+        let cursors = self.cursors
+        cursors.setCursor(nil, for: conflict.owner.id)
+        cursors.setCursor(nil, for: conflict.signedIn.id)
+        marks.settle()
+        switchOwner(to: SyncOwner(conflict.signedIn), from: conflict.owner)
+        ownerConflict = nil
+        return await sync(context: context)
     }
 
     // MARK: - Launch

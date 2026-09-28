@@ -22,10 +22,12 @@ import SwiftData
 // (decoding a pull, parsing its stamps) now cost about 0.1 s for 54,750 entries, too little to be
 // worth another suspension point in a run that re-checks its binding after every one.
 //
-// What plugs in later (not in the first vertical slice): the owner gate UI decides what
-// `SyncRunGate.current()` returns; the recovery-log file implements `SyncRecoveryLogSink`; the
-// backoff scheduler and the sync-status line read `SyncRunOutcome`; Settings → Full resync is
-// `SyncRunOptions.fullResync`.
+// Plugged in since the slice (phase B): the recovery-log file (`Shared/SyncRecoveryLog.swift`)
+// implements `SyncRecoveryLogSink`, and the per-owner backoff (`Shared/SyncBackoff.swift`) is
+// consulted and written HERE, with the run's own binding — so the app, StrideTests and the
+// rehearsal share one rule instead of each wrapper keeping a window of its own. Still to come
+// (phase C): the owner gate UI decides what `SyncRunGate.current()` returns; the sync-status
+// line reads `SyncBackoffStore.state(for:)`; Settings → Full resync is `SyncRunOptions.fullResync`.
 
 // MARK: - Transport
 
@@ -170,16 +172,18 @@ struct SyncRecoveryItem: Equatable {
 /// `archive` returns only once the lines are on disk (appended and flushed —
 /// `FileHandle.synchronize()`), and throws if they are not. A throw means the deletion does not
 /// happen: the reconciler rolls the pull back and writes no cursor, and a push drop leaves the
-/// row pending, so the next sync retries either way. The file implementation
-/// (`Shared/SyncRecoveryLog.swift`: JSON lines in Application Support, 5 MB cap, export) is not
-/// part of the first vertical slice; the in-memory one stands in for it.
+/// row pending, so the next sync retries either way. The app's sink is the file
+/// (`Shared/SyncRecoveryLog.swift`: JSON lines in Application Support, one file per owner, 5 MB
+/// cap, export); `SyncMemoryRecoveryLog` is the tests'.
 @MainActor
 protocol SyncRecoveryLogSink: AnyObject {
     func archive(_ items: [SyncRecoveryItem], accountID: String?) throws
 }
 
-/// Keeps the lines in memory — the tests' and the rehearsal's sink, and the app's until the file
-/// log lands. `failure` makes the next appends throw, as a full disk would.
+/// Keeps the lines in memory — the engine tests' sink, where a line is easier to assert on than
+/// a file. Never the app's: its lines are gone when the process exits, and the spec's promise is
+/// that the edit survives ("on disk before the delete"). `failure` makes the next appends throw,
+/// as a full disk would; StrideTests also drive the real file log into an unwritable directory.
 @MainActor
 final class SyncMemoryRecoveryLog: SyncRecoveryLogSink {
     struct Line: Equatable {
@@ -254,6 +258,9 @@ enum SyncBlockReason: Equatable {
     case alreadyRunning
     case signedOut
     case ownerUnsettled
+    /// An automatic run inside the owner's backoff window (`SyncBackoffStore`): the server said
+    /// to wait, or the last runs failed. Nothing was sent. A manual run is never blocked by it.
+    case backingOff(SyncBackoffState)
 }
 
 enum SyncStopReason: Equatable {
@@ -325,6 +332,9 @@ final class SyncEngine {
     /// Whether the store's delivery marks still wait for the first full pull to prove them.
     let marks: SyncMarksProof
     let recoveryLog: any SyncRecoveryLogSink
+    /// The per-owner backoff (M2 answer table: `invalid_payload`, 429, 503, other 5xx, no
+    /// answer). nil = no backoff at all (most engine tests): every run goes.
+    let backoff: SyncBackoffStore?
     /// Sentry, in the app: ids, reason codes and counts only (`SyncDiagnosticReport`).
     let report: (SyncDiagnosticReport) -> Void
     let bounds: SyncPushBounds
@@ -340,6 +350,7 @@ final class SyncEngine {
         strikes: SyncUnknownHabitStrikes,
         marks: SyncMarksProof,
         recoveryLog: any SyncRecoveryLogSink,
+        backoff: SyncBackoffStore? = nil,
         report: @escaping (SyncDiagnosticReport) -> Void = { _ in },
         bounds: SyncPushBounds = .standard,
         now: @escaping () -> Date = Date.init
@@ -351,6 +362,7 @@ final class SyncEngine {
         self.strikes = strikes
         self.marks = marks
         self.recoveryLog = recoveryLog
+        self.backoff = backoff
         self.report = report
         self.bounds = bounds
         self.now = now
@@ -372,7 +384,14 @@ final class SyncEngine {
     ///   removes delivered-but-absent rows (archived) before anything is pushed.
     /// - Chunks go in sequence and the run stops at the first one that fails; later chunks do not
     ///   run, and the retry resumes there (the acknowledged ones are no longer pending).
-    func run(in context: ModelContext, options: SyncRunOptions = []) async -> SyncRunOutcome {
+    /// - An `.automatic` run waits out the owner's backoff window (`.blocked(.backingOff)`, no
+    ///   request); a `.manual` one goes at once ("Sync Now retries at once"). Either way the
+    ///   outcome is written to the backoff under the owner the run was BOUND to: a run that ends
+    ///   after a switch to another account must not leave its failure (or its success) on that
+    ///   account, which is why this is here and not in the wrapper, which only knows who is
+    ///   signed in by the time the run returns.
+    func run(in context: ModelContext, options: SyncRunOptions = [],
+             trigger: SyncBackoffTrigger = .manual) async -> SyncRunOutcome {
         guard !isRunning else { return .blocked(.alreadyRunning) }
         let binding: SyncRunBinding
         switch gate.current() {
@@ -380,19 +399,27 @@ final class SyncEngine {
         case .signedOut: return .blocked(.signedOut)
         case .ownerUnsettled: return .blocked(.ownerUnsettled)
         }
+        if let backoff, case .wait(let state) = backoff.decision(for: trigger, ownerID: binding.ownerID) {
+            return .blocked(.backingOff(state))
+        }
         isRunning = true
         defer { isRunning = false }
 
         let run = SyncRun(engine: self, context: context, binding: binding)
+        let outcome: SyncRunOutcome
         do {
             try await run.execute(options)
-            return .synced(run.summary)
+            outcome = .synced(run.summary)
         } catch let stop as SyncRunStop {
-            return .stopped(stop.reason, run.summary)
+            outcome = .stopped(stop.reason, run.summary)
         } catch {
             context.rollback()
-            return .stopped(.localFailure(String(describing: error)), run.summary)
+            outcome = .stopped(.localFailure(String(describing: error)), run.summary)
         }
+        // Success resets; a back-off stop adds a failure; anything else (a reauth, a sign-out
+        // mid-run, a local failure) leaves the window as it was (`SyncBackoffStore.record`).
+        backoff?.record(outcome, for: binding.ownerID)
+        return outcome
     }
 
     /// Whether `cursor` is too old to trust (or unreadable): the run full-pulls instead.

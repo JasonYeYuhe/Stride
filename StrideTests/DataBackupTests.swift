@@ -688,6 +688,188 @@ final class DataBackupTests: XCTestCase {
             habits: ["H-UNRELATED"], entries: ["E-UNRELATED"], groups: []))
     }
 
+    // MARK: - The account a backup was made under (1.3.1)
+
+    private let accountA = BackupAccount(id: "41", email: "a@example.com")
+    private let accountB = BackupAccount(id: "42", email: "b@example.com")
+
+    /// The file records the store's owner, from the caller; a store with none records nothing,
+    /// and the keys are left out rather than written as null, so a 1.3.0 restorer (which ignores
+    /// unknown keys) and a 1.3.1 one read the same file.
+    func testBackupRecordsTheOwnerAccountAndOmitsItWithoutOne() throws {
+        try populate(context)
+        let with = try DataBackup.encode(DataBackup.snapshot(of: context, exportedAt: Date(timeIntervalSince1970: 1_790_000_000),
+                                                             account: accountA))
+        let object = try JSONSerialization.jsonObject(with: with) as! [String: Any]
+        XCTAssertEqual(object["accountId"] as? String, "41")
+        XCTAssertEqual(object["accountEmail"] as? String, "a@example.com")
+        XCTAssertEqual(object["schemaVersion"] as? Int, 2, "optional fields: still v2")
+        XCTAssertEqual(try DataBackup.decode(with).account, accountA)
+
+        let without = try JSONSerialization.jsonObject(with: export(context)) as! [String: Any]
+        XCTAssertNil(without["accountId"])
+        XCTAssertNil(without["accountEmail"])
+
+        // Apart from the two keys, the same file.
+        var stripped = object
+        stripped.removeValue(forKey: "accountId")
+        stripped.removeValue(forKey: "accountEmail")
+        XCTAssertEqual(NSDictionary(dictionary: stripped), NSDictionary(dictionary: without))
+    }
+
+    /// A 1.3.0 backup has no account. It still decodes as v2, and the restore offers new copies
+    /// — with keeping the ids still available, since it may be this same account's.
+    func testA130BackupWithoutAnAccountOffersCopies() throws {
+        let document = try DataBackup.decode(json(try validObject()))
+        XCTAssertNil(document.accountId)
+        XCTAssertNil(document.account)
+
+        let signedIn = DataBackup.restoreDecision(for: document, device: .signedIn(accountB))
+        XCTAssertTrue(signedIn.offersCopies)
+        XCTAssertEqual(signedIn.plan, RestorePlan(identity: .newCopies, owner: accountB))
+        XCTAssertEqual(signedIn.keepIDsInstead, RestorePlan(identity: .keepIDs, owner: accountB))
+
+        let signedOut = DataBackup.restoreDecision(for: document, device: .signedOut(next: nil))
+        XCTAssertEqual(signedOut.plan, RestorePlan(identity: .newCopies, owner: nil))
+        XCTAssertEqual(signedOut.keepIDsInstead, RestorePlan(identity: .keepIDs, owner: nil))
+    }
+
+    /// Neither field is data the user could lose, so one that cannot be read never costs the
+    /// whole backup: it reads as "no account", which offers copies — safe whatever the file is.
+    func testAccountFieldsThatCannotBeReadCountAsNone() throws {
+        var object = try validObject()
+        object["accountId"] = 41
+        XCTAssertEqual(try DataBackup.decode(json(object)).accountId, "41", "APIUser.id is a number on the server")
+
+        object["accountId"] = ["nested": true]
+        object["accountEmail"] = 7.5
+        let odd = try DataBackup.decode(json(object))
+        XCTAssertNil(odd.account)
+        XCTAssertNil(odd.accountEmail)
+        XCTAssertEqual(odd.habits.count, 3)
+
+        object["accountId"] = "  "
+        XCTAssertNil(try DataBackup.decode(json(object)).account)
+    }
+
+    /// DEV-PLAN-1.3.md M2, "Restore into another account": keep the ids only for the account
+    /// this device syncs as; otherwise copies, owned by the signed-in account, or by nobody when
+    /// signed out (review 2).
+    func testRestoreDecisionTable() {
+        typealias Case = (String, BackupAccount?, RestoreDevice, RestorePlan, RestorePlan?)
+        let cases: [Case] = [
+            ("same account, signed in", accountA, .signedIn(accountA),
+             RestorePlan(identity: .keepIDs, owner: accountA), nil),
+            ("same id, the email changed since", BackupAccount(id: "41", email: "old@example.com"), .signedIn(accountA),
+             RestorePlan(identity: .keepIDs, owner: accountA), nil),
+            ("another account, signed in", accountA, .signedIn(accountB),
+             RestorePlan(identity: .newCopies, owner: accountB), nil),
+            ("no account, signed in", nil, .signedIn(accountB),
+             RestorePlan(identity: .newCopies, owner: accountB), RestorePlan(identity: .keepIDs, owner: accountB)),
+            ("signed out, the user will sign into the backup's account", accountA, .signedOut(next: accountA),
+             RestorePlan(identity: .keepIDs, owner: accountA), nil),
+            ("signed out, another account next", accountA, .signedOut(next: accountB),
+             RestorePlan(identity: .newCopies, owner: nil), nil),
+            ("signed out, the user did not say", accountA, .signedOut(next: nil),
+             RestorePlan(identity: .newCopies, owner: nil), nil),
+            ("signed out, no account, an account next", nil, .signedOut(next: accountB),
+             RestorePlan(identity: .newCopies, owner: nil), RestorePlan(identity: .keepIDs, owner: accountB)),
+        ]
+        for (label, backup, device, plan, alternative) in cases {
+            let decision = DataBackup.restoreDecision(backupAccount: backup, device: device)
+            XCTAssertEqual(decision.plan, plan, label)
+            XCTAssertEqual(decision.keepIDsInstead, alternative, label)
+        }
+    }
+
+    /// "Restore as new copies": every habit, check-in and group gets a fresh id; each check-in is
+    /// on its own habit and each habit in its own group, as many as in the file; the history and
+    /// its edit stamps are the file's; nothing is delivered or restored-with-ids, and a deletion
+    /// queued for an OLD id stays queued.
+    func testRestoreAsNewCopiesGivesFreshIdsWithTheFilesLinkage() throws {
+        let source = freshContext()
+        try populate(source)
+        let document = try DataBackup.decode(try DataBackup.encode(DataBackup.snapshot(of: source, account: accountA)))
+        let fileIDs = Set(document.groups.map(\.id) + document.habits.map(\.id)
+                          + document.habits.flatMap { $0.records.map(\.id) })
+
+        let localSuite = "stride.tests.backup.copies.local"
+        let local = UserDefaults(suiteName: localSuite)!
+        local.removePersistentDomain(forName: localSuite)
+        defer { local.removePersistentDomain(forName: localSuite) }
+        let queue = SyncDeletionQueue(local: local, shared: nil)
+        let queuedHabit = try XCTUnwrap(document.habits.first).id.uuidString
+        queue.trackHabit(queuedHabit)
+
+        let preview = try DataBackup.restore(document, into: context, identity: .newCopies,
+                                             withdrawingDeletionsFrom: queue)
+        XCTAssertEqual(preview.habits, 3)
+        XCTAssertEqual(preview.checkIns, 4)
+        XCTAssertEqual(queue.pending().habits, [queuedHabit], "the old id's deletion still means what it meant")
+
+        let groups = try context.fetch(FetchDescriptor<HabitGroup>())
+        let habits = try context.fetch(FetchDescriptor<Habit>())
+        let records = try context.fetch(FetchDescriptor<HabitRecord>())
+        XCTAssertEqual(groups.count, document.groups.count)
+        XCTAssertEqual(habits.count, document.habits.count)
+        XCTAssertEqual(records.count, document.habits.reduce(0) { $0 + $1.records.count })
+        let storeIDs = Set(groups.map(\.id) + habits.map(\.id) + records.map(\.id))
+        XCTAssertEqual(storeIDs.count, fileIDs.count, "every id is distinct")
+        XCTAssertTrue(storeIDs.isDisjoint(with: fileIDs), "no id of the file survives")
+
+        // Linkage, counted the same way on both sides: record → habit, habit → group.
+        let fileGroupNames = Dictionary(uniqueKeysWithValues: document.groups.map { ($0.id, $0.name) })
+        let storeGroupNames = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0.name) })
+        for item in document.habits {
+            let copy = try XCTUnwrap(habits.first { $0.name == item.name }, item.name)
+            XCTAssertEqual(copy.records.count, item.records.count, "\(item.name) check-ins")
+            XCTAssertEqual(Set(copy.records.map(\.date)), Set(item.records.compactMap { DataBackup.dayKey($0.date) }))
+            assertSameInstant(copy.createdAt, item.createdAt, "\(item.name) createdAt kept")
+            assertSameInstant(copy.updatedAt, item.updatedAt, "\(item.name) updatedAt kept")
+            if let old = item.groupId, let name = fileGroupNames[old] {
+                XCTAssertEqual(copy.groupId.flatMap { storeGroupNames[$0] }, name, "\(item.name) follows its group")
+            } else {
+                XCTAssertEqual(copy.groupId, item.groupId, "a group not in the file is kept as it was")
+            }
+        }
+        XCTAssertEqual(habits.filter { $0.groupId.map(storeGroupNames.keys.contains) ?? false }.count,
+                       document.habits.filter { $0.groupId.map(fileGroupNames.keys.contains) ?? false }.count)
+
+        // New rows: never delivered, not restored-with-ids, not held — all pending.
+        let rows: [any SyncDeliverable] = groups + habits + records
+        for row in rows {
+            XCTAssertNil(row.syncedAt)
+            XCTAssertNil(row.restoredAt, "new copies are not restored rows")
+            XCTAssertNil(row.syncHoldReason)
+            XCTAssertTrue(row.isPending)
+        }
+    }
+
+    /// Keeping the ids marks every row `restoredAt`, so no pull deletes it and a `tombstoned`
+    /// answer holds it for the user's choice instead of dropping it.
+    func testKeepingIDsMarksEveryRowRestored() throws {
+        let source = freshContext()
+        try populate(source)
+        let document = try DataBackup.decode(try export(source))
+        let now = Date(timeIntervalSince1970: 1_790_000_123)
+
+        try DataBackup.restore(document, into: context, identity: .keepIDs, withdrawingDeletionsFrom: nil, now: now)
+
+        let rows: [any SyncDeliverable] = try context.fetch(FetchDescriptor<HabitGroup>())
+            + context.fetch(FetchDescriptor<Habit>()) + context.fetch(FetchDescriptor<HabitRecord>())
+        XCTAssertEqual(rows.count, 2 + 3 + 4)
+        for row in rows {
+            XCTAssertEqual(row.restoredAt, now)
+            XCTAssertNil(row.syncedAt, "never delivered from this device")
+            XCTAssertTrue(row.isPending)
+        }
+        XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Habit>()).map(\.id)), Set(document.habits.map(\.id)))
+        // The default is keeping the ids, as 1.3.0's restore did.
+        let other = freshContext()
+        try DataBackup.restore(document, into: other, withdrawingDeletionsFrom: nil)
+        XCTAssertTrue(try other.fetch(FetchDescriptor<Habit>()).allSatisfy { $0.restoredAt != nil })
+    }
+
     // MARK: - Erase
 
     func testEraseDeletesEverythingAndQueuesNoSyncDeletions() throws {

@@ -16,13 +16,21 @@
 #     is present), the pause flag inside the temp dir — no mail, no Sentry, no real switch;
 #   - the production sync rate limit (60 / min / account) switched ON, which NODE_ENV=test
 #     would otherwise bypass, so "no 429" means something;
+#   - the test hooks mounted (STRIDE_TEST_HOOKS=1 with NODE_ENV=test; server/lib/testHooks.js):
+#     `POST /__test/sweep-tombstones` runs the real sweep, so "a tombstone swept on the test
+#     server" is rehearsed with the code production will run once sweeping returns. They answer
+#     only loopback requests with no proxy headers, and never mount without NODE_ENV=test;
+#   - the pause switch is a file in the temp dir the tool may create (S20) — never the real one;
 #   - accounts are inserted straight into the temp database (sync_rehearsal/accounts.js, the
 #     server suite's createTestUser / createTestSession), so no email is involved;
 #   - killed by PID (never pkill) and the temp dir removed on exit, unless
 #     STRIDE_REHEARSAL_KEEP=1, which keeps it and prints where.
 #
 # Run it before every submission next to check_demo_account.sh. Exit 0 = every check passed;
-# SKIPPED rows are parts of M2 that are not built yet and say so.
+# SKIPPED rows need the phase C UI (the account screen, Today's rows) and say so.
+#
+# The 1.3.1 devices keep their recovery logs as the app does — the JSON-lines FILE — under
+# $ROOT/recovery-logs, so the export checks read what a user's export would.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -64,7 +72,7 @@ echo "Starting the local server on $BASE..."
   cd "$ROOT/server"
   exec env -u SYNC_PAUSED -u SYNC_PAUSE_RETRY_AFTER_SECONDS -u SYNC_AUTH_FAILURE_LIMIT_PER_15MIN \
     -u GLOBAL_RATE_LIMIT_PER_15MIN -u DEMO_TOKEN \
-    NODE_ENV=test PORT="$PORT" BIND_HOST=127.0.0.1 SYNC_PAUSE_FILE="$ROOT/SYNC_PAUSED" \
+    NODE_ENV=test STRIDE_TEST_HOOKS=1 PORT="$PORT" BIND_HOST=127.0.0.1 SYNC_PAUSE_FILE="$ROOT/SYNC_PAUSED" \
     RESEND_API_KEY= SENTRY_DSN= SENTRY_TRACES_SAMPLE_RATE= SYNC_RATE_LIMIT_PER_MIN=60 \
     "$NODE" "$ROOT/server/index.js"
 ) >"$ROOT/server.log" 2>&1 &
@@ -89,6 +97,7 @@ for _ in $(seq 1 300); do
 done
 curl -sf "$BASE/health" >/dev/null || { echo "the local server did not come up:"; cat "$ROOT/server.log"; exit 1; }
 [[ -f "$ROOT/server/stride.db" ]] || { echo "the server did not create its throwaway database"; exit 1; }
+grep -q "\[test-hooks\] mounted" "$ROOT/server.log" || { echo "the local server did not mount the test hooks:"; cat "$ROOT/server.log"; exit 1; }
 
 set +e
 STRIDE_REHEARSAL_BASE="$BASE" \
@@ -96,6 +105,7 @@ STRIDE_REHEARSAL_SERVER_DIR="$ROOT/server" \
 STRIDE_REHEARSAL_ROOT="$ROOT" \
 STRIDE_REHEARSAL_HELPER="$SCRIPT_DIR/sync_rehearsal/accounts.js" \
 STRIDE_REHEARSAL_NODE="$NODE" \
+STRIDE_REHEARSAL_PAUSE_FILE="$ROOT/SYNC_PAUSED" \
   "$ROOT/sync-rehearsal"
 STATUS=$?
 set -e

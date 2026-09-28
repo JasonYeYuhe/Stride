@@ -18,9 +18,22 @@ enum DataExportService {
 
     // MARK: - Producing the files
 
+    /// `account` is the store's sync owner (`SyncOwnerStore.owner`), recorded in the file so a
+    /// restore can tell whether it may keep the file's ids (`DataBackup.restoreDecision`). The
+    /// caller passes it — signed in or not, the owner is whose ids the rows carry; nil for a
+    /// store with no owner.
     @MainActor
-    static func backupJSONData(from context: ModelContext, exportedAt: Date = Date()) throws -> Data {
-        try DataBackup.encode(DataBackup.snapshot(of: context, exportedAt: exportedAt))
+    static func backupJSONData(from context: ModelContext, account: BackupAccount?,
+                               exportedAt: Date = Date()) throws -> Data {
+        try DataBackup.encode(DataBackup.snapshot(of: context, exportedAt: exportedAt, account: account))
+    }
+
+    /// The store's sync owner as a backup records it, or nil for a store with no owner. The
+    /// owner, not whoever is signed in: a backup must name the account whose ids the rows carry,
+    /// and a signed-out device (or one signed into another account, before the account screen
+    /// settles it) still holds the owner's rows.
+    static func storeOwnerAccount(defaults: UserDefaults = .standard) -> BackupAccount? {
+        SyncOwnerStore(defaults: defaults).owner.map { BackupAccount(id: $0.id, email: $0.email) }
     }
 
     @MainActor
@@ -36,9 +49,12 @@ enum DataExportService {
 
     /// Reads the snapshot on the main actor (SwiftData models belong to the context's actor),
     /// then encodes and writes off it, so a large history does not stall the share sheet.
-    fileprivate static func exportFile(from container: ModelContainer, stem: String, ext: String,
+    fileprivate static func exportFile(from container: ModelContainer, account: BackupAccount? = nil,
+                                       stem: String, ext: String,
                                        encode: @Sendable (BackupDocument) throws -> Data) async throws -> URL {
-        let document = try await MainActor.run { try DataBackup.snapshot(of: container.mainContext) }
+        let document = try await MainActor.run {
+            try DataBackup.snapshot(of: container.mainContext, account: account)
+        }
         let data = try encode(document)
         // A directory per export: two exports on the same day must not overwrite a file the
         // share sheet may still be reading.
@@ -68,12 +84,46 @@ enum DataExportService {
 
     // MARK: - Restore and erase, around sync
 
-    /// `DataBackup.restore` once no sync is in flight, withdrawing the restored ids from the
-    /// deletion queues. A full pull already awaiting its response — the first sync after a
-    /// sign-in, on a slow link, easily outlasts picking a file and confirming — used to land
-    /// after the restore and delete every restored habit, group and check-in the account did
-    /// not hold (SyncReconciler's full-pull pass), with no message. After the wait the store is
-    /// checked again: if that pull brought the account's habits down, this is `storeNotEmpty`.
+    /// What the restore screen offers for `document` on this device (`DataBackup.restoreDecision`,
+    /// M2 "Restore into another account"): keep the ids when the file is the signed-in account's
+    /// own — or, signed out, the account the user names as `next` — and otherwise "Restore as new
+    /// copies", with keeping the ids still offered for a file that names no account (every 1.3.0
+    /// backup). The screen restores with `plan` (or `keepIDsInstead`) through
+    /// `restore(_:into:plan:…)`.
+    @MainActor
+    static func restoreDecision(for document: BackupDocument, next: BackupAccount? = nil,
+                                sync: SyncService? = nil) -> RestoreDecision {
+        let sync = sync ?? .shared   // see `restore` for the optionals
+        return DataBackup.restoreDecision(for: document, device: sync.restoreDevice(next: next))
+    }
+
+    /// `DataBackup.restore` once no sync is in flight, with `plan`'s identity, and then the
+    /// store's owner set to `plan.owner` (`SyncService.adoptRestoredStore`): copies restored
+    /// while signed into B belong to B and go up on the next sync with no second sign-in; a
+    /// restore made signed out, naming no account, leaves the store for the next sign-in to adopt.
+    ///
+    /// A full pull already awaiting its response — the first sync after a sign-in, on a slow
+    /// link, easily outlasts picking a file and confirming — used to land after the restore and
+    /// delete every restored habit, group and check-in the account did not hold (SyncReconciler's
+    /// full-pull pass), with no message. After the wait the store is checked again: if that pull
+    /// brought the account's habits down, this is `storeNotEmpty`. The owner is set only once the
+    /// restore has saved; a refused or failed restore changes no owner.
+    @MainActor
+    @discardableResult
+    static func restore(_ document: BackupDocument, into context: ModelContext, plan: RestorePlan,
+                        sync: SyncService? = nil,
+                        deletionQueue: SyncDeletionQueue = .live) async throws -> BackupPreview {
+        let sync = sync ?? .shared
+        await sync.waitUntilIdle()
+        let preview = try DataBackup.restore(document, into: context, identity: plan.identity,
+                                             withdrawingDeletionsFrom: deletionQueue)
+        sync.adoptRestoredStore(owner: plan.owner)
+        return preview
+    }
+
+    /// 1.3.0's restore, which Settings still calls until the phase C restore screen: the file's
+    /// ids, every row marked `restoredAt` (so no pull deletes it — a tombstoned one is held for
+    /// "Restore as new copies"), and no owner change.
     @MainActor
     @discardableResult
     static func restore(_ document: BackupDocument, into context: ModelContext,
@@ -141,13 +191,53 @@ enum DataExportService {
 // MARK: - Share sheet items
 
 /// The lossless v2 backup, as a `.json` file. Serialised only when the user picks a destination.
+///
+/// `account` is the store's sync owner, written into the file (`accountId`, `accountEmail`) so a
+/// restore can tell a backup of this account from another's. It defaults to the owner recorded
+/// when the item is made (`DataExportService.storeOwnerAccount`), so Settings' existing
+/// `BackupJSONFile(container:)` records it with no change there; nil for a store with no owner.
 struct BackupJSONFile: Transferable, Sendable {
     let container: ModelContainer
+    var account: BackupAccount?
+
+    init(container: ModelContainer, account: BackupAccount? = DataExportService.storeOwnerAccount()) {
+        self.container = container
+        self.account = account
+    }
 
     static var transferRepresentation: some TransferRepresentation {
         FileRepresentation(exportedContentType: .json) { file in
             SentTransferredFile(try await DataExportService.exportFile(
-                from: file.container, stem: "Stride-Backup", ext: "json", encode: { try DataBackup.encode($0) }))
+                from: file.container, account: file.account, stem: "Stride-Backup", ext: "json",
+                encode: { try DataBackup.encode($0) }))
+        }
+    }
+}
+
+/// The recovery log's export (`SyncRecoveryExport`), as a `.json` file for Settings → Recovered
+/// edits → Export as JSON (phase C) and the account screen's Export. Holds only the log and the
+/// owner's id, and reads the file when the user picks a destination. Deliberately not a backup:
+/// picked in Restore it is `notABackup` (its version key is `recoveryLogVersion`).
+struct RecoveredEditsJSONFile: Transferable, Sendable {
+    let log: SyncRecoveryLog
+    let accountID: String?
+
+    /// `SyncService.recoveredEditsFile` makes one for the store's owner.
+    init(log: SyncRecoveryLog, accountID: String?) {
+        self.log = log
+        self.accountID = accountID
+    }
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(exportedContentType: .json) { file in
+            let data = try file.log.exportData(accountID: file.accountID)
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("StrideExport-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let url = directory.appendingPathComponent(
+                DataExportService.fileName("Stride-RecoveredEdits", extension: "json"))
+            try data.write(to: url, options: .atomic)
+            return SentTransferredFile(url)
         }
     }
 }

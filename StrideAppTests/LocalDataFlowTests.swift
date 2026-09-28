@@ -19,6 +19,7 @@ final class LocalDataFlowTests: XCTestCase {
     private var appGroup: ScratchDefaults!
     private var queue: SyncDeletionQueue!
     private var sync: SyncService!
+    private var recovery: ScratchRecoveryLog!
 
     /// The account the stubbed session belongs to (`{"id":1,...}` below).
     private let accountID = "1"
@@ -37,12 +38,15 @@ final class LocalDataFlowTests: XCTestCase {
         local = ScratchDefaults("flow.local")
         appGroup = ScratchDefaults("flow.appGroup")
         queue = SyncDeletionQueue(local: local.defaults, shared: appGroup.defaults)
+        recovery = ScratchRecoveryLog()
     }
 
     override func tearDown() {
         server.stop()
         local.remove()
         appGroup.remove()
+        recovery.remove()
+        recovery = nil
         sync = nil
         queue = nil
         tokens = nil
@@ -60,7 +64,7 @@ final class LocalDataFlowTests: XCTestCase {
         let auth = AuthService(api: server.makeClient(tokenStore: tokens), tokenStore: tokens,
                                defaults: local.defaults, onSignOut: { [unowned self] in self.sync.signedOut() })
         sync = SyncService(api: server.makeClient(tokenStore: tokens), defaults: local.defaults,
-                           deletionQueue: queue, sessions: auth)
+                           deletionQueue: queue, sessions: auth, recoveryLog: recovery.log)
         return auth
     }
 

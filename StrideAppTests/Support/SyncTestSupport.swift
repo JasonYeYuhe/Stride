@@ -45,3 +45,18 @@ enum SyncStubBodies {
 
     static let pushOK = #"{"ok":true}"#
 }
+
+/// The file recovery log over a directory of its own, so no test writes into the host app's
+/// Application Support (SyncService's default is `SyncRecoveryLog.defaultDirectory`).
+struct ScratchRecoveryLog {
+    let directory: URL
+    let log: SyncRecoveryLog
+
+    init() {
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("StrideAppTests-recovery-log-\(UUID().uuidString)", isDirectory: true)
+        log = SyncRecoveryLog(directory: directory)
+    }
+
+    func remove() { try? FileManager.default.removeItem(at: directory) }
+}

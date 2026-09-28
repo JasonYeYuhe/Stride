@@ -293,6 +293,12 @@ unless you know nothing else sends as it.
   `SYNC_AUTH_FAILURE_LIMIT_PER_15MIN` (100, per IP, sync requests without a valid session),
   `GLOBAL_RATE_LIMIT_PER_15MIN` (100, per IP, everything except sync). None is set on
   production; the defaults are the intended values.
+- `STRIDE_TEST_HOOKS` — **never set on the host.** With `NODE_ENV=test` it mounts
+  `POST /__test/sweep-tombstones` for `scripts/sync_rehearsal.sh` (M2's swept-tombstone case);
+  under `NODE_ENV=production` nothing is mounted even with it set, and a mounted route still
+  404s any request carrying the proxy headers the nginx block above sets (`X-Real-IP`,
+  `X-Forwarded-For` — nginx adds neither by default, so keep those lines) — see
+  `lib/testHooks.js` and its tests.
 
 ### Error reporting (Sentry)
 

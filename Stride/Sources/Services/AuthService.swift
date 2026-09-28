@@ -248,7 +248,9 @@ final class AuthService {
 
     /// TODO(M2 account screen): the spec also erases local data and clears the store's owner
     /// here ("`deleteAccount` erases local data and clears the owner"), which needs the
-    /// confirmation text to say so. Until then the owner stays the deleted account, so the next
+    /// confirmation text to say so. When it lands, the deleted account's recovery log
+    /// (`SyncService.clearRecoveredEdits` — its lines hold that account's names and notes) and
+    /// backoff go with it: `SyncService.resetSyncState` clears the backoff, not the log. Until then the owner stays the deleted account, so the next
     /// account signed into on this device finds rows it does not own and is not synced until
     /// that screen settles it — blocked, never merged. Clearing the owner alone would be worse:
     /// the rows keep `syncedAt` from the deleted account, and the next account's first full pull

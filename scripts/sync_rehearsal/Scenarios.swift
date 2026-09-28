@@ -1,11 +1,12 @@
 import Foundation
 import SwiftData
 
-// The first vertical slice's scenarios — DEV-PLAN-1.3.md M2, Acceptance (1) — each on fresh
-// accounts against the local server, each asserted, none relaxed. A scenario that needs a part
-// of M2 this slice does not build (the owner-gate screen, the recovery-log file and its export,
-// restore-as-copies, the swept-tombstone server switch) is reported SKIPPED with the reason,
-// never as PASS.
+// M2's rehearsal scenarios — DEV-PLAN-1.3.md M2, Acceptance (1), (6) and the non-UI half of (9)
+// — each on fresh accounts against the local server, each asserted, none relaxed. What needs
+// the phase C UI (the account screen of Acceptance (5), Today's reauth row and "sync paused"
+// line) is reported SKIPPED with the reason, never as PASS. Since phase B the devices keep the
+// app's recovery-log FILE and per-owner backoff, and the server runs with its test hooks (the
+// swept-tombstone switch).
 
 // MARK: - Report
 
@@ -399,10 +400,10 @@ struct Scenarios {
                      names.allSatisfy { $0 == ["Legacy", "Read books"] },
                      "habit names per device: \(names)")
 
-        let archived = a.log.lines.contains { $0.item.ref == SyncRowRef(kind: .entry, id: offlineID.uuidString) }
+        let archived = a.logItems().contains { $0.ref == SyncRowRef(kind: .entry, id: offlineID.uuidString) }
         report.check("a habit deleted on B while checked in offline on A is gone from A, and A's recovery log holds the check-in",
                      (try a.habits()).allSatisfy { $0.name != "Run" } && archived,
-                     "A's log: \(a.log.lines.map { "\($0.item.reason.rawValue) \($0.item.ref.kind)" })")
+                     "A's log: \(a.logItems().map { "\($0.reason.rawValue) \($0.ref.kind)" })")
 
         let finalA = pushes(a.transport.since(finalMarks["A"] ?? 0)), finalB = pushes(b.transport.since(finalMarks["B"] ?? 0))
         let lFinal = pushes(l.transport.since(lastL)).last, mFinal = pushes(m.transport.since(lastM)).last
@@ -660,8 +661,6 @@ struct Scenarios {
                      isSynced(quiet) && pushes(quietEx).isEmpty, quietTime)
     }
 
-    // MARK: Not in this slice
-
     // S13 — untap and re-tap one day (M2 slice review). The deletion of X is queued and the
     // re-tap Y pending when a sync pulls before it pushes: the pull brings X back, and before the
     // fix the day match renamed Y to X, the push carried `deletedEntryIds: [X]` with an upsert of
@@ -706,8 +705,8 @@ struct Scenarios {
             report.check("untap + re-tap offline, then a pull-first sync (\(mode)): the day stays checked here and on the server",
                          isSynced(outcome) && ex.first?.endpoint == .pull && local.count == 1
                             && local.first?.id.uuidString != untapped && onServer.count == 1
-                            && a.log.lines.isEmpty && a.queue.pending().isEmpty && pending == 0,
-                         "\(describe(outcome)); \(describe(ex)); local \(local.count), server \(onServer.count), log \(a.log.lines.count)")
+                            && a.logItems().isEmpty && a.queue.pending().isEmpty && pending == 0,
+                         "\(describe(outcome)); \(describe(ex)); local \(local.count), server \(onServer.count), log \(a.logItems().count)")
         }
 
         let account = try Account.create()
@@ -785,10 +784,10 @@ struct Scenarios {
                                 && !d.marks.isAwaited,
                              "\(describe(first)); marks \(describe(first.summary?.marks)); \(describe(ex1))")
                 report.check("SAME account: nothing deleted but the habit A's phone deleted while D slept (not re-uploaded)",
-                             names == ["Read", "Run", "Made after the last 1.3.0 sync"] && d.log.lines.isEmpty
+                             names == ["Read", "Run", "Made after the last 1.3.0 sync"] && d.logItems().isEmpty
                                 && !onServer.habits.contains { $0.name == "Stretch" }
                                 && after.difference(from: StoreDigest(pull: onServer)) == nil,
-                             "D \(after.summary) \(names.sorted()); server \(StoreDigest(pull: onServer).summary); log \(d.log.lines.count)")
+                             "D \(after.summary) \(names.sorted()); server \(StoreDigest(pull: onServer).summary); log \(d.logItems().count)")
                 report.check("SAME account: only the row made after the last 1.3.0 sync goes up; the next sync pushes 0/0/0",
                              totalPushed(ex1).rows == 2 && totalPushed(ex1).habits == 1 && quiet,
                              "first pushed \(totalPushed(ex1)); second: \(describe(ex2))")
@@ -809,8 +808,8 @@ struct Scenarios {
                                 && !d.marks.isAwaited,
                              "\(describe(first)); marks \(describe(first.summary?.marks)); \(describe(ex1))")
                 report.check("ANOTHER account: nothing deleted — every row D held is still there",
-                             after == before && d.log.lines.isEmpty,
-                             "before \(before.summary), after \(after.summary); log \(d.log.lines.count)")
+                             after == before && d.logItems().isEmpty,
+                             "before \(before.summary), after \(after.summary); log \(d.logItems().count)")
                 report.check("ANOTHER account: every row A holds comes back not_owned and is held; the rest are uploaded to B",
                              !ownedByA.isEmpty && heldIDs == ownedByA
                                 && Set(onB.habits.map(\.name)) == uploaded && uploaded.contains("Stretch")
@@ -822,18 +821,300 @@ struct Scenarios {
         }
     }
 
+    // MARK: - Phase B: the file recovery log, the swept tombstone, restore as copies, backoff
+
+    // S15 — a tombstone swept on the test server (review 2). A's cursor is over a year old: a
+    // tombstone is swept only past retention (after the ≥ 1.3.1 floor, M0), so a device that
+    // still holds the row it names has a cursor at least that old. Full resync, and support's
+    // snapshot_required, must then full-pull BEFORE the resend: the row is gone from the
+    // snapshot, so it is deleted here and archived to the file — not re-sent, which the server,
+    // with no tombstone left to answer `tombstoned`, would accept as a new insert.
+    func sweptTombstone() async throws {
+        for mode in ["Full resync", "snapshot_required"] {
+            let account = try Account.create()
+            let a = Device131("A", account: account), b = Device131("B", account: account)
+            defer { a.remove(); b.remove() }
+            let doomed = a.habit("Deleted on B", days: [0, 1])
+            a.habit("Kept", days: [0])
+            try a.save()
+            _ = await a.sync()
+            _ = await b.sync()
+            try b.deleteHabit(try unwrap(b.habit(id: doomed.id), "B has the habit"))
+            _ = await b.sync()
+            try await Task.sleep(nanoseconds: 20_000_000)   // the tombstones strictly before "now"
+            let swept = try await sweepTombstones(olderThanDays: 0)
+            a.cursor = SyncTimestamp.millisecondString(from: Date().addingTimeInterval(-400 * 86_400))
+
+            if mode == "snapshot_required" { try account.requestSnapshot() }
+            let mark = a.transport.mark()
+            let outcome = await a.sync(options: mode == "Full resync" ? .fullResync : [])
+            let ex = a.transport.since(mark)
+            let server = try await serverSnapshot(account)
+            let doomedID = doomed.id.uuidString
+            let serverHas = server.habits.contains { SyncReconciler.canonicalID($0.id) == doomedID }
+            let logged = a.logItems().filter { $0.reason == .deletedElsewhere }
+            let firstPush = ex.firstIndex { $0.endpoint == .push }
+            let firstFullPull = ex.firstIndex { $0.endpoint == .pull && $0.since == nil && $0.status == 200 }
+            let answered409 = mode == "Full resync" || ex.contains { $0.status == 409 }
+            report.check("swept tombstone (\(mode)): the row B deleted stays deleted on the server, and A full-pulls before any push",
+                         isSynced(outcome) && swept >= 3 && !serverHas && answered409
+                            && firstFullPull != nil && (firstPush.map { $0 > firstFullPull! } ?? true),
+                         "\(describe(outcome)); swept \(swept) tombstones; \(describe(ex)); server \(StoreDigest(pull: server).summary)")
+            report.check("swept tombstone (\(mode)): A no longer has it, and its recovery-log FILE holds the habit and both check-ins",
+                         try (try a.habit(id: doomed.id)) == nil
+                            && logged.filter { $0.ref.kind == .habit }.map(\.ref.id) == [doomedID]
+                            && logged.filter { $0.ref.kind == .entry }.count == 2
+                            && (try a.exportedLog()).items.count == logged.count,
+                         "A's log: \(a.logItems().map { "\($0.reason.rawValue) \($0.ref.kind)" })")
+            // The full pull applied the server's copy of "Kept", which settles its forced resend
+            // (remote state clears `needsResend`): a row the server holds is not sent again, and
+            // the row it no longer holds is gone before any push could carry it.
+            report.check("swept tombstone (\(mode)): the full pull settled every row, so the resend re-sent nothing; nothing left pending",
+                         try totalPushed(ex).rows == 0 && server.habits.map(\.name) == ["Kept"]
+                            && server.totals == SyncTotals(habits: 1, entries: 1, groups: 0) && (try a.pendingCount()) == 0,
+                         "pushed \(totalPushed(ex)); server habits \(server.habits.map(\.name))")
+        }
+    }
+
+    // S16 — a habit deleted on device B while edited offline on A: gone from A after its sync,
+    // and A's recovery-log EXPORT — built from the file on disk, as Settings will export it —
+    // holds the edit.
+    func recoveryLogExport() async throws {
+        let account = try Account.create()
+        let a = Device131("A", account: account), b = Device131("B", account: account)
+        defer { a.remove(); b.remove() }
+        let journal = a.habit("Journal", days: [0])
+        try a.save()
+        _ = await a.sync()
+        _ = await b.sync()
+        try b.deleteHabit(try unwrap(b.habit(id: journal.id), "B has Journal"))
+        _ = await b.sync()
+
+        let record = try unwrap(journal.records.first, "A's check-in")
+        let recordID = record.id.uuidString
+        record.note = "written offline on A"
+        record.touch()
+        try a.save()
+        let outcome = await a.sync()
+
+        let export = try a.exportedLog()
+        let line = export.items.first { $0.record?.id.uuidString == recordID }
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: a.log.directory.path)) ?? []
+        report.check("a habit deleted on B while edited offline on A is gone from A after its sync",
+                     try isSynced(outcome) && (try a.habits()).isEmpty,
+                     "\(describe(outcome)); A has \((try? a.habits().count) ?? -1) habits")
+        report.check("A's recovery-log EXPORT (from the file on disk) holds the edit, with its habit's name",
+                     line?.record?.note == "written offline on A" && line?.habitName == "Journal"
+                        && export.accountId == account.owner && files.contains("account-\(account.owner).jsonl"),
+                     "export: \(export.items.count) items, \(line.map { "\($0.reason.rawValue), note \"\($0.record?.note ?? "")\"" } ?? "no line for the check-in"); files \(files.sorted())")
+        var notABackup = false
+        do { _ = try DataBackup.decode(try a.log.exportData(accountID: account.owner)) } catch DataBackupError.notABackup { notABackup = true } catch {}
+        report.check("…and picked in Restore by mistake, that export reads as \"not a backup\"", notABackup,
+                     "DataBackup.decode → notABackup: \(notABackup)")
+    }
+
+    // S17 — Acceptance (6): a backup exported on account X, restored as new copies on a device
+    // signed into Y, is in Y after a sync and still there after a full pull; X is untouched.
+    func restoreAsCopiesIntoAnotherAccount() async throws {
+        let x = try Account.create(), y = try Account.create()
+        let a = Device131("A on X", account: x)
+        let d = Device131("D on Y", account: y), e = Device131("E on Y", account: y)
+        defer { a.remove(); d.remove(); e.remove() }
+        let group = HabitGroup(name: "Morning")
+        a.context.insert(group)
+        a.habit("Read", days: [0, 1, 2, 3, 4]).groupId = group.id
+        a.habit("Run", days: [0, 1])
+        try a.save()
+        _ = await a.sync()
+        let file = try DataBackup.encode(DataBackup.snapshot(of: a.context, account: BackupAccount(id: x.owner, email: x.email)))
+        let document = try DataBackup.decode(file)
+
+        let decision = DataBackup.restoreDecision(for: document, device: .signedIn(BackupAccount(id: y.owner, email: y.email)))
+        report.check("a backup naming account X, restored on a device signed into Y, is offered as new copies owned by Y",
+                     document.accountId == x.owner && decision.plan == RestorePlan(identity: .newCopies, owner: BackupAccount(id: y.owner, email: y.email))
+                        && decision.keepIDsInstead == nil,
+                     "file account \(document.accountId ?? "none"); plan \(decision.plan.identity) → owner \(decision.plan.owner?.id ?? "none")")
+        try DataBackup.restore(document, into: d.context, identity: decision.plan.identity, withdrawingDeletionsFrom: d.queue)
+        let first = await d.sync()
+        let onY = try await serverSnapshot(y), onX = try await serverSnapshot(x)
+        let xIDs = Set(onX.habits.map { SyncReconciler.canonicalID($0.id) } + onX.entries.map { SyncReconciler.canonicalID($0.id) }
+            + (onX.groups ?? []).map { SyncReconciler.canonicalID($0.id) })
+        let yIDs = Set(onY.habits.map { SyncReconciler.canonicalID($0.id) } + onY.entries.map { SyncReconciler.canonicalID($0.id) }
+            + (onY.groups ?? []).map { SyncReconciler.canonicalID($0.id) })
+        let yGroup = onY.groups?.first.map { SyncReconciler.canonicalID($0.id) }
+        let yRead = onY.habits.first { $0.name == "Read" }
+        report.check("the copies sync into Y: 1 group, 2 habits, 7 check-ins, fresh ids, Read still in its group; X unchanged",
+                     try isSynced(first) && onY.totals == SyncTotals(habits: 2, entries: 7, groups: 1)
+                        && xIDs.isDisjoint(with: yIDs) && yRead?.groupId.map(SyncReconciler.canonicalID) == yGroup
+                        && onX.totals == SyncTotals(habits: 2, entries: 7, groups: 1) && (try d.pendingCount()) == 0,
+                     "\(describe(first)); Y \(StoreDigest(pull: onY).summary), X \(StoreDigest(pull: onX).summary), shared ids \(xIDs.intersection(yIDs).count)")
+
+        d.cursor = nil
+        let mark = d.transport.mark()
+        let full = await d.sync()
+        let exFull = d.transport.since(mark)
+        let held = try SyncCopies.heldRows(in: d.context, reasons: Set(SyncHoldReason.allCases))
+        _ = await e.sync()
+        report.check("…and they survive a full pull on D (nothing deleted, nothing held, nothing re-sent), and a second Y device gets them",
+                     try isSynced(full) && exFull.first?.since == nil && pushes(exFull).isEmpty && held.isEmpty
+                        && (try d.digest()).difference(from: StoreDigest(pull: onY)) == nil
+                        && (try e.digest()).difference(from: StoreDigest(pull: onY)) == nil,
+                     "\(describe(exFull)); D \((try? d.digest().summary) ?? "-"), E \((try? e.digest().summary) ?? "-")")
+    }
+
+    // S18 — Acceptance (6), second half: a habit restored with its ids that another device had
+    // deleted is HELD tombstoned (not deleted, not resurrected), and "Restore as new copies"
+    // (SyncCopies.reidentify) brings it back to the account under new ids.
+    func restoredHabitDeletedElsewhere() async throws {
+        let account = try Account.create()
+        let a = Device131("A", account: account), b = Device131("B", account: account)
+        let d = Device131("D (restored)", account: account)
+        defer { a.remove(); b.remove(); d.remove() }
+        let journal = a.habit("Journal", days: [0, 1, 2])
+        a.habit("Other", days: [0])
+        try a.save()
+        _ = await a.sync()
+        let document = DataBackup.snapshot(habits: try a.habits(), groups: [],
+                                           account: BackupAccount(id: account.owner, email: account.email))
+        _ = await b.sync()
+        try b.deleteHabit(try unwrap(b.habit(id: journal.id), "B has Journal"))
+        _ = await b.sync()
+
+        let decision = DataBackup.restoreDecision(for: document, device: .signedIn(BackupAccount(id: account.owner, email: account.email)))
+        try DataBackup.restore(document, into: d.context, identity: decision.plan.identity, withdrawingDeletionsFrom: d.queue)
+        let first = await d.sync()
+        let dJournal = try d.habit(id: journal.id)
+        let held = try SyncCopies.heldRows(in: d.context, reasons: [.tombstoned])
+        var server = try await serverSnapshot(account)
+        report.check("the same account's backup keeps its ids; the restored habit B deleted is held `tombstoned`, with its check-ins, not deleted",
+                     isSynced(first) && decision.plan.identity == .keepIDs && dJournal?.activeHold == .tombstoned
+                        && dJournal?.records.count == 3 && held.habits.map(\.id) == [journal.id]
+                        && !server.habits.contains { $0.name == "Journal" } && d.logItems().isEmpty,
+                     "\(describe(first)); Journal on D \(dJournal.map { "held \($0.activeHold?.rawValue ?? "no")" } ?? "GONE"); server \(server.habits.map(\.name))")
+
+        let converted = try SyncCopies.reidentify(held, in: d.context)
+        let mark = d.transport.mark()
+        let pushedCopy = await d.sync()
+        server = try await serverSnapshot(account)
+        let back = server.habits.first { $0.name == "Journal" }
+        let newID = converted.habitIDs[journal.id]?.uuidString
+        report.check("\"Restore as new copies\" brings it back to the account under a new id, check-ins included",
+                     isSynced(pushedCopy) && back.map { SyncReconciler.canonicalID($0.id) } == newID && newID != nil
+                        && server.entries.filter { SyncReconciler.canonicalID($0.habitId) == newID }.count == 3
+                        && totalPushed(d.transport.since(mark)).habits == 1,
+                     "converted \(converted.rows.habits)h/\(converted.rows.entries)e; \(describe(d.transport.since(mark))); server \(server.habits.map(\.name))")
+
+        _ = await b.sync()
+        d.cursor = nil
+        let full = await d.sync()
+        let finalServer = StoreDigest(pull: try await serverSnapshot(account))
+        report.check("…B gets it back, and it survives D's next full pull",
+                     try isSynced(full) && (try b.habits()).contains { $0.name == "Journal" }
+                        && (try d.habit(id: converted.habitIDs[journal.id] ?? UUID()))?.activeHold == nil
+                        && (try d.digest()).difference(from: finalServer) == nil,
+                     "B \((try? b.habits().map(\.name).sorted()) ?? []); \(describe(full))")
+    }
+
+    // S19 — 400 invalid_payload (a client bug, answered by the real server): nothing held, rows
+    // pending, and the owner's backoff starts at about a minute. Automatic triggers (launch,
+    // foreground) honour it and send nothing; Sync Now bypasses it; success resets it.
+    func invalidPayloadBackoff() async throws {
+        let account = try Account.create()
+        let a = Device131("A", account: account)
+        defer { a.remove() }
+        let habit = a.habit("Read", days: [0])
+        try a.save()
+        a.transport.transformPushBody = { body in
+            guard var json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { return body }
+            json["habits"] = ["not": "an array"]
+            return (try? JSONSerialization.data(withJSONObject: json)) ?? body
+        }
+
+        let failed = await a.sync(trigger: .automatic)
+        let state = a.backoff.state(for: account.owner)
+        var clientBug = false
+        if case .stopped(.backOff(.clientBug, let answer), _) = failed, answer.code == "invalid_payload" { clientBug = true }
+        report.check("invalid_payload: the run stops as a client bug, nothing is held, the rows stay pending, backoff ≈ 1 min",
+                     try clientBug && habit.activeHold == nil && (try a.pendingCount()) == 2
+                        && state?.reason == .clientBug && (48.0...72.0).contains(state?.delay ?? 0),
+                     "\(describe(failed)); backoff \(state.map { "\($0.reason.rawValue) \(Int($0.delay)) s" } ?? "none"); pending \((try? a.pendingCount()) ?? -1)")
+
+        a.transport.transformPushBody = nil
+        var mark = a.transport.mark()
+        let automatic = await a.sync(trigger: .automatic)
+        var blocked = false
+        if case .blocked(.backingOff) = automatic { blocked = true }
+        report.check("…an automatic sync inside the window sends nothing",
+                     blocked && a.transport.since(mark).isEmpty,
+                     "\(describe(automatic)); \(describe(a.transport.since(mark)))")
+
+        mark = a.transport.mark()
+        let manual = await a.sync(trigger: .manual)
+        let server = try await serverSnapshot(account)
+        report.check("…Sync Now goes at once, lands the rows, and its success resets the backoff",
+                     try isSynced(manual) && !a.transport.since(mark).isEmpty && a.backoff.state(for: account.owner) == nil
+                        && server.totals == SyncTotals(habits: 1, entries: 1, groups: 0) && (try a.pendingCount()) == 0,
+                     "\(describe(manual)); \(describe(a.transport.since(mark)))")
+        let after = await a.sync(trigger: .automatic)
+        report.check("…and the next automatic sync goes again", isSynced(after), describe(after))
+    }
+
+    // S20 — the non-UI half of Acceptance (9): flipping the server's pause switch backs off as
+    // the server asked ("sync paused", never an error) and automatic syncs wait it out; a session
+    // revoked server-side stops the run as needsReauth and resets nothing. The Today row and the
+    // "sync paused" line that show these are phase C.
+    func pauseAndRevokedSession() async throws {
+        guard let pauseFile = Rehearsal.pauseFile else { throw Missing(description: "STRIDE_REHEARSAL_PAUSE_FILE") }
+        let account = try Account.create()
+        let a = Device131("A", account: account)
+        defer { a.remove(); try? FileManager.default.removeItem(at: pauseFile) }
+        let habit = a.habit("Read", days: [0])
+        try a.save()
+        _ = await a.sync()
+
+        try Data("120".utf8).write(to: pauseFile)
+        habit.note = "edited during the pause"
+        habit.touch()
+        try a.save()
+        let paused = await a.sync(trigger: .automatic)
+        let state = a.backoff.state(for: account.owner)
+        var serverAsked = false
+        if case .stopped(.backOff(.serverAsked(seconds: 120, paused: true), _), _) = paused { serverAsked = true }
+        let mark = a.transport.mark()
+        let waiting = await a.sync(trigger: .automatic)
+        var blocked = false
+        if case .blocked(.backingOff) = waiting { blocked = true }
+        report.check("pause switch: 503 sync_paused backs off for the server's 120 s as \"sync paused\" (not an error); automatic syncs wait",
+                     serverAsked && state?.reason == .paused && state?.reason.showsSyncPaused == true && state?.delay == 120
+                        && blocked && a.transport.since(mark).isEmpty && habit.isPending,
+                     "\(describe(paused)); backoff \(state.map { "\($0.reason.rawValue) \(Int($0.delay)) s" } ?? "none"); then \(describe(waiting))")
+
+        try FileManager.default.removeItem(at: pauseFile)
+        let resumed = await a.sync(trigger: .manual)
+        report.check("…the pause lifted, Sync Now lands the edit and clears the window",
+                     isSynced(resumed) && !habit.isPending && a.backoff.state(for: account.owner) == nil, describe(resumed))
+
+        habit.note = "edited after the session was revoked"
+        habit.touch()
+        try a.save()
+        a.queue.trackEntry(UUID().uuidString)
+        let cursor = a.cursor
+        try account.revokeSession()
+        let revoked = await a.sync()
+        var reauth = false
+        if case .stopped(.needsReauth, _) = revoked { reauth = true }
+        report.check("revoked session: the run stops as needsReauth, and nothing is reset (cursor, queue, pending edit, no backoff)",
+                     reauth && a.cursor == cursor && !a.queue.pending().isEmpty && habit.isPending && habit.syncedAt != nil
+                        && a.backoff.state(for: account.owner) == nil,
+                     "\(describe(revoked)); \(describe(Array(a.transport.exchanges.suffix(1))))")
+    }
+
     func skipped() {
-        report.current = "next slice"
-        report.skip("tombstone swept on the test server: Full resync and snapshot_required leave the row deleted, archived",
-                    "needs the swept-tombstone server switch (M0 floor ≥ 1.3.1); the engine path is covered by SyncEngineTests' fake server")
-        report.skip("A's recovery-log EXPORT holds the displaced edit",
-                    "the JSON-lines file log and Settings → Export are the next slice; S7 checks the same lines in the in-memory sink")
+        report.current = "phase C (UI)"
         report.skip("sign-in to another account → no request until the choice; Export first; Start from this account's data",
-                    "the owner-gate account screen (Acceptance 5) is the next slice")
-        report.skip("a backup from account A restored as new copies into B; a restored habit deleted elsewhere is held",
-                    "restore-as-copies / SyncCopies.reidentify (Acceptance 6) are the next slice")
-        report.skip("revoked session → Today's reauth row; pause switch → \"sync paused\", no error",
-                    "the needsReauth row and the sync-status line (Acceptance 9) are the next slice")
+                    "the account screen (Acceptance 5) is phase C UI; the gate and SyncService.startFromSignedInAccountsData are covered by StrideAppTests/SyncServiceTests")
+        report.skip("revoked session → Today's reauth row; pause switch → the \"sync paused\" line",
+                    "the rows themselves are phase C UI; S20 checks what they read (needsReauth, the paused backoff)")
     }
 }
 

@@ -8,14 +8,17 @@
 //
 //   node accounts.js <serverDir> create            → {"userId":…, "email":…, "token":…}
 //   node accounts.js <serverDir> row-error-trigger → installs the row_error injection (below)
+//   node accounts.js <serverDir> request-snapshot <userId> → arms 409 snapshot_required, as
+//                                                   ops/request-snapshot.js does for support
+//   node accounts.js <serverDir> revoke-session <token>    → the session is gone server-side
 "use strict";
 const path = require("node:path");
 const crypto = require("node:crypto");
 
-const [serverDir, command] = process.argv.slice(2);
+const [serverDir, command, arg] = process.argv.slice(2);
 const rehearsalRoot = process.env.STRIDE_REHEARSAL_ROOT;
 if (!serverDir || !command || !rehearsalRoot) {
-  console.error("usage: STRIDE_REHEARSAL_ROOT=<tmp> node accounts.js <serverDir> create|row-error-trigger");
+  console.error("usage: STRIDE_REHEARSAL_ROOT=<tmp> node accounts.js <serverDir> create|row-error-trigger|request-snapshot <userId>|revoke-session <token>");
   process.exit(64);
 }
 const resolved = path.resolve(serverDir);
@@ -51,6 +54,26 @@ switch (command) {
              WHEN NEW.note = 'REHEARSAL_ROW_ERROR'
              BEGIN SELECT RAISE(ABORT, 'rehearsal: injected row_error'); END;`);
     process.stdout.write("{}");
+    break;
+  }
+  case "request-snapshot": {
+    // The row ops/request-snapshot.js writes: the account's next push or pull from a 1.3.1+
+    // app is answered 409 snapshot_required, once.
+    const userId = Number(arg);
+    if (!Number.isSafeInteger(userId)) { console.error("request-snapshot needs a user id"); process.exit(64); }
+    db.prepare(`INSERT INTO sync_snapshot_requests (user_id, requested_at, note) VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET requested_at = excluded.requested_at,
+                  note = excluded.note, answered_at = NULL, answered_client = NULL`)
+      .run(userId, new Date().toISOString(), "sync rehearsal");
+    process.stdout.write("{}");
+    break;
+  }
+  case "revoke-session": {
+    // What a sign-out elsewhere or an expiry does: the token no longer names a session.
+    if (!arg) { console.error("revoke-session needs a token"); process.exit(64); }
+    const tokenHash = crypto.createHash("sha256").update(arg).digest("hex");
+    const { changes } = db.prepare("DELETE FROM sessions WHERE token_hash = ?").run(tokenHash);
+    process.stdout.write(JSON.stringify({ revoked: changes }));
     break;
   }
   default:

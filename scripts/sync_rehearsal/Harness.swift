@@ -22,6 +22,10 @@ enum Rehearsal {
     static let serverDir = env["STRIDE_REHEARSAL_SERVER_DIR"] ?? ""
     static let helper = env["STRIDE_REHEARSAL_HELPER"] ?? ""
     static let node = env["STRIDE_REHEARSAL_NODE"] ?? "/usr/bin/env"
+    /// The script's temp dir: the devices' recovery-log files live under it and go with it.
+    static let root = URL(fileURLWithPath: env["STRIDE_REHEARSAL_ROOT"] ?? NSTemporaryDirectory(), isDirectory: true)
+    /// The local server's pause switch (SYNC_PAUSE_FILE), inside the temp dir.
+    static let pauseFile = env["STRIDE_REHEARSAL_PAUSE_FILE"].map { URL(fileURLWithPath: $0) }
 
     /// What a 1.3.1 build sends (APIClient's X-Stride-Client). The server gates the
     /// millisecond pull, the row caps and cursor_expired on it.
@@ -61,10 +65,18 @@ struct Account {
 
     static func installRowErrorTrigger() throws { _ = try runHelper("row-error-trigger") }
 
-    private static func runHelper(_ command: String) throws -> Data {
+    /// Support's repair request (ops/request-snapshot.js): the next 1.3.1 push or pull of this
+    /// account is answered 409 snapshot_required, once.
+    func requestSnapshot() throws { _ = try Self.runHelper("request-snapshot", String(userId)) }
+
+    /// The session is gone server-side (signed out elsewhere, expired): the token answers 401.
+    func revokeSession() throws { _ = try Self.runHelper("revoke-session", token) }
+
+    private static func runHelper(_ command: String, _ arg: String? = nil) throws -> Data {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: Rehearsal.node)
         p.arguments = (Rehearsal.node.hasSuffix("/env") ? ["node"] : []) + [Rehearsal.helper, Rehearsal.serverDir, command]
+            + (arg.map { [$0] } ?? [])
         let out = Pipe(), err = Pipe()
         p.standardOutput = out
         p.standardError = err
@@ -152,6 +164,9 @@ final class HTTPTransport: SyncTransport {
     var pushFault: ((Int) -> PushFault?)?
     /// Called after a push was answered, before the engine sees the answer.
     var afterPush: ((Int) -> Void)?
+    /// Rewrites a push body before it is sent — a client bug on the wire (`invalid_payload`),
+    /// answered by the real server.
+    var transformPushBody: ((Data) -> Data)?
     /// Rewrites a pull's answer before the engine sees it.
     var transformPull: ((String?, SyncTransportResponse) -> SyncTransportResponse)?
 
@@ -172,7 +187,8 @@ final class HTTPTransport: SyncTransport {
     func mark() -> Int { exchanges.count }
     func since(_ mark: Int) -> [Exchange] { Array(exchanges[mark...]) }
 
-    func push(body: Data, token: String) async -> SyncTransportResponse {
+    func push(body original: Data, token: String) async -> SyncTransportResponse {
+        let body = transformPushBody?(original) ?? original
         pushCount += 1
         let n = pushCount
         let started = Date()
@@ -233,6 +249,23 @@ final class HTTPTransport: SyncTransport {
             return .noAnswer
         }
     }
+}
+
+/// The test server's swept-tombstone switch (server/lib/testHooks.js): the real
+/// `sweepStaleData({tombstoneRetentionDays})`, over the whole throwaway database. 0 sweeps every
+/// tombstone written before now. Straight to 127.0.0.1 with no proxy header, or the hook is a 404.
+@MainActor
+func sweepTombstones(olderThanDays days: Double = 0) async throws -> Int {
+    var request = URLRequest(url: Rehearsal.base.appendingPathComponent("__test/sweep-tombstones"))
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.httpBody = try JSONSerialization.data(withJSONObject: ["olderThanDays": days])
+    let (data, response) = try await URLSession(configuration: .ephemeral).data(for: request)
+    guard (response as? HTTPURLResponse)?.statusCode == 200,
+          let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let swept = json["swept"] as? [String: Any], let tombstones = swept["tombstones"] as? Int
+    else { throw RehearsalError.http("sweep-tombstones: \(String(decoding: data, as: UTF8.self))") }
+    return tombstones
 }
 
 /// A full pull straight from the server, for comparing devices with what the server holds.
@@ -444,8 +477,8 @@ class StoreDevice {
 
 // MARK: - 1.3.1 device
 
-/// A 1.3.1 device: its own store, deletion queue, cursor store, recovery log and gate, and the
-/// real `SyncEngine` over an HTTP transport that sends `ios/1.3.1(19)`.
+/// A 1.3.1 device: its own store, deletion queue, cursor store, recovery log, backoff and gate,
+/// and the real `SyncEngine` over an HTTP transport that sends `ios/1.3.1(19)`.
 @MainActor
 final class Device131: StoreDevice {
     final class Gate: SyncRunGate {
@@ -458,10 +491,14 @@ final class Device131: StoreDevice {
     let transport = HTTPTransport(clientHeader: Rehearsal.client131)
     let queue: SyncDeletionQueue
     let cursors: SyncDefaultsCursorStore
-    /// The in-memory sink the engine archives into. The JSON-lines file and its export are the
-    /// next slice; this is the same protocol the file log will implement.
-    let log = SyncMemoryRecoveryLog()
+    /// The recovery log the app uses: the JSON-lines FILE (Shared/SyncRecoveryLog.swift), in a
+    /// directory of this device's own under the rehearsal's temp dir.
+    let log: SyncRecoveryLog
     let gate: Gate
+    /// The per-owner backoff the app uses (Shared/SyncBackoff.swift), in this device's defaults.
+    /// Every run here says whether it is automatic or manual; the default is manual (Sync Now),
+    /// which the window never holds back, so scenarios that do not test it are unaffected.
+    var backoff: SyncBackoffStore { SyncBackoffStore(defaults: defaults) }
     /// Whether this store's migrated delivery marks still wait for the first full pull.
     var marks: SyncMarksProof { SyncMarksProof(defaults: defaults) }
     private(set) var engine: SyncEngine!
@@ -473,15 +510,29 @@ final class Device131: StoreDevice {
         let suite = StoreDevice.makeSuite()
         queue = SyncDeletionQueue(local: suite.defaults, shared: nil)
         cursors = SyncDefaultsCursorStore(defaults: suite.defaults)
+        log = SyncRecoveryLog(directory: Rehearsal.root.appendingPathComponent("recovery-logs", isDirectory: true)
+            .appendingPathComponent(suite.name, isDirectory: true))
         super.init(name: name, suite: suite)
         engine = SyncEngine(transport: transport, gate: gate, cursorStore: cursors, deletionQueue: queue,
                             strikes: SyncUnknownHabitStrikes(defaults: suite.defaults),
                             marks: SyncMarksProof(defaults: suite.defaults), recoveryLog: log,
+                            backoff: SyncBackoffStore(defaults: suite.defaults),
                             report: { [weak self] in self?.reports.append($0) }, bounds: bounds)
     }
 
-    func sync(options: SyncRunOptions = []) async -> SyncRunOutcome {
-        await engine.run(in: context, options: options)
+    func sync(options: SyncRunOptions = [], trigger: SyncBackoffTrigger = .manual) async -> SyncRunOutcome {
+        await engine.run(in: context, options: options, trigger: trigger)
+    }
+
+    /// The rows this device's recovery-log file holds for its account, oldest first — read back
+    /// from disk, not from the engine's word.
+    func logItems() -> [SyncRecoveryItem] {
+        ((try? log.read(accountID: account.owner).lines) ?? []).compactMap(\.item)
+    }
+
+    /// What Settings → Recovered edits → Export as JSON would hand the share sheet, decoded.
+    func exportedLog() throws -> SyncRecoveryExport {
+        try SyncRecoveryLog.decodeExport(try log.exportData(accountID: account.owner))
     }
 
     override func queueDeletion(habit: String, entries: [String]) {

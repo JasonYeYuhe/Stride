@@ -31,8 +31,11 @@ final class SyncEngineTests: XCTestCase {
     }
 
     private func device(owner: String = "1", token: String = "token-A",
-                        bounds: SyncPushBounds = .standard) -> TestDevice {
-        let d = TestDevice(server: server, owner: owner, token: token, bounds: bounds)
+                        bounds: SyncPushBounds = .standard,
+                        recoveryLog: (any SyncRecoveryLogSink)? = nil,
+                        backoff: Bool = false) -> TestDevice {
+        let d = TestDevice(server: server, owner: owner, token: token, bounds: bounds,
+                           recoveryLog: recoveryLog, backoff: backoff)
         devices.append(d)
         return d
     }
@@ -642,6 +645,162 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(a.cursors.cursor(for: "1"), cursor)
     }
 
+    // MARK: - The file recovery log under the engine (phase B)
+
+    /// A directory the test owns, removed (after its permissions are put back) at the end.
+    private func scratchLogDirectory() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SyncEngineTests-log-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
+            try? FileManager.default.removeItem(at: dir)
+        }
+        return dir
+    }
+
+    private func setWritable(_ dir: URL, _ writable: Bool) throws {
+        try FileManager.default.setAttributes([.posixPermissions: writable ? 0o700 : 0o500], ofItemAtPath: dir.path)
+    }
+
+    /// The app's sink is the FILE (`SyncRecoveryLog`), and "on disk before the delete" is only as
+    /// true as the file's failure path: with the log's directory unwritable (a full disk, or M3's
+    /// locked background sync), a pull whose tombstone takes a held row deletes nothing and writes
+    /// no cursor, and nothing reaches the directory. Made writable again, the next sync archives
+    /// and deletes, and the export holds the row.
+    func testAnUnwritableRecoveryLogFileOnAPullDeletesNothingAndWritesNoCursor() async throws {
+        let dir = try scratchLogDirectory()
+        let file = SyncRecoveryLog(directory: dir)
+        let a = device(recoveryLog: file), b = device(token: "token-A2")
+        a.habit("Read", records: [day(0)])
+        try a.save()
+        expectSynced(await a.sync())
+        expectSynced(await b.sync())
+        let bHabit = try XCTUnwrap(b.habits().first)
+        b.queue.trackHabit(bHabit.id.uuidString)
+        b.context.delete(bHabit)
+        try b.save()
+        expectSynced(await b.sync())
+
+        let aRecord = try XCTUnwrap(a.habits().first?.records.first)
+        aRecord.note = "edited, then refused"
+        aRecord.touch()
+        aRecord.hold(.rowError)      // held, so no push meets the tombstone first: the pull does
+        try a.save()
+        let cursor = a.cursors.cursor(for: "1")
+        try setWritable(dir, false)
+
+        let failed = await a.sync()
+        guard case .stopped(.recoveryLogFailed, _) = failed else { return XCTFail("\(failed)") }
+        XCTAssertEqual(try a.habits().count, 1, "nothing deleted")
+        XCTAssertEqual(try a.habits().first?.records.count, 1)
+        XCTAssertEqual(a.cursors.cursor(for: "1"), cursor, "no cursor written")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir.path), [], "nothing on disk")
+
+        try setWritable(dir, true)
+        expectSynced(await a.sync())
+        XCTAssertTrue(try a.habits().isEmpty)
+        let export = try SyncRecoveryLog.decodeExport(try file.exportData(accountID: "1"))
+        XCTAssertEqual(export.items.count, 1)
+        XCTAssertEqual(export.items.first?.record?.note, "edited, then refused")
+        XCTAssertEqual(export.items.first?.habitName, "Read")
+        XCTAssertEqual(export.items.first?.reason, .deletedElsewhere)
+        XCTAssertEqual(export.accountId, "1")
+    }
+
+    /// The push path: a row answered `tombstoned` whose archive cannot be written stays, pending
+    /// (answered again next sync), and the chunk's true acknowledgements are kept.
+    func testAnUnwritableRecoveryLogFileOnAPushDropKeepsTheRowPending() async throws {
+        let dir = try scratchLogDirectory()
+        let file = SyncRecoveryLog(directory: dir)
+        let a = device(recoveryLog: file)
+        let doomed = a.habit("Deleted elsewhere")
+        let fine = a.habit("Fine")
+        try a.save()
+        server.markTombstoned(.habit, doomed.id.uuidString)
+        a.cursors.setCursor(SyncTimestamp.millisecondString(from: Date().addingTimeInterval(30)), for: "1")
+        try setWritable(dir, false)
+
+        let failed = await a.sync()
+        guard case .stopped(.recoveryLogFailed, _) = failed else { return XCTFail("\(failed)") }
+        XCTAssertEqual(try a.habitNames(), ["Deleted elsewhere", "Fine"])
+        XCTAssertTrue(doomed.isPending)
+        XCTAssertFalse(fine.isPending)
+
+        try setWritable(dir, true)
+        expectSynced(await a.sync())
+        XCTAssertEqual(try a.habitNames(), ["Fine"])
+        XCTAssertEqual(try file.read(accountID: "1").lines.map(\.habit?.name), ["Deleted elsewhere"])
+    }
+
+    // MARK: - The per-owner backoff (phase B)
+
+    private static let invalidPayload = SyncTransportResponse(status: 400, body: Data(
+        #"{"error":"invalid_payload","code":"invalid_payload","message":"habits must be an array"}"#.utf8))
+
+    /// `400 invalid_payload` is a client bug: the run stops, nothing is held, the rows stay
+    /// pending, and the owner's backoff starts at about a minute. An automatic run inside the
+    /// window sends nothing; a manual one (Sync Now) goes at once, and its success resets the
+    /// window, so the next automatic run goes too.
+    func testInvalidPayloadBacksOffAutomaticRunsWhileManualRunsGoAndSuccessResets() async throws {
+        let a = device(backoff: true)
+        let habit = a.habit("Read")
+        try a.save()
+        a.cursors.setCursor(SyncTimestamp.millisecondString(from: Date()), for: "1")
+        server.scriptPush(at: 1, Self.invalidPayload)
+
+        let failed = await a.sync(trigger: .automatic)
+        guard case .stopped(.backOff(.clientBug, _), _) = failed else { return XCTFail("\(failed)") }
+        XCTAssertNil(habit.syncHoldReason, "the rows are not what is wrong")
+        XCTAssertTrue(habit.isPending)
+        let state = try XCTUnwrap(a.backoffStore.state(for: "1"))
+        XCTAssertEqual(state.reason, .clientBug)
+        XCTAssertEqual(state.consecutiveFailures, 1)
+        XCTAssertEqual(state.delay, 60, accuracy: 12.001)
+
+        let requests = server.requests.count
+        let waiting = await a.sync(trigger: .automatic)
+        XCTAssertEqual(waiting, .blocked(.backingOff(state)))
+        XCTAssertEqual(server.requests.count, requests, "an automatic run inside the window sends nothing")
+
+        expectSynced(await a.sync(trigger: .manual))
+        XCTAssertFalse(habit.isPending)
+        XCTAssertNil(a.backoffStore.state(for: "1"), "success resets")
+        expectSynced(await a.sync(trigger: .automatic))
+    }
+
+    /// The outcome is written under the owner the run was bound to, and read for the owner the
+    /// next run is bound to: account A's window never holds back account B's first sync.
+    func testTheBackoffBelongsToTheRunsOwner() async throws {
+        let a = device(backoff: true)
+        a.habit("Read")
+        try a.save()
+        server.scriptPull(at: 1, SyncTransportResponse(status: 503, body: Data(
+            #"{"error":"sync_paused","code":"sync_paused","retryAfterSeconds":900}"#.utf8)))
+        let paused = await a.sync(trigger: .automatic)
+        guard case .stopped(.backOff(.serverAsked(seconds: 900, paused: true), _), _) = paused else { return XCTFail("\(paused)") }
+        XCTAssertEqual(a.backoffStore.state(for: "1")?.reason, .paused)
+        XCTAssertEqual(a.backoffStore.state(for: "1")?.delay, 900)
+
+        a.gate.state = .ready(SyncRunBinding(ownerID: "2", token: "token-B", generation: 1))
+        let asB = await a.sync(trigger: .automatic)
+        guard case .synced = asB else { return XCTFail("B has no window of its own: \(asB)") }
+        XCTAssertNil(a.backoffStore.state(for: "2"))
+        XCTAssertEqual(a.backoffStore.state(for: "1")?.reason, .paused, "A's window is A's")
+    }
+
+    /// Stops that are not the server asking for less traffic leave the window alone — a sign-out
+    /// mid-run above all, which says nothing about the server.
+    func testASignOutMidRunWritesNoBackoff() async throws {
+        let a = device(backoff: true)
+        a.habit("Read")
+        try a.save()
+        server.onRequest = { [a] _ in a.gate.state = .signedOut }
+        let stopped = await a.sync(trigger: .automatic)
+        guard case .stopped(.bindingChanged, _) = stopped else { return XCTFail("\(stopped)") }
+        XCTAssertNil(a.backoffStore.state(for: "1"))
+    }
+
     // MARK: - The first full pull proves the account (owner decision, 2026-09-28)
 
     /// Stamps an hour old — what a 1.3.0 store holds for rows its last snapshot carried (the
@@ -923,8 +1082,14 @@ final class TestDevice {
     let gate: Gate
     let engine: SyncEngine
     var reports: [SyncDiagnosticReport] = []
+    /// The per-owner backoff in this device's defaults (used by the engine only when the device
+    /// was made with `backoff: true`).
+    var backoffStore: SyncBackoffStore { SyncBackoffStore(defaults: defaults) }
 
-    init(server: FakeSyncServer, owner: String, token: String, bounds: SyncPushBounds) {
+    /// `recoveryLog` replaces the in-memory `log` (the file log's tests); `backoff` gives the
+    /// engine the per-owner backoff, which most tests leave out so every run goes.
+    init(server: FakeSyncServer, owner: String, token: String, bounds: SyncPushBounds,
+         recoveryLog: (any SyncRecoveryLogSink)? = nil, backoff: Bool = false) {
         let schema = Schema([Habit.self, HabitRecord.self, HabitGroup.self])
         container = try! ModelContainer(for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
         context = container.mainContext
@@ -935,7 +1100,8 @@ final class TestDevice {
         var sink: ((SyncDiagnosticReport) -> Void)?
         engine = SyncEngine(transport: server, gate: gate, cursorStore: cursors, deletionQueue: queue,
                             strikes: SyncUnknownHabitStrikes(defaults: defaults),
-                            marks: SyncMarksProof(defaults: defaults), recoveryLog: log,
+                            marks: SyncMarksProof(defaults: defaults), recoveryLog: recoveryLog ?? log,
+                            backoff: backoff ? SyncBackoffStore(defaults: defaults) : nil,
                             report: { sink?($0) }, bounds: bounds)
         sink = { [weak self] in self?.reports.append($0) }
     }
@@ -944,8 +1110,8 @@ final class TestDevice {
 
     var marks: SyncMarksProof { SyncMarksProof(defaults: defaults) }
 
-    func sync(options: SyncRunOptions = []) async -> SyncRunOutcome {
-        await engine.run(in: context, options: options)
+    func sync(options: SyncRunOptions = [], trigger: SyncBackoffTrigger = .manual) async -> SyncRunOutcome {
+        await engine.run(in: context, options: options, trigger: trigger)
     }
 
     @discardableResult

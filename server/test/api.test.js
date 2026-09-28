@@ -20,7 +20,7 @@ const PAUSE_FILE = path.join(os.tmpdir(), `stride-test-SYNC_PAUSED-${process.pid
 function serverEnv(port, extra = {}) {
   const env = { ...process.env, PORT: String(port), NODE_ENV: "test", SYNC_PAUSE_FILE: PAUSE_FILE, ...extra };
   for (const k of ["SYNC_PAUSED", "SYNC_PAUSE_RETRY_AFTER_SECONDS", "SYNC_RATE_LIMIT_PER_MIN",
-    "SYNC_AUTH_FAILURE_LIMIT_PER_15MIN", "GLOBAL_RATE_LIMIT_PER_15MIN"]) {
+    "SYNC_AUTH_FAILURE_LIMIT_PER_15MIN", "GLOBAL_RATE_LIMIT_PER_15MIN", "STRIDE_TEST_HOOKS"]) {
     if (!(k in extra)) delete env[k];
   }
   // Empty rather than deleted: dotenv never overrides a variable that is present, so this also
@@ -10104,6 +10104,148 @@ describe("M2 LWW re-feed: the winner goes back to the device that lost", () => {
       assert.doesNotMatch(lines[0], /refed=/, "the winner's own push re-feeds nothing");
       assert.match(lines[1], / refed=habits:0,entries:1,groups:0(\s|$)/);
       assert.equal(count("lww_refeed.entries") - before0, 1);
+    });
+  });
+});
+
+// ----------------------------------------------------------------
+
+describe("Test hooks: the swept-tombstone switch (rehearsal only, lib/testHooks.js)", () => {
+  const { mountTestHooks, testHooksEnabled } = require("../lib/testHooks");
+  const PORT2 = 3098, BASE2 = `http://localhost:${PORT2}`;
+  const DAY = 86400000;
+  const sweep = (base, body, headers = {}) => fetch(`${base}/__test/sweep-tombstones`, {
+    method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body),
+  });
+  const tomb = (userId, id, deletedAt) => db.prepare(
+    "INSERT INTO deletion_tombstones (user_id, entity_type, entity_id, deleted_at) VALUES (?, 'habit', ?, ?)",
+  ).run(userId, id, deletedAt);
+  const tombIds = (userId) => db.prepare("SELECT entity_id FROM deletion_tombstones WHERE user_id = ? ORDER BY entity_id")
+    .all(userId).map((r) => r.entity_id);
+
+  /** m0.spawnServer, but collecting stderr from the first byte: the mount warning is written
+   * before listen(), so a listener added after the server answers /health would miss it. */
+  async function spawnCollecting(env) {
+    const proc = spawn(process.execPath, [path.join(__dirname, "..", "index.js")], {
+      env: serverEnv(PORT2, env), stdio: "pipe",
+    });
+    const out = { proc, stderr: "" };
+    proc.stderr.on("data", (d) => { out.stderr += d; process.stderr.write(d); });
+    await waitForServer(undefined, BASE2);
+    return out;
+  }
+
+  let u;
+  const OLD = m0.uuid(), FRESH = m0.uuid();
+  before(() => {
+    u = m0.user();
+    tomb(u.userId, OLD, new Date(Date.now() - 400 * DAY).toISOString());
+    tomb(u.userId, FRESH, new Date().toISOString());
+  });
+  after(() => m0.cleanup(u.userId));
+
+  it("mounts only for NODE_ENV exactly 'test' AND STRIDE_TEST_HOOKS exactly '1'", () => {
+    const cases = [
+      [{ NODE_ENV: "test", STRIDE_TEST_HOOKS: "1" }, true],
+      [{ NODE_ENV: "production", STRIDE_TEST_HOOKS: "1" }, false],
+      [{ STRIDE_TEST_HOOKS: "1" }, false],                       // pm2 lost NODE_ENV: fails closed
+      [{ NODE_ENV: "development", STRIDE_TEST_HOOKS: "1" }, false],
+      [{ NODE_ENV: "TEST", STRIDE_TEST_HOOKS: "1" }, false],
+      [{ NODE_ENV: "test ", STRIDE_TEST_HOOKS: "1" }, false],
+      [{ NODE_ENV: "test" }, false],
+      [{ NODE_ENV: "test", STRIDE_TEST_HOOKS: "true" }, false],
+      [{ NODE_ENV: "test", STRIDE_TEST_HOOKS: "0" }, false],
+      [{ NODE_ENV: "test", STRIDE_TEST_HOOKS: "" }, false],
+    ];
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      for (const [env, expected] of cases) {
+        assert.equal(testHooksEnabled(env), expected, JSON.stringify(env));
+        const mounted = [];
+        const app = /** @type {any} */ ({ use: (...a) => mounted.push(a[0]) });
+        assert.equal(mountTestHooks(app, { sweepStaleData: () => assert.fail("never called at mount") }, env), expected);
+        assert.deepEqual(mounted, expected ? ["/__test"] : [], JSON.stringify(env));
+      }
+    } finally {
+      console.warn = warn;
+    }
+  });
+
+  it("the suite's own server (NODE_ENV=test, no STRIDE_TEST_HOOKS) answers 404 and sweeps nothing", async () => {
+    const r = await sweep(BASE, { olderThanDays: 0 });
+    assert.equal(r.status, 404);
+    assert.deepEqual(tombIds(u.userId), [OLD, FRESH].sort());
+    assert.doesNotMatch(serverStderr, /\[test-hooks\]/);
+  });
+
+  describe("NODE_ENV=production with STRIDE_TEST_HOOKS=1 (second server)", () => {
+    let server;
+    before(async () => {
+      // As scripts/rehearse_server.sh boots production code: no APM agent traffic from a test.
+      server = await spawnCollecting({
+        NODE_ENV: "production", STRIDE_TEST_HOOKS: "1", DD_TRACE_ENABLED: "false", FRONTEND_ORIGIN: "",
+      });
+    });
+    after(async () => { await m0.stopServer(server && server.proc); });
+
+    it("answers 404 — the same as an unknown path — and sweeps nothing", async () => {
+      const r = await sweep(BASE2, { olderThanDays: 0 });
+      assert.equal(r.status, 404);
+      const unknown = await fetch(`${BASE2}/__test/no-such-route`, { method: "POST" });
+      assert.equal(unknown.status, 404);
+      assert.equal(await r.text().then((t) => t.replace("sweep-tombstones", "X")),
+        await unknown.text().then((t) => t.replace("no-such-route", "X")), "indistinguishable from no route");
+      assert.deepEqual(tombIds(u.userId), [OLD, FRESH].sort());
+      assert.match(server.stderr, /\[config\] FRONTEND_ORIGIN/, "it really booted in production mode");
+      assert.doesNotMatch(server.stderr, /\[test-hooks\]/);
+    });
+  });
+
+  describe("NODE_ENV=test with STRIDE_TEST_HOOKS=1 (second server)", () => {
+    let server;
+    before(async () => {
+      server = await spawnCollecting({ STRIDE_TEST_HOOKS: "1" });
+    });
+    after(async () => { await m0.stopServer(server && server.proc); });
+
+    it("says so loudly in the server log", () => {
+      assert.match(server.stderr, /\[test-hooks\] mounted \/__test/);
+    });
+
+    it("rejects a missing, negative or non-number olderThanDays with 400 and sweeps nothing", async () => {
+      for (const body of [{}, { olderThanDays: -1 }, { olderThanDays: "0" }, { olderThanDays: null }]) {
+        const r = await sweep(BASE2, body);
+        assert.equal(r.status, 400, JSON.stringify(body));
+      }
+      assert.deepEqual(tombIds(u.userId), [OLD, FRESH].sort());
+    });
+
+    it("answers 404 to a request that came through a proxy, and to GET", async () => {
+      assert.equal((await sweep(BASE2, { olderThanDays: 0 }, { "X-Forwarded-For": "203.0.113.7" })).status, 404);
+      assert.equal((await sweep(BASE2, { olderThanDays: 0 }, { "X-Real-IP": "203.0.113.7" })).status, 404);
+      assert.equal((await sweep(BASE2, { olderThanDays: 0 }, { Forwarded: "for=203.0.113.7" })).status, 404);
+      assert.equal((await fetch(`${BASE2}/__test/sweep-tombstones`)).status, 404);
+      assert.deepEqual(tombIds(u.userId), [OLD, FRESH].sort());
+    });
+
+    it("sweeps through the real sweepStaleData: older than the retention goes, newer stays", async () => {
+      const r = await sweep(BASE2, { olderThanDays: 365 });
+      assert.equal(r.status, 200);
+      const json = await r.json();
+      assert.equal(json.ok, true);
+      assert.ok(json.swept.tombstones >= 1, JSON.stringify(json));
+      for (const k of ["sessions", "magicLinks", "usageCounters", "userClients", "snapshotRequests"]) {
+        assert.equal(typeof json.swept[k], "number", `sweepStaleData's own result: ${k}`);
+      }
+      assert.deepEqual(tombIds(u.userId), [FRESH]);
+    });
+
+    it("olderThanDays 0 sweeps every tombstone written before now — the rehearsal's value", async () => {
+      await m0.sleep(5);
+      const r = await sweep(BASE2, { olderThanDays: 0 });
+      assert.equal(r.status, 200);
+      assert.deepEqual(tombIds(u.userId), []);
     });
   });
 });

@@ -22,6 +22,7 @@ final class SyncServiceTests: XCTestCase {
     private var appGroup: ScratchDefaults!
     private var queue: SyncDeletionQueue!
     private var sessions: FakeSyncSessions!
+    private var recovery: ScratchRecoveryLog!
     private var sync: SyncService!
 
     private let owner = SyncSession.accountA.account.id
@@ -42,6 +43,7 @@ final class SyncServiceTests: XCTestCase {
         appGroup = ScratchDefaults("sync.appGroup")
         queue = SyncDeletionQueue(local: local.defaults, shared: appGroup.defaults)
         sessions = FakeSyncSessions(.accountA)
+        recovery = ScratchRecoveryLog()
         sync = makeSync()
     }
 
@@ -49,6 +51,8 @@ final class SyncServiceTests: XCTestCase {
         server.stop()
         local.remove()
         appGroup.remove()
+        recovery.remove()
+        recovery = nil
         sync = nil
         sessions = nil
         queue = nil
@@ -64,7 +68,8 @@ final class SyncServiceTests: XCTestCase {
     private func makeSync(sessions: (any SyncSessionSource)? = nil, bounds: SyncPushBounds = .standard,
                           afterSyncRequest: APISyncTransport.Hook? = nil) -> SyncService {
         SyncService(api: server.makeClient(tokenStore: tokens), defaults: local.defaults, deletionQueue: queue,
-                    sessions: sessions ?? self.sessions, bounds: bounds, afterSyncRequest: afterSyncRequest)
+                    sessions: sessions ?? self.sessions, recoveryLog: recovery.log, bounds: bounds,
+                    afterSyncRequest: afterSyncRequest)
     }
 
     /// A store owned by account A with a live cursor: the next sync pushes first.
@@ -516,7 +521,342 @@ final class SyncServiceTests: XCTestCase {
         XCTAssertNil(sync.ownerConflict)
         XCTAssertEqual(syncRequests.map(\.authorization), ["Bearer tok-B", "Bearer tok-B"])
         XCTAssertNil(syncRequests.first?.query["since"], "B has no cursor: a full pull, not A's")
-        XCTAssertEqual(cursors.cursor(for: owner), recentCursor, "A's cursor is A's")
+        XCTAssertNil(cursors.cursor(for: owner),
+                     "A's cursor went with A's ownership: A full-pulls if it ever owns the store again")
+    }
+
+    // MARK: - Backoff (phase B: per owner, persisted)
+
+    private var backoffStore: SyncBackoffStore { SyncBackoffStore(defaults: local.defaults) }
+
+    private static let pausedBody = #"{"error":"sync_paused","code":"sync_paused","message":"Sync is paused."}"#
+
+    /// The window a paused server gave outlives the process: a relaunched app (a new
+    /// SyncService over the same defaults) shows "paused" at once and its automatic sync sends
+    /// nothing — the slice kept the window in memory, so every device that was opened asked the
+    /// paused server again. Sync Now still goes at once, and its success clears the window.
+    func testTheBackoffWindowSurvivesARelaunchAndSyncNowGoesAtOnce() async {
+        seedOwnerAndCursor()
+        server.on("GET", "/v1/sync/pull", respond: .init(status: 503, body: Self.pausedBody,
+                                                         headers: ["Retry-After": "600"]))
+        await sync.sync(context: context, trigger: .automatic)
+        XCTAssertTrue(sync.isPaused)
+
+        let relaunched = makeSync()
+        XCTAssertTrue(relaunched.isPaused, "read back from the store at launch")
+        XCTAssertEqual(relaunched.backoff?.reason, .paused)
+        XCTAssertEqual(relaunched.nextAutomaticSync.map { $0.timeIntervalSinceNow } ?? 0, 600, accuracy: 5)
+        let before = syncRequests.count
+        let automatic = await relaunched.sync(context: context, trigger: .automatic)
+        XCTAssertFalse(automatic)
+        XCTAssertEqual(syncRequests.count, before, "an automatic sync inside the window sends nothing")
+        XCTAssertFalse(relaunched.isSyncing)
+
+        stubHappyServer()
+        let manual = await relaunched.sync(context: context)
+        XCTAssertTrue(manual, "Sync Now goes at once")
+        XCTAssertNil(relaunched.backoff)
+        XCTAssertFalse(relaunched.isPaused)
+        XCTAssertNil(backoffStore.state(for: owner), "success resets")
+        let again = await relaunched.sync(context: context, trigger: .automatic)
+        XCTAssertTrue(again)
+    }
+
+    /// Account A's window never holds back B: B signing into a device A owned, with nothing to
+    /// lose, adopts it silently and its automatic sync goes; A's window goes with A's queue.
+    func testASilentSwitchLeavesThePreviousOwnersWindowBehind() async {
+        seedOwnerAndCursor()
+        backoffStore.recordFailure(.serverAsked(seconds: 3_600, paused: true), for: owner)
+        sessions.session = .accountB
+        stubHappyServer()
+
+        let ran = await sync.sync(context: context, trigger: .automatic)
+
+        XCTAssertTrue(ran)
+        XCTAssertEqual(syncRequests.map(\.authorization), ["Bearer tok-B", "Bearer tok-B"])
+        XCTAssertNil(backoffStore.state(for: owner), "A's window went with the store")
+        XCTAssertNil(sync.backoff)
+    }
+
+    // MARK: - The file recovery log (phase B)
+
+    /// A habit whose check-in is held here, deleted on another device: the pull archives it into
+    /// the FILE (the app's sink since phase B) before deleting it, and the phase C row can count,
+    /// export and clear it.
+    private func archiveOneHeldHabit() async throws -> Habit {
+        seedOwnerAndCursor()
+        let habit = Habit(name: "Edited offline")
+        context.insert(habit)
+        habit.hold(.rowError)
+        try context.save()
+        server.on("POST", "/v1/sync/push", respond: .ok(SyncStubBodies.pushOK))
+        server.on("GET", "/v1/sync/pull", respond: .ok(SyncStubBodies.pull(deletedHabitIds: [habit.id.uuidString])))
+        let ran = await sync.sync(context: context)
+        XCTAssertTrue(ran)
+        return habit
+    }
+
+    func testAPullArchivesIntoTheFileLogAndSettingsCanCountExportAndClearIt() async throws {
+        _ = try await archiveOneHeldHabit()
+
+        XCTAssertEqual(syncPaths, ["/v1/sync/pull"], "a held row is not pushed")
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<Habit>()), 0, "deleted after archiving")
+        XCTAssertEqual(sync.recoveredEdits?.lines, 1)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: recovery.directory.path)
+            .filter { $0.hasSuffix(".jsonl") }, ["account-7.jsonl"], "the owner's own file")
+
+        let export = try SyncRecoveryLog.decodeExport(try sync.exportRecoveredEdits())
+        XCTAssertEqual(export.accountId, owner)
+        XCTAssertEqual(export.items.map(\.habit?.name), ["Edited offline"])
+        XCTAssertEqual(export.items.first?.reason, .deletedElsewhere)
+        XCTAssertEqual(sync.recoveredEditsFile.accountID, owner)
+        XCTAssertThrowsError(try DataBackup.decode(try sync.exportRecoveredEdits()), "not a backup")
+
+        try sync.clearRecoveredEdits()
+        XCTAssertEqual(sync.recoveredEdits?.lines, 0)
+        XCTAssertEqual(try recovery.log.lineCount(accountID: owner), 0)
+    }
+
+    /// Recovery-log lines are something to lose: an empty store whose log holds A's recovered
+    /// edits is not handed to B silently — the lines would be read for no one again.
+    func testRecoveredEditsCountAsSomethingToLose() async throws {
+        seedOwnerAndCursor()
+        let row = DataBackup.snapshot(habits: [Habit(name: "Recovered")], groups: []).habits[0]
+        try recovery.log.append([SyncRecoveryItem(archivedAt: Date(), reason: .deletedElsewhere, row: .habit(row))],
+                                accountID: owner)
+        sessions.session = .accountB
+        stubHappyServer()
+
+        let ran = await sync.sync(context: context)
+
+        XCTAssertFalse(ran)
+        XCTAssertTrue(server.requests.isEmpty)
+        XCTAssertEqual(sync.ownerConflict?.owner.id, owner)
+    }
+
+    // MARK: - Held rows (phase B API; the rows are phase C UI)
+
+    func testHeldRowsAreListedByReasonAndRestoreAsNewCopiesUploadsTheCopy() async throws {
+        seedOwnerAndCursor()
+        let restored = Habit(name: "Restored, deleted elsewhere")
+        let refused = Habit(name: "Refused")
+        context.insert(restored)
+        context.insert(refused)
+        restored.restoredAt = Date()
+        restored.hold(.tombstoned)
+        refused.hold(.rowError)
+        try context.save()
+        let oldID = restored.id
+
+        let listed = try sync.heldRows(in: context)
+        XCTAssertEqual(listed.map(\.reason), [.rowError, .tombstoned])
+        XCTAssertEqual(listed.map(\.counts.habits), [1, 1])
+        XCTAssertEqual(listed.map(\.canRestoreAsCopies), [false, true])
+
+        stubHappyServer()
+        let outcome = try await sync.restoreHeldRowsAsNewCopies(.tombstoned, in: context)
+
+        XCTAssertEqual(outcome.rows.habits, 1)
+        XCTAssertNotEqual(restored.id, oldID)
+        XCTAssertEqual(outcome.habitIDs[oldID], restored.id)
+        XCTAssertEqual(pushedHabitIDs, [restored.id.uuidString], "the copy went up in the same call")
+        XCTAssertFalse(restored.isPending)
+        XCTAssertTrue(queue.pending().isEmpty, "no deletion queued for the old id")
+        XCTAssertEqual(try sync.heldRows(in: context).map(\.reason), [.rowError])
+    }
+
+    func testDiscardHeldRowsDeletesThemAndQueuesNothing() async throws {
+        seedOwnerAndCursor()
+        let foreign = Habit(name: "Another account's")
+        context.insert(foreign)
+        foreign.records = [HabitRecord(date: HabitCalendar.dayKey(for: Date()))]
+        foreign.hold(.notOwned)
+        try context.save()
+
+        let outcome = try await sync.discardHeldRows(.notOwned, in: context)
+
+        XCTAssertEqual(outcome.rows.habits, 1)
+        XCTAssertEqual(outcome.rows.entries, 1)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<Habit>()), 0)
+        XCTAssertTrue(queue.pending().isEmpty)
+        XCTAssertTrue(server.requests.isEmpty, "nothing to send")
+    }
+
+    // MARK: - Restore's owner (phase B API; the screen is phase C)
+
+    private func backup(from account: SyncAccount?, habit name: String) -> (BackupDocument, UUID) {
+        let habit = Habit(name: name)
+        let doc = DataBackup.snapshot(habits: [habit], groups: [],
+                                      account: account.map { BackupAccount(id: $0.id, email: $0.email) })
+        return (doc, habit.id)
+    }
+
+    /// Review 2: copies restored while signed into B make B the owner, and the next sync pushes
+    /// them with no second sign-in — even on a device A owned (the store was empty).
+    func testRestoringCopiesWhileSignedIntoBMakesBTheOwnerAndTheNextSyncPushesThem() async throws {
+        seedOwnerAndCursor()
+        queue.trackHabit("A's deletion")
+        sessions.session = .accountB
+        let (doc, originalID) = backup(from: SyncSession.accountA.account, habit: "From A")
+
+        let decision = DataExportService.restoreDecision(for: doc, sync: sync)
+        XCTAssertEqual(decision.plan, RestorePlan(identity: .newCopies, owner: BackupAccount(id: "8", email: "b@example.com")))
+        XCTAssertNil(decision.keepIDsInstead)
+        try await DataExportService.restore(doc, into: context, plan: decision.plan, sync: sync, deletionQueue: queue)
+
+        XCTAssertEqual(owners.owner?.id, "8")
+        XCTAssertTrue(queue.pending().isEmpty, "A's queued deletion was A's")
+        stubHappyServer()
+        let ran = await sync.sync(context: context)
+        XCTAssertTrue(ran)
+        XCTAssertNil(sync.ownerConflict)
+        let pushed = pushedHabitIDs
+        XCTAssertEqual(pushed.count, 1)
+        XCTAssertFalse(pushed.contains(originalID.uuidString), "a new copy, not A's id")
+        XCTAssertTrue(syncRequests.allSatisfy { $0.authorization == "Bearer tok-B" })
+    }
+
+    /// Signed out, a restore that names no account leaves the store without an owner, for the
+    /// next sign-in to adopt; naming the file's own account as the next one keeps the ids and
+    /// makes it the owner.
+    func testRestoringWhileSignedOutLeavesNoOwnerUnlessTheUserNamesTheAccount() async throws {
+        seedOwnerAndCursor()
+        sessions.session = nil
+        let (doc, originalID) = backup(from: SyncSession.accountB.account, habit: "From B")
+
+        let unnamed = DataExportService.restoreDecision(for: doc, sync: sync)
+        XCTAssertEqual(unnamed.plan, RestorePlan(identity: .newCopies, owner: nil))
+        let named = DataExportService.restoreDecision(
+            for: doc, next: BackupAccount(id: "8", email: "b@example.com"), sync: sync)
+        XCTAssertEqual(named.plan.identity, .keepIDs)
+
+        try await DataExportService.restore(doc, into: context, plan: unnamed.plan, sync: sync, deletionQueue: queue)
+        XCTAssertNil(owners.owner, "for the next sign-in to adopt")
+        let restored = try XCTUnwrap(try context.fetch(FetchDescriptor<Habit>()).first)
+        XCTAssertNotEqual(restored.id, originalID)
+        XCTAssertNil(restored.restoredAt, "copies are new rows")
+    }
+
+    /// Phase B review R1. A's device, signed out: the user deletes every habit (queued for A),
+    /// then restores a 1.3.0 backup naming no account. The restore leaves no owner and drops A's
+    /// queue — a queue belongs to one account — so A's cursor must go with it. Otherwise A signing
+    /// back in adopts the store and pulls incrementally from that cursor: the habits it deleted
+    /// have not changed since, so they never come back here, while their deletions never reach
+    /// the server — device and account drift apart until the cursor ages out. Without the cursor
+    /// the adoption full-pulls, and the device shows what the account holds.
+    func testARestoreThatDropsTheOwnersQueuedDeletionsAlsoDropsItsCursor() async throws {
+        seedOwnerAndCursor()
+        sessions.session = nil
+        let deletedOffline = Habit(name: "Deleted while signed out")
+        queue.trackHabit(deletedOffline.id.uuidString)
+        let (doc, _) = backup(from: nil, habit: "From a 1.3.0 backup")
+
+        let decision = DataExportService.restoreDecision(for: doc, sync: sync)
+        XCTAssertEqual(decision.plan, RestorePlan(identity: .newCopies, owner: nil))
+        try await DataExportService.restore(doc, into: context, plan: decision.plan, sync: sync, deletionQueue: queue)
+        XCTAssertNil(owners.owner)
+        XCTAssertTrue(queue.pending().isEmpty, "A's queue went with A's ownership")
+        XCTAssertNil(cursors.cursor(for: owner), "and so did the cursor that assumed it")
+
+        sessions.session = .accountA
+        server.on("POST", "/v1/sync/push", respond: .ok(SyncStubBodies.pushOK))
+        server.on("GET", "/v1/sync/pull", respond: .ok(SyncStubBodies.pull(habits: [SyncStubBodies.habit(deletedOffline)])))
+        let ran = await sync.sync(context: context)
+
+        XCTAssertTrue(ran)
+        XCTAssertEqual(owners.owner?.id, owner, "A adopted the owner-less store")
+        XCTAssertEqual(syncPaths.first, "/v1/sync/pull")
+        XCTAssertNil(syncRequests.first?.query["since"], "a full pull, not A's pre-restore cursor")
+        XCTAssertEqual(pushedHabitIDs.count, 1, "the copy went up")
+        let ids = Set(try context.fetch(FetchDescriptor<Habit>()).map(\.id))
+        XCTAssertTrue(ids.contains(deletedOffline.id), "the account still holds it, and now so does the device")
+        XCTAssertEqual(ids.count, 2)
+    }
+
+    /// The same drop on a restore made signed in: the store changes hands (A → B), and A's cursor
+    /// goes with A's queue, so A full-pulls if it ever owns the store again.
+    func testARestoreIntoAnotherAccountLeavesThePreviousOwnerNoCursor() async throws {
+        seedOwnerAndCursor()
+        queue.trackHabit("A's deletion")
+        sessions.session = .accountB
+        cursors.setCursor(recentCursor, for: SyncSession.accountB.account.id)   // from an earlier hand-over
+        let (doc, _) = backup(from: SyncSession.accountA.account, habit: "From A")
+
+        try await DataExportService.restore(doc, into: context,
+                                            plan: DataExportService.restoreDecision(for: doc, sync: sync).plan,
+                                            sync: sync, deletionQueue: queue)
+
+        XCTAssertEqual(owners.owner?.id, SyncSession.accountB.account.id)
+        XCTAssertNil(cursors.cursor(for: owner))
+        XCTAssertNil(cursors.cursor(for: SyncSession.accountB.account.id),
+                     "a cursor exists only for the owner of the store it described")
+    }
+
+    /// A backup records the store's owner — signed in or not — so a restore can tell whose ids
+    /// the file carries. Settings' `BackupJSONFile(container:)` picks it up by default.
+    func testBackupsRecordTheStoresOwner() throws {
+        owners.set(SyncOwner(SyncSession.accountA.account))
+        let account = DataExportService.storeOwnerAccount(defaults: local.defaults)
+        XCTAssertEqual(account, BackupAccount(id: "7", email: "a@example.com"))
+        let data = try DataExportService.backupJSONData(from: context, account: account)
+        XCTAssertEqual(try DataBackup.decode(data).accountId, "7")
+        owners.clear()
+        XCTAssertNil(DataExportService.storeOwnerAccount(defaults: local.defaults))
+    }
+
+    // MARK: - "Start from this account's data" (phase B API; the account screen is phase C)
+
+    func testStartFromThisAccountsDataErasesAsDataAndEverythingOfItsThenFullPullsB() async throws {
+        seedOwnerAndCursor()
+        context.insert(Habit(name: "A's habit"))
+        try context.save()
+        queue.trackHabit("A's deletion")
+        let row = DataBackup.snapshot(habits: [Habit(name: "A's recovered edit")], groups: []).habits[0]
+        try recovery.log.append([SyncRecoveryItem(archivedAt: Date(), reason: .deletedElsewhere, row: .habit(row))],
+                                accountID: owner)
+        backoffStore.recordFailure(.transient, for: owner)
+        cursors.setCursor(recentCursor, for: "8")   // B synced on this device once, long ago
+        sessions.session = .accountB
+        let fromB = Habit(name: "B's habit")
+        server.on("GET", "/v1/sync/pull", respond: .ok(SyncStubBodies.pull(habits: [SyncStubBodies.habit(fromB)])))
+        server.on("POST", "/v1/sync/push", respond: .ok(SyncStubBodies.pushOK))
+
+        let blocked = await sync.sync(context: context)
+        XCTAssertFalse(blocked)
+        let conflict = try XCTUnwrap(sync.ownerConflict)
+        XCTAssertTrue(server.requests.isEmpty)
+
+        let ran = await sync.startFromSignedInAccountsData(conflict, in: context)
+
+        XCTAssertTrue(ran)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Habit>()).map(\.name), ["B's habit"])
+        XCTAssertEqual(owners.owner?.id, "8")
+        XCTAssertNil(sync.ownerConflict)
+        XCTAssertTrue(queue.pending().isEmpty)
+        XCTAssertEqual(try recovery.log.lineCount(accountID: owner), 0)
+        XCTAssertNil(backoffStore.state(for: owner))
+        XCTAssertNil(cursors.cursor(for: owner))
+        XCTAssertEqual(syncPaths, ["/v1/sync/pull", "/v1/sync/pull"], "nothing of A's pushed")
+        XCTAssertNil(syncRequests.first?.query["since"], "a full pull, not B's old cursor")
+        XCTAssertTrue(syncRequests.allSatisfy { $0.authorization == "Bearer tok-B" })
+    }
+
+    /// The screen's choice applies only to the conflict it showed: after a sign-out (or another
+    /// sign-in) it erases nothing.
+    func testStartFromThisAccountsDataDoesNothingOnceTheConflictIsGone() async throws {
+        seedOwnerAndCursor()
+        context.insert(Habit(name: "A's habit"))
+        try context.save()
+        sessions.session = .accountB
+        await sync.sync(context: context)
+        let conflict = try XCTUnwrap(sync.ownerConflict)
+        sessions.session = nil
+
+        let ran = await sync.startFromSignedInAccountsData(conflict, in: context)
+
+        XCTAssertFalse(ran)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<Habit>()), 1)
+        XCTAssertEqual(owners.owner?.id, owner)
     }
 
     // MARK: - The run binding (review 2)

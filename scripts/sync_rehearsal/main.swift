@@ -29,6 +29,12 @@ func main() async -> Int32 {
         ("S11 run binding", scenarios.runBinding),
         ("S13 untap + re-tap", scenarios.untapAndReTap),
         ("S14 migrated marks proof", scenarios.migratedMarksProof),
+        ("S15 swept tombstone", scenarios.sweptTombstone),
+        ("S16 recovery-log export", scenarios.recoveryLogExport),
+        ("S17 restore as copies into B", scenarios.restoreAsCopiesIntoAnotherAccount),
+        ("S18 restored + deleted elsewhere", scenarios.restoredHabitDeletedElsewhere),
+        ("S19 invalid_payload backoff", scenarios.invalidPayloadBackoff),
+        ("S20 pause + revoked session", scenarios.pauseAndRevokedSession),
     ]
     if Rehearsal.env["STRIDE_REHEARSAL_LARGE"] == "1" {
         plan.append(("S12 20,000 entries (timed)", scenarios.largeAccount))
