@@ -421,6 +421,14 @@ from what it took, and record the new number in the progress log before building
   pull 1.3.0 from review and resubmit it as build 19 with only that fix, so M2 builds from 20.
   The Gemini review of the slice failed (agy headless denied its file-reading tool); Codex is
   queued after its usage reset.
+- 2026-09-29 — **Gemini 3.1 Pro review of the slice** (via the gemini MCP bridge on a throwaway copy
+  of `abc8bac`, since `agy`'s headless mode denied its file-reading tool): categories 1, 2 and 5
+  (data loss, acknowledgement, migration) clean; three findings, all refuted by the code — the
+  "ms stamp sorts below whole seconds" loop (every stamp is normalised by `isoOrNull` →
+  `toISOString`, fixed width, before any comparison), the token in the run binding (session tokens
+  never refresh client-side; a change means another sign-in, which must abort the run), and the
+  `liveRecord` fetch returning another context's deleted record (covered by
+  `testAnUntapSavedInTheWidgetsContextDoesNotLeaveAGhostForTheApp`). Codex runs after its reset.
 - 2026-09-28 — owner decision on the migrated-marks question (review R1 of the slice): **the first
   full pull proves the account.** A 1.3.0 session that expires keeps `stride_last_sync_time`, so
   "the device signed out" cannot be inferred from the key. The migration marks a store's rows
