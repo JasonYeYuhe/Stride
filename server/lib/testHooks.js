@@ -52,7 +52,7 @@ function loopbackOnly(req, res, next) {
 /**
  * Mount the test hooks on `app` when, and only when, the environment allows it.
  * @param {import('express').Express} app
- * @param {{ sweepStaleData: (opts?: { tombstoneRetentionDays?: number }) => object }} db
+ * @param {{ sweepStaleData: (opts?: { tombstoneRetentionDays?: number, belowCursorHorizon?: boolean }) => object }} db
  * @param {NodeJS.ProcessEnv} [env]
  * @returns {boolean} whether anything was mounted
  */
@@ -68,7 +68,8 @@ function mountTestHooks(app, db, env = process.env) {
     if (typeof days !== "number" || !Number.isFinite(days) || days < 0) {
       return res.status(400).json({ error: "olderThanDays must be a number >= 0" });
     }
-    const swept = db.sweepStaleData({ tombstoneRetentionDays: days });
+    // Any age: the rehearsal sweeps tombstones minutes old (db.js MIN_TOMBSTONE_RETENTION_DAYS).
+    const swept = db.sweepStaleData({ tombstoneRetentionDays: days, belowCursorHorizon: true });
     res.json({ ok: true, swept });
   });
   app.use("/__test", router);

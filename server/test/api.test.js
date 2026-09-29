@@ -7350,7 +7350,7 @@ describe("sweepStaleData GC", () => {
       "INSERT INTO deletion_tombstones (user_id, entity_type, entity_id, deleted_at) VALUES (?, 'habit', ?, ?)"
     ).run(userId, "fresh-tomb", freshIso);
 
-    appDb.sweepStaleData({ tombstoneRetentionDays: 90 });
+    appDb.sweepStaleData({ tombstoneRetentionDays: 90, belowCursorHorizon: true });
 
     const old = db.prepare("SELECT 1 FROM deletion_tombstones WHERE entity_id = ?").get("old-tomb");
     const fresh = db.prepare("SELECT 1 FROM deletion_tombstones WHERE entity_id = ?").get("fresh-tomb");
@@ -8847,6 +8847,34 @@ describe("M0 rate limits (second server with limits switched on)", () => {
     assert.ok(Number(limited.headers.get("retry-after")) > 0);
     assert.equal((await m0.req("GET", "/v1/sync/pull", { token: b.token, base: BASE2 })).status, 200,
       "a signed-in device behind the same address is not in that bucket");
+  });
+});
+
+describe("sweepStaleData never sweeps a tombstone a cursor may still need (data-safety-1 v2)", () => {
+  const appDb = require("../db");
+  let userId;
+  before(() => { userId = createTestUser().userId; });
+  after(() => m0.cleanup(userId));
+
+  it("refuses a retention under 365 days unless the caller says belowCursorHorizon, and sweeps nothing", () => {
+    const tomb = m0.uuid();
+    db.prepare("INSERT INTO deletion_tombstones (user_id, entity_type, entity_id, deleted_at) VALUES (?, 'entry', ?, ?)")
+      .run(userId, tomb, new Date(Date.now() - 200 * 86400000).toISOString());
+    for (const days of [0, 90, 364]) {
+      assert.throws(() => appDb.sweepStaleData({ tombstoneRetentionDays: days }), /kept at least 365 days/);
+    }
+    assert.ok(db.prepare("SELECT 1 FROM deletion_tombstones WHERE entity_id = ?").get(tomb), "nothing swept");
+  });
+
+  it("sweeps at 365 days and more: a 400-day-old tombstone goes, a 200-day-old one stays", () => {
+    const old = m0.uuid();
+    const young = m0.uuid();
+    const insert = db.prepare("INSERT INTO deletion_tombstones (user_id, entity_type, entity_id, deleted_at) VALUES (?, 'entry', ?, ?)");
+    insert.run(userId, old, new Date(Date.now() - 400 * 86400000).toISOString());
+    insert.run(userId, young, new Date(Date.now() - 200 * 86400000).toISOString());
+    appDb.sweepStaleData({ tombstoneRetentionDays: 365 });
+    assert.equal(db.prepare("SELECT 1 FROM deletion_tombstones WHERE entity_id = ?").get(old), undefined, "older than 365 days: swept");
+    assert.ok(db.prepare("SELECT 1 FROM deletion_tombstones WHERE entity_id = ?").get(young), "younger: kept");
   });
 });
 

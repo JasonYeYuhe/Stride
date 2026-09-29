@@ -270,6 +270,17 @@ const USAGE_RETENTION_DAYS = 400;
 const ANSWERED_SNAPSHOT_RETENTION_DAYS = 90;
 
 /**
+ * The youngest a deletion tombstone may be swept at: every cursor an app may still pull with
+ * (routes/sync.js CURSOR_RETENTION_DAYS, 365). Past that age a pull is `cursor_expired`, and a
+ * 1.3.1 app's first full pull after the update gets `deletionsSince: {complete: false}`. Swept
+ * younger, a deletion would be missing from a list the server calls complete, and that app would
+ * resend the row as one the 1.3.0 server refused: a habit deleted on another device back in the
+ * account (review data-safety-1, routes/sync.js `deletionsSince`). Only the rehearsal's test hook
+ * and the server tests go below it, by saying so (`belowCursorHorizon`).
+ */
+const MIN_TOMBSTONE_RETENTION_DAYS = 365;
+
+/**
  * Garbage-collect expired sessions and magic links.
  *
  * Deletion tombstones are NOT swept unless a caller asks (`tombstoneRetentionDays`). They
@@ -285,18 +296,22 @@ const ANSWERED_SNAPSHOT_RETENTION_DAYS = 90;
  * What turns sweeping back on: a 426 minimum-version floor that retires every app <= 1.3.0,
  * i.e. a floor of at least 1.3.1 (decided from the usage report's < 1.3.1 cohort, not a date).
  * After that, sweep at CURSOR_RETENTION_DAYS (365, routes/sync.js) — every client left handles
- * cursor_expired.
+ * cursor_expired. Never younger: see MIN_TOMBSTONE_RETENTION_DAYS, which this function enforces.
  *
  * Also drops usage counters and client-cohort rows (metrics.js) older than
  * USAGE_RETENTION_DAYS: long enough to compare a year against the year before, short enough
  * that a departed user's app version does not sit here forever. And snapshot requests answered
  * more than ANSWERED_SNAPSHOT_RETENTION_DAYS ago (pending ones stay until answered or cleared).
  *
- * @param {{ tombstoneRetentionDays?: number }} [opts] retention in days; omit to keep all tombstones
+ * @param {{ tombstoneRetentionDays?: number, belowCursorHorizon?: boolean }} [opts] retention in
+ *   days, omitted to keep all tombstones; `belowCursorHorizon` only from the test hook and tests
  * @returns {{ tombstones: number, sessions: number, magicLinks: number, usageCounters: number, userClients: number, snapshotRequests: number }}
  */
 function sweepStaleData(opts = {}) {
   const retentionDays = opts.tombstoneRetentionDays;
+  if (retentionDays !== undefined && retentionDays < MIN_TOMBSTONE_RETENTION_DAYS && !opts.belowCursorHorizon) {
+    throw new Error(`sweepStaleData: tombstones are kept at least ${MIN_TOMBSTONE_RETENTION_DAYS} days (asked ${retentionDays})`);
+  }
   const nowMs = Date.now();
 
   const sweep = db.transaction(() => {
