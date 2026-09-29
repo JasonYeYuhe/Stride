@@ -263,6 +263,14 @@ enum SyncPushPlanner {
     ///
     /// Asks the store for the rows with `needsResend` set rather than reading every row: this
     /// runs at the start of every sync.
+    ///
+    /// Counts only a row the planner could send (review delivery-2). A Full resync marks every
+    /// record, including the check-ins of a held habit and an orphan no habit owns; `plan` never
+    /// sends either (it reaches records through habits and skips a held habit's), so nothing
+    /// acknowledges them and their flag stays. Counted, they made every later sync pull before
+    /// the push as well as after it, for as long as the hold lasted — for an orphan, for good.
+    /// Their flag is kept, not cleared: once the hold is lifted the resend is still owed, and
+    /// `SyncCopies.reidentify` clears it for rows that become new copies.
     static func hasForcedResend(in context: ModelContext) throws -> Bool {
         func any<Row: SyncDeliverable>(_ rows: [Row]) -> Bool { rows.contains { $0.needsResend && !$0.isHeld } }
         if any(try context.fetch(FetchDescriptor<HabitGroup>(predicate: #Predicate { $0.needsResend == true }))) {
@@ -271,7 +279,17 @@ enum SyncPushPlanner {
         if any(try context.fetch(FetchDescriptor<Habit>(predicate: #Predicate { $0.needsResend == true }))) {
             return true
         }
-        return any(try context.fetch(FetchDescriptor<HabitRecord>(predicate: #Predicate { $0.needsResend == true })))
+        let marked = Set(try context.fetch(FetchDescriptor<HabitRecord>(predicate: #Predicate { $0.needsResend == true }))
+            .map(\.persistentModelID))
+        guard !marked.isEmpty else { return false }
+        // The planner's walk: a record's habit is known only from the habit's side
+        // (`Habit.records` has no inverse), and records are matched by identifier, so it stops at
+        // the first sendable one — after a Full resync that is the first habit's. `SyncStatusCounts`
+        // leaves the same rows out of its count.
+        for habit in try context.fetch(FetchDescriptor<Habit>()) where !habit.isHeld {
+            if habit.records.contains(where: { marked.contains($0.persistentModelID) && !$0.isHeld }) { return true }
+        }
+        return false
     }
 
     // MARK: Pack
@@ -581,7 +599,12 @@ enum SyncPushResolver {
             var facts = SyncRowFacts(isRestored: rows.contains { $0.restoredAt != nil })
             if ref.kind == .entry, case let .entry(entry) = item.body {
                 let habitRef = SyncRowRef(kind: .habit, id: SyncReconciler.canonicalID(entry.habitId))
-                facts.habitAcknowledged = index.rows(habitRef).contains { $0.hasBeenDelivered }
+                let habitRows = index.rows(habitRef)
+                facts.habitAcknowledged = habitRows.contains { $0.hasBeenDelivered }
+                // Read after the habit's own answer: habits come before entries in a chunk, as in
+                // the plan, so a hold this loop has just applied is seen (`hold` leaves
+                // `restoredAt`), as is one from an earlier sync (review delivery-1).
+                facts.habitKeptForRestore = habitRows.contains { $0.restoredAt != nil || $0.activeHold == .tombstoned }
                 facts.priorUnknownHabitStrikes = strikes.strikes(for: ref.id)
             }
 

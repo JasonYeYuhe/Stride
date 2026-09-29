@@ -90,8 +90,8 @@ final class SyncBackoffTests: XCTestCase {
                        "no Retry-After: the curve")
     }
 
-    /// Other 5xx and no HTTP answer back off on the same curve; they differ only in the reason
-    /// the status line will show ("offline" vs an error).
+    /// Other 5xx and no HTTP answer both back off; the reason tells the status line ("offline"
+    /// vs a count) and the window apart (`testNoAnswerWaitsAboutAMinuteAndNeverDoubles`).
     func testTransientSplitsOfflineFromServerErrors() {
         XCTAssertEqual(store.recordFailure(.transient, answer: .noAnswer, for: "A").reason, .offline)
         XCTAssertEqual(store.recordFailure(.transient, answer: Self.serverDown, for: "B").reason, .serverError)
@@ -99,6 +99,39 @@ final class SyncBackoffTests: XCTestCase {
         XCTAssertFalse(SyncBackoffReason.offline.showsSyncPaused)
         XCTAssertFalse(SyncBackoffReason.serverError.showsSyncPaused)
         XCTAssertFalse(SyncBackoffReason.clientBug.showsSyncPaused)
+    }
+
+    /// Review critic-2: no HTTP answer reached the server, so the window it sets spares nothing.
+    /// It is the curve's first step, about a minute, however many launches met no network —
+    /// after a day without signal the next launch past that minute syncs (it waited up to 6 h
+    /// before). It does not advance the count either, so the first server answer after the
+    /// offline stretch starts near the bottom of the curve, not at the 6 h cap.
+    func testNoAnswerWaitsAboutAMinuteAndNeverDoubles() {
+        for n in 1...10 {
+            let state = store.recordFailure(.transient, answer: .noAnswer, for: "A")
+            XCTAssertEqual(state.reason, .offline)
+            XCTAssertEqual(state.delay, 60, "failure \(n)")
+            XCTAssertEqual(state.consecutiveFailures, 1, "failure \(n)")
+            XCTAssertFalse(store.mayRun(.automatic, ownerID: "A"))
+            advance(state.delay)
+            XCTAssertTrue(store.mayRun(.automatic, ownerID: "A"), "the next launch after a minute runs")
+        }
+        draw = 1
+        XCTAssertEqual(store.recordFailure(.transient, answer: .noAnswer, for: "A").delay, 72, accuracy: 1e-9,
+                       "jittered like the curve's first step, never past it")
+
+        draw = 0.5
+        let serverDown = store.recordFailure(.transient, answer: Self.serverDown, for: "A")
+        XCTAssertEqual(serverDown.consecutiveFailures, 2)
+        XCTAssertEqual(serverDown.delay, 120, "a real server answer doubles from where the server's episode was")
+
+        // An outage the device also lost its signal in: the server's count is carried through,
+        // so its next answer keeps doubling.
+        store.recordFailure(.transient, answer: Self.serverDown, for: "A")
+        let offline = store.recordFailure(.transient, answer: .noAnswer, for: "A")
+        XCTAssertEqual(offline.consecutiveFailures, 3)
+        XCTAssertEqual(offline.delay, 60)
+        XCTAssertEqual(store.recordFailure(.transient, answer: Self.serverDown, for: "A").delay, 480)
     }
 
     /// One failing episode keeps doubling across reasons: a rate limit then an outage does not
@@ -242,9 +275,12 @@ final class SyncBackoffTests: XCTestCase {
         defaults.set(["A": ["failures": Int.max, "reason": "offline", "failedAt": clock.timeIntervalSince1970, "delay": 60.0]],
                      forKey: SyncBackoffStore.key)
         XCTAssertEqual(store.state(for: "A")?.consecutiveFailures, SyncBackoffState.countCap)
-        let next = store.recordFailure(.transient, answer: .noAnswer, for: "A")
+        let next = store.recordFailure(.transient, answer: Self.serverDown, for: "A")
         XCTAssertEqual(next.consecutiveFailures, SyncBackoffState.countCap)
         XCTAssertEqual(next.delay, SyncBackoffPolicy.maximum)
+        let offline = store.recordFailure(.transient, answer: .noAnswer, for: "A")
+        XCTAssertEqual(offline.consecutiveFailures, SyncBackoffState.countCap)
+        XCTAssertEqual(offline.delay, 60, "no answer waits a minute even at the top of the count")
     }
 
     // MARK: - Recording run outcomes
@@ -281,8 +317,9 @@ final class SyncBackoffTests: XCTestCase {
 
     /// The engine's own stop reasons, from a fake server, land as the table says: 503
     /// `sync_paused` with `retryAfterSeconds` → that window, "sync paused"; a lost network →
-    /// offline on the curve; `invalid_payload` → client bug, doubling; the next clean run clears
-    /// it. Rows stay pending throughout (the engine's rule; backing off holds nothing).
+    /// offline, about a minute, the count unchanged (review critic-2); `invalid_payload` → client
+    /// bug, doubling; the next clean run clears it. Rows stay pending throughout (the engine's
+    /// rule; backing off holds nothing).
     func testEngineOutcomesDriveTheState() async throws {
         let server = FakeSyncServer()
         server.validTokens = ["token-A"]
@@ -303,16 +340,16 @@ final class SyncBackoffTests: XCTestCase {
         let o2 = await device.sync()
         let s2 = try XCTUnwrap(store.record(o2, for: "A"))
         XCTAssertEqual(s2.reason, .offline)
-        XCTAssertEqual(s2.consecutiveFailures, 2)
-        XCTAssertEqual(s2.delay, 120)
+        XCTAssertEqual(s2.consecutiveFailures, 1)
+        XCTAssertEqual(s2.delay, 60)
 
         let invalid = try JSONSerialization.data(withJSONObject: ["error": "invalid_payload", "code": "invalid_payload"])
         server.scriptPush(at: 1, SyncTransportResponse(status: 400, body: invalid))
         let o3 = await device.sync()
         let s3 = try XCTUnwrap(store.record(o3, for: "A"))
         XCTAssertEqual(s3.reason, .clientBug)
-        XCTAssertEqual(s3.consecutiveFailures, 3)
-        XCTAssertEqual(s3.delay, 240)
+        XCTAssertEqual(s3.consecutiveFailures, 2)
+        XCTAssertEqual(s3.delay, 120)
         XCTAssertEqual(try device.pendingCount(), 2, "nothing held, nothing acknowledged")
 
         let o4 = await device.sync()

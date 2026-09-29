@@ -71,6 +71,21 @@ final class SyncAnswersTests: XCTestCase {
         for reason in SyncSkipReason.allCases { XCTAssertTrue(covered.contains(reason.rawValue), reason.rawValue) }
     }
 
+    /// Review delivery-1: a check-in made after a restore has no `restoredAt` of its own, but its
+    /// habit is kept for the restore-as-copies choice. `tombstoned_habit` keeps it pending (it
+    /// moves with the habit, or goes with it on Discard) instead of dropping it. Its own
+    /// `tombstoned` still drops it: the check-in itself was deleted elsewhere.
+    func testATombstonedHabitsAnswerKeepsACheckInWhoseHabitIsKeptForRestore() {
+        let kept = SyncRowFacts(habitKeptForRestore: true)
+        XCTAssertEqual(SyncAnswers.rowAction(skipped: true, reason: "tombstoned_habit", facts: kept), .keepPending)
+        XCTAssertEqual(SyncAnswers.rowAction(skipped: true, reason: "tombstoned", facts: kept), .drop)
+        XCTAssertEqual(SyncAnswers.rowAction(skipped: true, reason: "tombstoned_habit",
+                                             facts: SyncRowFacts(isRestored: true, habitKeptForRestore: true)),
+                       .hold(.tombstoned), "a restored check-in is still held")
+        XCTAssertEqual(SyncAnswers.rowAction(skipped: true, reason: "tombstoned_habit", facts: SyncRowFacts()), .drop,
+                       "a habit nobody restored: delete wins")
+    }
+
     /// "An entry still `unknown_habit` three syncs after its habit was acknowledged is held."
     /// Before the habit is acknowledged, no strike counts: the habit's chunk may not have landed.
     func testUnknownHabitIsHeldOnTheThirdStrikeAfterItsHabitWasAcknowledged() {

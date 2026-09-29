@@ -16,8 +16,11 @@ extension SyncStatusLine {
     /// redrawn when a sync ends, the backoff changes or the session goes. The counts are the
     /// view's (`SyncStatusCounts`, refreshed on saves and when a sync ends), because reading the
     /// store on every render is not free.
+    ///
+    /// `now` is when the line is drawn; tests pass a later one to see the window lapse.
     @MainActor
-    static func today(auth: AuthService, sync: SyncService, counts: SyncStatusCounts.Counts) -> SyncStatusLine? {
+    static func today(auth: AuthService, sync: SyncService, counts: SyncStatusCounts.Counts,
+                      now: Date = Date()) -> SyncStatusLine? {
         #if DEBUG
         if let scenario = launchScenario { return scenario }
         #endif
@@ -28,6 +31,9 @@ extension SyncStatusLine {
             needsReauth: sync.needsReauth || auth.sessionExpired,
             ownerConflict: sync.ownerConflict != nil,
             backoff: sync.backoff?.reason,
+            // The gate's own test (`SyncBackoffStore.decision`), so "Offline" lasts exactly as
+            // long as automatic syncs are held back by that failure (review critic-2).
+            retryAt: sync.backoff.flatMap { $0.isWaiting(at: now) ? $0.retryAt : nil },
             lastSync: SyncTimestamp.parse(sync.lastSyncTime),
             pending: counts.pending,
             held: counts.held))
@@ -45,7 +51,7 @@ extension SyncStatusLine {
         switch arguments[index + 1] {
         case "signInAgain", "reauth": return .signInAgain
         case "paused": return .paused
-        case "offline": return .offline(waiting: 3)
+        case "offline": return .offline(waiting: 3, until: .distantFuture)
         case "waiting": return .waiting(3)
         case "held": return .held(2)
         case "synced": return .synced(Date().addingTimeInterval(-120))
@@ -66,10 +72,23 @@ struct SyncStatusRow: View {
             SignInAgainRow()
         case .paused:
             SyncStatusLabel(systemImage: "pause.circle") { Text("Sync paused") }
-        case .offline(let count):
-            SyncStatusLabel(systemImage: "icloud.slash") { Text("Offline — \(count) changes waiting") }
+        case .offline(let count, let until):
+            // Once the window lapses, worded as `make` would word it from then on, a count
+            // (review critic-2): Today may not be redrawn before the next foreground, and
+            // "Offline" would stay up on a device that is online again. Checked once a minute,
+            // not at `until`: an explicit schedule starts from its FIRST date even when that is
+            // in the future, and never fired its last one (both measured, macOS 27) — so
+            // `.explicit([until])` drew the count at once, and a past date plus `until` never
+            // flipped. `.everyMinute` behaves as documented; the flip lags by under a minute.
+            TimelineView(.everyMinute) { context in
+                if max(context.date, Date()) < until {
+                    SyncStatusLabel(systemImage: "icloud.slash") { Text("Offline — \(count) changes waiting") }
+                } else {
+                    Self.waiting(count)
+                }
+            }
         case .waiting(let count):
-            SyncStatusLabel(systemImage: "arrow.triangle.2.circlepath") { Text("\(count) changes waiting to sync") }
+            Self.waiting(count)
         case .held(let count):
             SyncStatusLabel(systemImage: "exclamationmark.circle", tint: .orange) {
                 Text("\(count) changes can't sync — see Settings")
@@ -84,6 +103,11 @@ struct SyncStatusRow: View {
                 }
             }
         }
+    }
+
+    /// "3 changes waiting to sync": `.waiting`, and `.offline` once its window has lapsed.
+    private static func waiting(_ count: Int) -> some View {
+        SyncStatusLabel(systemImage: "arrow.triangle.2.circlepath") { Text("\(count) changes waiting to sync") }
     }
 }
 

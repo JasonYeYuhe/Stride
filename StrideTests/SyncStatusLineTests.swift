@@ -14,12 +14,15 @@ final class SyncStatusLineTests: XCTestCase {
 
     private let lastSync = Date(timeIntervalSince1970: 1_790_000_000)
 
+    /// The window's end while it is still open (`SyncStatusInput.retryAt`).
+    private let retryAt = Date(timeIntervalSince1970: 1_790_000_600)
+
     private func input(
         signedIn: Bool = true, needsReauth: Bool = false, ownerConflict: Bool = false,
-        backoff: SyncBackoffReason? = nil, lastSync: Date? = nil, pending: Int = 0, held: Int = 0
+        backoff: SyncBackoffReason? = nil, retryAt: Date? = nil, lastSync: Date? = nil, pending: Int = 0, held: Int = 0
     ) -> SyncStatusInput {
         SyncStatusInput(signedIn: signedIn, needsReauth: needsReauth, ownerConflict: ownerConflict,
-                        backoff: backoff, lastSync: lastSync, pending: pending, held: held)
+                        backoff: backoff, retryAt: retryAt, lastSync: lastSync, pending: pending, held: held)
     }
 
     // MARK: - The mapping
@@ -42,7 +45,8 @@ final class SyncStatusLineTests: XCTestCase {
     /// Signed into another account with something to lose: the account screen of that sign-in
     /// settles it, and no sync has run, so Today says nothing about sync.
     func testAnOwnerConflictShowsNothing() {
-        XCTAssertNil(SyncStatusLine.make(input(ownerConflict: true, backoff: .offline, lastSync: lastSync, pending: 3, held: 1)))
+        XCTAssertNil(SyncStatusLine.make(input(ownerConflict: true, backoff: .offline, retryAt: retryAt, lastSync: lastSync,
+                                               pending: 3, held: 1)))
     }
 
     /// 429 and 503 `sync_paused` are the server asking this device to wait: "Sync paused", with
@@ -59,9 +63,21 @@ final class SyncStatusLineTests: XCTestCase {
     }
 
     func testOfflineWithChangesWaitingCountsThem() {
-        XCTAssertEqual(SyncStatusLine.make(input(backoff: .offline, lastSync: lastSync, pending: 3)), .offline(waiting: 3))
-        XCTAssertEqual(SyncStatusLine.make(input(backoff: .offline, lastSync: lastSync, pending: 3, held: 2)), .offline(waiting: 3),
-                       "the offline count is the more immediate news")
+        XCTAssertEqual(SyncStatusLine.make(input(backoff: .offline, retryAt: retryAt, lastSync: lastSync, pending: 3)),
+                       .offline(waiting: 3, until: retryAt))
+        XCTAssertEqual(SyncStatusLine.make(input(backoff: .offline, retryAt: retryAt, lastSync: lastSync, pending: 3, held: 2)),
+                       .offline(waiting: 3, until: retryAt), "the offline count is the more immediate news")
+    }
+
+    /// Review critic-2: "Offline" is what the last run met, and the reason stays until a run
+    /// succeeds. Once the window it set has lapsed, a launch or foreground may run again, so the
+    /// line says only what is known now — changes waiting — not "Offline" on a device that may
+    /// be online again.
+    func testOfflineOnceItsWindowHasLapsedReadsAsChangesWaiting() {
+        XCTAssertEqual(SyncStatusLine.make(input(backoff: .offline, lastSync: lastSync, pending: 3)), .waiting(3))
+        XCTAssertEqual(SyncStatusLine.make(input(backoff: .offline, lastSync: lastSync, pending: 3, held: 2)), .waiting(3))
+        XCTAssertEqual(SyncStatusLine.make(input(backoff: .offline, lastSync: lastSync, held: 2)), .held(2),
+                       "nothing waiting: as before")
     }
 
     /// Offline with nothing to send is not news: every change is on the server, and the last
@@ -75,6 +91,8 @@ final class SyncStatusLineTests: XCTestCase {
     func testServerErrorsAndClientBugsAreACountNotAnError() {
         for reason in [SyncBackoffReason.serverError, .clientBug] {
             XCTAssertEqual(SyncStatusLine.make(input(backoff: reason, lastSync: lastSync, pending: 2)), .waiting(2), "\(reason)")
+            XCTAssertEqual(SyncStatusLine.make(input(backoff: reason, retryAt: retryAt, lastSync: lastSync, pending: 2)), .waiting(2),
+                           "\(reason), window open")
             XCTAssertEqual(SyncStatusLine.make(input(backoff: reason, lastSync: lastSync)), .synced(lastSync), "\(reason), nothing waiting")
         }
     }
@@ -99,9 +117,11 @@ final class SyncStatusLineTests: XCTestCase {
     /// the backoff would show. None of them is "sign in" (only a 401 is).
     func testEveryBackoffReasonHasAMapping() {
         for reason in SyncBackoffReason.allCases {
-            let line = SyncStatusLine.make(input(backoff: reason, lastSync: lastSync, pending: 1))
-            XCTAssertNotNil(line, "\(reason)")
-            XCTAssertNotEqual(line, .signInAgain, "\(reason)")
+            for retryAt in [nil, retryAt] {
+                let line = SyncStatusLine.make(input(backoff: reason, retryAt: retryAt, lastSync: lastSync, pending: 1))
+                XCTAssertNotNil(line, "\(reason)")
+                XCTAssertNotEqual(line, .signInAgain, "\(reason)")
+            }
         }
     }
 

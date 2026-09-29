@@ -73,11 +73,11 @@ final class TodaySyncStatusTests: XCTestCase {
         try await super.tearDown()
     }
 
-    /// What Today would draw now, with the counts it would read.
-    private func line() throws -> SyncStatusLine? {
+    /// What Today would draw at `now`, with the counts it would read.
+    private func line(at now: Date = Date()) throws -> SyncStatusLine? {
         let queue = SyncDeletionQueue(local: local.defaults, shared: appGroup.defaults)
         let counts = try SyncStatusCounts.read(in: context, deletions: queue.pending())
-        return SyncStatusLine.today(auth: auth, sync: sync, counts: counts)
+        return SyncStatusLine.today(auth: auth, sync: sync, counts: counts, now: now)
     }
 
     // MARK: - Tests
@@ -173,14 +173,33 @@ final class TodaySyncStatusTests: XCTestCase {
         XCTAssertEqual(try line(), .paused)
     }
 
-    /// No answer at all, with the habit still waiting: "Offline — 1 change waiting".
-    func testNoAnswerWithAChangeWaitingReadsOffline() async throws {
+    /// No answer at all, with the habit still waiting: "Offline — 1 change waiting" — while the
+    /// window that failure set is open. Once it lapses a launch or foreground may run again, and
+    /// the line says only what is known then: a change waiting (review critic-2).
+    func testNoAnswerWithAChangeWaitingReadsOfflineUntilItsWindowLapses() async throws {
         server.on("POST", "/v1/sync/push") { _ in throw URLError(.notConnectedToInternet) }
 
         await sync.sync(context: context)
 
-        XCTAssertEqual(sync.backoff?.reason, .offline)
-        XCTAssertEqual(try line(), .offline(waiting: 1))
+        let backoff = try XCTUnwrap(sync.backoff)
+        XCTAssertEqual(backoff.reason, .offline)
+        XCTAssertEqual(try line(), .offline(waiting: 1, until: backoff.retryAt))
+        XCTAssertEqual(try line(at: backoff.retryAt), .waiting(1))
+        XCTAssertEqual(sync.backoff?.reason, .offline, "the reason itself stays until a run succeeds")
+    }
+
+    /// Review critic-2: launch after launch with no network must not push the next automatic
+    /// sync hours out. No request reached the server, so each failure waits about a minute —
+    /// the fourth used to wait 8 min, the tenth 6 h, after the network was back.
+    func testRepeatedNoAnswerFailuresKeepTheAutomaticWindowAboutAMinute() async throws {
+        server.on("POST", "/v1/sync/push") { _ in throw URLError(.notConnectedToInternet) }
+
+        for _ in 1...4 { await sync.sync(context: context) }
+
+        let backoff = try XCTUnwrap(sync.backoff)
+        XCTAssertEqual(backoff.reason, .offline)
+        XCTAssertLessThanOrEqual(backoff.delay, 72, "the curve's first step, jitter included")
+        XCTAssertLessThanOrEqual(try XCTUnwrap(sync.nextAutomaticSync), Date().addingTimeInterval(72))
     }
 
     /// A 5xx is a count too, never an error on Today.

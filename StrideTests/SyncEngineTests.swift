@@ -359,6 +359,40 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(next.pulls.first?.fullPull, true)
     }
 
+    /// Review delivery-2: Full resync marks every record, including a check-in of a held habit
+    /// and an orphan no habit owns. The planner never sends either, so nothing acknowledges them
+    /// and their flag stays — and while it counted as a forced resend, every later sync pulled
+    /// before the push as well as after it. Once the Full resync's own full pull is done, a sync
+    /// with nothing to send makes one pull.
+    func testAFullResyncLeavesNoExtraPullBehindForRowsThePlannerNeverSends() async throws {
+        let a = device()
+        a.habit("Read")
+        try a.save()
+        expectSynced(await a.sync())
+        // Another account's ids kept by a restore, held `not_owned`, with a check-in the user made
+        // on it since (not held itself); and an orphan check-in from an old bug.
+        let held = a.habit("Another account's", records: [day(0)])
+        held.hold(.notOwned)
+        let orphan = HabitRecord(date: day(9))
+        a.context.insert(orphan)
+        try a.save()
+        server.clock += 120   // past the overlap: no echo settles the rows
+
+        expectSynced(await a.sync(options: .fullResync))
+        XCTAssertTrue(held.records[0].needsResend, "marked, and never sent while its habit is held")
+        XCTAssertTrue(orphan.needsResend)
+        XCTAssertFalse(try SyncPushPlanner.hasForcedResend(in: a.context), "nothing the planner could send")
+
+        server.clock += 120
+        let afterResync = expectSynced(await a.sync())
+        XCTAssertEqual(afterResync.pulls.first?.fullPull, true, "the full pull Full resync asked for")
+        server.clock += 120
+        let quiet = expectSynced(await a.sync())
+        XCTAssertEqual(quiet.requests.map(\.endpoint), [.pull], "one pull, not one before a push with nothing to send")
+        XCTAssertEqual(held.activeHold, .notOwned)
+        XCTAssertTrue(held.records[0].needsResend, "still owed once the hold is lifted")
+    }
+
     // MARK: - Queued deletions and day matching (M2 slice review)
 
     /// Untap a delivered check-in and tap the day again, offline, then a sync that pulls before
@@ -590,6 +624,52 @@ final class SyncEngineTests: XCTestCase {
         a.cursors.setCursor(nil, for: "1")
         expectSynced(await a.sync())
         XCTAssertEqual(try a.habitNames(), ["Another account's", "Restored"], "held rows survive a full pull")
+    }
+
+    /// Review delivery-1: habits deleted on another device, restored here with their ids, and
+    /// checked in on Today before the next sync. The new check-in has no `restoredAt` of its
+    /// own; the push answers the habit `tombstoned` and every check-in `tombstoned_habit`. The
+    /// check-in stays — local, unarchived, held back with its habit — and "Restore as New Copies"
+    /// takes it along, as the pull path and `reidentify` already treat it. With a live cursor the
+    /// push meets the tombstone; with none, the full pull keeps the never-delivered habit by
+    /// absence without holding it, so the push decides there too.
+    func testACheckInMadeOnARestoredHabitTheServerTombstonedStaysAndMovesWithTheCopy() async throws {
+        for liveCursor in [true, false] {
+            server = FakeSyncServer()
+            server.validTokens = ["token-A"]
+            let a = device()
+            let habit = a.habit("Restored", records: [day(0)])
+            let restoredAt = Date()
+            habit.restoredAt = restoredAt
+            habit.records[0].restoredAt = restoredAt
+            let tapped = HabitRecord(date: day(5))
+            habit.records.append(tapped)
+            try a.save()
+            let oldID = habit.id.uuidString
+            server.markTombstoned(.habit, oldID)
+            if liveCursor {
+                // Past the tombstone, so the pull does not carry it: the push must meet it.
+                a.cursors.setCursor(SyncTimestamp.millisecondString(from: Date().addingTimeInterval(30)), for: "1")
+            }
+
+            let summary = expectSynced(await a.sync())
+            XCTAssertEqual(summary.pushedRows.entries, 2, "cursor \(liveCursor): the push met the tombstone")
+            XCTAssertEqual(habit.activeHold, .tombstoned, "cursor \(liveCursor)")
+            XCTAssertEqual(try a.context.fetch(FetchDescriptor<HabitRecord>()).count, 2, "cursor \(liveCursor)")
+            XCTAssertNil(tapped.syncHoldReason, "cursor \(liveCursor): kept by its habit's hold, not held itself")
+            XCTAssertTrue(a.log.lines.isEmpty, "cursor \(liveCursor): nothing archived, nothing dropped")
+            XCTAssertEqual(summary.dropped, 0)
+            XCTAssertTrue(try SyncPushPlanner.plan(in: a.context, deletions: a.queue.pending()).isEmpty,
+                          "cursor \(liveCursor): held back with its habit")
+
+            let copies = try SyncCopies.reidentify(try SyncCopies.heldRows(in: a.context), in: a.context)
+            XCTAssertEqual(copies.rows, SyncRowCounts(groups: 0, habits: 1, entries: 2), "cursor \(liveCursor)")
+            XCTAssertNotEqual(habit.id.uuidString, oldID)
+            expectSynced(await a.sync())
+            XCTAssertEqual(Set(server.entries.values.map(\.wire.habitId)), [habit.id.uuidString], "cursor \(liveCursor)")
+            XCTAssertEqual(server.entries.count, 2, "cursor \(liveCursor): today's check-in reached the account with the copy")
+            XCTAssertTrue(tapped.hasBeenDelivered && !tapped.isPending, "cursor \(liveCursor)")
+        }
     }
 
     /// A failed recovery-log append on a pull deletes nothing and writes no cursor; the next sync

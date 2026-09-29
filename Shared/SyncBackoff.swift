@@ -4,8 +4,9 @@ import Foundation
 //
 // The answer table says when to wait: `400 invalid_payload` backs off doubling 1 min → 6 h,
 // jittered, and "Sync Now" retries at once; `429 rate_limited` / `503 sync_paused` wait for
-// `Retry-After` / `retryAfterSeconds`; other 5xx and no answer at all back off on the same
-// jittered curve. `SyncAnswers.action` decides WHICH of those an answer is and
+// `Retry-After` / `retryAfterSeconds`; other 5xx back off on the same jittered curve. No answer
+// at all waits only the curve's first step, about a minute, and never doubles (review critic-2,
+// `SyncBackoffState.afterFailure`). `SyncAnswers.action` decides WHICH of those an answer is and
 // `SyncBackoffPolicy.delay` gives the number; this file is the state between runs.
 //
 // The first vertical slice kept that state in memory on `SyncService` (`consecutiveFailures`,
@@ -26,8 +27,9 @@ enum SyncBackoffReason: String, Equatable, Sendable, CaseIterable {
     case clientBug = "client_bug"
     /// A 5xx other than the pause, or a 200 that said `ok: false`.
     case serverError = "server_error"
-    /// No HTTP answer at all: offline, timeout, DNS, TLS. Split from `serverError` only for the
-    /// phase C status line ("offline — 3 changes waiting"); the curve is the same.
+    /// No HTTP answer at all: offline, timeout, DNS, TLS. Split from `serverError` for the phase
+    /// C status line ("offline — 3 changes waiting") and for its window: about a minute, never
+    /// the doubling curve (review critic-2, `SyncBackoffState.afterFailure`).
     case offline
     /// `429 rate_limited`.
     case rateLimited = "rate_limited"
@@ -56,7 +58,8 @@ enum SyncBackoffReason: String, Equatable, Sendable, CaseIterable {
 /// foreground sync for a day. With `failedAt` kept, a `now` before it means the clock moved and
 /// the window is over — the same "inequality, not ordering" care the delivery state takes.
 struct SyncBackoffState: Equatable, Sendable {
-    /// Failed runs since the last successful one, this one included. 1 for the first failure.
+    /// Failed runs since the last successful one, this one included; 1 for the first failure.
+    /// A run with no HTTP answer does not add to it (`afterFailure`).
     var consecutiveFailures: Int
     var reason: SyncBackoffReason
     /// When the run that set this window stopped, by this device's clock.
@@ -86,6 +89,15 @@ struct SyncBackoffState: Equatable, Sendable {
     /// minute. A server-given `Retry-After` replaces the curve for that one window
     /// (`SyncBackoffPolicy.delay`) but still counts, so a later answer without one does not
     /// restart it either.
+    ///
+    /// No HTTP answer is the exception (review critic-2): its window is the curve's first step,
+    /// about a minute, and it does not advance the count. No request reached the server, so a
+    /// longer wait spares it nothing — and on iOS the only automatic syncs are launch and
+    /// foreground, with nothing that re-arms on connectivity, so after a day without signal the
+    /// doubled window kept every launch from syncing for up to 6 h after the network was back.
+    /// Not counting it keeps the 6 h doubling for real server answers: a 5xx after an offline
+    /// stretch starts near the bottom of the curve, not at its cap. A server episode's count is
+    /// carried through, so an outage the device also lost its signal in keeps doubling.
     static func afterFailure(
         _ previous: SyncBackoffState?,
         kind: SyncBackoffKind,
@@ -93,11 +105,16 @@ struct SyncBackoffState: Equatable, Sendable {
         now: Date,
         unitRandom: Double
     ) -> SyncBackoffState {
-        let failures = min((previous?.consecutiveFailures ?? 0) + 1, SyncBackoffState.countCap)
-        let delay = SyncBackoffPolicy.delay(for: kind, consecutiveFailures: failures, unitRandom: unitRandom)
+        let reason = SyncBackoffReason(kind, answer: answer)
+        let previousFailures = previous?.consecutiveFailures ?? 0
+        let failures = reason == .offline
+            ? max(1, previousFailures)
+            : min(previousFailures + 1, SyncBackoffState.countCap)
+        let delay = SyncBackoffPolicy.delay(for: kind, consecutiveFailures: reason == .offline ? 1 : failures,
+                                            unitRandom: unitRandom)
         return SyncBackoffState(
             consecutiveFailures: failures,
-            reason: SyncBackoffReason(kind, answer: answer),
+            reason: reason,
             failedAt: now,
             delay: min(max(0, delay), SyncBackoffPolicy.maximum))
     }

@@ -22,8 +22,10 @@ enum SyncStatusLine: Equatable {
     /// 429 `rate_limited` or 503 `sync_paused`: "Sync paused".
     case paused
     /// No answer at all (offline, timeout, DNS) with changes this device has not delivered:
-    /// "Offline — 3 changes waiting".
-    case offline(waiting: Int)
+    /// "Offline — 3 changes waiting". Only until `until`, when the window that failure set ends
+    /// and a launch or foreground may run again; from then on the row reads as `waiting`
+    /// (review critic-2).
+    case offline(waiting: Int, until: Date)
     /// A server error or a request this build got wrong, with changes waiting: the rows are safe
     /// and the backoff retries, so it is a count, not an error ("3 changes waiting to sync").
     case waiting(Int)
@@ -47,6 +49,11 @@ struct SyncStatusInput: Equatable {
     /// Why the owner's automatic syncs are backing off (`SyncService.backoff?.reason`); nil after
     /// a successful run ("success resets").
     var backoff: SyncBackoffReason?
+    /// When that backoff's window ends (`SyncBackoffState.retryAt`) while it is still open as the
+    /// line is drawn (`SyncBackoffState.isWaiting`); nil once it has lapsed. The reason is what
+    /// the LAST run met, and it stays until a run succeeds; this says whether a later run could
+    /// have been tried since.
+    var retryAt: Date? = nil
     /// `SyncService.lastSyncTime`, parsed.
     var lastSync: Date?
     /// What the next push would carry: pending rows plus queued deletions (`SyncStatusCounts`).
@@ -67,7 +74,11 @@ extension SyncStatusLine {
     /// 3. **Paused / rate-limited** — whatever is pending: nothing will move until the server
     ///    says so, and the line says why.
     /// 4. **Offline or a server error with changes waiting.** With nothing waiting, "offline" is
-    ///    not news: every change is on the server, so the last-synced line stays true.
+    ///    not news: every change is on the server, so the last-synced line stays true. "Offline"
+    ///    only while the window its failure set is open (review critic-2): after it, a launch or
+    ///    foreground runs again, and until one has, all that is known is that changes wait — the
+    ///    reason stays until a run succeeds, so wording from it said "Offline" on a device that
+    ///    was online again.
     /// 5. **Held rows**, which only an edit or a Settings action resolves.
     /// 6. **Last synced.** Pending rows right after an edit are not shown: there is no failure,
     ///    the next sync takes them, and a count flickering after every tap is not calm.
@@ -77,7 +88,8 @@ extension SyncStatusLine {
         if let reason = input.backoff {
             if reason.showsSyncPaused { return .paused }
             if input.pending > 0 {
-                return reason == .offline ? .offline(waiting: input.pending) : .waiting(input.pending)
+                if reason == .offline, let until = input.retryAt { return .offline(waiting: input.pending, until: until) }
+                return .waiting(input.pending)
             }
         }
         if input.held > 0 { return .held(input.held) }

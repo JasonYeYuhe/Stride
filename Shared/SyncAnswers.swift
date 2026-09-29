@@ -61,6 +61,10 @@ struct SyncRowFacts: Equatable {
     /// restore-as-copies choice instead of dropping it — a restore undoes another device's
     /// deletion only when the user says so.
     var isRestored = false
+    /// For an entry: its habit is kept for the restore-as-copies choice — restored with its ids
+    /// (`restoredAt`) or already held `tombstoned`. A `tombstoned_habit` answer then keeps the
+    /// entry instead of dropping it, even one made after the restore (review delivery-1).
+    var habitKeptForRestore = false
     /// For an entry: its habit has been delivered (`syncedAt != nil`). The `unknown_habit`
     /// strikes count only from then on — before, the habit's own chunk may simply not have landed.
     var habitAcknowledged = false
@@ -87,8 +91,18 @@ enum SyncAnswers {
         guard skipped else { return .acknowledge }
         guard let known = reason.flatMap(SyncSkipReason.init(rawValue:)) else { return .keepPending }
         switch known {
-        case .tombstoned, .tombstonedHabit:
+        case .tombstoned:
             return facts.isRestored ? .hold(.tombstoned) : .drop
+        case .tombstonedHabit:
+            if facts.isRestored { return .hold(.tombstoned) }
+            // A check-in made after the restore, on a habit kept for the copies choice (review
+            // delivery-1). The habit's own answer holds it, and "Restore as New Copies" moves ALL
+            // of its check-ins with it (`SyncCopies.reidentify`), so a drop here deleted the tap
+            // the user had just made. Kept pending, it stays back while the habit is held (the
+            // planner's `blockedHabits`) and Discard deletes it with the habit — what the pull
+            // path does with such a record (`SyncLocalRemoval.removeHabit`), so the outcome no
+            // longer depends on which request met the tombstone first.
+            return facts.habitKeptForRestore ? .keepPending : .drop
         case .missingField:
             return .hold(.missingField)
         case .rowError:
@@ -197,7 +211,8 @@ enum SyncBackoffKind: Equatable {
     /// The app built a request the server could not read (`invalid_payload`, a second
     /// `too_many_rows`, an unknown 4xx). Doubling 1 min → 6 h, jittered; reported to Sentry.
     case clientBug
-    /// Other 5xx, no answer, a 200 that said `ok: false`. Doubling 1 min → 6 h, jittered.
+    /// Other 5xx, no answer, a 200 that said `ok: false`. Doubling 1 min → 6 h, jittered — except
+    /// no answer at all, which waits about a minute and never doubles (`SyncBackoffState.afterFailure`).
     case transient
     /// 429 `rate_limited` / 503 `sync_paused`: the server said when. Shown as "sync paused"
     /// inline when `paused`; never `syncError`.

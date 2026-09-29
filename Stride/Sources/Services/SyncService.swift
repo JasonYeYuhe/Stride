@@ -53,8 +53,8 @@ final class SyncService {
     var isPaused: Bool { backoff?.reason == .paused }
     /// Automatic syncs (launch, foreground) before this are skipped: the server asked this
     /// device to wait (429 / 503 with `Retry-After`), or the last syncs failed and are backing off
-    /// (doubling 1 min → 6 h, jittered — `SyncBackoffPolicy`). "Sync Now" and a sign-in always
-    /// go at once. nil once the window is over.
+    /// (doubling 1 min → 6 h, jittered — `SyncBackoffPolicy`; about a minute when no answer came
+    /// at all). "Sync Now" and a sign-in always go at once. nil once the window is over.
     var nextAutomaticSync: Date? {
         guard let backoff, backoff.isWaiting(at: Date()) else { return nil }
         return backoff.retryAt
