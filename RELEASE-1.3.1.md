@@ -596,9 +596,21 @@ installed over 1.3.0, keeping the data container, and its first sync ran:
 
 ### Server — deploy only after 1.3.0 is live
 
-- [ ] 1.3.0 (19) approved **and released** (`release.py release 1.3.0`, on the owner's go).
-- [ ] Deploy the 1.3.1 server half with the prod-copy rehearsal (`scripts/rehearse_server.sh`),
-  before any 1.3.1 build reaches a user. Confirm the tombstone-sweep hook is not mounted in
+- [x] 1.3.0 (19) approved **and released**: READY_FOR_SALE on iOS and macOS, found 2026-09-30
+  01:3x JST. The version was MANUAL, so the owner released it.
+- [x] **Deployed 2026-09-29 16:25 UTC** (server tree at `5dca011`), by DEPLOY.md's five steps:
+  - tests: 488 pass, typecheck clean;
+  - host diff: every host file equal to the last deploy `441b809`, nothing host-only;
+  - prod-copy rehearsal: every check PASS, "safe to deploy";
+  - backup: `/root/backups/stride-predeploy-20260929-162541.db` (integrity ok);
+  - rsync and restart.
+
+  Verified after: `/health` 200 via nginx; loopback bind intact (direct :3002 → 000); AASA 200
+  `application/json`; `/v1` answers `Cache-Control: no-store` with no ETag (static pages keep
+  theirs); `deletion_tombstones` has `habit_id` / `entry_date` (production had 0 tombstones);
+  `integrity_check` ok; `check_demo_account.sh` exit 0.
+- [x] The deploy's scope: the 1.3.1 server half, with the prod-copy rehearsal
+  (`scripts/rehearse_server.sh`), before any 1.3.1 build reaches a user. Confirm the tombstone-sweep hook is not mounted in
   production. The half includes:
   - the header-gated millisecond pull and the LWW re-feed (`f911248`, plus the phase B server
     commits)
@@ -610,9 +622,9 @@ installed over 1.3.0, keeping the data container, and its first sync ran:
 
   The deploy also helps live 1.2.3 users (the same-day re-check). Run DEPLOY.md's post-deploy
   checks for both `41c8fea` fixes.
-- [ ] Acceptance (7): against production, a pull with `X-Stride-Client: ios/1.3.1(20)` shows
-  millisecond `updatedAt`, and one without the header shows whole seconds (curl, DEPLOY.md's
-  post-deploy check).
+- [x] Acceptance (7), checked against production after the deploy as the demo account (session
+  logged out after): `ios/1.3.1(20)` gets `2026-08-02T02:37:19.313Z`; `ios/1.3.0(19)` and no
+  header get `2026-08-02T02:37:19Z`.
 
 ### Migration and gates
 

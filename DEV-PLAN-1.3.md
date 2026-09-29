@@ -540,6 +540,19 @@ from what it took, and record the new number in the progress log before building
     Polish from those runs is in `cef373d` (held-row button and Discard follow the count, red
     swipe Delete) and `0b7bdd2` (no Full Resync in the reauth state). RELEASE-1.3.0.md now lists
     three 1.3.0 limitations found on the way, each covered by the 1.3.1 server half or by 1.3.1.
+- 2026-09-30 01:3x JST — **1.3.0 (19) is live, and so is the 1.3.1 server half.** 1.3.0 was
+  found READY_FOR_SALE on iOS and macOS; it was MANUAL, so the owner released it. The server
+  half (tree at `5dca011`) was deployed 2026-09-29 16:25 UTC by DEPLOY.md's five steps, with
+  every rehearsal check passing on a copy of production. It carries:
+  - the millisecond pull and the LWW re-feed;
+  - aliases and `deletionsSince`;
+  - the old-app hold-back and no-store answers;
+  - the tombstone columns and the 365-day sweep floor.
+
+  Acceptance (7) was verified against production. From now on, live 1.3.0 and 1.2.3 devices no
+  longer lose a same-day re-check made on another device, and stop caching API answers. PR
+  JasonYeYuhe/Stride#4 (`release/1.3.0` → `main`, after merging `main`'s published privacy page)
+  is ready to merge once its CI passes.
 - 2026-09-28 — owner decision on the migrated-marks question (review R1 of the slice): **the first
   full pull proves the account.** A 1.3.0 session that expires keeps `stride_last_sync_time`, so
   "the device signed out" cannot be inferred from the key. The migration marks a store's rows
