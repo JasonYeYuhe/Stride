@@ -461,6 +461,87 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(try a.pendingCount(), 0)
     }
 
+    /// The phone and the iPad check the same day before either has pulled the other's check-in.
+    /// The server holds one row per habit and day and keeps the iPad's id Y, so the phone's X is
+    /// answered `applied` with `aliases: {X: Y}`, and the phone takes Y in the save that
+    /// acknowledges it (review data-safety-4). Its post-push pull is lost here — the only other
+    /// thing that would have renamed it — and the uncheck that follows deletes Y and queues Y: the
+    /// push deletes the day's row, and no pull checks the day again, here or on the iPad. Kept as
+    /// X, the uncheck's push deleted nothing and the next pull brought the day back as Y.
+    func testAnUncheckAfterAnAliasedPushDeletesTheDaysRowOnTheServer() async throws {
+        let (phone, iPad, walk, y) = try await sameDayOnTwoDevices()
+        let checkIn = try XCTUnwrap(walk.records.first)
+        server.scriptPull(at: 1, .noAnswer)
+        let lost = await phone.sync()
+        guard case .stopped(.backOff, let pushed) = lost else { return XCTFail("the lost pull stops the run: \(lost)") }
+        XCTAssertEqual(pushed.acknowledged, 1)
+        XCTAssertEqual(checkIn.id, y, "the check-in took the id the server keeps, with its acknowledgement")
+        XCTAssertFalse(checkIn.isPending)
+
+        let untap = HabitCheckIn.tap(walk, on: day(0), in: phone.context)
+        try phone.save()
+        let untapped = try XCTUnwrap(untap.deletedRecordID)
+        phone.queue.trackEntry(untapped)
+        XCTAssertEqual(untapped, y.uuidString)
+        expectSynced(await phone.sync())
+
+        XCTAssertTrue(server.entries.values.filter { $0.wire.habitId == walk.id.uuidString }.isEmpty,
+                      "the uncheck deleted the day's row on the server")
+        XCTAssertTrue(phone.queue.pending().isEmpty)
+        expectSynced(await phone.sync())
+        XCTAssertEqual(try phone.context.fetchCount(FetchDescriptor<HabitRecord>()), 0, "no pull checked the day again")
+        expectSynced(await iPad.sync())
+        XCTAssertEqual(try iPad.context.fetchCount(FetchDescriptor<HabitRecord>()), 0, "the iPad's check-in went with it")
+    }
+
+    /// The same uncheck, made while the push carrying X is in flight: no record is left to rename,
+    /// and the queued deletion names X, which the server does not hold. The acknowledgement queues
+    /// Y beside it (review data-safety-4), so the run's own pull does not bring the day back and
+    /// the next push deletes it on the server. Without that, that very pull checked the day again.
+    func testAnUncheckWhileTheAliasedPushIsInFlightStillDeletesTheDaysRowOnTheServer() async throws {
+        let (phone, iPad, walk, y) = try await sameDayOnTwoDevices()
+        let x = try XCTUnwrap(walk.records.first).id.uuidString
+        let checkedDay = day(0)
+        server.onRequest = { [unowned phone] request in
+            guard request.endpoint == .push else { return }
+            let untap = HabitCheckIn.tap(walk, on: checkedDay, in: phone.context)
+            try? phone.save()
+            if let id = untap.deletedRecordID { phone.queue.trackEntry(id) }
+        }
+        expectSynced(await phone.sync())
+        server.onRequest = nil
+
+        XCTAssertEqual(try phone.context.fetchCount(FetchDescriptor<HabitRecord>()), 0, "the run's own pull left the day unchecked")
+        XCTAssertEqual(Set(phone.queue.pending().entries), [x, y.uuidString])
+        expectSynced(await phone.sync())
+        XCTAssertTrue(server.entries.values.filter { $0.wire.habitId == walk.id.uuidString }.isEmpty)
+        XCTAssertTrue(phone.queue.pending().isEmpty)
+        XCTAssertEqual(try phone.context.fetchCount(FetchDescriptor<HabitRecord>()), 0)
+        expectSynced(await iPad.sync())
+        XCTAssertEqual(try iPad.context.fetchCount(FetchDescriptor<HabitRecord>()), 0)
+    }
+
+    /// Both devices hold "Walk"; the iPad checks day 0 and syncs (the server's row is its Y); the
+    /// phone checks the same day and has not synced since. Returns the phone's habit and Y.
+    private func sameDayOnTwoDevices() async throws -> (phone: TestDevice, iPad: TestDevice, walk: Habit, y: UUID) {
+        let phone = device(), iPad = device(token: "token-A2")
+        let walk = phone.habit("Walk")
+        try phone.save()
+        expectSynced(await phone.sync())
+        expectSynced(await iPad.sync())
+
+        let iPadWalk = try XCTUnwrap(iPad.habits().first)
+        HabitCheckIn.tap(iPadWalk, on: day(0), in: iPad.context)
+        try iPad.save()
+        expectSynced(await iPad.sync())
+        let y = try XCTUnwrap(iPadWalk.records.first).id
+
+        HabitCheckIn.tap(walk, on: day(0), in: phone.context)
+        try phone.save()
+        XCTAssertNotEqual(try XCTUnwrap(walk.records.first).id, y, "precondition: the day under two ids")
+        return (phone, iPad, walk, y)
+    }
+
     /// A cursor this device still counts live, but old enough that the server may not (a clock
     /// running slow): the run pulls on it BEFORE pushing, so a `cursor_expired` answer comes while
     /// nothing has gone up yet — full pull first, then push, as the spec orders it. Pushed first,
@@ -1374,9 +1455,10 @@ final class TestDevice {
 // MARK: - Fake server
 
 /// A small model of routes/sync.js for one account: LWW upserts with the values-differ check and
-/// the re-feed, entries keyed by habit and day, tombstones, skip reasons, `totals`, row caps,
-/// `snapshot_required` and `cursor_expired`. The transport's double — the engine under test
-/// talks to it through `SyncTransport` exactly as it talks to APIClient.
+/// the re-feed, entries keyed by habit and day (and the `aliases` answer that follows from it),
+/// tombstones, skip reasons, `totals`, row caps, `snapshot_required` and `cursor_expired`. The
+/// transport's double — the engine under test talks to it through `SyncTransport` exactly as it
+/// talks to APIClient, as the 1.3.1 app it is.
 @MainActor
 final class FakeSyncServer: SyncTransport {
     struct Request {
@@ -1460,10 +1542,16 @@ final class FakeSyncServer: SyncTransport {
         var applied: [String: Int] = ["habits": 0, "entries": 0, "groups": 0]
         var skipped: [String: [String]] = ["habits": [], "entries": [], "groups": []]
         var skippedReasons: [String: [String: String]] = ["habits": [:], "entries": [:], "groups": [:]]
+        /// Only when there is one, as the server sends it.
+        var aliases: [String: [String: String]]?
 
         mutating func skip(_ type: String, _ id: String, _ reason: String) {
             skipped[type, default: []].append(id)
             skippedReasons[type, default: [:]][id] = reason
+        }
+
+        mutating func alias(entry sent: String, to stored: String) {
+            aliases = ["entries": (aliases?["entries"] ?? [:]).merging([sent: stored]) { $1 }]
         }
     }
 
@@ -1521,8 +1609,10 @@ final class FakeSyncServer: SyncTransport {
             if isTombstoned(.habit, e.habitId) { answer.skip("entries", e.id, "tombstoned_habit"); continue }
             if let reason = forcedReasons[canon(e.id)] { answer.skip("entries", e.id, reason); continue }
             guard habits[canon(e.habitId)] != nil else { answer.skip("entries", e.id, "unknown_habit"); continue }
-            upsert(&entries, key: canon(e.habitId) + "|" + e.date, wire: e, stamp: e.updatedAt ?? e.createdAt,
+            let key = canon(e.habitId) + "|" + e.date
+            upsert(&entries, key: key, wire: e, stamp: e.updatedAt ?? e.createdAt,
                    keepID: true, same: { $0.note == $1.note && $0.value == $1.value })
+            if let stored = entries[key]?.wire.id, stored != e.id { answer.alias(entry: e.id, to: stored) }
             answer.applied["entries", default: 0] += 1
         }
         return ok(answer)

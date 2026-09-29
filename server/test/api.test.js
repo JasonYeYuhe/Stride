@@ -10108,6 +10108,93 @@ describe("M2 LWW re-feed: the winner goes back to the device that lost", () => {
   });
 });
 
+describe("M2 aliases: an entry written onto another id's row for its day is named in the answer (>= 1.3.1)", () => {
+  // Two devices checked the same day before either pulled the other's check-in. Entries conflict
+  // on (habit_id, date) and the stored row keeps its id, so the second device's X is written (or
+  // kept older) as the first device's Y, and answered `applied`. Before the alias it learnt Y only
+  // from a later pull; an uncheck made before that pull queued X, the push deleted nothing, and the
+  // next pull checked the day again (review data-safety-4).
+  let u;
+  const H = m0.uuid();
+  before(async () => {
+    u = m0.user();
+    assert.equal((await m0.push(u.token, { habits: [m0.habit(H)] })).status, 200);
+  });
+  after(() => m0.cleanup(u.userId));
+
+  const storedId = (day) => db.prepare("SELECT id FROM habit_entries WHERE habit_id = ? AND date = ?").get(H, day)?.id;
+
+  /** The first device checks `day` in as Y (stamped 12:00); the second pushes it as X. */
+  async function sameDay(day, { client = m0.V131, updatedAt } = {}) {
+    const Y = m0.uuid(), X = m0.uuid();
+    assert.equal((await m0.push(u.token, { entries: [m0.entry(Y, H, day)] })).status, 200);
+    const r = await m0.push(u.token, { entries: [m0.entry(X, H, day, { value: 3, updatedAt })] }, { client });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json.skipped.entries, [], "applied, as before");
+    assert.equal(r.json.applied.entries, 1);
+    assert.equal(storedId(day), Y, "the stored row keeps its id");
+    return { X, Y, r };
+  }
+
+  it("1.3.1: a newer edit is written onto the stored row, and aliases names that row's id", async () => {
+    const { X, Y, r } = await sameDay("2026-09-27", { updatedAt: "2026-09-27T13:00:00.000Z" });
+    assert.deepEqual(r.json.aliases, { entries: { [X]: Y } });
+    assert.equal(db.prepare("SELECT value FROM habit_entries WHERE id = ?").get(Y).value, 3);
+  });
+
+  it("1.3.1: an older edit the guard keeps is named too — the device holds that day under the wrong id either way", async () => {
+    const { X, Y, r } = await sameDay("2026-09-28", { updatedAt: "2026-09-28T11:00:00.000Z" });
+    assert.deepEqual(r.json.aliases, { entries: { [X]: Y } });
+    assert.equal(db.prepare("SELECT value FROM habit_entries WHERE id = ?").get(Y).value, 1, "the newer edit stays");
+  });
+
+  it("1.3.1: a second id for one day in the same push is named after the first", async () => {
+    const X1 = m0.uuid(), X2 = m0.uuid(), day = "2026-09-29";
+    const r = await m0.push(u.token, { entries: [m0.entry(X1, H, day), m0.entry(X2, H, day)] });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json.aliases, { entries: { [X2]: X1 } });
+  });
+
+  it("1.3.1: no aliases key when no entry landed on another id — a new row, the same id again, a skipped one", async () => {
+    const E = m0.uuid(), gone = m0.uuid();
+    const fresh = await m0.push(u.token, { entries: [m0.entry(E, H, "2026-09-30")] });
+    assert.equal(fresh.status, 200);
+    assert.equal(fresh.json.aliases, undefined);
+    const again = await m0.push(u.token, { entries: [m0.entry(E, H, "2026-09-30", { value: 2, updatedAt: "2026-09-30T13:00:00.000Z" })] });
+    assert.equal(again.json.aliases, undefined);
+    await m0.push(u.token, { deletedEntryIds: [gone] });
+    const skipped = await m0.push(u.token, { entries: [m0.entry(gone, H, "2026-09-30")] });
+    assert.deepEqual(skipped.json.skippedReasons.entries, { [gone]: "tombstoned" });
+    assert.equal(skipped.json.aliases, undefined);
+  });
+
+  for (const [label, client, day] of [["ios/1.3.0(18)", m0.V130, "2026-10-01"], ["no header", null, "2026-10-02"],
+    ["a malformed header", "ios/1.3.1-beta(19)", "2026-10-03"]]) {
+    it(`${label}: the same push is answered without aliases (the key is 1.3.1's)`, async () => {
+      const { r } = await sameDay(day, { client, updatedAt: `${day}T13:00:00.000Z` });
+      assert.equal(r.json.aliases, undefined);
+      assert.deepEqual(Object.keys(r.json).sort(), ["applied", "ok", "skipped", "skippedReasons"]);
+    });
+  }
+
+  it("what the alias is for: deleting the stored id takes the day, and a pull since does not bring it back", async () => {
+    const day = "2026-10-04";
+    const cursor = (await m2.pull(u.token, m0.V131)).json.serverTime;
+    await m0.sleep(5);
+    const { X, Y, r } = await sameDay(day, { updatedAt: `${day}T13:00:00.000Z` });
+
+    // The sent id deletes nothing: the pre-alias uncheck.
+    assert.equal((await m0.push(u.token, { deletedEntryIds: [X] })).status, 200);
+    assert.equal(storedId(day), Y);
+
+    assert.equal((await m0.push(u.token, { deletedEntryIds: [r.json.aliases.entries[X]] })).status, 200);
+    assert.equal(storedId(day), undefined);
+    const inc = (await m2.pull(u.token, m0.V131, cursor)).json;
+    assert.ok(!inc.entries.some((e) => e.date === day), JSON.stringify(inc.entries));
+    assert.ok(inc.deletedEntryIds.includes(Y));
+  });
+});
+
 // ----------------------------------------------------------------
 
 describe("Test hooks: the swept-tombstone switch (rehearsal only, lib/testHooks.js)", () => {

@@ -475,27 +475,47 @@ final class SyncRecoveryLogTests: XCTestCase {
 
     // MARK: - Concurrency
 
+    /// The default cap is far above what the passes write, so every append goes in place.
     func testConcurrentAppendsFromTwoInstancesNeverInterleaveLines() throws {
-        try assertNoInterleaving(cap: SyncRecoveryLog.defaultCapBytes)
+        try assertNoInterleaving(cap: SyncRecoveryLog.defaultCapBytes, trims: false)
     }
 
+    /// Sized from the passes' own ~3 KB lines (review recovery-backup-2). It was 25 of
+    /// `oneLineBytes()`'s 200-character lines, about 12 KB, less than one six-line pass: every
+    /// append replaced the whole file, the file ended as one pass, and the checks on interleaving
+    /// and pass order had nothing to look at — the trim that keeps older lines never ran under
+    /// concurrency. 27½ lines does not line up with a six-line pass: each trim keeps whole older
+    /// passes beside the new one and cuts the oldest partway.
     func testConcurrentAppendsThatTrimNeverInterleaveOrLoseCount() throws {
-        try assertNoInterleaving(cap: try oneLineBytes() * 25)
+        let line = try passLineBytes()
+        try assertNoInterleaving(cap: line * 27 + line / 2, trims: true)
+    }
+
+    /// One line of `assertNoInterleaving`'s passes. ~3 KB: long enough that an unlocked writer
+    /// would split it.
+    private func passLine(pass: Int, index: Int) -> SyncRecoveryItem {
+        record(note: String(repeating: "n", count: 3_000), value: Double(index), habitName: "pass-\(pass)")
+    }
+
+    /// The encoded size of the longest `passLine` (a two-digit pass), newline included.
+    private func passLineBytes() throws -> Int {
+        let probe = makeLog(directory: root.appendingPathComponent("probe-pass"))
+        try probe.append([passLine(pass: 10, index: 0)], accountID: "probe")
+        return try probe.summary(accountID: "probe").bytes
     }
 
     /// Two instances over one directory — two processes, as far as the lock is concerned, since
     /// `flock` locks belong to an open file description — each appending passes of several long
     /// lines from many threads at once. Every line must decode, a pass's lines must be contiguous
-    /// and in order, and lines on disk plus lines dropped must be every line written.
-    private func assertNoInterleaving(cap: Int) throws {
+    /// and in order, and lines on disk plus lines dropped must be every line written. `trims`: the
+    /// cap is one the passes outgrow, and the file must end holding what makes the contiguity and
+    /// order checks able to fail — more than one pass, the oldest cut partway.
+    private func assertNoInterleaving(cap: Int, trims: Bool) throws {
         let a = makeLog(cap: cap), b = makeLog(cap: cap)
         let passes = 40, perPass = 6
         let errors = NSMutableArray()
         DispatchQueue.concurrentPerform(iterations: passes) { pass in
-            let items = (0..<perPass).map { i -> SyncRecoveryItem in
-                // ~3 KB lines: long enough that an unlocked writer would split them.
-                record(note: String(repeating: "n", count: 3_000), value: Double(i), habitName: "pass-\(pass)")
-            }
+            let items = (0..<perPass).map { passLine(pass: pass, index: $0) }
             do { try (pass.isMultiple(of: 2) ? a : b).append(items, accountID: "42") } catch {
                 errors.add(error)
             }
@@ -512,6 +532,14 @@ final class SyncRecoveryLogTests: XCTestCase {
             let pass = try XCTUnwrap(line.habitName)
             if runs.last?.pass == pass { runs[runs.count - 1].values.append(line.record?.value ?? -1) }
             else { runs.append((pass, [line.record?.value ?? -1])); seen.append(pass) }
+        }
+        if trims {
+            XCTAssertGreaterThan(contents.dropped, 0)
+            XCTAssertGreaterThan(runs.count, 1, "older passes are kept beside the newest")
+            XCTAssertLessThan(runs.first?.values.count ?? perPass, perPass, "the oldest pass is cut partway")
+        } else {
+            XCTAssertEqual(contents.dropped, 0)
+            XCTAssertEqual(runs.count, passes)
         }
         XCTAssertEqual(Set(seen).count, seen.count, "each pass is one contiguous run")
         for (index, run) in runs.enumerated() {

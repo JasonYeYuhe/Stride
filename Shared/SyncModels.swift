@@ -150,6 +150,22 @@ struct SyncPushResponse: Decodable {
         }
     }
 
+    /// Applied entries that landed on a row the server already held for their habit and day, under
+    /// another id: sent id -> the id that row keeps, as the server spells both; compare through
+    /// `SyncReconciler.canonicalID` (routes/sync.js "aliases", review data-safety-4). Only entries:
+    /// habits and groups conflict on their own id. Absent from a push that had none, and from
+    /// every server before 1.3.1's.
+    struct Aliases: Decodable, Equatable {
+        var entries: [String: String] = [:]
+
+        init(entries: [String: String] = [:]) { self.entries = entries }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: PerType.self)
+            entries = try c.decodeIfPresent([String: String].self, forKey: .entries) ?? [:]
+        }
+    }
+
     private enum PerType: String, CodingKey { case habits, entries, groups }
 
     let ok: Bool
@@ -157,6 +173,7 @@ struct SyncPushResponse: Decodable {
     var applied: Applied? = nil
     var skipped: Skipped? = nil
     var skippedReasons: SkippedReasons? = nil
+    var aliases: Aliases? = nil
 }
 
 /// The `limits` a `400 too_many_rows` answer carries (routes/sync.js `ROW_LIMITS`), so the

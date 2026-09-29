@@ -204,6 +204,15 @@ const sameValues = (a, b) => a.length === b.length && a.every((x, i) => x === b[
  *             chose to upload its habits. The device holds such a row — never acknowledges it
  *             (its full-pull rule would then delete it), never drops it — and offers "Restore
  *             as new copies", which gives it new ids.
+ *   aliases — to apps >= 1.3.1, and only when it happened: `{entries: {sentId: storedId}}`, an
+ *             applied entry that landed on the row this account already held for its habit and
+ *             day under another id. Two devices that checked the same day before either pulled
+ *             the other's check-in hold one row under two ids: entries conflict on (habit_id,
+ *             date), and the stored row keeps its id. The device takes the stored id when it
+ *             acknowledges (review data-safety-4). Until then it learnt it only from a later pull,
+ *             so an uncheck made first queued the sent id, the push deleted nothing (deleteEntry
+ *             matches the id), and the pull after it brought the day back as the stored row.
+ *             Habits and groups conflict on their own id, so only entries have aliases.
  * Before 1.3.1 nothing read this — the apps decode only `ok` — and a dropped row was harmless
  * because the next snapshot re-sent it anyway. Once clients stop re-sending, a silent drop
  * becomes a row that is never synced, so it has to be visible.
@@ -401,7 +410,8 @@ router.use(express.json({ limit: "5mb" }));
 // POST /sync/push — mobile app pushes local changes to server
 // Accepts { habits, entries, groups, deletedHabitIds, deletedEntryIds, deletedGroupIds }
 // Returns { ok, applied: {habits, entries, groups}, skipped: {habits: [ids], entries: [ids], groups: [ids]},
-//           skippedReasons: {habits: {id: reason}, entries: {…}, groups: {…}} }
+//           skippedReasons: {habits: {id: reason}, entries: {…}, groups: {…}},
+//           aliases?: {entries: {sentId: storedId}} (>= 1.3.1, when any) }
 router.post("/push", (req, res) => {
   const userId = req.user.id;
   const body = req.body ?? {};
@@ -508,10 +518,14 @@ router.post("/push", (req, res) => {
   // Two devices that each checked in on the same day hold different ids for one row; the
   // server keeps the first. The other device only adopts the server's id when the row comes
   // back in its pull, so when its push didn't change the row (older, or identical), move the
-  // row into the feed anyway. Once the ids agree this matches nothing.
+  // row into the feed anyway. Once the ids agree this matches nothing. (An app >= 1.3.1 is also
+  // told the id in the push answer's `aliases`, below; this stays for the apps before it.)
   const refeedMismatchedEntry = db.prepare(
     "UPDATE habit_entries SET updated_at = ? WHERE habit_id = ? AND date = ? AND id <> ?"
   );
+  // The id the (habit, day) row holds after an entry's upsert: the `aliases` answer (the contract
+  // above), for apps >= 1.3.1, which take it instead of waiting for that pull.
+  const storedEntryId = db.prepare("SELECT id FROM habit_entries WHERE habit_id = ? AND date = ?");
 
   const upsertGroup = db.prepare(`
     INSERT INTO habit_groups (id, user_id, name, color_hex, sort_order, created_at, updated_at, client_updated_at)
@@ -576,6 +590,10 @@ router.post("/push", (req, res) => {
   const applied = { habits: 0, entries: 0, groups: 0 };
   /** Rows the LWW re-feed moved back into the feed (counted in `applied` too). */
   const refed = { habits: 0, entries: 0, groups: 0 };
+  /** Applied entries that landed on another id's row for their day: sent id -> stored id (the
+   * `aliases` answer). Collected only for an app that reads it. @type {Map<string, string>} */
+  const aliases = new Map();
+  const answersAliases = clientAtLeast(req, "1.3.1");
   /** Skipped id -> reason, per kind; a Map keeps the order ids were skipped in. The first
    * reason wins when an id is sent twice. @type {{ habits: Map<string, string>, entries: Map<string, string>, groups: Map<string, string> }} */
   const skipped = { habits: new Map(), entries: new Map(), groups: new Map() };
@@ -759,6 +777,13 @@ router.post("/push", (req, res) => {
             refeedMismatchedEntry.run(now, entryHabitId, e.date, id);
           }
         }
+        // Read after the write, whichever way it went: an insert keeps the sent id, a conflict on
+        // (habit, day) keeps the stored row's — written over or kept by the guard, the device
+        // holds that day under an id this server does not (review data-safety-4).
+        if (answersAliases) {
+          const stored = /** @type {{ id: string } | undefined} */ (storedEntryId.get(entryHabitId, e.date));
+          if (stored && stored.id !== id) aliases.set(id, stored.id);
+        }
         applied.entries++;
       } catch (err) {
         if (!isRowError(err)) throw err;
@@ -803,6 +828,9 @@ router.post("/push", (req, res) => {
       entries: Object.fromEntries(skipped.entries),
       groups: Object.fromEntries(skipped.groups),
     },
+    // Only when there is one: a push with no alias answers exactly as before, and an app before
+    // 1.3.1 never sees the key.
+    ...(aliases.size > 0 ? { aliases: { entries: Object.fromEntries(aliases) } } : {}),
   });
 });
 

@@ -391,7 +391,7 @@ handler — so every gate below is ≥ 1.3.1, and 1.3.0 is treated exactly like 
 
 | Status | `code` | Who can get it | Meaning / what the app does |
 |---|---|---|---|
-| 200 | — | everyone | Push: `{ok, applied, skipped, skippedReasons}`. Pull: arrays + `totals` + `serverTime`. |
+| 200 | — | everyone | Push: `{ok, applied, skipped, skippedReasons}`, plus `aliases` for a header ≥ 1.3.1 when there are any. Pull: arrays + `totals` + `serverTime`. |
 | 401 | — | everyone | `{error:"Unauthorized"}` — no or expired session; sign in again. |
 | 400 | `invalid_payload` | everyone | A present field is not an array, or `since` is repeated. A client bug. |
 | 400 | `too_many_rows` | header ≥ 1.3.1 | Over 500 habits / 5,000 entries / 200 groups in one push; `limits` says which. Deletion lists are not capped. |
@@ -430,6 +430,14 @@ Skipped rows are reported, never silently dropped: `skippedReasons` names why (`
 `skipped_habit`, `unknown_habit`, `invalid_value`). A shipped app ignores all of it — it decodes
 only `ok` and re-sends everything next time — so the field is additive. It matters from 1.3.1,
 when apps send only what changed and a silently dropped row would be a row that never syncs.
+
+**Entry aliases.** Entries conflict on (habit, day) and the stored row keeps its id, so a day two
+devices checked before either pulled the other's check-in is one row under two ids. To a header
+≥ 1.3.1, a push whose applied entry landed on such a row says so: `aliases: {entries: {<sent id>:
+<stored id>}}`, the key present only when there is one. The app takes the stored id as it
+acknowledges. Before, it learnt it only from its next pull, so an uncheck made first queued an id
+the server does not hold: the delete matched nothing and the next pull checked the day again. Older
+apps still learn the id from that pull. The cost is one indexed read per entry a 1.3.1 app pushes.
 
 `invalid_value` (1.3.0 server) is a row with a number no app can produce, which the server used
 to store and hand to every device on the account: every app up to 1.2.3 traps on `Int(value)`

@@ -64,8 +64,10 @@ final class SyncPushPlannerTests: XCTestCase {
 
     private func ok(skipped: SyncPushResponse.Skipped? = nil,
                     reasons: SyncPushResponse.SkippedReasons? = nil,
-                    applied: SyncPushResponse.Applied? = nil) -> SyncPushResponse {
-        SyncPushResponse(ok: true, applied: applied, skipped: skipped ?? .init(), skippedReasons: reasons ?? .init())
+                    applied: SyncPushResponse.Applied? = nil,
+                    aliases: [String: String]? = nil) -> SyncPushResponse {
+        SyncPushResponse(ok: true, applied: applied, skipped: skipped ?? .init(), skippedReasons: reasons ?? .init(),
+                         aliases: aliases.map { .init(entries: $0) })
     }
 
     @discardableResult
@@ -406,6 +408,91 @@ final class SyncPushPlannerTests: XCTestCase {
         let after = try plan()
         XCTAssertEqual(ids(after.chunks[0]).habits, [broken.id.uuidString])
         XCTAssertEqual(ids(after.chunks[0]).entries.count, 2)
+    }
+
+    // MARK: - Aliases (review data-safety-4)
+
+    /// The server holds one row per habit and day and keeps the id it has, so a day another
+    /// device checked first comes back in `aliases`: the record takes that id in the save that
+    /// acknowledges it, at the stamp that was sent. Until then only a later pull renamed it, and an
+    /// uncheck made before that pull queued an id the server does not hold.
+    func testAnAliasedEntryTakesTheStoredIdAsItIsAcknowledged() throws {
+        let h = habit(records: 2)
+        let records = h.records.sorted { $0.date < $1.date }
+        let sentID = records[0].id.uuidString, sentStamp = records[0].stamp
+        let stored = UUID()
+        let chunk = try plan().chunks[0]
+
+        // Keyed by the id as sent; the stored id as the server spells it.
+        let outcome = try resolve(chunk, ok(aliases: [sentID: stored.uuidString.lowercased()]))
+
+        XCTAssertEqual(records[0].id, stored)
+        XCTAssertEqual(records[0].syncedAt, sentStamp)
+        XCTAssertFalse(records[0].isPending)
+        XCTAssertFalse(records[1].isPending)
+        XCTAssertNotEqual(records[1].id, stored)
+        XCTAssertEqual(outcome.acknowledged.count, 3)
+        XCTAssertEqual(outcome.realigned, [SyncRowRef(kind: .entry, id: sentID): stored.uuidString])
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<HabitRecord>(predicate: #Predicate { $0.id == stored })), 1)
+        XCTAssertTrue(try plan().isEmpty, "nothing to send again")
+        XCTAssertTrue(queue.pending().isEmpty)
+    }
+
+    /// Only where it can be followed: not for an entry that was skipped (the server wrote nothing
+    /// for it), nor to an alias that is not a UUID or only respells the sent id, and never onto an
+    /// id a local record already goes by — that day is here twice, an old duplicate; a second
+    /// record under one id would outlive every full pull, while the reconciler's day match settles
+    /// the duplicate as it always has. Two copies of one day named onto the same row: one takes it.
+    func testAnAliasIsFollowedOnlyWhereItCanBeAndNeverOntoAnIdAlreadyHere() throws {
+        let h = habit(records: 4)
+        let other = habit("Other", records: 1)
+        try pushAll()
+        let records = h.records.sorted { $0.date < $1.date }
+        records.forEach { $0.touch() }
+        let sent = records.map(\.id)
+        let alreadyHere = other.records[0].id
+        let chunk = try plan().chunks[0]
+        XCTAssertEqual(chunk.payload.entries.count, 4)
+
+        let outcome = try resolve(chunk, ok(
+            skipped: .init(entries: [sent[0].uuidString]),
+            reasons: .init(entries: [sent[0].uuidString: "unknown_habit"]),
+            aliases: [sent[0].uuidString: UUID().uuidString, sent[1].uuidString: "not-a-uuid",
+                      sent[2].uuidString: sent[2].uuidString.lowercased(), sent[3].uuidString: alreadyHere.uuidString]))
+        XCTAssertEqual(records.map(\.id), sent, "no record renamed")
+        XCTAssertEqual(other.records[0].id, alreadyHere)
+        XCTAssertEqual(outcome.realigned, [:])
+        XCTAssertFalse(records[3].isPending, "still acknowledged")
+
+        let twice = habit("Twice")
+        let d = day0.addingTimeInterval(9 * 86_400)
+        twice.records = [HabitRecord(date: d), HabitRecord(date: d)]
+        let copies = twice.records.map(\.id.uuidString)
+        let stored = UUID()
+        let both = try resolve(try plan().chunks[0], ok(aliases: [copies[0]: stored.uuidString, copies[1]: stored.uuidString]))
+        XCTAssertEqual(both.realigned.count, 1)
+        XCTAssertEqual(twice.records.filter { $0.id == stored }.count, 1)
+        XCTAssertEqual(Set(twice.records.map(\.id)).count, 2, "never two records under one id")
+    }
+
+    /// A record deleted here while its chunk was in flight has nothing to rename, and the uncheck
+    /// queued the sent id, which the server does not hold: the stored id is queued with it, so the
+    /// deletion reaches the row the server keeps. A deletion that queued nothing queues nothing.
+    func testAnAliasedEntryDeletedInFlightQueuesTheStoredIdWithItsDeletion() throws {
+        let h = habit(records: 2)
+        try context.save()   // the check-ins were saved before the sync began
+        let records = h.records.sorted { $0.date < $1.date }
+        let untapped = records[0].id.uuidString, unqueued = records[1].id.uuidString
+        let chunk = try plan().chunks[0]
+        records.forEach { context.delete($0) }
+        try context.save()
+        queue.trackEntry(untapped)
+
+        let stored = UUID()
+        let outcome = try resolve(chunk, ok(aliases: [untapped: stored.uuidString, unqueued: UUID().uuidString]))
+
+        XCTAssertEqual(queue.pending().entries, [untapped, stored.uuidString])
+        XCTAssertEqual(outcome.realigned, [SyncRowRef(kind: .entry, id: untapped): stored.uuidString])
     }
 
     // MARK: - Chunks

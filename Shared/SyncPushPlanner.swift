@@ -526,6 +526,10 @@ struct SyncChunkOutcome: Equatable {
     var unrecognisedReasons: [SyncRowRef: String] = [:]
     /// The deletion ids this chunk delivered, now removed from the queue.
     var deliveredDeletions = SyncDeletionQueue.Batch()
+    /// Acknowledged entries the server keeps under another id (its `aliases`), by sent ref: the
+    /// stored id the local record now goes by — or, for one deleted here while the chunk was in
+    /// flight, the id queued for deletion with it (review data-safety-4).
+    var realigned: [SyncRowRef: String] = [:]
 }
 
 @MainActor
@@ -552,6 +556,20 @@ enum SyncPushResolver {
         return out
     }
 
+    /// The server's `aliases`, by canonical sent id: the id kept by the row an applied entry landed
+    /// on, the one the server already held for that habit and day (routes/sync.js, "The
+    /// incremental-push contract"; review data-safety-4). Left out: an alias that is not a UUID,
+    /// which no local record can carry, and one that only respells the sent id.
+    static func entryAliases(in response: SyncPushResponse) -> [SyncRowRef: UUID] {
+        var out: [SyncRowRef: UUID] = [:]
+        for (sent, stored) in response.aliases?.entries ?? [:] {
+            guard let storedID = UUID(uuidString: stored) else { continue }
+            let ref = SyncRowRef(kind: .entry, id: SyncReconciler.canonicalID(sent))
+            if ref.id != storedID.uuidString { out[ref] = storedID }
+        }
+        return out
+    }
+
     /// The acknowledged rows: the chunk's submitted ids (canonical, de-duplicated) minus every id
     /// in `skipped`. Never derived from `applied`, which holds counts per type, not ids
     /// (routes/sync.js). With the stamp each was sent at.
@@ -564,8 +582,9 @@ enum SyncPushResolver {
         return out
     }
 
-    /// Applies a chunk's 200 to the store: acknowledgements, holds, `unknown_habit` strikes and
-    /// the deletion queue. Returns the drops for the engine (recovery log, then delete).
+    /// Applies a chunk's 200 to the store: acknowledgements, holds, `unknown_habit` strikes, the
+    /// deletion queue and the server's aliases. Returns the drops for the engine (recovery log,
+    /// then delete).
     ///
     /// Call only for an answer `SyncAnswers.action` mapped to `.proceed`, and only after the run
     /// has re-checked that its owner, token and state generation are still current — an
@@ -575,6 +594,17 @@ enum SyncPushResolver {
     /// A row deleted locally while its chunk was in flight is simply not found; there is nothing
     /// to acknowledge. Rows sharing a canonical id (`Habit.id` has no uniqueness constraint, and
     /// old id-case bugs made duplicates) are all updated: the server holds one row for that id.
+    ///
+    /// An acknowledged entry the server keeps under another id (`entryAliases`) takes that id here,
+    /// in the chunk's own save (review data-safety-4). Two devices that checked a day before either
+    /// pulled the other's check-in hold one server row under two ids, and until the day match of a
+    /// later pull renamed it, an uncheck queued an id the server does not hold: the push deleted
+    /// nothing, and the next pull brought the day back as the server's row. That pull may never come
+    /// first — it can fail, and the user can tap while it is in flight. A record deleted here while
+    /// its chunk was in flight has nothing to rename; if its deletion is queued, the stored id is
+    /// queued with it, so the uncheck still reaches the row. Neither is done onto an id a local
+    /// record already goes by: that day is here twice already (an old duplicate), and following the
+    /// alias would put one id on two records.
     static func resolve(
         _ chunk: SyncPushChunk,
         response: SyncPushResponse,
@@ -583,12 +613,35 @@ enum SyncPushResolver {
         strikes: SyncUnknownHabitStrikes
     ) throws -> SyncChunkOutcome {
         let skipped = skippedIDs(in: response)
+        let aliases = entryAliases(in: response)
+        let aliasTargets = aliases.values.map { SyncRowRef(kind: .entry, id: $0.uuidString) }
         let index = try RowIndex(context, kinds: Set(chunk.submitted.map(\.ref.kind)).union(
             chunk.payload.entries.isEmpty ? [] : [.habit]),
-            entries: chunk.submitted.map(\.ref).filter { $0.kind == .entry })
+            entries: chunk.submitted.map(\.ref).filter { $0.kind == .entry } + aliasTargets)
         var outcome = SyncChunkOutcome()
         var handled = Set<SyncRowRef>()
         var clearedStrikes: [String] = []
+        // Ids a local record goes by, or has just been given: no alias gives one a second record.
+        var takenIDs = Set(aliasTargets.filter { !index.rows($0).isEmpty })
+        var queuedEntries: Set<String>?
+
+        func followAlias(of ref: SyncRowRef, rows: [any SyncDeliverable]) {
+            guard let stored = aliases[ref] else { return }
+            let target = SyncRowRef(kind: .entry, id: stored.uuidString)
+            guard !takenIDs.contains(target) else { return }
+            let records = rows.compactMap { $0 as? HabitRecord }
+            if records.isEmpty {
+                // Read once, and only here: deleting a multi-year habit queues thousands of ids.
+                let queued = queuedEntries ?? Set(deletionQueue.pending().entries.map(SyncReconciler.canonicalID))
+                queuedEntries = queued
+                guard queued.contains(ref.id) else { return }
+                deletionQueue.trackEntry(stored.uuidString)
+            } else {
+                records.forEach { $0.id = stored }
+            }
+            takenIDs.insert(target)
+            outcome.realigned[ref] = stored.uuidString
+        }
 
         for item in chunk.items {
             guard let ref = item.ref, let sent = item.sentStamp, handled.insert(ref).inserted else { continue }
@@ -612,7 +665,10 @@ enum SyncPushResolver {
             case .acknowledge:
                 rows.forEach { $0.acknowledge(sentStamp: sent) }
                 outcome.acknowledged.append(ref)
-                if ref.kind == .entry { clearedStrikes.append(ref.id) }
+                if ref.kind == .entry {
+                    clearedStrikes.append(ref.id)
+                    followAlias(of: ref, rows: rows)
+                }
             case .hold(let holdReason):
                 // At the SENT stamp: an edit made while the chunk was in flight is a new value
                 // and gets its own chance.

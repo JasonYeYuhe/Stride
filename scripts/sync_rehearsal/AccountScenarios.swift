@@ -124,11 +124,17 @@ extension Scenarios {
         d.signedIn = nil
         d.signedIn = y
         let startConflict = try unwrap(await d.sync().conflict, "the screen for Y")
+        // The account the screen's Export writes, taken as the app takes it: from the conflict's
+        // owner (`SyncService.backupFile(for:)`). Built by hand from X, the check could not fail
+        // (review recovery-backup-3); built this way, it fails when the screen would record any
+        // account but the store's owner, X, while Y is signed in.
+        let exportAccount = startConflict.owner.map { BackupAccount(id: $0.id, email: $0.email) }
         let backup = try DataBackup.decode(try DataBackup.encode(
-            DataBackup.snapshot(of: d.context, account: BackupAccount(id: x.owner, email: x.email))))
+            DataBackup.snapshot(of: d.context, account: exportAccount)))
         let exported = Set(backup.habits.map(\.name))
         report.check("Export first: the backup names X and holds every habit on the device, the never-pushed one included",
-                     backup.accountId == x.owner && exported == ["X: Read", "X: Run", "X: never pushed"],
+                     exportAccount?.id == x.owner && backup.accountId == x.owner && backup.accountEmail == x.email
+                        && exported == ["X: Read", "X: Run", "X: never pushed"],
                      "accountId \(backup.accountId ?? "none"); \(exported.sorted())")
 
         let xIDs = Set(try d.habits().map(\.id.uuidString))

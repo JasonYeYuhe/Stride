@@ -728,8 +728,25 @@ final class SyncDeliveryTests: XCTestCase {
         let bare = try JSONDecoder().decode(SyncPushResponse.self, from: Data(#"{"ok":true}"#.utf8))
         XCTAssertTrue(bare.ok)
         XCTAssertNil(bare.skipped)
+        XCTAssertNil(bare.aliases)
         let partial = try JSONDecoder().decode(SyncPushResponse.self, from: Data(#"{"ok":true,"skipped":{"entries":["x"]}}"#.utf8))
         XCTAssertEqual(partial.skipped, .init(entries: ["x"]))
+    }
+
+    /// `aliases` (review data-safety-4): entries only, sent id → stored id as the server spells
+    /// them. The server sends the key only when there is one (a bare answer decodes it as nil,
+    /// above); an object without `entries` still decodes, as none.
+    func testPushResponseDecodesAliases() throws {
+        let json = """
+        {"ok":true,"applied":{"habits":0,"entries":2,"groups":0},
+         "skipped":{"habits":[],"entries":[],"groups":[]},
+         "skippedReasons":{"habits":{},"entries":{},"groups":{}},
+         "aliases":{"entries":{"E1":"e9"}}}
+        """
+        let response = try JSONDecoder().decode(SyncPushResponse.self, from: Data(json.utf8))
+        XCTAssertEqual(response.aliases, .init(entries: ["E1": "e9"]))
+        let empty = try JSONDecoder().decode(SyncPushResponse.self, from: Data(#"{"ok":true,"aliases":{}}"#.utf8))
+        XCTAssertEqual(empty.aliases?.entries, [:])
     }
 
     func testPullTotalsAreOptional() throws {

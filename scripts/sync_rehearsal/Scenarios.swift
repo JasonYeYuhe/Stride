@@ -732,6 +732,58 @@ struct Scenarios {
                      "\(describe(ex)); local \(local.count), server \(onServer.count)")
     }
 
+    // S23 — one day checked on two devices, then unchecked (review data-safety-4). The phone and
+    // the iPad check a day before either pulls the other's check-in. The server keeps one row per
+    // habit and day, the iPad's, and names it in the phone's push answer (`aliases`); the phone
+    // takes that id as it acknowledges. Its post-push pull is lost, so nothing else renamed it:
+    // the uncheck that follows must delete the day on the server, and no pull may check it again.
+    // Before, the uncheck queued the phone's own id, the push deleted nothing, and the next pull
+    // brought the day back on the phone while it stayed checked everywhere else.
+    func sameDayOnTwoDevicesThenUncheck() async throws {
+        let account = try Account.create()
+        let phone = Device131("phone", account: account), iPad = Device131("iPad", account: account)
+        defer { phone.remove(); iPad.remove() }
+        let dayString = HabitCalendar.dayStringFormatter.string(from: HabitCalendar.startOfKey(Scenario.day(0)))
+        func serverDay(habit: UUID) async throws -> [SyncEntry] {
+            try await serverSnapshot(account).entries.filter {
+                SyncReconciler.canonicalID($0.habitId) == habit.uuidString && $0.date == dayString
+            }
+        }
+        func records(_ d: Device131) throws -> [HabitRecord] { try d.context.fetch(FetchDescriptor<HabitRecord>()) }
+
+        let walk = phone.habit("Walk")
+        try phone.save()
+        guard isSynced(await phone.sync()), isSynced(await iPad.sync()) else { throw Missing(description: "the first syncs") }
+        try iPad.tapAndSave(try unwrap(iPad.habits().first, "the iPad has Walk"), day: 0)
+        guard isSynced(await iPad.sync()) else { throw Missing(description: "the iPad's check-in") }
+        try phone.tapAndSave(walk, day: 0)
+        let sentID = try unwrap(records(phone).first, "the phone's check-in").id
+
+        phone.transport.transformPull = { _, _ in .noAnswer }   // the post-push pull never arrives
+        let lost = await phone.sync()
+        phone.transport.transformPull = nil
+        let held = try await serverDay(habit: walk.id)
+        let renamed = try records(phone)
+        report.check("the same day from two devices: the phone's check-in takes the id the server keeps as it is acknowledged",
+                     !isSynced(lost) && held.count == 1 && renamed.count == 1 && renamed.first?.id != sentID
+                        && renamed.first?.id.uuidString == SyncReconciler.canonicalID(held.first?.id ?? "")
+                        && renamed.first?.isPending == false,
+                     "\(describe(lost)); server \(held.map(\.id)); phone \(renamed.map(\.id.uuidString))")
+
+        try phone.tapAndSave(walk, day: 0)   // the uncheck
+        let mark = phone.transport.mark()
+        let unchecked = await phone.sync()
+        let again = await phone.sync()
+        let iPadSynced = await iPad.sync()
+        let ex = phone.transport.since(mark)
+        let onServer = try await serverDay(habit: walk.id)
+        let onPhone = try records(phone).count, onIPad = try records(iPad).count
+        report.check("…then an uncheck deletes the day on the server, and no pull checks it again on either device",
+                     isSynced(unchecked) && isSynced(again) && isSynced(iPadSynced) && onServer.isEmpty
+                        && onPhone == 0 && onIPad == 0 && phone.queue.pending().isEmpty,
+                     "\(describe(ex)); server \(onServer.count), phone \(onPhone), iPad \(onIPad)")
+    }
+
     // S14 — the first full pull proves the account (owner decision 2026-09-28; slice review R1).
     // Device D ran 1.3.0 on account A, synced, and went dormant; its session expired, which
     // deletes the token and keeps `stride_last_sync_time`, so nothing says which account its

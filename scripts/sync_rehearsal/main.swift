@@ -37,6 +37,7 @@ func main() async -> Int32 {
         ("S20 pause + revoked session", scenarios.pauseAndRevokedSession),
         ("S21 account screen", scenarios.accountScreen),
         ("S22 owner unknown → Upload", scenarios.accountScreenUnknownOwnerUpload),
+        ("S23 same day, two ids → uncheck", scenarios.sameDayOnTwoDevicesThenUncheck),
     ]
     if Rehearsal.env["STRIDE_REHEARSAL_LARGE"] == "1" {
         plan.append(("S12 20,000 entries (timed)", scenarios.largeAccount))
