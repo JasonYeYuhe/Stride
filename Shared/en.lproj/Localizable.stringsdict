@@ -474,6 +474,38 @@
 			<string>%lld items belong to another account</string>
 		</dict>
 	</dict>
+	<key>Restore them as new copies to bring them back to your account, or discard them. Your backup file keeps them either way. (%lld held)</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>Restore it as a new copy to bring it back to your account, or discard it. Your backup file keeps it either way.</string>
+			<key>other</key>
+			<string>Restore them as new copies to bring them back to your account, or discard them. Your backup file keeps them either way.</string>
+		</dict>
+	</dict>
+	<key>They came from another account's data, so this account can't sync them as they are. Restore them as new copies to add them to this account. (%lld held)</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>It came from another account's data, so this account can't sync it as it is. Restore it as a new copy to add it to this account.</string>
+			<key>other</key>
+			<string>They came from another account's data, so this account can't sync them as they are. Restore them as new copies to add them to this account.</string>
+		</dict>
+	</dict>
 	<key>Recovered Edits (%lld)</key>
 	<dict>
 		<key>NSStringLocalizedFormatKey</key>

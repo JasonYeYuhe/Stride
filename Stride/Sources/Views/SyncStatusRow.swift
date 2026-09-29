@@ -148,25 +148,34 @@ private struct SyncStatusLabel<Content: View>: View {
 /// region (en_FR), and equals `appLocale` whenever a language is picked. Under a minute, and for
 /// a stamp in the future (the clock moved back since), it says "just now" rather than "in 0
 /// seconds".
-private struct SyncedText: View {
+///
+/// Settings' Sync Now row says it too, abbreviated to fit beside the button, in a TimelineView of
+/// its own. Settings' own formatter read "in 0s" right after every sync — the stored stamp is
+/// whole seconds and can land just ahead of the clock — and, computed once per render with no
+/// timeline, still "in 0s" minutes later (E2E S4, S5, S6, S9).
+struct SyncedText: View {
     let date: Date
     let now: Date
+    var unitsStyle: RelativeDateTimeFormatter.UnitsStyle = .full
 
     var body: some View {
-        if now.timeIntervalSince(date) < 60 {
-            Text("Synced just now")
-        } else {
-            let dateLabel = Self.relative(date, now: now)
-            Text("Synced \(dateLabel)")
-        }
+        Self.text(date, now: now, unitsStyle: unitsStyle)
+    }
+
+    /// The same sentence as a `Text`, for an accessibility value.
+    @MainActor
+    static func text(_ date: Date, now: Date, unitsStyle: RelativeDateTimeFormatter.UnitsStyle = .full) -> Text {
+        if now.timeIntervalSince(date) < 60 { return Text("Synced just now") }
+        let dateLabel = relative(date, now: now, unitsStyle: unitsStyle)
+        return Text("Synced \(dateLabel)")
     }
 
     @MainActor
-    static func relative(_ date: Date, now: Date) -> String {
+    static func relative(_ date: Date, now: Date, unitsStyle: RelativeDateTimeFormatter.UnitsStyle = .full) -> String {
         let formatter = RelativeDateTimeFormatter()
         formatter.locale = LanguageManager.shared.stringLocale
         formatter.calendar = appCalendar
-        formatter.unitsStyle = .full
+        formatter.unitsStyle = unitsStyle
         return formatter.localizedString(for: date, relativeTo: now)
     }
 }
@@ -230,7 +239,8 @@ private struct SignInAgainRow: View {
 }
 
 /// The "Sign in again" flow: the row's tap, and the login sheet it opens (TodayView presents
-/// `showingLogin` and calls `loginClosed` when the sheet goes).
+/// `showingLogin` and calls `loginClosed` when the sheet goes). Settings' Account section runs one
+/// of its own for the same row there (E2E S9).
 ///
 /// Held by TodayView, not by the row (review critic-1). The sign-in the sheet is for ends the row's
 /// reason — `setUser` clears `sessionExpired`, and Today's line moves on — so the row leaves the
@@ -248,6 +258,9 @@ final class SignInAgainFlow {
     /// The tap's session check, or the sync after it, is running: the row shows a spinner and
     /// takes no second tap.
     private(set) var isChecking = false
+    /// What the login sheet's email field starts with: `accountEmail` as the tap found it, before
+    /// the session check could forget the account (E2E S9 suggestion — it started empty).
+    private(set) var loginEmail: String?
 
     private let auth: AuthService
     private let sync: SyncService
@@ -275,6 +288,7 @@ final class SignInAgainFlow {
         guard !isChecking else { return }
         isChecking = true
         defer { isChecking = false }
+        loginEmail = accountEmail
         if auth.hasStoredSession {
             await auth.checkSession()
             if auth.isLoggedIn {
@@ -283,6 +297,16 @@ final class SignInAgainFlow {
             }
         }
         showingLogin = true
+    }
+
+    var accountEmail: String? { Self.accountEmail(auth: auth, sync: sync) }
+
+    /// The account the row asks the user to sign back into: the one still signed in (a 401 this
+    /// launch), or — once the session check has forgotten it, or a cold launch found it gone — the
+    /// store's owner, whose habits "keep syncing" is about. nil when neither is known (an
+    /// owner-unknown store). Settings shows it under its row (`SettingsAccountState`).
+    static func accountEmail(auth: AuthService, sync: SyncService) -> String? {
+        auth.userEmail ?? sync.storeOwner?.email
     }
 
     /// The sheet closed. Signed in: a sync at once (user-initiated, so no backoff), as Settings

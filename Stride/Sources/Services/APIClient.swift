@@ -11,20 +11,63 @@ actor APIClient {
     #endif
 
     private let baseURL: URL
-    private let session: URLSession
+    /// Not private: APIClientTests checks that `shared` goes through `defaultSession`.
+    nonisolated let session: URLSession
     private let tokenStore: SessionTokenStore
 
-    /// The defaults are what `shared` has always used. StrideAppTests passes a URLSession whose
-    /// URLProtocol answers instead of a server, and an in-memory token store (see
-    /// `SessionTokenStore` for why never the real Keychain item).
+    /// The defaults are what `shared` uses. StrideAppTests passes a URLSession whose URLProtocol
+    /// answers instead of a server, and an in-memory token store (see `SessionTokenStore` for why
+    /// never the real Keychain item).
     init(
         baseURL: URL = APIClient.defaultBaseURL,
-        session: URLSession = .shared,
+        session: URLSession = APIClient.defaultSession,
         tokenStore: SessionTokenStore = KeychainSessionTokenStore()
     ) {
         self.baseURL = baseURL
         self.session = session
         self.tokenStore = tokenStore
+    }
+
+    // MARK: - Nothing on disk but the Keychain item
+
+    /// The session `shared` talks through: no URL cache, no cookies (E2E S9).
+    ///
+    /// Until 1.3.1 it was `URLSession.shared`, whose disk cache (Library/Caches/<bundle>/Cache.db)
+    /// kept the /v1/auth/verify answer — the live session token, in plain text — every session
+    /// check's answer and every pull's habits, and whose cookie store kept the `stride_session`
+    /// cookie the verify answer sets for the web login and sent it back on every request. The
+    /// token belongs in the Keychain only (`KeychainSessionTokenStore`), and this app
+    /// authenticates with the Bearer header alone: the server reads the header first on every
+    /// route, and the app sends no request that needs the cookie (a stored token is the only way
+    /// it is signed in). Ephemeral, so no credential store is written either.
+    static let defaultSession = URLSession(configuration: sessionConfiguration())
+
+    static func sessionConfiguration() -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        return configuration
+    }
+
+    /// The hosts earlier builds may have left answers and cookies for: this build's API, and the
+    /// production API (a Debug build installed over a store build talks to localhost).
+    static let apiHosts: Set<String> = Set([defaultBaseURL.host, LoginLink.host].compactMap { $0 })
+
+    /// What earlier builds left through `URLSession.shared` (E2E S9): every cached answer, and the
+    /// API's cookies. Run at every launch (StrideApp), off the main thread — cheap once there is
+    /// nothing left, and it also clears what a reinstalled older build wrote since. Nothing else
+    /// in the app uses the shared URL cache or cookie store (no web view, no other URLSession;
+    /// Sentry sends through its own), so all of the cache goes; other hosts' cookies are left.
+    /// CFNetwork vacuums Cache.db as it removes the rows, so the token's bytes do not stay behind
+    /// in free pages.
+    static func purgeStoredHTTPState(cache: URLCache = .shared, cookies: HTTPCookieStorage = .shared,
+                                     hosts: Set<String> = apiHosts) {
+        cache.removeAllCachedResponses()
+        for cookie in cookies.cookies ?? [] where hosts.contains(where: { cookie.isSent(to: $0) }) {
+            cookies.deleteCookie(cookie)
+        }
     }
 
     private let encoder: JSONEncoder = {
@@ -345,4 +388,15 @@ enum APIError: LocalizedError {
 
 // Sync request/response models live in Shared/SyncModels.swift so the reconciliation
 // logic that consumes them (Shared/SyncReconciler.swift) is visible to StrideTests.
+
+private extension HTTPCookie {
+    /// Whether a request to `host` would carry this cookie (RFC 6265's domain match): a host-only
+    /// cookie (`stride-api.colorarchive.me`, what the server's verify answer sets) goes to that
+    /// host alone, a domain cookie (`.colorarchive.me`) to the domain and every host under it.
+    func isSent(to host: String) -> Bool {
+        let host = host.lowercased(), domain = domain.lowercased()
+        guard domain.hasPrefix(".") else { return host == domain }
+        return host == String(domain.dropFirst()) || host.hasSuffix(domain)
+    }
+}
 

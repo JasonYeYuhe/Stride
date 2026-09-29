@@ -55,15 +55,46 @@ enum DataExportService {
         let document = try await MainActor.run {
             try DataBackup.snapshot(of: container.mainContext, account: account)
         }
-        let data = try encode(document)
-        // A directory per export: two exports on the same day must not overwrite a file the
-        // share sheet may still be reading.
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("StrideExport-\(UUID().uuidString)", isDirectory: true)
+        return try writeExportFile(try encode(document),
+                                   named: fileName(stem, extension: ext, date: document.exportedAt))
+    }
+
+    // MARK: - The files in tmp
+
+    /// Every export file is written into a directory of its own in tmp, named with this prefix.
+    static let exportDirectoryPrefix = "StrideExport-"
+
+    /// Writes one export into a new `StrideExport-<UUID>` directory under `root`: two exports on
+    /// the same day must not overwrite a file a share sheet may still be reading.
+    static func writeExportFile(_ data: Data, named name: String,
+                                in root: URL = FileManager.default.temporaryDirectory) throws -> URL {
+        let directory = root.appendingPathComponent(exportDirectoryPrefix + UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let url = directory.appendingPathComponent(fileName(stem, extension: ext, date: document.exportedAt))
+        let url = directory.appendingPathComponent(name)
         try data.write(to: url, options: .atomic)
         return url
+    }
+
+    /// Deletes every export directory under `root`, and returns how many went (E2E S-DEL).
+    ///
+    /// Nothing ever removed them: tmp kept every backup, CSV and recovered-edits file shared since
+    /// the app was installed (three copies per tap, before `ExportFileMemo`), and after Delete
+    /// Account the deleted account's habits and edits were still there, although the deletion
+    /// erases this device's copy. Called at launch (StrideApp; no share sheet is open then), after
+    /// Erase Local Data (`eraseLocalData`), and after the flows that erase the store from outside
+    /// Settings' list — Delete Account, Start from This Account's Data (`AccountDataRefresh`). The
+    /// exports those offered were shared before the button that erased could be tapped, and a
+    /// share hands the receiver its own copy of the file. A directory that cannot be removed now is
+    /// left for the next call.
+    @discardableResult
+    static func removeExportFiles(in root: URL = FileManager.default.temporaryDirectory) -> Int {
+        let fileManager = FileManager.default
+        guard let names = try? fileManager.contentsOfDirectory(atPath: root.path) else { return 0 }
+        var removed = 0
+        for name in names where name.hasPrefix(exportDirectoryPrefix) {
+            if (try? fileManager.removeItem(at: root.appendingPathComponent(name))) != nil { removed += 1 }
+        }
+        return removed
     }
 
     // MARK: - Reading a picked file
@@ -235,12 +266,16 @@ enum DataExportService {
     /// erased (`.recoveredEditsChanged`) and Settings asks again. Not the line count: at the log's
     /// 5 MB cap the sync's line pushes the oldest out, and the count reads the same (review
     /// recovery-backup-1).
+    ///
+    /// An erase also deletes the export files in tmp (`removeExportFiles`; `exportRoot` is tmp
+    /// itself, a test's own directory in tests): they are copies of what it erased (E2E S-DEL).
     @MainActor
     static func eraseLocalData(in context: ModelContext,
                                clearingRecoveredEdits: Bool = false,
                                recoveredEditTotalShown: Int? = nil,
                                auth: AuthService? = nil,
-                               sync: SyncService? = nil) async -> EraseOutcome {
+                               sync: SyncService? = nil,
+                               exportRoot: URL = FileManager.default.temporaryDirectory) async -> EraseOutcome {
         let auth = auth ?? .shared, sync = sync ?? .shared   // see `restore` for the optionals
         if auth.isLoggedIn || auth.hasStoredSession {
             guard await sync.syncAfterInFlight(context: context) else { return .syncFailed }
@@ -264,6 +299,7 @@ enum DataExportService {
             return .saveFailed
         }
         sync.resetSyncState(clearingRecoveryLog: clearingRecoveredEdits)
+        removeExportFiles(in: exportRoot)
         return .erased
     }
 
@@ -312,6 +348,36 @@ struct RestoreHandover: Equatable {
 
 // MARK: - Share sheet items
 
+/// One share, one file (E2E S-DEL). The share sheet asks an item for its file several times (its
+/// collaboration check among them, the device log shows), and each ask used to read the store and
+/// write a copy of its own: one Export as JSON tap left three `StrideExport-*` directories,
+/// written within 80 ms. Each item holds one of these (a class, so every copy of the item value
+/// shares it): the first ask writes the file, and every ask made while it is being written or in
+/// the `reuseWindow` after gets that same file. A later share of the same item — no redraw made a
+/// new one — writes a fresh file, so no share is handed data more than a minute old. A failed
+/// write is not kept: the next ask tries again.
+final class ExportFileMemo: @unchecked Sendable {
+    static let reuseWindow: TimeInterval = 60
+
+    private let lock = NSLock()
+    private var made: (task: Task<URL, Error>, at: Date)?
+
+    func file(now: Date = Date(), write: @escaping @Sendable () async throws -> URL) async throws -> URL {
+        let task: Task<URL, Error> = lock.withLock {
+            if let made, now.timeIntervalSince(made.at) < Self.reuseWindow { return made.task }
+            let task = Task { try await write() }
+            made = (task, now)
+            return task
+        }
+        do {
+            return try await task.value
+        } catch {
+            lock.withLock { if made?.task == task { made = nil } }
+            throw error
+        }
+    }
+}
+
 /// The lossless v2 backup, as a `.json` file. Serialised only when the user picks a destination.
 ///
 /// `account` is the store's sync owner, written into the file (`accountId`, `accountEmail`) so a
@@ -321,6 +387,7 @@ struct RestoreHandover: Equatable {
 struct BackupJSONFile: Transferable, Sendable {
     let container: ModelContainer
     var account: BackupAccount?
+    let memo = ExportFileMemo()
 
     init(container: ModelContainer, account: BackupAccount? = DataExportService.storeOwnerAccount()) {
         self.container = container
@@ -329,9 +396,11 @@ struct BackupJSONFile: Transferable, Sendable {
 
     static var transferRepresentation: some TransferRepresentation {
         FileRepresentation(exportedContentType: .json) { file in
-            SentTransferredFile(try await DataExportService.exportFile(
-                from: file.container, account: file.account, stem: "Stride-Backup", ext: "json",
-                encode: { try DataBackup.encode($0) }))
+            SentTransferredFile(try await file.memo.file {
+                try await DataExportService.exportFile(
+                    from: file.container, account: file.account, stem: "Stride-Backup", ext: "json",
+                    encode: { try DataBackup.encode($0) })
+            })
         }
     }
 }
@@ -343,6 +412,7 @@ struct BackupJSONFile: Transferable, Sendable {
 struct RecoveredEditsJSONFile: Transferable, Sendable {
     let log: SyncRecoveryLog
     let accountID: String?
+    let memo = ExportFileMemo()
 
     /// `SyncService.recoveredEditsFile` makes one for the store's owner.
     init(log: SyncRecoveryLog, accountID: String?) {
@@ -352,14 +422,11 @@ struct RecoveredEditsJSONFile: Transferable, Sendable {
 
     static var transferRepresentation: some TransferRepresentation {
         FileRepresentation(exportedContentType: .json) { file in
-            let data = try file.log.exportData(accountID: file.accountID)
-            let directory = FileManager.default.temporaryDirectory
-                .appendingPathComponent("StrideExport-\(UUID().uuidString)", isDirectory: true)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let url = directory.appendingPathComponent(
-                DataExportService.fileName("Stride-RecoveredEdits", extension: "json"))
-            try data.write(to: url, options: .atomic)
-            return SentTransferredFile(url)
+            SentTransferredFile(try await file.memo.file {
+                try DataExportService.writeExportFile(
+                    try file.log.exportData(accountID: file.accountID),
+                    named: DataExportService.fileName("Stride-RecoveredEdits", extension: "json"))
+            })
         }
     }
 }
@@ -367,11 +434,14 @@ struct RecoveredEditsJSONFile: Transferable, Sendable {
 /// One row per check-in, as a `.csv` file for spreadsheets. Serialised only when shared.
 struct HabitsCSVFile: Transferable, Sendable {
     let container: ModelContainer
+    let memo = ExportFileMemo()
 
     static var transferRepresentation: some TransferRepresentation {
         FileRepresentation(exportedContentType: .commaSeparatedText) { file in
-            SentTransferredFile(try await DataExportService.exportFile(
-                from: file.container, stem: "Stride-Export", ext: "csv", encode: { DataBackup.csvData($0) }))
+            SentTransferredFile(try await file.memo.file {
+                try await DataExportService.exportFile(
+                    from: file.container, stem: "Stride-Export", ext: "csv", encode: { DataBackup.csvData($0) })
+            })
         }
     }
 }

@@ -999,14 +999,14 @@ final class AccountSwitchTests: XCTestCase {
         await signIn("magic-A")
         let step = try XCTUnwrap(DeleteAccountStep.current(auth: auth, sync: sync, hasLocalData: true))
         XCTAssertEqual(step.recoveredEditLines, 1)
-        let unchanged = await step.recheck(sync: sync)
+        let unchanged = await step.recheck(sync: sync, context: context)
         XCTAssertNil(unchanged, "the count it offered is still on disk: delete")
 
         let row = DataBackup.snapshot(habits: [Habit(name: "Archived after Continue")], groups: []).habits[0]
         try recovery.log.append([SyncRecoveryItem(archivedAt: Date(), reason: .deletedElsewhere, row: .habit(row))],
                                 accountID: accountA.id)
 
-        let rebuilt = await step.recheck(sync: sync)
+        let rebuilt = await step.recheck(sync: sync, context: context)
         let changed = try XCTUnwrap(rebuilt, "a line nobody offered: do not delete")
         XCTAssertEqual(changed.recoveredEditLines, 2)
         XCTAssertTrue(changed.recoveredEditsChanged)
@@ -1014,15 +1014,15 @@ final class AccountSwitchTests: XCTestCase {
         XCTAssertTrue(changed.offersBackup)
         XCTAssertEqual(changed.id, step.id, "the same sheet, updated in place")
         XCTAssertEqual(sync.recoveredEdits?.lines, 2)
-        let confirmed = await changed.recheck(sync: sync)
+        let confirmed = await changed.recheck(sync: sync, context: context)
         XCTAssertNil(confirmed, "shown the two lines: delete")
 
         // A log emptied meanwhile has nothing to lose; another owner's store loses no lines.
         try recovery.log.clear(accountID: accountA.id)
-        let emptied = await changed.recheck(sync: sync)
+        let emptied = await changed.recheck(sync: sync, context: context)
         XCTAssertNil(emptied)
         let otherOwner = DeleteAccountStep(email: "b@example.com", erasesDevice: false, hasLocalData: true, recoveredEdits: .empty)
-        let untouched = await otherOwner.recheck(sync: sync)
+        let untouched = await otherOwner.recheck(sync: sync, context: context)
         XCTAssertNil(untouched)
     }
 
@@ -1045,12 +1045,42 @@ final class AccountSwitchTests: XCTestCase {
         XCTAssertEqual(try capped.lineCount(accountID: accountA.id), step.recoveredEditLines,
                        "precondition: at the cap the count did not move")
 
-        let rebuilt = await step.recheck(sync: sync)
+        let rebuilt = await step.recheck(sync: sync, context: context)
         let changed = try XCTUnwrap(rebuilt, "a line nobody offered: do not delete")
         XCTAssertTrue(changed.recoveredEditsChanged)
         XCTAssertTrue(changed.offersRecoveredEdits)
-        let confirmed = await changed.recheck(sync: sync)
+        let confirmed = await changed.recheck(sync: sync, context: context)
         XCTAssertNil(confirmed, "shown what is on disk now: delete")
+    }
+
+    /// E2E S-DEL: the sync that archived a line after Continue had also removed the store's last
+    /// habit, and the rebuilt step still offered Export as JSON — an empty backup — because it
+    /// kept Continue's answer. It reads the store again: recovered edits only.
+    func testDeleteAccountStepRebuiltOverAnEmptiedStoreOffersNoBackup() async throws {
+        let habit = try seedAsStore()
+        await signIn("magic-A")
+        let step = try XCTUnwrap(DeleteAccountStep.current(auth: auth, sync: sync, hasLocalData: true))
+        XCTAssertTrue(step.offersBackup, "precondition")
+
+        // What that sync did: the habit went (deleted on another device), its edit was archived.
+        context.delete(habit)
+        try context.save()
+        let row = DataBackup.snapshot(habits: [Habit(name: "A's habit, edited here")], groups: []).habits[0]
+        try recovery.log.append([SyncRecoveryItem(archivedAt: Date(), reason: .deletedElsewhere, row: .habit(row))],
+                                accountID: accountA.id)
+        XCTAssertFalse(DeleteAccountStep.hasLocalData(in: context))
+
+        let rebuilt = await step.recheck(sync: sync, context: context)
+
+        let changed = try XCTUnwrap(rebuilt)
+        XCTAssertFalse(changed.offersBackup, "nothing left to back up")
+        XCTAssertTrue(changed.offersRecoveredEdits)
+        XCTAssertTrue(changed.recoveredEditsChanged)
+
+        // A group alone is something to back up.
+        context.insert(HabitGroup(name: "Morning"))
+        try context.save()
+        XCTAssertTrue(DeleteAccountStep.hasLocalData(in: context))
     }
 
     /// Erase Local Data's API: the owner's recovered edits go only when the caller asks (after

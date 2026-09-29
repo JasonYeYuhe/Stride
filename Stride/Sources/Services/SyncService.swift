@@ -46,9 +46,9 @@ final class SyncService {
     private(set) var syncError: String?
 
     /// The last sync was answered 401. No state was reset: signing into the same account again
-    /// resumes. The inline "Sign in again to keep syncing" row on Today reads this, together with
-    /// `AuthService.sessionExpired` — the persisted half, for a cold launch whose session check
-    /// finds the token dead before any sync can meet the 401.
+    /// resumes. The inline "Sign in again to keep syncing" row on Today (and Settings' Account
+    /// section) reads this, together with `AuthService.sessionExpired` — the persisted half, for a
+    /// cold launch whose session check finds the token dead before any sync can meet the 401.
     private(set) var needsReauth = false
     /// The owner's backoff as last read from `SyncBackoffStore` — why automatic syncs wait
     /// (`reason`: offline, server error, rate limited, paused, client bug) and since when. The
@@ -263,8 +263,12 @@ final class SyncService {
                 // sign-out, an erase, another account). Nothing after it was written.
                 break
             case .needsReauth:
+                // "Sign in again to keep syncing" says it — Today's row, and Settings' Account
+                // section in the same words — and nothing else (M2, "Sign-in that stays";
+                // acceptance 9). This also set 1.3.0's red "Please log in again" footer, under a
+                // green "Signed in", and the footer outlived the session check that signed the
+                // device out (E2E S9).
                 needsReauth = true
-                syncError = appLocalized("Please log in again")
             case .upgradeRequired:
                 syncError = transport.displayMessage
             case .backOff(let kind, let answer):

@@ -416,6 +416,34 @@
 			<string>%lld</string>
 		</dict>
 	</dict>
+	<key>Restore them as new copies to bring them back to your account, or discard them. Your backup file keeps them either way. (%lld held)</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>새 사본으로 복원해 계정으로 되돌리거나 폐기하세요. 어느 쪽이든 백업 파일에는 남아 있습니다.</string>
+		</dict>
+	</dict>
+	<key>They came from another account's data, so this account can't sync them as they are. Restore them as new copies to add them to this account. (%lld held)</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>다른 계정의 데이터에서 왔기 때문에 이 계정에서는 그대로 동기화할 수 없습니다. 새 사본으로 복원하면 이 계정에 추가됩니다.</string>
+		</dict>
+	</dict>
 	<key>Recovered Edits (%lld)</key>
 	<dict>
 		<key>NSStringLocalizedFormatKey</key>

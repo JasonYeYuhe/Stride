@@ -86,7 +86,7 @@ final class LocalizationSourceScanTests: XCTestCase {
             "error", "newError", "email", "habitName", "habit.emoji", "habit.name", "unit",
             "group.name", "title", "weekday", "dayNumber", "logged", "target", "dateLabel",
             "point.spokenDate", "best.emoji", "best.name", "worst.emoji", "worst.name",
-            "template.displayName", "formatSyncTime(lastSync)",
+            "template.displayName",
             "Self.amount(result.loggedValue)", "Self.amount(habit.targetValue)", "status",
         ]
         var table: [String: String] = [:]

@@ -140,6 +140,83 @@ final class TodaySyncStatusTests: XCTestCase {
         XCTAssertFalse(authDefaults.defaults.bool(forKey: AuthService.sessionExpiredKey))
     }
 
+    // MARK: - Settings' Account section (E2E S9)
+
+    /// What Settings' Account section would show now.
+    private func account() -> SettingsAccountState { SettingsAccountState.current(auth: auth, sync: sync) }
+
+    /// After a revoke, Settings said "Signed in" in green over a red "Please log in again", with
+    /// only Log Out and Delete Account; after the row's session check and a cancelled sheet,
+    /// "Sign In" over the same red line. It now shows Today's row, with the account to sign back
+    /// into and no red line, before the check (still signed in) and after it (signed out), and the
+    /// sheet the row opens starts with that address. Signing back in ends it, as on Today.
+    func testSettingsShowsTheReauthRowWithNoErrorBeforeAndAfterTheSessionCheck() async throws {
+        XCTAssertEqual(account(), SettingsAccountState(header: .signedIn(email: "a@example.com"),
+                                                       showsAccountActions: true, footerError: nil))
+        server.on("POST", "/v1/sync/push", respond: .init(status: 401, body: #"{"error":"Unauthorized"}"#))
+
+        await sync.sync(context: context)
+
+        XCTAssertNil(sync.syncError)
+        XCTAssertEqual(account(), SettingsAccountState(header: .signInAgain(email: "a@example.com"),
+                                                       showsAccountActions: true, footerError: nil))
+
+        // The row's tap: the check finds the session gone and signs the device out.
+        server.on("GET", "/v1/auth/session", respond: .ok(#"{"user":null}"#))
+        let flow = SignInAgainFlow(auth: auth, sync: sync)
+        await flow.start(context: context)
+
+        XCTAssertTrue(flow.showingLogin)
+        XCTAssertEqual(flow.loginEmail, "a@example.com", "the login sheet's email, taken before the check forgot it")
+        XCTAssertFalse(auth.isLoggedIn)
+        XCTAssertEqual(account(), SettingsAccountState(header: .signInAgain(email: "a@example.com"),
+                                                       showsAccountActions: false, footerError: nil),
+                       "the store's owner, once the session's account is forgotten")
+
+        server.on("POST", "/v1/auth/verify", respond: .ok(
+            #"{"ok":true,"user":{"id":7,"email":"a@example.com","created_at":"2026-09-01 10:00:00"},"sessionToken":"tok-A2"}"#))
+        server.on("POST", "/v1/sync/push", respond: .ok(SyncStubBodies.pushOK))
+        server.on("GET", "/v1/sync/pull", respond: .ok(SyncStubBodies.pull()))
+        let signedIn = await auth.verifyToken("magic-A")
+        XCTAssertTrue(signedIn)
+        let ran = await sync.sync(context: context)   // Settings' post-sign-in sync
+        XCTAssertTrue(ran)
+        XCTAssertEqual(account().header, .signedIn(email: "a@example.com"))
+    }
+
+    /// The cold-launch variant: no sync met the 401, the launch check deleted the dead token, and
+    /// Settings shows the row — for the store's owner — where it showed a bare "Sign In".
+    func testSettingsShowsTheReauthRowAfterAColdLaunchFoundTheSessionGone() async throws {
+        server.on("GET", "/v1/auth/session", respond: .ok(#"{"user":null}"#))
+        auth = AuthService(api: server.makeClient(tokenStore: tokens), tokenStore: tokens,
+                           defaults: authDefaults.defaults, onSignOut: {}, onSignIn: {})
+        sync = SyncService(api: server.makeClient(tokenStore: tokens), defaults: local.defaults,
+                           deletionQueue: SyncDeletionQueue(local: local.defaults, shared: appGroup.defaults),
+                           sessions: auth, recoveryLog: recovery.log)
+        await auth.waitForSessionRestore()
+
+        XCTAssertEqual(account(), SettingsAccountState(header: .signInAgain(email: "a@example.com"),
+                                                       showsAccountActions: false, footerError: nil))
+        let flow = SignInAgainFlow(auth: auth, sync: sync)
+        await flow.start(context: context)
+        XCTAssertTrue(flow.showingLogin, "no token left: the sheet at once")
+        XCTAssertEqual(flow.loginEmail, "a@example.com")
+    }
+
+    /// The red footer is for a signed-in account's sync. A failure's sentence used to stay under
+    /// "Sign In" after a sign-out (`signedOut()` keeps `syncError`); signed out it is not shown.
+    func testSettingsShowsASyncErrorOnlyWhileSignedIn() async throws {
+        server.on("POST", "/v1/sync/push", respond: .init(status: 500, body: #"{"error":"Internal error"}"#))
+        await sync.sync(context: context)
+        XCTAssertEqual(account().footerError, "Internal error")
+
+        sync.signedOut()
+        server.on("POST", "/v1/auth/logout", respond: .ok(#"{"ok":true}"#))
+        await auth.logout()
+
+        XCTAssertEqual(account(), SettingsAccountState(header: .signIn, showsAccountActions: false, footerError: nil))
+    }
+
     /// A deliberate sign-out is not a lost session: the row does not follow the user out.
     func testSigningOutRemovesTheReauthRow() async throws {
         server.on("POST", "/v1/sync/push", respond: .init(status: 401, body: #"{"error":"Unauthorized"}"#))

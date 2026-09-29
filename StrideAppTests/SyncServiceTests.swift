@@ -338,20 +338,25 @@ final class SyncServiceTests: XCTestCase {
 
     /// 401: `needsReauth`, and nothing is reset — not the token (the sync transport never
     /// deletes it, unlike 1.3.0's), the cursor, the queue or any row's delivery state — so
-    /// signing into the same account again resumes where it stopped.
+    /// signing into the same account again resumes where it stopped. And no `syncError`: the
+    /// "Sign in again" row says it (E2E S9 — the red "Please log in again" footer sat under a
+    /// green "Signed in"); an earlier run's error does not stay up either.
     func testUnauthorizedStopsAsNeedsReauthAndResetsNothing() async throws {
         seedOwnerAndCursor()
         queue.trackHabit("gone")
         let habit = Habit(name: "Read")
         context.insert(habit)
         try context.save()
+        server.on("POST", "/v1/sync/push", respond: .init(status: 500, body: #"{"error":"Internal error"}"#))
+        await sync.sync(context: context)
+        XCTAssertEqual(sync.syncError, "Internal error", "precondition: an earlier run's footer")
         server.on("POST", "/v1/sync/push", respond: .init(status: 401, body: #"{"error":"Unauthorized"}"#))
 
         let ran = await sync.sync(context: context)
 
         XCTAssertFalse(ran)
         XCTAssertTrue(sync.needsReauth)
-        XCTAssertEqual(sync.syncError, appLocalized("Please log in again"))
+        XCTAssertNil(sync.syncError)
         XCTAssertEqual(tokens.read(), SyncSession.accountA.token)
         XCTAssertEqual(cursors.cursor(for: owner), recentCursor)
         XCTAssertEqual(queue.pending().habits, ["gone"])

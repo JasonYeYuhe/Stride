@@ -22,6 +22,15 @@ struct StrideApp: App {
         // makes anyway. See SyncService.prepareLaunch.
         SyncService.prepareLaunch(context: modelContainer.mainContext, defaults: .standard,
                                   hasStoredSession: KeychainSessionTokenStore().read() != nil)
+        // Copies of the user's data that nothing else ever removed, off the main thread: the
+        // export files earlier share sheets wrote to tmp — backups, recovered edits, a deleted
+        // account's among them (E2E S-DEL) — and the answers and cookies earlier builds left in
+        // the shared URL cache and cookie store, the live session token among them (E2E S9). No
+        // share sheet is open yet, and this build's requests use neither store.
+        Task.detached(priority: .utility) {
+            DataExportService.removeExportFiles()
+            APIClient.purgeStoredHTTPState()
+        }
         #if DEBUG
         // DEBUG-only, like `-paywall`: populate() erases the store (habits, check-ins, groups)
         // without queueing tombstones, and this file is compiled into StrideMac too, where

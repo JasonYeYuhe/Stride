@@ -291,6 +291,39 @@ final class SyncSectionTests: XCTestCase {
         XCTAssertNil(cursors.cursor(for: owner))
     }
 
+    // MARK: - Sync Now (the Account section's)
+
+    /// E2E S5: signed into B over A's habits with the account screen's choice pending, Sync Now is
+    /// blocked like every sync — no request — and showed nothing at all. It now hands the conflict
+    /// back, and Settings opens the account screen with it. An automatic sync stays silent (its
+    /// callers ask for nothing), and once the owner syncs, Sync Now hands back nothing, whether
+    /// the sync worked or not.
+    func testSyncNowWhileTheAccountChoiceIsPendingReturnsTheConflict() async throws {
+        seedOwnerAndCursor()
+        context.insert(Habit(name: "A's habit"))
+        try context.save()
+        sessions.session = .accountB
+        stubHappyServer()
+
+        let blocked = await actions.syncNow()
+        let automatic = await sync.sync(context: context, trigger: .automatic)
+
+        XCTAssertEqual(blocked, SyncOwnerConflict(owner: SyncOwner(SyncSession.accountA.account),
+                                                  signedIn: SyncSession.accountB.account))
+        XCTAssertFalse(automatic)
+        XCTAssertTrue(server.requests.isEmpty, "still no request before the choice")
+
+        sessions.session = .accountA
+        let synced = await actions.syncNow()
+        XCTAssertNil(synced)
+        XCTAssertEqual(syncPaths, ["/v1/sync/push", "/v1/sync/pull"])
+
+        server.on("GET", "/v1/sync/pull", respond: .init(status: 500, body: #"{"error":"Internal error"}"#))
+        let failed = await actions.syncNow()
+        XCTAssertNil(failed, "a failure is the Account footer's")
+        XCTAssertEqual(sync.syncError, "Internal error")
+    }
+
     // MARK: - Restore choices
 
     private func backup(from account: SyncAccount?) -> BackupDocument {

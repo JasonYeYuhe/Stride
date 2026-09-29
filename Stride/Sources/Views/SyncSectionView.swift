@@ -54,12 +54,25 @@ struct SyncSectionContent: Equatable {
     }
 }
 
-/// The section's actions, apart from the view so the hosted tests run exactly what the buttons
-/// run. Side effects outside sync (reminders, widgets, VoiceOver) stay in the view.
+/// The section's actions — and the Account section's Sync Now — apart from the view so the hosted
+/// tests run exactly what the buttons run. Side effects outside sync (reminders, widgets,
+/// VoiceOver) stay in the view.
 @MainActor
 struct SyncSectionActions {
     let sync: SyncService
     let context: ModelContext
+
+    /// Sync Now: a user-initiated sync. While the account screen's choice is pending
+    /// (`SyncService.ownerConflict`) that sync is blocked and makes no request, and the tap showed
+    /// nothing at all (E2E S5) — the row pointing at the choice sits below the fold. So the
+    /// conflict comes back, and Settings presents the account screen, the same one the "Choose
+    /// What Happens to This Device's Habits…" row opens: the user asked for this sync, and that
+    /// choice is what it waits for. nil otherwise, whatever the sync's outcome — a failure is the
+    /// Account footer's. Launch and foreground syncs still block silently (acceptance 10).
+    func syncNow() async -> SyncOwnerConflict? {
+        guard !(await sync.sync(context: context)) else { return nil }
+        return sync.ownerConflict
+    }
 
     /// "Restore as New Copies": fresh ids in place, then a sync, so the copies reach the account
     /// without a second tap (`SyncService.restoreHeldRowsAsNewCopies`).
@@ -276,7 +289,7 @@ struct SyncSectionView: View {
         let busy = busyReason == group.reason
         VStack(alignment: .leading, spacing: 2) {
             convertibleTitle(group)
-            convertibleExplanation(group.reason)
+            convertibleExplanation(group)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -342,12 +355,17 @@ struct SyncSectionView: View {
         }
     }
 
+    /// In the number the title counts: "1 restored habit was deleted on another device" stood over
+    /// "Restore them as new copies … Your backup file keeps them either way." (E2E S6). The count
+    /// only picks the plural form — "(… held)" in the key is never shown — as the Stats unit keys
+    /// do ("days (unit after %lld)").
     @ViewBuilder
-    private func convertibleExplanation(_ reason: SyncHoldReason) -> some View {
-        if reason == .tombstoned {
-            Text("Restore them as new copies to bring them back to your account, or discard them. Your backup file keeps them either way.")
+    private func convertibleExplanation(_ group: SyncService.HeldRows) -> some View {
+        let count = group.counts.total
+        if group.reason == .tombstoned {
+            Text("Restore them as new copies to bring them back to your account, or discard them. Your backup file keeps them either way. (\(count) held)")
         } else {
-            Text("They came from another account's data, so this account can't sync them as they are. Restore them as new copies to add them to this account.")
+            Text("They came from another account's data, so this account can't sync them as they are. Restore them as new copies to add them to this account. (\(count) held)")
         }
     }
 
@@ -524,6 +542,11 @@ struct RecoveredEditsShareLink: View {
 }
 
 /// The orange-triangle footer line Settings uses for an error under the control that caused it.
+///
+/// `Color.secondary`, not the hierarchical `.secondary`: every use is in a section footer, whose
+/// text is secondary already, and the hierarchical style resolved a level below it — the one line
+/// that says what went wrong was the palest text on the screen (E2E S-DEL, Delete Account's "New
+/// recovered edits arrived"). It wraps rather than truncating, as the footers' other text must.
 struct SettingsInlineError: View {
     let message: String
 
@@ -535,7 +558,8 @@ struct SettingsInlineError: View {
                 .accessibilityHidden(true)
             Text(verbatim: message)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

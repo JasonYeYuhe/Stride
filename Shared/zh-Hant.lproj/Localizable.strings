@@ -294,8 +294,6 @@
 "Export as CSV" = "匯出為 CSV";
 "Export as JSON" = "匯出為 JSON";
 "Stride Habits Export" = "Stride 習慣匯出";
-"CSV export of all habits" = "所有習慣的 CSV 匯出";
-"JSON export of all habits" = "所有習慣的 JSON 匯出";
 "Legal" = "法律資訊";
 "%lldd" = "%lld天";
 "Complete a Habit" = "完成一個習慣";
@@ -323,7 +321,6 @@
 "%lld %@" = "%lld %@";
 "%lldw" = "%lld週";
 "Syncing" = "同步中";
-"Last synced %@" = "上次同步：%@";
 "Sync error: %@" = "同步錯誤：%@";
 "Restore %@" = "恢復%@";
 "In progress" = "進行中";
@@ -416,8 +413,6 @@
 "Discard…" = "丟棄…";
 "Discard These Items?" = "要丟棄這些項目嗎？";
 "Discard" = "丟棄";
-"Restore them as new copies to bring them back to your account, or discard them. Your backup file keeps them either way." = "將它們恢復為新副本以放回你的帳號，或將其丟棄。無論哪種方式，備份檔案中都會保留它們。";
-"They came from another account's data, so this account can't sync them as they are. Restore them as new copies to add them to this account." = "它們來自另一個帳號的資料，因此此帳號無法按原樣同步。將它們恢復為新副本即可加入此帳號。";
 "Changes made on this device to items that were deleted on another device. Export them to keep a copy." = "你在此裝置上對已在另一部裝置上刪除的項目所做的變更。匯出即可保留一份副本。";
 "Export Recovered Edits" = "匯出找回的編輯";
 "Clear Recovered Edits…" = "清除找回的編輯…";

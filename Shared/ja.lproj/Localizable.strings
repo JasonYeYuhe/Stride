@@ -294,8 +294,6 @@
 "Export as CSV" = "CSV で書き出す";
 "Export as JSON" = "JSON で書き出す";
 "Stride Habits Export" = "Stride 習慣データ";
-"CSV export of all habits" = "すべての習慣の CSV データ";
-"JSON export of all habits" = "すべての習慣の JSON データ";
 "Legal" = "法的情報";
 "%lldd" = "%lld日";
 "Complete a Habit" = "習慣を完了";
@@ -323,7 +321,6 @@
 "%lld %@" = "%lld %@";
 "%lldw" = "%lld週";
 "Syncing" = "同期中";
-"Last synced %@" = "最終同期：%@";
 "Sync error: %@" = "同期エラー：%@";
 "Restore %@" = "%@を復元";
 "In progress" = "処理中";
@@ -416,8 +413,6 @@
 "Discard…" = "破棄…";
 "Discard These Items?" = "これらの項目を破棄しますか？";
 "Discard" = "破棄";
-"Restore them as new copies to bring them back to your account, or discard them. Your backup file keeps them either way." = "新しいコピーとして復元してアカウントに戻すか、破棄してください。どちらの場合もバックアップファイルには残ります。";
-"They came from another account's data, so this account can't sync them as they are. Restore them as new copies to add them to this account." = "別のアカウントのデータから来たため、このアカウントではそのまま同期できません。新しいコピーとして復元すると、このアカウントに追加されます。";
 "Changes made on this device to items that were deleted on another device. Export them to keep a copy." = "別のデバイスで削除された項目に、このデバイスで加えた変更です。書き出すとコピーを残せます。";
 "Export Recovered Edits" = "復旧した編集を書き出す";
 "Clear Recovered Edits…" = "復旧した編集を消去…";

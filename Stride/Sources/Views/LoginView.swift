@@ -12,6 +12,13 @@ struct LoginView: View {
     @State private var step: LoginStep = .email
     @State private var showSuccess = false
 
+    /// `prefilledEmail`: what the email field starts with — the account a "Sign in again" row
+    /// asks for (`SignInAgainFlow.loginEmail`), where the field used to start empty (E2E S9
+    /// suggestion). nil leaves it empty, as for a first sign-in.
+    init(prefilledEmail: String? = nil) {
+        _email = State(initialValue: prefilledEmail ?? "")
+    }
+
     enum LoginStep: Equatable {
         case email
         case checkInbox

@@ -247,6 +247,22 @@ final class LocalizationCatalogTests: XCTestCase {
             XCTAssertEqual(loc("\(n) restored items were deleted on another device", "es"),
                            one ? "1 elemento restaurado se eliminó en otro dispositivo" : "2 elementos restaurados se eliminaron en otro dispositivo")
             XCTAssertEqual(text(Text("Recovered Edits (\(n))", bundle: testBundle), "en"), "Recovered Edits (\(n))")
+            // A held row's explanation in the number its title counts (E2E S6: "1 restored habit
+            // was deleted…" over "Restore them…"). The count picks the form and is not shown.
+            XCTAssertEqual(loc("Restore them as new copies to bring them back to your account, or discard them. Your backup file keeps them either way. (\(n) held)", "en"),
+                           one ? "Restore it as a new copy to bring it back to your account, or discard it. Your backup file keeps it either way."
+                               : "Restore them as new copies to bring them back to your account, or discard them. Your backup file keeps them either way.")
+            XCTAssertEqual(text(Text("Restore them as new copies to bring them back to your account, or discard them. Your backup file keeps them either way. (\(n) held)", bundle: testBundle), "es"),
+                           one ? "Restáuralo como copia nueva para devolverlo a tu cuenta, o descártalo. Tu archivo de copia de seguridad lo conserva en ambos casos."
+                               : "Restáuralos como copias nuevas para devolverlos a tu cuenta, o descártalos. Tu archivo de copia de seguridad los conserva en ambos casos.")
+            XCTAssertEqual(text(Text("They came from another account's data, so this account can't sync them as they are. Restore them as new copies to add them to this account. (\(n) held)", bundle: testBundle), "en"),
+                           one ? "It came from another account's data, so this account can't sync it as it is. Restore it as a new copy to add it to this account."
+                               : "They came from another account's data, so this account can't sync them as they are. Restore them as new copies to add them to this account.")
+            XCTAssertEqual(loc("They came from another account's data, so this account can't sync them as they are. Restore them as new copies to add them to this account. (\(n) held)", "es"),
+                           one ? "Procede de los datos de otra cuenta, así que esta cuenta no puede sincronizarlo tal como está. Restáuralo como copia nueva para añadirlo a esta cuenta."
+                               : "Proceden de los datos de otra cuenta, así que esta cuenta no puede sincronizarlos tal como están. Restáuralos como copias nuevas para añadirlos a esta cuenta.")
+            XCTAssertEqual(loc("Restore them as new copies to bring them back to your account, or discard them. Your backup file keeps them either way. (\(n) held)", "ja"),
+                           "新しいコピーとして復元してアカウントに戻すか、破棄してください。どちらの場合もバックアップファイルには残ります。")
             // The account screen and the restore hand-over.
             XCTAssertEqual(text(Text("\(n) deletions not yet synced", bundle: testBundle), "en"),
                            one ? "1 deletion not yet synced" : "2 deletions not yet synced")

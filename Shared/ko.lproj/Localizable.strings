@@ -294,8 +294,6 @@
 "Export as CSV" = "CSV로 내보내기";
 "Export as JSON" = "JSON으로 내보내기";
 "Stride Habits Export" = "Stride 습관 내보내기";
-"CSV export of all habits" = "모든 습관의 CSV 내보내기";
-"JSON export of all habits" = "모든 습관의 JSON 내보내기";
 "Legal" = "법적 고지";
 "%lldd" = "%lld일";
 "Complete a Habit" = "습관 완료하기";
@@ -323,7 +321,6 @@
 "%lld %@" = "%lld %@";
 "%lldw" = "%lld주";
 "Syncing" = "동기화 중";
-"Last synced %@" = "마지막 동기화: %@";
 "Sync error: %@" = "동기화 오류: %@";
 "Restore %@" = "%@ 복원";
 "In progress" = "진행 중";
@@ -416,8 +413,6 @@
 "Discard…" = "폐기…";
 "Discard These Items?" = "이 항목을 폐기할까요?";
 "Discard" = "폐기";
-"Restore them as new copies to bring them back to your account, or discard them. Your backup file keeps them either way." = "새 사본으로 복원해 계정으로 되돌리거나 폐기하세요. 어느 쪽이든 백업 파일에는 남아 있습니다.";
-"They came from another account's data, so this account can't sync them as they are. Restore them as new copies to add them to this account." = "다른 계정의 데이터에서 왔기 때문에 이 계정에서는 그대로 동기화할 수 없습니다. 새 사본으로 복원하면 이 계정에 추가됩니다.";
 "Changes made on this device to items that were deleted on another device. Export them to keep a copy." = "다른 기기에서 삭제된 항목에 이 기기에서 한 변경 사항입니다. 내보내서 사본을 보관하세요.";
 "Export Recovered Edits" = "복구된 편집 내보내기";
 "Clear Recovered Edits…" = "복구된 편집 지우기…";

@@ -246,6 +246,10 @@ struct AccountSwitchView: View {
                 progressLabel(for: .start) { Text("Start from This Account's Data") }
             }
             .buttonStyle(.bordered)
+            // Red, as its confirmation's button is: under the app's green tint the role alone drew
+            // it exactly like "Export a Backup", the one irreversible choice on the screen looking
+            // like the safe one (E2E S5).
+            .tint(.red)
             .disabled(working != nil)
             .accessibilityLabel(Text("Start from This Account's Data"))
             .accessibilityValue(working == .start ? Text("In progress") : Text(verbatim: ""))
@@ -415,12 +419,16 @@ struct AccountChoiceSheet: View {
 
 /// What hangs off the store once a flow outside the list screens erased or replaced it (Start
 /// from this account's data, account deletion): per-habit reminders of habits that are gone, the
-/// badge, the widgets — as Erase Local Data does in Settings.
+/// badge, the widgets — as Erase Local Data does in Settings — and the export files in tmp, which
+/// hold copies of what was erased (E2E S-DEL: after Delete Account the deleted account's backup
+/// and recovered edits were still there). Every export those flows offered was shared before
+/// the button that erased the store could be tapped.
 @MainActor
 enum AccountDataRefresh {
     static func afterLocalChange(in container: ModelContainer) {
         NotificationService.shared.rescheduleAllHabitReminders(modelContainer: container)
         NotificationService.shared.updateBadge(modelContainer: container)
         WidgetCenter.shared.reloadAllTimelines()
+        DataExportService.removeExportFiles()
     }
 }

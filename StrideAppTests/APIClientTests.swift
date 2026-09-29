@@ -152,6 +152,69 @@ final class APIClientTests: XCTestCase {
         }
     }
 
+    // MARK: - Nothing on disk but the Keychain item (E2E S9)
+
+    /// `URLSession.shared` kept the /v1/auth/verify answer — the live session token — and every
+    /// pull in Library/Caches/<bundle>/Cache.db, and the `stride_session` cookie the verify answer
+    /// sets in the cookie store. The app's client stores neither, and sends no cookie.
+    func testTheAppsSessionHasNoURLCacheAndNoCookies() throws {
+        XCTAssertTrue(APIClient.shared.session === APIClient.defaultSession, "shared goes through it")
+        let configuration = APIClient.defaultSession.configuration
+        XCTAssertNil(configuration.urlCache)
+        XCTAssertEqual(configuration.requestCachePolicy, .reloadIgnoringLocalCacheData)
+        XCTAssertNil(configuration.httpCookieStorage)
+        XCTAssertFalse(configuration.httpShouldSetCookies)
+        // What the launch purge cleans: the production API whatever the build, and this build's.
+        XCTAssertTrue(APIClient.apiHosts.contains("stride-api.colorarchive.me"))
+        XCTAssertTrue(APIClient.apiHosts.contains(try XCTUnwrap(APIClient.defaultBaseURL.host)))
+    }
+
+    /// What earlier builds left: the launch purge empties the URL cache and deletes the cookies a
+    /// request to an API host would carry — the verify answer's host-only cookie, a domain cookie
+    /// above it — and leaves other hosts' alone. Over a cache and a cookie store of the test's own.
+    func testThePurgeEmptiesTheCacheAndTakesOnlyTheAPIsCookies() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("StrideAppTests-url-cache-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // A memory tier as well: on the simulator a response stored in a disk-only cache was not
+        // readable back within seconds, and the test needs it there before the purge.
+        let cache = URLCache(memoryCapacity: 1_000_000, diskCapacity: 5_000_000, directory: directory)
+        let verify = URLRequest(url: URL(string: "https://\(LoginLink.host)/v1/auth/verify")!)
+        let answer = HTTPURLResponse(url: verify.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+                                     headerFields: ["Content-Type": "application/json", "Cache-Control": "max-age=600"])!
+        cache.storeCachedResponse(CachedURLResponse(response: answer, data: Data(#"{"sessionToken":"tok-123"}"#.utf8)), for: verify)
+        try await waitUntil("the answer is cached") { cache.cachedResponse(for: verify) != nil }
+
+        let cookies = try XCTUnwrap(URLSessionConfiguration.ephemeral.httpCookieStorage, "an in-memory store")
+        cookies.cookieAcceptPolicy = .always
+        func cookie(_ domain: String, _ name: String) -> HTTPCookie {
+            HTTPCookie(properties: [.domain: domain, .path: "/", .name: name, .value: "v",
+                                    .expires: Date().addingTimeInterval(3_600)])!
+        }
+        for c in [cookie(LoginLink.host, "stride_session"), cookie(".colorarchive.me", "wide"),
+                  cookie("localhost", "stride_session"), cookie("example.com", "other"),
+                  cookie("stride.colorarchive.me", "sibling")] {
+            cookies.setCookie(c)
+        }
+        XCTAssertEqual(cookies.cookies?.count, 5, "precondition")
+
+        APIClient.purgeStoredHTTPState(cache: cache, cookies: cookies, hosts: [LoginLink.host, "localhost"])
+
+        try await waitUntil("the cache is empty") { cache.cachedResponse(for: verify) == nil }
+        XCTAssertEqual(Set(cookies.cookies?.map { "\($0.domain) \($0.name)" } ?? []),
+                       ["example.com other", "stride.colorarchive.me sibling"],
+                       "a sibling host's host-only cookie never went to the API")
+    }
+
+    private func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !condition() {
+            guard ContinuousClock.now < deadline else { return XCTFail("timed out: \(what)") }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
     // MARK: - X-Stride-Client
 
     /// The header decides which contract the server speaks to this app (server/lib/clientVersion.js).

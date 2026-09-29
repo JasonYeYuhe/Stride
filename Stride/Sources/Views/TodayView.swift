@@ -139,7 +139,7 @@ struct TodayView: View {
         .sheet(isPresented: Bindable(signInAgain).showingLogin, onDismiss: {
             Task { await signInAgain.loginClosed(context: modelContext) }
         }) {
-            LoginView()
+            LoginView(prefilledEmail: signInAgain.loginEmail)
         }
         // Coming back to the app the next morning, and midnight passing while it is open.
         .onChange(of: scenePhase) { _, phase in

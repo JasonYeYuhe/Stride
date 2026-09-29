@@ -294,8 +294,6 @@
 "Export as CSV" = "Exportar como CSV";
 "Export as JSON" = "Exportar como JSON";
 "Stride Habits Export" = "Exportación de hábitos de Stride";
-"CSV export of all habits" = "Exportación CSV de todos los hábitos";
-"JSON export of all habits" = "Exportación JSON de todos los hábitos";
 "Legal" = "Legal";
 "%lldd" = "%lld d";
 "Complete a Habit" = "Completar un hábito";
@@ -323,7 +321,6 @@
 "%lld %@" = "%lld %@";
 "%lldw" = "%lld sem";
 "Syncing" = "Sincronizando";
-"Last synced %@" = "Última sincronización: %@";
 "Sync error: %@" = "Error de sincronización: %@";
 "Restore %@" = "Restaurar %@";
 "In progress" = "En curso";
@@ -416,8 +413,6 @@
 "Discard…" = "Descartar…";
 "Discard These Items?" = "¿Descartar estos elementos?";
 "Discard" = "Descartar";
-"Restore them as new copies to bring them back to your account, or discard them. Your backup file keeps them either way." = "Restáuralos como copias nuevas para devolverlos a tu cuenta, o descártalos. Tu archivo de copia de seguridad los conserva en ambos casos.";
-"They came from another account's data, so this account can't sync them as they are. Restore them as new copies to add them to this account." = "Proceden de los datos de otra cuenta, así que esta cuenta no puede sincronizarlos tal como están. Restáuralos como copias nuevas para añadirlos a esta cuenta.";
 "Changes made on this device to items that were deleted on another device. Export them to keep a copy." = "Cambios hechos en este dispositivo a elementos que se eliminaron en otro dispositivo. Expórtalos para guardar una copia.";
 "Export Recovered Edits" = "Exportar ediciones recuperadas";
 "Clear Recovered Edits…" = "Borrar ediciones recuperadas…";

@@ -55,8 +55,12 @@ struct SettingsView: View {
     // Store
     @State private var showingPaywall = false
     @State private var showingLogin = false
+    /// "Sign in again to keep syncing" in the Account section: the row's tap and its login sheet,
+    /// as Today's (E2E S9). The sheet hangs on the List: the sign-in ends the row.
+    @State private var signInAgain = SignInAgainFlow()
     /// The account screen, reopened from the sync section's row after a sign-in was left
-    /// without a choice (the app quit on it). Only on that tap: never presented on its own.
+    /// without a choice (the app quit on it), or by Sync Now while that choice blocks it (E2E S5).
+    /// Only on those taps: never presented on its own.
     @State private var accountChoice: SyncOwnerConflict?
     private var store = StoreService.shared
     private var auth = AuthService.shared
@@ -175,14 +179,15 @@ struct SettingsView: View {
 
                 // Account & Sync
                 Section {
-                    if auth.isLoggedIn {
+                    switch accountState.header {
+                    case .signedIn(let email):
                         HStack(spacing: 12) {
                             Image(systemName: "person.crop.circle.fill")
                                 .font(.title2)
                                 .foregroundStyle(.green)
                                 .accessibilityHidden(true)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(auth.userEmail ?? "")
+                                Text(verbatim: email)
                                     .font(.subheadline)
                                 Text("Signed in")
                                     .font(.caption)
@@ -190,50 +195,9 @@ struct SettingsView: View {
                             }
                         }
                         .accessibilityElement(children: .combine)
-
-                        Button {
-                            Task {
-                                await sync.sync(context: modelContext)
-                            }
-                        } label: {
-                            HStack {
-                                Label("Sync Now", systemImage: "arrow.triangle.2.circlepath")
-                                Spacer()
-                                if sync.isSyncing {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                } else if let lastSync = sync.lastSyncTime {
-                                    Text(formatSyncTime(lastSync))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                        .disabled(sync.isSyncing)
-                        .accessibilityLabel("Sync Now")
-                        .accessibilityValue(syncAccessibilityValue)
-
-                        Button(role: .destructive) {
-                            Task { await auth.logout() }
-                        } label: {
-                            Label("Log Out", systemImage: "rectangle.portrait.and.arrow.right")
-                        }
-
-                        Button(role: .destructive) {
-                            showingDeleteAccountAlert = true
-                        } label: {
-                            HStack {
-                                Label("Delete Account", systemImage: "person.crop.circle.badge.minus")
-                                if isDeletingAccount {
-                                    Spacer()
-                                    ProgressView()
-                                        .controlSize(.small)
-                                }
-                            }
-                        }
-                        .disabled(isDeletingAccount)
-                        .accessibilityValue(isDeletingAccount ? Text("Processing...") : Text(verbatim: ""))
-                    } else {
+                    case .signInAgain(let email):
+                        signInAgainRow(email: email)
+                    case .signIn:
                         Button {
                             showingLogin = true
                         } label: {
@@ -260,10 +224,35 @@ struct SettingsView: View {
                         }
                         .buttonStyle(.plain)
                     }
+
+                    if accountState.showsAccountActions {
+                        syncNowRow
+
+                        Button(role: .destructive) {
+                            Task { await auth.logout() }
+                        } label: {
+                            Label("Log Out", systemImage: "rectangle.portrait.and.arrow.right")
+                        }
+
+                        Button(role: .destructive) {
+                            showingDeleteAccountAlert = true
+                        } label: {
+                            HStack {
+                                Label("Delete Account", systemImage: "person.crop.circle.badge.minus")
+                                if isDeletingAccount {
+                                    Spacer()
+                                    ProgressView()
+                                        .controlSize(.small)
+                                }
+                            }
+                        }
+                        .disabled(isDeletingAccount)
+                        .accessibilityValue(isDeletingAccount ? Text("Processing...") : Text(verbatim: ""))
+                    }
                 } header: {
                     Text("Account")
                 } footer: {
-                    if let error = sync.syncError {
+                    if let error = accountState.footerError {
                         Text(error)
                             .font(.caption)
                             .foregroundStyle(.red)
@@ -507,10 +496,12 @@ struct SettingsView: View {
                     // the user picks a destination. Two `let`s used to stand here, running the
                     // CSV and the JSON export of the whole history on every render of this
                     // screen — every sync tick, entitlement refresh and edit — on the main thread.
+                    // No `message:` on a file's ShareLink: the share sheet sends it as an item of
+                    // its own, and Save to Files wrote it beside the file as text.txt ("JSON export
+                    // of all habits", E2E S6). The subject is only a mail subject.
                     ShareLink(
                         item: HabitsCSVFile(container: modelContext.container),
                         subject: Text("Stride Habits Export"),
-                        message: Text("CSV export of all habits"),
                         preview: SharePreview(DataExportService.fileName("Stride-Export", extension: "csv"))
                     ) {
                         Label("Export as CSV", systemImage: "tablecells")
@@ -519,7 +510,6 @@ struct SettingsView: View {
                     ShareLink(
                         item: BackupJSONFile(container: modelContext.container),
                         subject: Text("Stride Habits Export"),
-                        message: Text("JSON export of all habits"),
                         preview: SharePreview(DataExportService.fileName("Stride-Backup", extension: "json"))
                     ) {
                         Label("Export as JSON", systemImage: "curlybraces")
@@ -660,6 +650,11 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showingLogin) {
                 LoginView()
+            }
+            // "Sign in again"'s sign-in, as Today presents its own (E2E S9). No sync on close: the
+            // `isLoggedIn` onChange below runs it, as for Sign In.
+            .sheet(isPresented: Bindable(signInAgain).showingLogin) {
+                LoginView(prefilledEmail: signInAgain.loginEmail)
             }
             // In AccountChoiceSheet, as StrideApp presents it: the screen's title and its Cancel
             // live in a navigation bar, and a sheet has none of its own. Presented bare, the iOS
@@ -978,10 +973,12 @@ struct SettingsView: View {
     private var recoveredEditLines: Int { sync.recoveredEdits?.lines ?? 0 }
 
     /// "Synced" only while it is true: signed in over another account's store (the account
-    /// screen was left without a choice), nothing syncs until the Sync section's row is used.
+    /// screen was left without a choice), nothing syncs until the Sync section's row is used; a
+    /// session the server refused (the Account section's "Sign in again", E2E S9), nothing syncs
+    /// until the sign-in.
     private var dataStorageValue: String {
         guard auth.isLoggedIn else { return appLocalized("On Device") }
-        return sync.ownerConflict == nil ? appLocalized("Synced") : appLocalized("Not Syncing")
+        return sync.ownerConflict == nil && !sync.needsReauth ? appLocalized("Synced") : appLocalized("Not Syncing")
     }
 
     private var eraseConfirmMessage: Text {
@@ -1024,22 +1021,97 @@ struct SettingsView: View {
         }
     }
 
-    // Each branch is a whole phrase so it stays one localization key, not a %@ argument.
-    private var syncAccessibilityValue: Text {
-        if sync.isSyncing { return Text("Syncing") }
-        guard let lastSync = sync.lastSyncTime else { return Text(verbatim: "") }
-        return Text("Last synced \(formatSyncTime(lastSync))")
+    // MARK: - Account
+
+    private var accountState: SettingsAccountState {
+        SettingsAccountState.current(auth: auth, sync: sync)
     }
 
-    private func formatSyncTime(_ iso: String) -> String {
-        guard let date = SyncTimestamp.parse(iso) else { return iso }
-        let relative = RelativeDateTimeFormatter()
-        // The in-app language, as Today's "Synced …" line (SyncStatusRow.SyncedText): without it
-        // a Japanese-picked app on an English device read "最終同期：2 min. ago" next to Today's
-        // "2 分前に同期済み".
-        relative.locale = LanguageManager.shared.stringLocale
-        relative.unitsStyle = .abbreviated
-        return relative.localizedString(for: date, relativeTo: Date())
+    /// Today's "Sign in again to keep syncing", as the Account section's first row (E2E S9): the
+    /// same words and the same tap (`SignInAgainFlow.start`: the session check, then the login
+    /// sheet, its email filled in), laid out as the Sign In row it stands in for, with the account
+    /// to sign back into under it.
+    private func signInAgainRow(email: String?) -> some View {
+        Button {
+            Task { await signInAgain.start(context: modelContext) }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "person.crop.circle.badge.exclamationmark")
+                    .font(.title2)
+                    .foregroundStyle(.orange)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Sign in again to keep syncing")
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let email {
+                        Text(verbatim: email)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                if signInAgain.isChecking {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                }
+            }
+            .padding(.vertical, 4)
+        }
+        .buttonStyle(.plain)
+        .disabled(signInAgain.isChecking)
+        .accessibilityHint("Opens sign-in")
+    }
+
+    /// Sync Now, with when this device last synced beside it in Today's words (`SyncedText`),
+    /// redrawn every minute: "just now" under a minute and never a time ahead — it read "in 0s"
+    /// right after every sync and still "in 0s" minutes later (E2E S4, S5, S6, S9). While the
+    /// account screen's choice blocks syncing, the tap opens that screen (E2E S5).
+    private var syncNowRow: some View {
+        TimelineView(.everyMinute) { context in
+            // The start of the minute, not now: a sync after it would read as ahead of the clock.
+            // The later of the two, as Today's line.
+            let now = max(context.date, Date())
+            let lastSync = SyncTimestamp.parse(sync.lastSyncTime)
+            Button {
+                Task {
+                    if let conflict = await SyncSectionActions(sync: sync, context: modelContext).syncNow() {
+                        accountChoice = conflict
+                    }
+                }
+            } label: {
+                HStack {
+                    Label("Sync Now", systemImage: "arrow.triangle.2.circlepath")
+                    Spacer()
+                    if sync.isSyncing {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else if let lastSync {
+                        // `Color`, not the hierarchical `.secondary`, which inside a Button
+                        // resolves against the tint (SyncSectionView's rows) and drew it pale green.
+                        SyncedText(date: lastSync, now: now, unitsStyle: .abbreviated)
+                            .font(.caption)
+                            .foregroundStyle(Color.secondary)
+                    }
+                }
+            }
+            .disabled(sync.isSyncing)
+            .accessibilityLabel("Sync Now")
+            .accessibilityValue(syncAccessibilityValue(lastSync: lastSync, now: now))
+        }
+    }
+
+    // Each branch is a whole phrase so it stays one localization key, not a %@ argument.
+    private func syncAccessibilityValue(lastSync: Date?, now: Date) -> Text {
+        if sync.isSyncing { return Text("Syncing") }
+        guard let lastSync else { return Text(verbatim: "") }
+        return SyncedText.text(lastSync, now: now)
     }
 
     #if DEBUG
@@ -1071,7 +1143,7 @@ struct SettingsView: View {
     private func confirmAccountDeletion(_ step: DeleteAccountStep) async {
         guard !isDeletingAccount else { return }
         isDeletingAccount = true
-        if let changed = await step.recheck(sync: sync) {
+        if let changed = await step.recheck(sync: sync, context: modelContext) {
             isDeletingAccount = false
             deleteAccountStep = changed
             AccessibilityNotification.Announcement(
@@ -1087,7 +1159,10 @@ struct SettingsView: View {
         do {
             try await auth.deleteAccount()
         } catch {
-            deleteAccountError = error.localizedDescription
+            // In the picked language: `localizedDescription` is APIError's English, and a session
+            // the server already refused (the reauth state, E2E S9) read "Please log in again"
+            // in English in any language.
+            deleteAccountError = APIError.displayMessage(for: error)
         }
         isDeletingAccount = false
     }
@@ -1146,6 +1221,61 @@ struct SettingsView: View {
     }
 }
 
+// MARK: - Account
+
+/// What Settings' Account section shows. Pure (`make`), so the hosted tests pin it after real sync
+/// answers without rendering Settings.
+///
+/// After a server-side revoke the section said "Signed in" in green over a red "Please log in
+/// again" — the sync error the 401 set — and offered only Log Out and Delete Account; once Today's
+/// row had checked the session and signed the device out, "Sign In" kept the same red line (E2E
+/// S9). Now it says what Today says whenever Today says it, signed in or not: "Sign in again to
+/// keep syncing", with the same tap (`SignInAgainFlow`), and no red line — a 401 sets no sync
+/// error (`SyncService`), and none is shown there.
+struct SettingsAccountState: Equatable {
+    enum Header: Equatable {
+        /// The address, and "Signed in" in green.
+        case signedIn(email: String)
+        /// "Sign in again to keep syncing", over the account to sign back into when it is known
+        /// (`SignInAgainFlow.accountEmail`).
+        case signInAgain(email: String?)
+        /// "Sign In".
+        case signIn
+    }
+
+    var header: Header
+    /// Sync Now, Log Out and Delete Account: an account is loaded — in the reauth state too,
+    /// where Log Out and Delete Account still work and Sync Now finds out whether the session is
+    /// back.
+    var showsAccountActions: Bool
+    /// The red footer (`SyncService.syncError`): only while signed in and not asked to sign in
+    /// again. Signing in again is then the one thing to do, as on Today; signed out, no sync runs
+    /// for an error to be about.
+    var footerError: String?
+
+    /// `needsSignInAgain` is Today's first rule (`SyncStatusLine.make`): `SyncService.needsReauth`
+    /// or `AuthService.sessionExpired`.
+    static func make(signedIn: Bool, email: String?, needsSignInAgain: Bool, reauthEmail: String?,
+                     syncError: String?) -> SettingsAccountState {
+        if needsSignInAgain {
+            return SettingsAccountState(header: .signInAgain(email: reauthEmail),
+                                        showsAccountActions: signedIn, footerError: nil)
+        }
+        guard signedIn else {
+            return SettingsAccountState(header: .signIn, showsAccountActions: false, footerError: nil)
+        }
+        return SettingsAccountState(header: .signedIn(email: email ?? ""), showsAccountActions: true,
+                                    footerError: syncError)
+    }
+
+    @MainActor
+    static func current(auth: AuthService, sync: SyncService) -> SettingsAccountState {
+        make(signedIn: auth.isLoggedIn, email: auth.userEmail,
+             needsSignInAgain: sync.needsReauth || auth.sessionExpired,
+             reauthEmail: SignInAgainFlow.accountEmail(auth: auth, sync: sync), syncError: sync.syncError)
+    }
+}
+
 // MARK: - Delete Account
 
 /// What Delete Account's last step offers (the phase C leftovers, the owner's decision 3). Pure,
@@ -1177,7 +1307,6 @@ struct DeleteAccountStep: Identifiable, Equatable {
     /// The DEBUG screenshot scenario (`SyncSectionDemo.deleteAccount`): the final button only
     /// closes the sheet.
     var isDemo = false
-    private let hasLocalData: Bool
 
     /// `recoveredEdits`: the owner's recovery log as counted now (`SyncService.recoveredEdits`);
     /// nil when it could not be read.
@@ -1185,7 +1314,6 @@ struct DeleteAccountStep: Identifiable, Equatable {
          isDemo: Bool = false) {
         self.email = email
         self.erasesDevice = erasesDevice
-        self.hasLocalData = hasLocalData
         offersBackup = erasesDevice && hasLocalData
         offersRecoveredEdits = erasesDevice && recoveredEdits?.lines != 0
         recoveredEditLines = recoveredEdits?.lines
@@ -1204,17 +1332,31 @@ struct DeleteAccountStep: Identifiable, Equatable {
     /// account owns loses none of its lines, so neither stops the deletion. (A sync that starts
     /// after this check and finishes inside the deletion request is not covered; one still
     /// running when the request returns is stopped by the sign-out, `SyncService.signedOut`.)
+    ///
+    /// The rebuilt step reads the store again (`context`), not Continue's answer: the sync that
+    /// archived the line can have emptied it — the habit it removed was the last one — and the
+    /// updated sheet offered Export as JSON for an empty store (E2E S-DEL).
     @MainActor
-    func recheck(sync: SyncService) async -> DeleteAccountStep? {
+    func recheck(sync: SyncService, context: ModelContext) async -> DeleteAccountStep? {
         guard erasesDevice else { return nil }
         await sync.waitUntilIdle()
         sync.refreshRecoveredEdits()
         let now = sync.recoveredEdits
         guard now?.archivedTotal != recoveredEditTotal, now?.lines != 0 else { return nil }
-        var step = DeleteAccountStep(email: email, erasesDevice: true, hasLocalData: hasLocalData,
-                                     recoveredEdits: now)
+        var step = DeleteAccountStep(email: email, erasesDevice: true,
+                                     hasLocalData: Self.hasLocalData(in: context), recoveredEdits: now)
         step.recoveredEditsChanged = true
         return step
+    }
+
+    /// Whether Export as JSON has anything to keep: a habit or a group (a check-in is exported
+    /// under its habit). A count that cannot be read counts as something.
+    @MainActor
+    static func hasLocalData(in context: ModelContext) -> Bool {
+        func holds<Model: PersistentModel>(_ type: Model.Type) -> Bool {
+            ((try? context.fetchCount(FetchDescriptor<Model>())) ?? 1) > 0
+        }
+        return holds(Habit.self) || holds(HabitGroup.self)
     }
 
     /// The step for whoever is signed in now, or nil when nobody is. Counts the recovery log again
@@ -1258,10 +1400,11 @@ struct DeleteAccountView: View {
                     if step.offersBackup || step.offersRecoveredEdits {
                         Section {
                             if step.offersBackup {
+                                // No `message:`: it went beside the file as text.txt (E2E S6; Settings'
+                                // Export Data rows).
                                 ShareLink(
                                     item: BackupJSONFile(container: modelContext.container),
                                     subject: Text("Stride Habits Export"),
-                                    message: Text("JSON export of all habits"),
                                     preview: SharePreview(DataExportService.fileName("Stride-Backup", extension: "json"))
                                 ) {
                                     Label("Export as JSON", systemImage: "curlybraces")
@@ -1275,15 +1418,20 @@ struct DeleteAccountView: View {
                         } header: {
                             Text("Export Data")
                         } footer: {
+                            // Each line wraps in full, as `message` does: updated in place by the
+                            // recheck, the footer kept its first layout and cut both explanations
+                            // to one line with an ellipsis (E2E S-DEL).
                             VStack(alignment: .leading, spacing: 6) {
                                 if step.recoveredEditsChanged {
                                     SettingsInlineError(message: appLocalized("New recovered edits arrived. Export them, then try again."))
                                 }
                                 if step.offersBackup {
                                     Text("Export as JSON saves a complete backup, which can be restored on a device with no habits.")
+                                        .fixedSize(horizontal: false, vertical: true)
                                 }
                                 if step.offersRecoveredEdits {
                                     Text("The recovered edits on this device are erased too. Export them first if you might need them.")
+                                        .fixedSize(horizontal: false, vertical: true)
                                 }
                             }
                         }
@@ -1324,10 +1472,12 @@ struct DeleteAccountView: View {
     }
 
     /// The server half always; the device half only when this account owns the store — another
-    /// owner's rows are left alone, and saying they go would be false.
+    /// owner's rows are left alone, and saying they go would be false — and the store holds
+    /// something to export (`offersBackup`): on an empty one it said "export a backup first" with
+    /// no Export as JSON row to do it with (E2E S-DEL). Recovered edits have their own footer line.
     @ViewBuilder
     private var message: some View {
-        if step.erasesDevice {
+        if step.offersBackup {
             Text("All your habits, records, and account information will be permanently removed from our servers. The habits, check-ins and groups on this device are deleted too; export a backup first if you want to keep a copy.")
         } else {
             Text("All your habits, records, and account information will be permanently removed from our servers.")

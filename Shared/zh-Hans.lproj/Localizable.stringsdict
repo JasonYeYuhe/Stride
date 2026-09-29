@@ -416,6 +416,34 @@
 			<string>%lld</string>
 		</dict>
 	</dict>
+	<key>Restore them as new copies to bring them back to your account, or discard them. Your backup file keeps them either way. (%lld held)</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>将其恢复为新副本以放回你的账户，或将其丢弃。无论哪种方式，备份文件中都会保留一份。</string>
+		</dict>
+	</dict>
+	<key>They came from another account's data, so this account can't sync them as they are. Restore them as new copies to add them to this account. (%lld held)</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>来自另一个账户的数据，因此此账户无法按原样同步。将其恢复为新副本即可添加到此账户。</string>
+		</dict>
+	</dict>
 	<key>Recovered Edits (%lld)</key>
 	<dict>
 		<key>NSStringLocalizedFormatKey</key>
