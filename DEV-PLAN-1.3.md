@@ -528,6 +528,18 @@ from what it took, and record the new number in the progress log before building
     - The server half, now including `deletionsSince`, deploys before any 1.3.1 build reaches
       a user. Without it the upgrade pass falls back to archive-then-delete.
     - The Codex review runs on the final branch after 2026-10-04.
+  - **Simulator re-run on the round-two build: everything passes.**
+    - Upgrade in place from a real 1.3.0 store: 7/7. Deletions made elsewhere go quietly; another
+      account's refused restore is held and brought back by Restore as New Copies; 1.3.0's
+      cached token is purged.
+    - Mixed fleet against the new server: 4/4. `withheld=1` keeps the old app's re-check, also
+      across two separate pulls in one session, and the id alias works.
+    - Sign-in, reauth and account flows: 6/6.
+    - Exports, Delete Account and held rows: 5/5.
+
+    Polish from those runs is in `cef373d` (held-row button and Discard follow the count, red
+    swipe Delete) and `0b7bdd2` (no Full Resync in the reauth state). RELEASE-1.3.0.md now lists
+    three 1.3.0 limitations found on the way, each covered by the 1.3.1 server half or by 1.3.1.
 - 2026-09-28 — owner decision on the migrated-marks question (review R1 of the slice): **the first
   full pull proves the account.** A 1.3.0 session that expires keeps `stride_last_sync_time`, so
   "the device signed out" cannot be inferred from the key. The migration marks a store's rows

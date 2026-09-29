@@ -431,7 +431,8 @@ pull. 1.3.0 kept that pull's server-time cursor (`stride_sync_cursor`).
 - **Settings' last-sync label:** reads like Today's and refreshes every minute; no more "in 0s".
 - **Sign-in sheet:** opened from a "Sign in again" row, it starts with the account's email.
 
-Gates on the merged tree (`cc272aa` + `5dca011`):
+Gates on the merged tree (`cc272aa` + `5dca011`), and again on the final tree `0b7bdd2` after
+the re-run's polish, with the same counts:
 - StrideTests 432, en and ja, 2 expected skips (the real-container test and an iOS-only one)
 - hosted 151
 - server 488, typecheck clean
@@ -479,10 +480,49 @@ installed over 1.3.0, keeping the data container, and its first sync ran:
 - **No cache on either app version.** Every `/v1` answer is `no-store` with no ETag, and
   `If-None-Match: *` still gets a 200.
 
-**Found on the way (fixed in `cef373d`):**
+**Sign-in, reauth and the account screen (E2E-R, on `cef373d`): all six PASS.**
+- **The reauth state.** Settings' Account section shows Today's "Sign in again to keep syncing"
+  row, with the email under it. There is no green "Signed in" and no red text, and Data Storage
+  says "Not Syncing".
+- **The account screen after a reauth sign-in (critic-1).** Tapping the row opens the sign-in
+  sheet with the account's email filled in. Signing in to a different account shows the account
+  screen inside that same sheet.
+- **Cancel (accounts-2).** It signs out and changes nothing. "Sign in again" comes back and
+  survives a cold launch.
+- **A sign-in ends the row.** It goes at once, even when the next sync is paused, or after a
+  session check that failed offline.
+- **Sync Now while the choice is pending.** It opens the account screen and sends no request.
+  Start from This Account's Data is red.
+- **Settings' last-sync label** refreshes by itself ("Synced just now", then "1m ago"). The
+  swipe Delete is red.
+
+**Exports, Delete Account and held rows (E2E-X, on `cef373d`): all five PASS.**
+- **Exports.** One item per Save to Files and no `text.txt`. One `StrideExport-*` folder per
+  share, although the share sheet asks for the file twice. The folders are gone after a cold
+  launch and after an erase.
+- **Delete Account with recovered edits.**
+  - The sheet offers both exports.
+  - An edit archived while the sheet is up updates it in place: nothing is deleted, and the
+    footer wraps in full. The warning is drawn in the footer's own colour (sampled 133,133,139
+    for both).
+  - Once the store is empty, the updated sheet drops Export as JSON.
+  - The final delete removes the account server-side and signs the device out. It empties the
+    store, the recovery log and `tmp`, and leaves no token.
+- **One held habit.** The Sync section reads, in the singular:
+  - "1 restored habit was deleted on another device"
+  - "Restore it as a new copy…"
+  - a "Restore as a New Copy" button
+  - "Discard This Item?" with "It's removed from this device…"
+
+  Restore as a New Copy uploads the habit under a new id, and Today's "1 change can't sync —
+  see Settings" goes with it.
+
+**Found on the way (fixed in `cef373d` and `0b7bdd2`):**
 - With one held habit, the body read "Restore it as a new copy" above a "Restore as New Copies"
   button. The button, the Discard dialog title and both Discard messages now follow the count.
 - Settings' three swipe Deletes were drawn green (the app tint). They are red.
+- Full Resync was offered while the session needed signing in again, where it can only get a
+  401. It is hidden then (`0b7bdd2`).
 
 **A 1.3.0 flaw the re-run confirmed (not a 1.3.1 bug):**
 - **What happens:** on 1.3.0, a restore of another account's backup made while SIGNED OUT is
@@ -515,6 +555,11 @@ installed over 1.3.0, keeping the data container, and its first sync ran:
   Nothing is lost or resurrected, but deletions made elsewhere land in Recovered Edits. Rows the
   1.3.0 server refused are archived rather than held for Restore as New Copies. So deploy the
   server half before 1.3.1 reaches users.
+- **A share sheet left open over a minute writes a second export file.** An export is reused
+  for 60 s, so a Save to Files chosen later writes a fresh copy (E2E-X). The user still gets one
+  item, and the spare copy is removed at the next launch, erase or account deletion. A longer
+  window would hand out stale data after an edit; one file per share sheet needs a presentation
+  id.
 - **Recovered edits are export-only.** Settings shows a count with Export / Clear, not a
   browsable list. The spec allows that list to move to a later 1.3.x.
 - **macOS: a widget edit made while the app stays frontmost** does not refresh the "changes
@@ -585,6 +630,11 @@ installed over 1.3.0, keeping the data container, and its first sync ran:
 
 ### Device checks (acceptance 4, 5, 6, 9)
 
+All of these passed in the simulators against a local server (the E2E runs above). What remains
+is the owner's pass on real devices against production, after the server deploy. Real devices
+matter because the Keychain, Mail/Gmail links, background timing and a real 1.2.3/1.3.0 store
+all differ from the simulator setup.
+
 - [ ] (4) Mixed fleet on real builds: a 1.3.0 (or 1.2.3) device and a 1.3.1 device on one test
   account. Tap one habit on each and sync both; both show both taps. Also uncheck and re-check a
   day on the 1.3.1 device with no sync in between, then sync the old device: the day stays
@@ -604,7 +654,10 @@ installed over 1.3.0, keeping the data container, and its first sync ran:
 - [ ] Delete Account on a device with a recovered edit: alert → Continue → Export step → an edit
   archived while the sheet is up updates it in place and deletes nothing (the simulators passed
   this).
-- [ ] The screens no script captures (see Known limitations), on a device and on a Mac.
+- [ ] The screens no script captures (see Known limitations), on a device and on a Mac. The
+  simulator runs walked every iOS one: the owner-choice row → account sheet, the confirmation
+  dialogs, and the alert → Continue → sheet → recheck hand-off. The macOS sheets are still
+  unseen.
 
 ### Release mechanics
 
