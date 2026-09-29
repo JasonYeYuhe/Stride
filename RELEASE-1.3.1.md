@@ -438,6 +438,60 @@ Gates on the merged tree (`cc272aa` + `5dca011`):
 - rehearsal 80 PASS / 0 FAIL / 1 SKIPPED (LARGE 85/0/1)
 - the generic iOS and macOS product checks
 
+### The simulator re-run on the round-two build (2026-09-29/30)
+
+Same setup and kit as the first run. Real builds: 1.3.1 (20) rebuilt from `9d1d05e`, and 1.3.0
+(19).
+
+**Upgrade in place, a real 1.3.0 store (E2E-U): all seven checks PASS.** The store was set up
+on 1.3.0:
+- another account's backup restored while signed in, so its habit was refused `not_owned` on
+  every 1.3.0 sync;
+- the account's own habits, synced, then synced again more than 5 minutes later (the
+  migration's margin).
+
+Then, on another device, one habit was deleted and one check-in unchecked. The 1.3.1 app was
+installed over 1.3.0, keeping the data container, and its first sync ran:
+- It pulled `?deletionsSince=` 1.3.0's cursor, and the answer listed the deleted habit, its
+  check-in and the unchecked check-in.
+- Those were removed quietly: no Recovered Edits row, and no recovery log at all.
+- The other account's habit and its check-in were resent, answered `not_owned` /
+  `not_owned_habit`, and held ("1 habit belongs to another account").
+- Restore as New Copies uploaded them into the account under new ids. Nothing of the other
+  account's leaked, and its rows are unchanged.
+- The unverified / unproven / pinned-cursor keys were cleared, and the next sync was quiet.
+- 1.3.0's cached `/v1/auth/verify` answer, with the session token, was purged at the first 1.3.1
+  launch. This was checked against a 1.3.0-era server copy, since the new server's no-store
+  answers leave nothing to cache.
+- No crash.
+
+**Mixed fleet against the new server (E2E-M): all four PASS.**
+- **One pull carries both.** A 1.3.1 uncheck + re-check with no sync in between was pulled by
+  1.3.0 with `withheld=1`. 1.3.0 re-IDed its record, and the day stayed checked, including after
+  a cold launch.
+- **Two separate pulls in one 1.3.0 session.** This was the unreproduced residual: the deletion
+  came in one pull and the re-check in the next, with no relaunch. The re-check was not lost, in
+  that session or after a relaunch, so no further server measure is needed. That rests on one
+  reproduction.
+- **The id alias.** Two devices checked a day offline. The 1.3.1 push answer named the stored id
+  (`aliases`), the app took it, and a later uncheck deleted the server row; both devices end
+  unchecked.
+- **No cache on either app version.** Every `/v1` answer is `no-store` with no ETag, and
+  `If-None-Match: *` still gets a 200.
+
+**Found on the way (fixed in `cef373d`):**
+- With one held habit, the body read "Restore it as a new copy" above a "Restore as New Copies"
+  button. The button, the Discard dialog title and both Discard messages now follow the count.
+- Settings' three swipe Deletes were drawn green (the app tint). They are red.
+
+**A 1.3.0 flaw the re-run confirmed (not a 1.3.1 bug):**
+- **What happens:** on 1.3.0, a restore of another account's backup made while SIGNED OUT is
+  lost when you then sign in. The logout had cleared 1.3.0's cursor, so the sign-in sync is a
+  full pull, which deletes every local row the account lacks, with no message.
+- **Why 1.3.0 is not pulled:** the backup file keeps the rows. 1.3.1 restores another account's
+  backup only as new copies. The server cannot change what 1.3.0 deletes locally. It is recorded
+  under RELEASE-1.3.0.md's known limitations.
+
 ## Known limitations
 
 - **Count habits merge by last-write-wins per entry**, not additively. 3 glasses logged offline
