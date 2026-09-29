@@ -500,5 +500,61 @@
 			<string>%lld</string>
 		</dict>
 	</dict>
+	<key>Restore as New Copies (%lld held)</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>새 사본으로 복원</string>
+		</dict>
+	</dict>
+	<key>Discard These Items? (%lld held)</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>이 항목을 폐기할까요?</string>
+		</dict>
+	</dict>
+	<key>They're removed from this device. Your backup file still has them. (%lld held)</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>이 기기에서 제거됩니다. 백업 파일에는 그대로 남아 있습니다.</string>
+		</dict>
+	</dict>
+	<key>They're removed from this device, and they may not exist anywhere else. Export a backup first if you might want them. (%lld held)</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>이 기기에서 제거되며 다른 곳에는 없을 수도 있습니다. 필요할 수 있다면 먼저 백업을 내보내세요.</string>
+		</dict>
+	</dict>
 </dict>
 </plist>

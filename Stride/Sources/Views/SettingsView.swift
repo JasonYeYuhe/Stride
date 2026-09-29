@@ -361,6 +361,9 @@ struct SettingsView: View {
                                 } label: {
                                     Label("Delete", systemImage: "trash")
                                 }
+                                // The app's green tint overrides a destructive swipe action's red (E2E upgrade run),
+                                // here and on the two swipe actions below.
+                                .tint(.red)
 
                                 Button {
                                     withAnimation {
@@ -422,6 +425,7 @@ struct SettingsView: View {
                                 } label: {
                                     Label("Delete", systemImage: "trash")
                                 }
+                                .tint(.red)
                             }
                         }
                     }
@@ -463,6 +467,7 @@ struct SettingsView: View {
                                 } label: {
                                     Label("Delete", systemImage: "trash")
                                 }
+                                .tint(.red)
                             }
                         }
                     }

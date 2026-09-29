@@ -411,7 +411,6 @@
 "Too large to upload" = "太大，无法上传";
 "Restore as New Copies" = "恢复为新副本";
 "Discard…" = "丢弃…";
-"Discard These Items?" = "要丢弃这些项目吗？";
 "Discard" = "丢弃";
 "Changes made on this device to items that were deleted on another device. Export them to keep a copy." = "你在此设备上对已在另一台设备上删除的项目所做的更改。导出即可保留一份副本。";
 "Export Recovered Edits" = "导出找回的编辑";
@@ -424,8 +423,6 @@
 "Full Resync?" = "要完全重新同步吗？";
 "Resync Everything" = "全部重新同步";
 "Stride first downloads your account's latest changes, then sends every habit, check-in and group on this device to your account again. Use it when another device is missing something." = "Stride 会先下载你账户的最新更改，然后将此设备上的所有习惯、打卡和分组重新发送到你的账户。当另一台设备缺少内容时使用。";
-"They're removed from this device. Your backup file still has them." = "它们将从此设备中移除。备份文件中仍保留着它们。";
-"They're removed from this device, and they may not exist anywhere else. Export a backup first if you might want them." = "它们将从此设备中移除，而且可能在其他地方都不存在。如果之后可能需要，请先导出备份。";
 "Restored as new copies." = "已恢复为新副本。";
 "Discarded." = "已丢弃。";
 "Recovered edits cleared." = "已清除找回的编辑。";

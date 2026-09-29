@@ -411,7 +411,6 @@
 "Too large to upload" = "Demasiado grande para subirlo";
 "Restore as New Copies" = "Restaurar como copias nuevas";
 "Discard…" = "Descartar…";
-"Discard These Items?" = "¿Descartar estos elementos?";
 "Discard" = "Descartar";
 "Changes made on this device to items that were deleted on another device. Export them to keep a copy." = "Cambios hechos en este dispositivo a elementos que se eliminaron en otro dispositivo. Expórtalos para guardar una copia.";
 "Export Recovered Edits" = "Exportar ediciones recuperadas";
@@ -424,8 +423,6 @@
 "Full Resync?" = "¿Hacer una resincronización completa?";
 "Resync Everything" = "Resincronizar todo";
 "Stride first downloads your account's latest changes, then sends every habit, check-in and group on this device to your account again. Use it when another device is missing something." = "Stride primero descarga los últimos cambios de tu cuenta y luego vuelve a enviar a tu cuenta todos los hábitos, registros y grupos de este dispositivo. Úsalo cuando a otro dispositivo le falte algo.";
-"They're removed from this device. Your backup file still has them." = "Se eliminan de este dispositivo. Tu archivo de copia de seguridad todavía los tiene.";
-"They're removed from this device, and they may not exist anywhere else. Export a backup first if you might want them." = "Se eliminan de este dispositivo y puede que no existan en ningún otro sitio. Si puedes necesitarlos, exporta primero una copia de seguridad.";
 "Restored as new copies." = "Restaurados como copias nuevas.";
 "Discarded." = "Descartados.";
 "Recovered edits cleared." = "Ediciones recuperadas borradas.";

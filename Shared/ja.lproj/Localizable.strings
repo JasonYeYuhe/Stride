@@ -411,7 +411,6 @@
 "Too large to upload" = "大きすぎてアップロードできない";
 "Restore as New Copies" = "新しいコピーとして復元";
 "Discard…" = "破棄…";
-"Discard These Items?" = "これらの項目を破棄しますか？";
 "Discard" = "破棄";
 "Changes made on this device to items that were deleted on another device. Export them to keep a copy." = "別のデバイスで削除された項目に、このデバイスで加えた変更です。書き出すとコピーを残せます。";
 "Export Recovered Edits" = "復旧した編集を書き出す";
@@ -424,8 +423,6 @@
 "Full Resync?" = "完全再同期しますか？";
 "Resync Everything" = "すべて再同期";
 "Stride first downloads your account's latest changes, then sends every habit, check-in and group on this device to your account again. Use it when another device is missing something." = "Stride はまずアカウントの最新の変更をダウンロードし、その後このデバイスのすべての習慣・チェックイン・グループをアカウントに再送信します。別のデバイスで何かが足りないときに使ってください。";
-"They're removed from this device. Your backup file still has them." = "このデバイスから削除されます。バックアップファイルには残っています。";
-"They're removed from this device, and they may not exist anywhere else. Export a backup first if you might want them." = "このデバイスから削除され、ほかの場所には残っていない可能性があります。必要になりそうなら、先にバックアップを書き出してください。";
 "Restored as new copies." = "新しいコピーとして復元しました。";
 "Discarded." = "破棄しました。";
 "Recovered edits cleared." = "復旧した編集を消去しました。";

@@ -216,7 +216,8 @@ final class LocalizationCatalogTests: XCTestCase {
     /// case a missing plural entry gets wrong ("1 changes").
     @MainActor
     func testSyncCountsResolveOneAndOtherInEnglishAndSpanish() throws {
-        let bundles = ["en": try lproj("en"), "es": try lproj("es"), "ja": try lproj("ja")]
+        let bundles = ["en": try lproj("en"), "es": try lproj("es"), "ja": try lproj("ja"),
+                       "zh-Hans": try lproj("zh-Hans")]
         func loc(_ value: String.LocalizationValue, _ language: String) -> String {
             String(localized: value, bundle: bundles[language]!, locale: Locale(identifier: language))
         }
@@ -228,6 +229,21 @@ final class LocalizationCatalogTests: XCTestCase {
         }
         for n in [1, 2] {
             let one = n == 1
+            // The held rows' button and Discard confirmation in the number they act on (E2E
+            // upgrade run: "Restore it as a new copy" above a "Restore as New Copies" button).
+            // "(… held)" only picks the form; one-form languages read for one or many.
+            XCTAssertEqual(loc("Restore as New Copies (\(n) held)", "en"), one ? "Restore as a New Copy" : "Restore as New Copies")
+            XCTAssertEqual(loc("Restore as New Copies (\(n) held)", "es"), one ? "Restaurar como copia nueva" : "Restaurar como copias nuevas")
+            XCTAssertEqual(loc("Discard These Items? (\(n) held)", "en"), one ? "Discard This Item?" : "Discard These Items?")
+            XCTAssertEqual(loc("Discard These Items? (\(n) held)", "zh-Hans"), "要丢弃吗？")
+            XCTAssertEqual(loc("They're removed from this device. Your backup file still has them. (\(n) held)", "en"),
+                           one ? "It's removed from this device. Your backup file still has it."
+                               : "They're removed from this device. Your backup file still has them.")
+            XCTAssertEqual(loc("They're removed from this device, and they may not exist anywhere else. Export a backup first if you might want them. (\(n) held)", "es"),
+                           one ? "Se elimina de este dispositivo y puede que no exista en ningún otro sitio. Si puedes necesitarlo, exporta primero una copia de seguridad."
+                               : "Se eliminan de este dispositivo y puede que no existan en ningún otro sitio. Si puedes necesitarlos, exporta primero una copia de seguridad.")
+            XCTAssertEqual(loc("They're removed from this device. Your backup file still has them. (\(n) held)", "ja"),
+                           "このデバイスから削除されます。バックアップファイルには残っています。")
             // Today (SyncStatusRow).
             XCTAssertEqual(loc("Offline — \(n) changes waiting", "en"), one ? "Offline — 1 change waiting" : "Offline — 2 changes waiting")
             XCTAssertEqual(loc("Offline — \(n) changes waiting", "es"), one ? "Sin conexión — 1 cambio pendiente" : "Sin conexión — 2 cambios pendientes")

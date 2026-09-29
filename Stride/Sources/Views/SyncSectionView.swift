@@ -287,6 +287,7 @@ struct SyncSectionView: View {
     @ViewBuilder
     private func convertibleRows(_ group: SyncService.HeldRows) -> some View {
         let busy = busyReason == group.reason
+        let count = group.counts.total
         VStack(alignment: .leading, spacing: 2) {
             convertibleTitle(group)
             convertibleExplanation(group)
@@ -300,7 +301,9 @@ struct SyncSectionView: View {
             Task { await restoreAsCopies(group.reason) }
         } label: {
             HStack {
-                Label("Restore as New Copies", systemImage: "plus.square.on.square")
+                // In the number the rows above count (E2E upgrade run: "Restore it as a new copy" over
+                // "Restore as New Copies"); "(… held)" in the key only picks the form.
+                Label("Restore as New Copies (\(count) held)", systemImage: "plus.square.on.square")
                 if busy {
                     Spacer()
                     ProgressView()
@@ -326,7 +329,7 @@ struct SyncSectionView: View {
         // Each dialog hangs on the button that opens it (on iPad it points at it), never on the
         // Section: a modifier on a Section is applied to every row in it.
         .confirmationDialog(
-            "Discard These Items?",
+            Text("Discard These Items? (\(count) held)"),
             isPresented: Binding(get: { discardReason == group.reason },
                                  set: { if !$0 { discardReason = nil } }),
             titleVisibility: .visible
@@ -336,7 +339,7 @@ struct SyncSectionView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            discardMessage(group.reason)
+            discardMessage(group.reason, count: group.counts.total)
         }
     }
 
@@ -442,13 +445,14 @@ struct SyncSectionView: View {
     // MARK: - Discard confirmation
 
     @ViewBuilder
-    private func discardMessage(_ reason: SyncHoldReason) -> some View {
+    private func discardMessage(_ reason: SyncHoldReason, count: Int) -> some View {
         // The service's own note: a `not_owned` row from an owner-unknown upload may exist nowhere
-        // else, and the confirmation must say so. A restored row's backup file still has it.
+        // else, and the confirmation must say so. A restored row's backup file still has it. In the
+        // number the dialog discards; "(… held)" in the key only picks the form.
         if reason == .tombstoned {
-            Text("They're removed from this device. Your backup file still has them.")
+            Text("They're removed from this device. Your backup file still has them. (\(count) held)")
         } else {
-            Text("They're removed from this device, and they may not exist anywhere else. Export a backup first if you might want them.")
+            Text("They're removed from this device, and they may not exist anywhere else. Export a backup first if you might want them. (\(count) held)")
         }
     }
 

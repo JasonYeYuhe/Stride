@@ -411,7 +411,6 @@
 "Too large to upload" = "너무 커서 업로드할 수 없음";
 "Restore as New Copies" = "새 사본으로 복원";
 "Discard…" = "폐기…";
-"Discard These Items?" = "이 항목을 폐기할까요?";
 "Discard" = "폐기";
 "Changes made on this device to items that were deleted on another device. Export them to keep a copy." = "다른 기기에서 삭제된 항목에 이 기기에서 한 변경 사항입니다. 내보내서 사본을 보관하세요.";
 "Export Recovered Edits" = "복구된 편집 내보내기";
@@ -424,8 +423,6 @@
 "Full Resync?" = "전체 재동기화할까요?";
 "Resync Everything" = "모두 재동기화";
 "Stride first downloads your account's latest changes, then sends every habit, check-in and group on this device to your account again. Use it when another device is missing something." = "Stride가 먼저 계정의 최신 변경 사항을 다운로드한 다음, 이 기기의 모든 습관, 체크인, 그룹을 계정으로 다시 보냅니다. 다른 기기에 빠진 항목이 있을 때 사용하세요.";
-"They're removed from this device. Your backup file still has them." = "이 기기에서 제거됩니다. 백업 파일에는 그대로 남아 있습니다.";
-"They're removed from this device, and they may not exist anywhere else. Export a backup first if you might want them." = "이 기기에서 제거되며 다른 곳에는 없을 수도 있습니다. 필요할 수 있다면 먼저 백업을 내보내세요.";
 "Restored as new copies." = "새 사본으로 복원했습니다.";
 "Discarded." = "폐기했습니다.";
 "Recovered edits cleared." = "복구된 편집을 지웠습니다.";
