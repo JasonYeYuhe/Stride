@@ -343,6 +343,15 @@ enum SyncWireStamp {
 /// nothing in the recovery log (they are not pending). So a store this rule stamped starts with
 /// its marks **unproven** (`SyncMarksProof`), and the first full pull of the account that adopts
 /// it decides them before its deletion pass (`SyncReconciler`, owner decision 2026-09-28).
+///
+/// Proven, a mark still says only that 1.3.0 PUSHED the row, not that the server took it: 1.3.0
+/// never read `skipped`, so a restore that kept another account's ids, or a row a tombstone
+/// refused, was pushed and refused on every sync, with the check-ins made on it since kept only
+/// here (review data-safety-1). The marks are therefore also **unverified** until one full-pull
+/// absence pass has run after the proof, and that pass resends what it would have deleted, for
+/// the server to answer row by row (`SyncMarksProof.isUnverified`). A row deleted elsewhere is
+/// then answered by its tombstone, so that first pass leans on tombstones being kept: the
+/// resurrection above is prevented from the next pass on, not at the first.
 enum SyncDeliveryMigration {
     /// Written by 1.3.0's `SyncService` (whole seconds, `SyncTimestamp.string`) and still by
     /// 1.3.1's, for the Settings display — which is why the rule must run before 1.3.1's first
@@ -441,9 +450,10 @@ enum SyncDeliveryMigration {
 
         do {
             let counts = try stampMigratedRows(in: context, lastSyncTime: lastSync)
-            // Before the save: a crash between the two must not leave marks without the flag
-            // (the retry finds them stamped and stamps nothing, so it would never set it). A
-            // flag whose marks were rolled back is harmless — the proof finds nothing to forget.
+            // Before the save: a crash between the two must not leave marks without the flags
+            // (the retry finds them stamped and stamps nothing, so it would never set them). Flags
+            // whose marks were rolled back are harmless — the proof finds nothing to forget. Both
+            // flags: the proof, and the first absence pass after it (review data-safety-1).
             if counts.total > 0 { SyncMarksProof(defaults: defaults).require() }
             if context.hasChanges { try context.save() }
             defaults.set(true, forKey: doneKey)
@@ -478,17 +488,36 @@ enum SyncDeliveryMigration {
 ///   because of it), so another account's snapshot cannot hold one. If it holds none, every
 ///   mark is forgotten first, so the rows are kept and uploaded once, and an unproven store
 ///   never has a row deleted by its absence from another account's snapshot.
-/// - A snapshot that fails validation (a truncated body proves nothing) decides only if it
-///   proves; otherwise the marks stay provisional, its deletion pass does not run anyway, and
-///   the next run full-pulls again.
+/// - A snapshot whose totals match its arrays decides even when a row in it is malformed: its
+///   ids are all there, and every id this device delivered is a UUID. One whose totals are
+///   missing or do not match (a truncated body proves nothing) decides only if it proves;
+///   otherwise it applies nothing, the run ends before its push, and the next run full-pulls
+///   again (review data-safety-2: what an undecided pull inserted, or its run acknowledged,
+///   would otherwise be taken for proof by the next one).
+///
+/// Proven, the marks are still **unverified** until a full-pull absence pass has run after the
+/// proof (review data-safety-1). A mark says 1.3.0 pushed the row, not that the server took it:
+/// a restore that kept another account's ids went up and came back `not_owned` on every 1.3.0
+/// sync, unread, and the check-ins made on it since exist only here. So that first pass deletes
+/// no delivered row the account lacks. It marks it `needsResend`, and the push lets the server
+/// answer for each one: `tombstoned` drops it (archived first, as the row is pending),
+/// `not_owned` holds it for Restore as New Copies, and a row no server holds is inserted. Rows
+/// the server refuses as another account's stay here, so nothing crosses accounts, and the pass
+/// runs only after a proof: a store whose marks were forgotten has no delivered row to resend.
 ///
 /// Settled by the deciding pull, by "Upload these habits to this account" (`forgetMarks`), and
 /// by an erase (`SyncService.resetSyncState`: no rows, no marks). A sign-in to the same account
-/// later needs no proof — the owner and its cursor resume. Neither data loss nor resurrection
-/// after a sweep, with one residual: a store whose every delivered row was deleted elsewhere
-/// holds nothing the snapshot can show, so it re-uploads (see DEV-PLAN-1.3.md M2, "Migrated rows").
+/// later needs no proof — the owner and its cursor resume. Two residuals, both harmless while
+/// tombstones are kept: a store whose every delivered row was deleted elsewhere holds nothing the
+/// snapshot can show, so it re-uploads (see DEV-PLAN-1.3.md M2, "Migrated rows"); and the
+/// unverified pass resends what the account deleted, which only a tombstone answers. After a
+/// sweep, a 1.3.0 device whose first 1.3.1 full pull comes later re-inserts those rows — a
+/// restore the user can undo, not a loss; the build that sweeps again (M0) must revisit both.
 struct SyncMarksProof {
     static let key = "stride_delivery_marks_unproven"
+    /// Set with `key`, cleared by the first full-pull absence pass after the proof (review
+    /// data-safety-1; `isUnverified`).
+    static let unverifiedKey = "stride_delivery_marks_unverified"
 
     /// Where `SyncService` keeps the cursors and the owner (`UserDefaults.standard` in the app).
     let defaults: UserDefaults
@@ -496,9 +525,31 @@ struct SyncMarksProof {
     /// The marks wait for the first full pull of the adopting account.
     var isAwaited: Bool { defaults.bool(forKey: Self.key) }
 
-    func require() { defaults.set(true, forKey: Self.key) }
+    /// No full-pull absence pass has run since the proof: the next one keeps and resends a
+    /// delivered row the account lacks instead of deleting it (`SyncReconciler.apply`'s
+    /// `marksUnverified`).
+    var isUnverified: Bool { defaults.bool(forKey: Self.unverifiedKey) }
 
-    func settle() { defaults.removeObject(forKey: Self.key) }
+    /// The migration stamped rows: they wait for the proof, and for the first pass after it.
+    func require() {
+        defaults.set(true, forKey: Self.key)
+        defaults.set(true, forKey: Self.unverifiedKey)
+    }
+
+    /// The proving pull held a row this device delivered: the marks are this account's and
+    /// stand. They stay unverified until an absence pass has run (`markVerified`).
+    func markProven() { defaults.removeObject(forKey: Self.key) }
+
+    /// A full pull's absence pass ran after the proof and resent what it would have deleted. From
+    /// here on a delivered row the account lacks was deleted elsewhere, and the pass deletes it.
+    func markVerified() { defaults.removeObject(forKey: Self.unverifiedKey) }
+
+    /// Nothing is left to prove or verify: every mark was forgotten (a proof that found none of
+    /// the rows, "Upload these habits") or erased with the rows.
+    func settle() {
+        defaults.removeObject(forKey: Self.key)
+        defaults.removeObject(forKey: Self.unverifiedKey)
+    }
 
     /// "Upload these habits to this account" (the account screen, M2 phase C; sub-decision (e)).
     /// The user said these rows go up, so no mark may let the adoption's full pull delete one —
@@ -518,6 +569,7 @@ enum SyncMarksVerdict: Equatable {
     case proven(SyncRowRef)
     /// It holds none of them: every mark was forgotten before the deletion pass.
     case forgotten(SyncDeliveryMigration.Counts)
-    /// It holds none, but it failed validation: nothing decided, nothing deleted.
+    /// It holds none, but its totals are missing or do not match its arrays: nothing decided,
+    /// nothing applied, and the run ends before its push (review data-safety-2).
     case undecided
 }

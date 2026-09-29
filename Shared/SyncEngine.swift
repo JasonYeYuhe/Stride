@@ -237,6 +237,9 @@ struct SyncRunSummary: Equatable {
     var archived = 0
     var deletionsDelivered = 0
     var heldTombstoned: [SyncRowRef] = []
+    /// Delivered rows a full pull lacked that its pass kept for the push to resend, because the
+    /// migrated delivery marks were unverified (review data-safety-1).
+    var markedForResend = SyncRowCounts()
     var pullIssues: [SyncPullIssue] = []
     var deletionPassSkipped = false
     /// What a proving full pull decided about the store's migrated delivery marks
@@ -375,7 +378,10 @@ final class SyncEngine {
     ///   write. A mismatch ends it as `.bindingChanged`, acknowledging nothing more.
     /// - While the store's delivery marks are unproven (`SyncMarksProof`), it starts with a FULL
     ///   pull whatever the cursor, and that pull decides them before its deletion pass: nothing
-    ///   is pushed, and nothing deleted by absence, before the account is proven.
+    ///   is pushed, and nothing deleted by absence, before the account is proven. A proving pull
+    ///   that cannot decide (its totals do not match) applies nothing, and the run ends there,
+    ///   before any push (review data-safety-2). Until a full pull's pass has run after the
+    ///   proof, that pass resends what it would have deleted (review data-safety-1).
     /// - It pulls BEFORE pushing when there is no cursor, when the cursor is older than
     ///   `cursorLifetime` (cleared: a full pull) or `cursorProbeAge` (so the server's
     ///   `cursor_expired` comes before the push), or when any row waits on a forced resend: the
@@ -602,11 +608,12 @@ private final class SyncRun {
                 try check()
                 let reconciled: SyncReconcileReport
                 let proving = since == nil && engine.marks.isAwaited
+                let verifying = since == nil && engine.marks.isUnverified
                 do {
                     // Read now, not at the run's start: the push before this pull acknowledged
                     // what it delivered, and whatever is still queued must not come back.
                     reconciled = try SyncReconciler.apply(pulled, to: context, isFullPull: since == nil,
-                                                          proveMarks: proving,
+                                                          proveMarks: proving, marksUnverified: verifying,
                                                           queuedDeletions: engine.deletionQueue.pending(),
                                                           recoveryLog: engine.recoveryLog,
                                                           accountID: binding.ownerID, now: engine.now())
@@ -620,14 +627,31 @@ private final class SyncRun {
                     // Only once the decision is saved (the reconcile saved or threw): a flag
                     // cleared ahead of a rolled-back forget would let the next full pull delete by
                     // marks nobody proved. Settled even if the gate changes next — the store is
-                    // what it is. Undecided stays awaited: the next run full-pulls again.
-                    if verdict != .undecided { engine.marks.settle() }
+                    // what it is. Undecided stays awaited: the next run full-pulls again. Forgotten
+                    // leaves no mark to verify either.
+                    switch verdict {
+                    case .proven: engine.marks.markProven()
+                    case .forgotten: engine.marks.settle()
+                    case .undecided: break
+                    }
                 }
+                // The pass that resent what the marks could not vouch for has run and is saved:
+                // from here a delivered row the account lacks was deleted elsewhere (review
+                // data-safety-1). Never before the proof: an undecided pull runs no pass.
+                if verifying, reconciled.deletionPassRan { engine.marks.markVerified() }
                 summary.archived += reconciled.archived
                 summary.heldTombstoned += reconciled.heldTombstoned
+                summary.markedForResend += reconciled.markedForResend
                 summary.pullIssues += reconciled.issues
                 if reconciled.deletionPassSkipped { summary.deletionPassSkipped = true }
                 if let diagnostic = reconciled.diagnostic { engine.report(diagnostic) }
+                if proving, reconciled.marks == .undecided {
+                    // It applied nothing (review data-safety-2), and the run ends before its push:
+                    // a row acknowledged into this account would be taken for proof by the next
+                    // proving pull as surely as a row this one inserted. No cursor either, as
+                    // nothing was applied up to it. Backed off like a 200 whose body cannot be read.
+                    throw SyncRunStop(reason: .backOff(.transient, answer: answer))
+                }
                 summary.serverTime = pulled.serverTime
 
                 try check()

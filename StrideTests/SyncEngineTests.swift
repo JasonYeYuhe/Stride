@@ -929,10 +929,11 @@ final class SyncEngineTests: XCTestCase {
 
     /// The same account again (the session expired while the device was on 1.3.0). The proof is
     /// a full pull before anything is pushed — whatever cursor the owner has — and the snapshot
-    /// holds a habit this device delivered, so the marks stand: the habit deleted on another
-    /// device meanwhile is removed (not re-uploaded, which after a sweep would resurrect it),
-    /// nothing else is deleted, nothing is uploaded, the next sync is quiet, and signing out
-    /// and back in resumes with no proof to make.
+    /// holds a habit this device delivered, so the marks stand: nothing the account holds goes up
+    /// again. The habit deleted on another device meanwhile is not deleted by that pull's pass,
+    /// which cannot tell it from a row the 1.3.0 server refused (review data-safety-1): it is
+    /// resent once, and the account's tombstone drops it here, archived first. Nothing else is
+    /// deleted, the next sync is quiet, and signing out and back in resumes with no proof to make.
     func testAMigratedStoreSignedIntoItsOwnAccountIsProvenAndKeepsItsMarks() async throws {
         let d = device(), other = device(token: "token-A2")
         let read = aged(d.habit("Read", records: [day(0), day(1)]))
@@ -952,9 +953,13 @@ final class SyncEngineTests: XCTestCase {
         guard case .proven = summary.marks else { return XCTFail("\(String(describing: summary.marks))") }
         XCTAssertEqual(try d.habitNames(), ["Read", "Stretch"])
         XCTAssertEqual(read.records.count, 2)
-        XCTAssertEqual(summary.pushedRows.total, 0, "every row was in the last 1.3.0 snapshot")
-        XCTAssertTrue(d.log.lines.isEmpty)
+        XCTAssertEqual(summary.markedForResend, SyncRowCounts(groups: 0, habits: 1, entries: 1))
+        XCTAssertEqual(summary.pushedRows, SyncRowCounts(groups: 0, habits: 1, entries: 1),
+                       "only Run's resend: the account holds every other row")
+        XCTAssertEqual(summary.dropped, 2)
+        XCTAssertEqual(d.log.lines.map(\.item.reason), [.tombstoned, .tombstoned], "Run and its check-in")
         XCTAssertFalse(d.marks.isAwaited)
+        XCTAssertFalse(d.marks.isUnverified, "the pass ran")
         XCTAssertEqual(try d.pendingCount(), 0)
 
         let quiet = expectSynced(await d.sync())
@@ -968,6 +973,71 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertTrue(resumed.pushes.isEmpty)
         XCTAssertEqual(resumed.pulls.map(\.fullPull), [false], "same account: resume, no proof")
         XCTAssertEqual(try d.habitNames(), ["Read", "Stretch"])
+    }
+
+    /// Review data-safety-1 (the reviewer's S1). A 1.3.0 device signed into B restored a backup
+    /// made under A — 1.3.0 keeps the ids — and every 1.3.0 sync pushed those rows into B, which
+    /// refused them (`not_owned`, `not_owned_habit`); 1.3.0 never read `skipped`, so the rows and
+    /// the check-ins made on them since exist only here. The migration marks them delivered with
+    /// the rest, and B's snapshot proves the marks with B's own habit: the proving pull's pass
+    /// deleted them all as "deleted elsewhere", with no recovery-log line. A mark says 1.3.0
+    /// pushed a row, not that a server took it. So until one absence pass has run after the
+    /// proof, a delivered row the account lacks is kept and resent, and the server answers for
+    /// each: A's rows `not_owned` (held for Restore as New Copies, an edit made since included),
+    /// the habit B's phone deleted `tombstoned` (dropped, archived first), one no server has
+    /// (inserted). That pass clears the flag, so a deletion made elsewhere later deletes by
+    /// absence again.
+    func testAMigratedStoresRowsTheAccountLacksAreResentForTheServerToAnswerNotDeleted() async throws {
+        let d = device(owner: "2", token: "token-B"), phone = device(owner: "2", token: "token-A2")
+        aged(d.habit("B's own", records: [day(0)]))
+        let deletedOnPhone = aged(d.habit("Deleted on B's phone"))
+        try d.save()
+        expectSynced(await d.sync())            // 1.3.0's snapshots put these on B
+        expectSynced(await phone.sync())
+        let deletedID = deletedOnPhone.id.uuidString
+        try await deleteElsewhere("Deleted on B's phone", on: phone)
+        // A's backup, restored with its ids after that sync; B has refused every row of it since.
+        let restored = aged(d.habit("From A's backup", records: (0..<19).map(day)))
+        let onNoServer = aged(d.habit("On no server"))
+        try d.save()
+        let restoredID = restored.id, onNoServerID = onNoServer.id.uuidString
+        server.forcedReasons[restored.id.uuidString] = "not_owned"
+        restored.records.forEach { server.forcedReasons[$0.id.uuidString] = "not_owned_habit" }
+        try arriveFrom130(d, owner: "2")
+        // A check-in edited after the update, before the first 1.3.1 sync: pending, and still A's.
+        let edited = try XCTUnwrap(restored.records.first)
+        let editedID = edited.id
+        edited.note = "edited after the update"
+        edited.touch()
+        try d.save()
+
+        let summary = expectSynced(await d.sync())
+
+        guard case .proven = summary.marks else { return XCTFail("\(String(describing: summary.marks))") }
+        XCTAssertEqual(try d.habitNames(), ["B's own", "From A's backup", "On no server"], "the proving pull deleted none")
+        let kept = try XCTUnwrap(d.habits().first { $0.id == restoredID })
+        XCTAssertEqual(kept.activeHold, .notOwned)
+        XCTAssertEqual(kept.records.count, 19)
+        XCTAssertTrue(kept.records.allSatisfy { $0.activeHold == .notOwned }, "the edited check-in too")
+        XCTAssertEqual(kept.records.first { $0.id == editedID }?.note, "edited after the update")
+        XCTAssertNil(server.habits[restoredID.uuidString])
+        XCTAssertNotNil(server.habits[onNoServerID], "no server row and no tombstone: inserted")
+        XCTAssertEqual(d.log.lines.map(\.item.ref.id), [deletedID], "only the row the tombstone dropped")
+        XCTAssertEqual(d.log.lines.first?.item.reason, .tombstoned)
+        XCTAssertEqual(summary.markedForResend, SyncRowCounts(groups: 0, habits: 3, entries: 19))
+        XCTAssertEqual(try d.pendingCount(), 0)
+        XCTAssertFalse(d.marks.isUnverified, "cleared by the pass that resent them")
+
+        // A pass has run after the proof: from here a delivered row the account lacks was deleted
+        // elsewhere, and the next full pull removes it by absence, with no resend.
+        expectSynced(await phone.sync())
+        try await deleteElsewhere("On no server", on: phone)
+        d.cursors.setCursor(nil, for: "2")
+        let later = expectSynced(await d.sync())
+        XCTAssertEqual(later.pulls.first?.fullPull, true)
+        XCTAssertTrue(later.pushes.isEmpty, "deleted by absence, not resent")
+        XCTAssertEqual(try d.habitNames(), ["B's own", "From A's backup"], "held rows survive the full pull")
+        XCTAssertEqual(d.log.lines.count, 1, "delivered and unedited: nothing to archive")
     }
 
     /// Another account adopts the store (the reviewer's R1). Its snapshot holds none of this
@@ -1055,9 +1125,10 @@ final class SyncEngineTests: XCTestCase {
         }
     }
 
-    /// A snapshot that fails validation proves nothing it does not contain: the marks stay
-    /// provisional and the flag set, nothing is deleted or uploaded, and the next run — though
-    /// it has a cursor by then — full-pulls again and decides.
+    /// A snapshot whose totals do not match its arrays proves nothing it does not contain: the
+    /// marks stay provisional and both flags set, nothing is applied, deleted or uploaded, and
+    /// the run ends before its push with no cursor written (review data-safety-2). The next run
+    /// full-pulls again and decides.
     func testATruncatedProvingPullLeavesTheProofToTheNextFullPull() async throws {
         let d = device()
         aged(d.habit("Read"))
@@ -1069,26 +1140,107 @@ final class SyncEngineTests: XCTestCase {
              "totals":{"habits":9,"entries":0,"groups":0}}
             """.utf8)))
 
-        let first = expectSynced(await d.sync())
-        XCTAssertEqual(first.marks, .undecided)
-        XCTAssertTrue(first.deletionPassSkipped)
+        let first = await d.sync()
+        guard case .stopped(.backOff(.transient, _), let stopped) = first else { return XCTFail("\(first)") }
+        XCTAssertEqual(stopped.marks, .undecided)
+        XCTAssertTrue(stopped.deletionPassSkipped)
+        XCTAssertTrue(stopped.pushes.isEmpty, "provisional marks: nothing goes up before the proof")
         XCTAssertTrue(d.marks.isAwaited)
+        XCTAssertTrue(d.marks.isUnverified)
         XCTAssertEqual(try d.habitNames(), ["Read"])
-        XCTAssertEqual(first.pushedRows.total, 0, "provisional marks: not pending, not deleted")
-        XCTAssertNotNil(d.cursors.cursor(for: "1"))
+        XCTAssertNil(d.cursors.cursor(for: "1"), "nothing applied: no cursor")
 
         let second = expectSynced(await d.sync())
         XCTAssertEqual(second.pulls.first?.fullPull, true)
         guard case .proven = second.marks else { return XCTFail("\(String(describing: second.marks))") }
         XCTAssertFalse(d.marks.isAwaited)
+        XCTAssertFalse(d.marks.isUnverified)
         XCTAssertEqual(try d.habitNames(), ["Read"])
     }
 
-    /// The flag is settled only once the deciding pull is saved: a proving pull rolled back (its
-    /// recovery-log append failed) leaves it set, and the retry decides.
+    /// Review data-safety-2 (the reviewer's S2). The marks were inferred for account A, and B's
+    /// session adopted the store. B's proving pull could not decide — its totals did not match, a
+    /// truncated body — yet it still inserted B's habit, delivered by being applied, and the run
+    /// went on to push a new row into B and acknowledge it. Either one then "proved" A's marks at
+    /// the next full pull, whose pass deleted A's rows. An undecided proving pull now applies
+    /// nothing and ends the run before the push, writing no cursor, so the next one decides on
+    /// B's snapshot alone: none of this device's rows, every mark forgotten, nothing deleted, and
+    /// A's rows go up to be refused `not_owned` and held.
+    func testAnUndecidedProvingPullAppliesNothingAndEndsTheRunSoTheNextDecidesOnTheSnapshot() async throws {
+        let serverB = FakeSyncServer()
+        serverB.validTokens = ["token-B"]
+        let theirs = TestDevice(server: serverB, owner: "2", token: "token-B", bounds: .standard)
+        let d = TestDevice(server: serverB, owner: "2", token: "token-B", bounds: .standard)
+        devices += [theirs, d]
+        theirs.habit("B's own", records: [day(0)])
+        try theirs.save()
+        expectSynced(await theirs.sync())
+
+        let fromA = aged(d.habit("A's habit", records: [day(1)]))
+        try d.save()
+        let fromAID = fromA.id
+        try arriveFrom130(d, owner: "2")
+        serverB.forcedReasons[fromA.id.uuidString] = "not_owned"
+        fromA.records.forEach { serverB.forcedReasons[$0.id.uuidString] = "not_owned_habit" }
+        d.habit("Made after the update")
+        try d.save()
+        let own = try XCTUnwrap(serverB.habits.values.first?.wire)
+        let ownEntry = try XCTUnwrap(serverB.entries.values.first?.wire)
+        serverB.scriptPull(at: 1, SyncTransportResponse(status: 200, body: try pullBody(
+            habits: [own], entries: [ownEntry], totals: SyncTotals(habits: 1, entries: 2, groups: 0),
+            serverTime: serverB.clock)))
+
+        let first = await d.sync()
+
+        guard case .stopped(.backOff(.transient, _), let stopped) = first else { return XCTFail("\(first)") }
+        XCTAssertEqual(stopped.marks, .undecided)
+        XCTAssertEqual(stopped.pulls.count, 1)
+        XCTAssertTrue(stopped.pushes.isEmpty, "the run ended before the push")
+        XCTAssertEqual(try d.habitNames(), ["A's habit", "Made after the update"], "B's habit was not applied")
+        XCTAssertNil(d.cursors.cursor(for: "2"), "nothing applied: no cursor")
+        XCTAssertTrue(d.marks.isAwaited)
+        XCTAssertTrue(d.marks.isUnverified)
+
+        let second = expectSynced(await d.sync())
+
+        XCTAssertEqual(second.pulls.first?.fullPull, true)
+        XCTAssertEqual(second.marks, .forgotten(.init(habits: 1, records: 1, groups: 0)))
+        XCTAssertEqual(try d.habitNames(), ["A's habit", "B's own", "Made after the update"], "nothing deleted")
+        let kept = try XCTUnwrap(d.habits().first { $0.id == fromAID })
+        XCTAssertEqual(kept.activeHold, .notOwned)
+        XCTAssertTrue(kept.records.allSatisfy { $0.activeHold == .notOwned })
+        XCTAssertTrue(d.log.lines.isEmpty)
+        XCTAssertFalse(d.marks.isAwaited)
+        XCTAssertFalse(d.marks.isUnverified, "forgotten marks leave nothing to verify")
+    }
+
+    /// A pull answer as routes/sync.js sends it, to script one request with `FakeSyncServer`.
+    private func pullBody(habits: [SyncHabit], entries: [SyncEntry] = [], deletedHabitIds: [String] = [],
+                          totals: SyncTotals, serverTime: Date) throws -> Data {
+        struct Body: Encodable {
+            var habits: [SyncHabit]
+            var entries: [SyncEntry]
+            var groups: [SyncGroup] = []
+            var deletedHabitIds: [String]
+            var deletedEntryIds: [String] = []
+            var deletedGroupIds: [String] = []
+            var serverTime: String
+            var totals: SyncTotals
+        }
+        return try JSONEncoder().encode(Body(habits: habits, entries: entries, deletedHabitIds: deletedHabitIds,
+                                             serverTime: SyncTimestamp.millisecondString(from: serverTime),
+                                             totals: totals))
+    }
+
+    /// The flags are settled only once the deciding pull is saved: a proving pull rolled back (its
+    /// recovery-log append failed) leaves both set, and the retry decides. A pass under unverified
+    /// marks deletes nothing by absence (review data-safety-1), so this proving pull carries a
+    /// tombstone for the habit edited offline, which must be archived before it goes. The
+    /// retry's snapshot only lacks it: the pass keeps it, the push resends it, and the account's
+    /// tombstone drops it, the edit archived first.
     func testAProvingPullThatRollsBackLeavesTheProofToBeMade() async throws {
         let d = device(), other = device(token: "token-A2")
-        aged(d.habit("Read"))
+        let read = aged(d.habit("Read"))
         let run = aged(d.habit("Run", records: [day(0)]))
         let runID = run.id.uuidString
         try d.save()
@@ -1099,17 +1251,23 @@ final class SyncEngineTests: XCTestCase {
         run.note = "edited offline"
         run.touch()
         try d.save()
+        let readOnServer = try XCTUnwrap(server.habits[read.id.uuidString]?.wire)
+        server.scriptPull(at: 1, SyncTransportResponse(status: 200, body: try pullBody(
+            habits: [readOnServer], deletedHabitIds: [runID], totals: SyncTotals(habits: 1, entries: 0, groups: 0),
+            serverTime: server.clock)))
         d.log.failure = CocoaError(.fileWriteOutOfSpace)
 
         let failed = await d.sync()
         guard case .stopped(.recoveryLogFailed, _) = failed else { return XCTFail("\(failed)") }
         XCTAssertTrue(d.marks.isAwaited)
+        XCTAssertTrue(d.marks.isUnverified)
         XCTAssertEqual(try d.habitNames(), ["Read", "Run"])
 
         d.log.failure = nil
         let summary = expectSynced(await d.sync())
         guard case .proven = summary.marks else { return XCTFail("\(String(describing: summary.marks))") }
         XCTAssertFalse(d.marks.isAwaited)
+        XCTAssertFalse(d.marks.isUnverified)
         XCTAssertEqual(try d.habitNames(), ["Read"])
         XCTAssertTrue(d.log.lines.contains { $0.item.ref.id == runID }, "the offline edit is recoverable")
     }

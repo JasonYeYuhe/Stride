@@ -360,11 +360,12 @@ final class SyncServiceTests: XCTestCase {
     }
 
     /// The migrated-rows rule runs before the first 1.3.1 sync: a row older than 1.3.0's last
-    /// sync was in that sync's snapshot, so it counts as delivered — and when the account no
-    /// longer has it (deleted on another device), the first full pull removes it instead of this
-    /// device uploading it again. A row newer than that sync is pushed. The marks stand because
-    /// the snapshot holds another row this device delivered (the proof, `SyncMarksProof`); one
-    /// that held none would have them forgotten and the row re-sent, to be answered `tombstoned`.
+    /// sync was in that sync's snapshot, so it counts as delivered, and one the account still
+    /// holds is not uploaded again. The marks stand because the snapshot holds a row this device
+    /// delivered (the proof, `SyncMarksProof`). A marked row the account no longer has (deleted on
+    /// another device) is not deleted by that first full pull, whose marks cannot tell it from a
+    /// row the 1.3.0 server refused (review data-safety-1): it goes up with the row made after the
+    /// last 1.3.0 sync, and the server's `tombstoned` drops it, into the recovery log first.
     func testMigratedRowsCountAsDeliveredOnTheFirstSync() async throws {
         let lastSync130 = Date().addingTimeInterval(-3_600)
         local.defaults.set(SyncTimestamp.string(from: lastSync130), forKey: SyncDeliveryMigration.lastSyncTimeKey)
@@ -379,16 +380,24 @@ final class SyncServiceTests: XCTestCase {
         context.insert(kept)
         context.insert(new)
         try context.save()
-        let newID = new.id, keptID = kept.id
+        let oldID = old.id, newID = new.id, keptID = kept.id
         let snapshot = SyncStubBodies.pull(habits: [SyncStubBodies.habit(kept)])
-        server.on("POST", "/v1/sync/push", respond: .ok(SyncStubBodies.pushOK))
+        let tombstonedOld = #"""
+            {"ok":true,"skipped":{"habits":["\#(oldID.uuidString)"],"entries":[],"groups":[]},
+             "skippedReasons":{"habits":{"\#(oldID.uuidString)":"tombstoned"},"entries":{},"groups":{}}}
+            """#
+        server.on("POST", "/v1/sync/push", respond: .ok(tombstonedOld))
         server.on("GET", "/v1/sync/pull") { request in .ok(request.query["since"] == nil ? snapshot : SyncStubBodies.pull()) }
 
         await sync.sync(context: context)
 
         let pushed = try XCTUnwrap(syncRequests.first { $0.path == "/v1/sync/push" }?.json?["habits"] as? [[String: Any]])
-        XCTAssertEqual(pushed.map { $0["id"] as? String }, [newID.uuidString])
+        XCTAssertEqual(Set(pushed.compactMap { $0["id"] as? String }), [oldID.uuidString, newID.uuidString],
+                       "never the row the account holds")
         XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Habit>()).map(\.id)), [keptID, newID])
+        XCTAssertEqual(try recovery.log.lineCount(accountID: owner), 1, "the dropped row, archived before it went")
+        XCTAssertFalse(marks.isAwaited)
+        XCTAssertFalse(marks.isUnverified)
     }
 
     /// A 1.3.0 store with one row stamped by the migrated-rows rule's cutoff and one after it,
@@ -1058,10 +1067,11 @@ final class SyncServiceTests: XCTestCase {
         XCTAssertTrue(queue.pending().isEmpty)
     }
 
-    /// An erased store has no delivery marks, so none wait for a proof.
+    /// An erased store has no delivery marks, so none wait for a proof, or for the pass after it.
     func testResetSyncStateSettlesTheMarksProof() {
         marks.require()
         sync.resetSyncState()
         XCTAssertFalse(marks.isAwaited)
+        XCTAssertFalse(marks.isUnverified)
     }
 }

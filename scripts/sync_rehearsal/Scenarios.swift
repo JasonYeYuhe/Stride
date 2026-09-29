@@ -736,7 +736,10 @@ struct Scenarios {
     // Device D ran 1.3.0 on account A, synced, and went dormant; its session expired, which
     // deletes the token and keeps `stride_last_sync_time`, so nothing says which account its
     // rows were delivered to. Meanwhile A's phone deleted a habit. D updates: the real migration
-    // marks its rows delivered, provisionally, and D signs in — to A again, or to B.
+    // marks its rows delivered, provisionally, and D signs in — to A again, or to B. Proven, the
+    // marks are still unverified for that first pass (review data-safety-1: a mark says 1.3.0
+    // pushed the row, not that the server took it), so the habit A deleted is resent once and
+    // A's tombstone drops it, archived first, instead of the pass deleting it unrecorded.
     func migratedMarksProof() async throws {
         let accountA = try Account.create(), accountB = try Account.create()
         let old = SnapshotDevice("D on 1.3.0", shape: .v130, account: accountA)
@@ -782,15 +785,21 @@ struct Scenarios {
                 let onServer = try await serverSnapshot(accountA)
                 report.check("SAME account: the first sync is a full pull before any push, and it proves the marks",
                              migrated != .failed && isSynced(first) && fullFirst && { if case .proven = first.summary?.marks { return true }; return false }()
-                                && !d.marks.isAwaited,
+                                && !d.marks.isAwaited && !d.marks.isUnverified,
                              "\(describe(first)); marks \(describe(first.summary?.marks)); \(describe(ex1))")
-                report.check("SAME account: nothing deleted but the habit A's phone deleted while D slept (not re-uploaded)",
-                             names == ["Read", "Run", "Made after the last 1.3.0 sync"] && d.logItems().isEmpty
+                let logged = d.logItems()
+                let stretchLogged: Bool = {
+                    guard logged.count == 1, let line = logged.first, line.reason == .tombstoned,
+                          case .habit(let habit) = line.row else { return false }
+                    return habit.name == "Stretch"
+                }()
+                report.check("SAME account: nothing deleted but the habit A's phone deleted while D slept — resent once, dropped by A's tombstone, archived",
+                             names == ["Read", "Run", "Made after the last 1.3.0 sync"] && stretchLogged
                                 && !onServer.habits.contains { $0.name == "Stretch" }
                                 && after.difference(from: StoreDigest(pull: onServer)) == nil,
-                             "D \(after.summary) \(names.sorted()); server \(StoreDigest(pull: onServer).summary); log \(d.logItems().count)")
-                report.check("SAME account: only the row made after the last 1.3.0 sync goes up; the next sync pushes 0/0/0",
-                             totalPushed(ex1).rows == 2 && totalPushed(ex1).habits == 1 && quiet,
+                             "D \(after.summary) \(names.sorted()); server \(StoreDigest(pull: onServer).summary); log \(logged.count)")
+                report.check("SAME account: only the row made after the last 1.3.0 sync and Stretch's resend go up; the next sync pushes 0/0/0",
+                             totalPushed(ex1).rows == 3 && totalPushed(ex1).habits == 2 && quiet,
                              "first pushed \(totalPushed(ex1)); second: \(describe(ex2))")
             } else {
                 // What A holds now — the same-account run above uploaded D's newest row there,
@@ -806,7 +815,7 @@ struct Scenarios {
                 let uploaded = Set(habits.filter { !inA.contains($0.id.uuidString) }.map(\.name))
                 report.check("ANOTHER account: the first sync is a full pull before any push, and it forgets the marks",
                              migrated != .failed && isSynced(first) && fullFirst && { if case .forgotten = first.summary?.marks { return true }; return false }()
-                                && !d.marks.isAwaited,
+                                && !d.marks.isAwaited && !d.marks.isUnverified,
                              "\(describe(first)); marks \(describe(first.summary?.marks)); \(describe(ex1))")
                 report.check("ANOTHER account: nothing deleted — every row D held is still there",
                              after == before && d.logItems().isEmpty,

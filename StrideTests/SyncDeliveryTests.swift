@@ -643,7 +643,9 @@ final class SyncDeliveryTests: XCTestCase {
 
     /// Owner decision 2026-09-28: the marks the rule infers are for an account 1.3.0 never
     /// recorded, so a store it stamped waits for the first full pull of the account that adopts
-    /// it (`SyncMarksProof`). One it stamped nothing in has nothing to prove.
+    /// it (`SyncMarksProof`), and — a mark says 1.3.0 pushed the row, not that the server took it
+    /// (review data-safety-1) — for the first absence pass after that proof. One it stamped
+    /// nothing in has nothing to prove or verify.
     func testStampedMarksAwaitTheProofAndAStoreWithNoneHasNothingToProve() throws {
         let proof = SyncMarksProof(defaults: defaults)
         let habit = Habit(name: "A")
@@ -652,12 +654,31 @@ final class SyncDeliveryTests: XCTestCase {
         try context.save()
         XCTAssertEqual(SyncDeliveryMigration.runOnceIfNeeded(in: context, defaults: defaults), .stamped(.init()))
         XCTAssertFalse(proof.isAwaited, "no last-sync time: nothing stamped")
+        XCTAssertFalse(proof.isUnverified)
 
         defaults.removeObject(forKey: SyncDeliveryMigration.doneKey)
         defaults.set("2026-09-20T12:00:00Z", forKey: SyncDeliveryMigration.lastSyncTimeKey)
         XCTAssertEqual(SyncDeliveryMigration.runOnceIfNeeded(in: context, defaults: defaults),
                        .stamped(.init(habits: 1, records: 0, groups: 0)))
         XCTAssertTrue(proof.isAwaited)
+        XCTAssertTrue(proof.isUnverified)
+    }
+
+    /// The two flags part at the proof: proven, the marks stand but stay unverified until an
+    /// absence pass has run; forgotten or erased, nothing is left to verify either.
+    func testTheProofAndTheFirstPassAfterItAreSettledApart() {
+        let proof = SyncMarksProof(defaults: defaults)
+        proof.require()
+        proof.markProven()
+        XCTAssertFalse(proof.isAwaited)
+        XCTAssertTrue(proof.isUnverified)
+        proof.markVerified()
+        XCTAssertFalse(proof.isUnverified)
+
+        proof.require()
+        proof.settle()
+        XCTAssertFalse(proof.isAwaited)
+        XCTAssertFalse(proof.isUnverified)
     }
 
     /// "Upload these habits to this account": every mark forgotten and saved, holds and
@@ -682,6 +703,7 @@ final class SyncDeliveryTests: XCTestCase {
         XCTAssertEqual(counts, .init(habits: 1, records: 1, groups: 1))
         XCTAssertFalse(context.hasChanges)
         XCTAssertFalse(proof.isAwaited)
+        XCTAssertFalse(proof.isUnverified, "no mark left to verify")
         XCTAssertNil(habit.syncedAt)
         XCTAssertEqual(habit.activeHold, .notOwned, "a hold is not a mark")
         XCTAssertTrue(group.needsResend)

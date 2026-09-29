@@ -57,6 +57,12 @@ import SwiftData
 ///   `SyncMarksProof`) decides them before anything is applied or deleted: they stand if the
 ///   snapshot holds a row this device holds as delivered, and are forgotten otherwise — so the
 ///   deletion pass of an account that is not the marks' own finds nothing delivered to delete.
+///   One whose totals do not match cannot decide, and then applies nothing (review
+///   data-safety-2).
+/// - Until a full pull's absence pass has run after that proof (`marksUnverified`), the pass
+///   deletes no delivered row the account lacks: it marks it `needsResend`, for the push's
+///   answer to decide, because a migrated mark says 1.3.0 pushed the row, not that the server
+///   took it (review data-safety-1).
 @MainActor
 enum SyncReconciler {
     /// The one form ids are compared in: the uppercase `uuidString` of the parsed UUID.
@@ -71,7 +77,12 @@ enum SyncReconciler {
     ///   - isFullPull: the pull was made without `since`. Only a full pull runs the absence pass.
     ///   - proveMarks: the store's delivery marks are unproven (`SyncMarksProof.isAwaited`): this
     ///     full pull decides them first (`report.marks`). Ignored on an incremental pull, which
-    ///     deletes only by explicit tombstones and cannot show what an account lacks.
+    ///     deletes only by explicit tombstones and cannot show what an account lacks. Undecided,
+    ///     the pull applies nothing at all.
+    ///   - marksUnverified: no absence pass has run since the marks' proof
+    ///     (`SyncMarksProof.isUnverified`): this full pull's pass, if it runs, keeps each delivered
+    ///     row the account lacks and marks it `needsResend` (`report.markedForResend`) instead of
+    ///     deleting it. Ignored on an incremental pull, which runs no pass.
     ///   - queuedDeletions: this device's deletion queue (`SyncDeletionQueue.pending()`), read
     ///     for this pull. A remote habit, entry or group whose id is queued — or an entry of a
     ///     queued habit — is not applied: the push carrying the deletion is still to come, and
@@ -89,6 +100,7 @@ enum SyncReconciler {
         to context: ModelContext,
         isFullPull: Bool,
         proveMarks: Bool = false,
+        marksUnverified: Bool = false,
         queuedDeletions: SyncDeletionQueue.Batch = .init(),
         recoveryLog: (any SyncRecoveryLogSink)? = nil,
         accountID: String? = nil,
@@ -104,6 +116,7 @@ enum SyncReconciler {
         do {
             try applyValidated(response, entries: parsed, to: context, isFullPull: isFullPull,
                                proveMarks: proveMarks && isFullPull,
+                               marksUnverified: marksUnverified && isFullPull,
                                queuedDeletions: queuedDeletions, report: &report, recoveryLog: recoveryLog,
                                accountID: accountID, now: now)
             return report
@@ -210,6 +223,7 @@ enum SyncReconciler {
         to context: ModelContext,
         isFullPull: Bool,
         proveMarks: Bool,
+        marksUnverified: Bool,
         queuedDeletions: SyncDeletionQueue.Batch,
         report: inout SyncReconcileReport,
         recoveryLog: (any SyncRecoveryLogSink)?,
@@ -233,8 +247,14 @@ enum SyncReconciler {
         // Before anything below: the upserts mark what they apply as delivered and align record
         // ids to the server's, either of which would make the proof find what it put there.
         if proveMarks {
+            let whole = !report.issues.contains { $0.reason == .totalsMissing || $0.reason == .totalsMismatch }
             report.marks = decideMarks(response, entryIDs: parsed.keys, habits: existingHabits,
-                                       groups: existingGroups, snapshotIsValid: report.issues.isEmpty)
+                                       groups: existingGroups, snapshotIsWhole: whole)
+            // Undecided, the pull applies nothing (review data-safety-2). Its upserts would mark
+            // what they insert delivered, and the next proving pull would find those rows in the
+            // same account's snapshot and take them for proof of marks this one could not prove.
+            // The engine ends the run here too, so no push acknowledges a row either.
+            if report.marks == .undecided { return }
         }
 
         // Remote deletions first, so nothing below resurrects them or matches onto them
@@ -358,11 +378,22 @@ enum SyncReconciler {
             // review). Y is inserted instead, and X goes (to the recovery log first if pending).
             if let existingRecord = days.record(of: habit, onDayOf: entryDate, excluding: removal) {
                 // Align local ID to server ID so full-pull reconciliation won't delete it
-                if existingRecord.id != entryUUID { existingRecord.id = entryUUID }
+                let realigned = existingRecord.id != entryUUID
+                if realigned { existingRecord.id = entryUUID }
                 // The local-newer guard, at milliseconds, strictly: see the type's comment. Only
                 // against an edit stamp the server actually sent: a server before 2026-09-15 sent
                 // none, and its `createdAt` (the day) says nothing about when the value changed.
-                if remoteEntry.updatedAt != nil, SyncTimestamp.isNewer(existingRecord.stamp, than: remoteStamp) {
+                //
+                // Under a new id, only for a value that still has to go up: pending, or held,
+                // which the hold decides (review data-safety-3). A record delivered at its current
+                // stamp that the server now holds under another id, with an older stamp, was
+                // deleted there and its day added again (another device untapped and re-tapped
+                // it, or took a count to zero and back). An incremental pull brings X's tombstone
+                // and inserts Y: delete wins. A full pull brings no tombstone, and keeping the
+                // "newer" local value under Y left a record neither pending nor equal to the
+                // server's, on this device alone, until the day was edited again.
+                if remoteEntry.updatedAt != nil, SyncTimestamp.isNewer(existingRecord.stamp, than: remoteStamp),
+                   !realigned || existingRecord.isPending || existingRecord.isHeld {
                     report.keptLocalNewer.append(SyncRowRef(kind: .entry, id: entryUUID.uuidString))
                     continue
                 }
@@ -430,26 +461,42 @@ enum SyncReconciler {
 
         // The full-pull absence pass: only on a snapshot validated and applied whole. A skip in
         // the upserts above lands in `issues` too, so this one condition covers both.
+        //
+        // While the store's delivery marks are unverified (`marksUnverified`, review
+        // data-safety-1), a delivered row the account lacks is kept and marked for resend
+        // instead of deleted: a migrated mark says 1.3.0 pushed the row, not that the server took
+        // it, and 1.3.0 never read a refusal. The push's answer decides each one: a tombstone
+        // drops it (archived first, as it is pending by then), `not_owned` holds it for Restore
+        // as New Copies, and a row no server holds is inserted. The server refuses an id another
+        // account owns, so no row crosses accounts, and the engine clears the flag once this
+        // pass has run.
         if isFullPull, report.issues.isEmpty {
             report.deletionPassRan = true
             let remoteHabitIds = Set(response.habits.map { canonicalID($0.id) })
             let remoteEntryIds = parsed.keys
             let remoteGroupIds = Set((response.groups ?? []).map { canonicalID($0.id) })
+            func keptForResend(_ row: some SyncDeliverable, _ count: WritableKeyPath<SyncRowCounts, Int>) -> Bool {
+                guard marksUnverified else { return false }
+                if !row.needsResend { row.markNeedsResend() }
+                report.markedForResend[keyPath: count] += 1
+                return true
+            }
 
             for habit in existingHabits where !remoteHabitIds.contains(habit.id.uuidString) {
-                if absentRowIsKept(habit) { continue }
+                if absentRowIsKept(habit) || keptForResend(habit, \.habits) { continue }
                 removal.removeHabit(habit)
             }
             // Records of every surviving local habit — duplicates of one id included, and one kept
-            // above as held or never delivered. A habit this pull inserted has only pulled records.
+            // above as held, never delivered or kept for resend. A habit this pull inserted has
+            // only pulled records.
             for habit in existingHabits where !removal.isRemoving(habit) {
                 for record in habit.records where !remoteEntryIds.contains(record.id.uuidString) {
-                    if absentRowIsKept(record) { continue }
+                    if absentRowIsKept(record) || keptForResend(record, \.entries) { continue }
                     removal.removeRecord(record, of: habit)
                 }
             }
             for group in existingGroups where !remoteGroupIds.contains(group.id.uuidString) {
-                if absentRowIsKept(group) { continue }
+                if absentRowIsKept(group) || keptForResend(group, \.groups) { continue }
                 removal.removeGroup(group)
             }
         }
@@ -483,13 +530,20 @@ enum SyncReconciler {
     /// one whose every habit was edited after the last 1.3.0 sync while its history was not (a
     /// reorder touches every active habit).
     ///
-    /// Proven → the marks stand. None held and the snapshot validated → every mark forgotten,
-    /// here, before the deletion pass. None held but invalid (a truncated body could have cut
-    /// the very row that proves it) → undecided: nothing forgotten, and nothing deleted either,
-    /// because the deletion pass needs a valid snapshot too.
+    /// Proven → the marks stand. None held and the snapshot whole → every mark forgotten, here,
+    /// before the deletion pass. None held and not whole — totals missing, or not matching the
+    /// arrays: a truncated body could have cut the very row that proves it → undecided, and the
+    /// caller applies nothing.
+    ///
+    /// Whole means the totals, not every validation check (review data-safety-2). With matching
+    /// totals the id sets are complete whatever else is wrong with a row — an id that is not a
+    /// UUID, a case variant, a date that does not parse, an entry without its habit — and every
+    /// id this device delivered is a UUID, so a malformed row cannot hide one. Such an issue still
+    /// skips the deletion pass; it no longer leaves the marks provisional for a later pull to
+    /// decide on rows this one inserted.
     private static func decideMarks(_ response: SyncPullResponse, entryIDs remoteEntries: Set<String>,
                                     habits: [Habit], groups: [HabitGroup],
-                                    snapshotIsValid: Bool) -> SyncMarksVerdict {
+                                    snapshotIsWhole: Bool) -> SyncMarksVerdict {
         let remoteHabits = Set(response.habits.map { canonicalID($0.id) })
         let remoteGroups = Set((response.groups ?? []).map { canonicalID($0.id) })
         if let habit = habits.first(where: { $0.hasBeenDelivered && remoteHabits.contains($0.id.uuidString) }) {
@@ -503,7 +557,7 @@ enum SyncReconciler {
                 return .proven(SyncRowRef(kind: .entry, id: record.id.uuidString))
             }
         }
-        guard snapshotIsValid else { return .undecided }
+        guard snapshotIsWhole else { return .undecided }
         return .forgotten(SyncDeliveryMigration.forgetMarks(habits: habits, groups: groups))
     }
 
@@ -513,7 +567,8 @@ enum SyncReconciler {
     /// ids is never deleted either: it is held `tombstoned` for the restore-as-copies choice.
     /// Everything else was delivered and the server no longer has it — another device deleted
     /// it — so it goes, `needsResend` or not: after a sweep a resend would be a new insert.
-    /// (The `restoredAt` hold is `SyncLocalRemoval`'s, shared with every other deletion path.)
+    /// (The `restoredAt` hold is `SyncLocalRemoval`'s, shared with every other deletion path;
+    /// while the migrated marks are unverified, the pass resends such a row instead.)
     private static func absentRowIsKept<Row: SyncDeliverable>(_ row: Row) -> Bool {
         row.isHeld || !row.hasBeenDelivered
     }
@@ -688,6 +743,12 @@ struct SyncRowCounts: Equatable {
     var entries = 0
 
     var total: Int { groups + habits + entries }
+
+    static func += (lhs: inout SyncRowCounts, rhs: SyncRowCounts) {
+        lhs.groups += rhs.groups
+        lhs.habits += rhs.habits
+        lhs.entries += rhs.entries
+    }
 }
 
 /// What one pull did, for the engine's summary and its reports.
@@ -704,6 +765,10 @@ struct SyncReconcileReport: Equatable {
     var archived = 0
     /// Rows restored with their ids that a deletion reached: held `tombstoned`, not deleted.
     var heldTombstoned: [SyncRowRef] = []
+    /// Delivered rows the full pull lacked that its pass kept and marked `needsResend`, because
+    /// the store's delivery marks were unverified (`marksUnverified`, review data-safety-1): the
+    /// next push lets the server answer for each.
+    var markedForResend = SyncRowCounts()
     /// Remote values not applied because the local stamp is strictly newer; those rows stay
     /// pending.
     var keptLocalNewer: [SyncRowRef] = []
