@@ -1303,6 +1303,12 @@ pushes full snapshots too.)*
 | Swift Charts, CloudKit, target bump | No | Hand-rolled charts everywhere and the widget cannot use Charts; CloudKit is a live-store migration with no demo account; nothing needs iOS 18. |
 
 ## After this phase (not scheduled)
+- **Export: write the file before presenting the share sheet** *(found 2026-09-29)*. Exports
+  are written lazily, on demand, when the share sheet asks for them. On macOS, ShareKit waits for
+  that on the main thread: a 2 s+ hang in production (Sentry STRIDE-APPLE-7). On iOS the share
+  sheet takes 6–7 s to appear. Writing the file first and sharing its URL fixes both, and gives
+  exactly one file per share (1.3.1's reuse window is 60 s). Small, but UI-visible on every
+  export: 1.3.2 or M3.
 
 Negative / "at most" habits (Loop's open-bug cluster lives here); every-N-days / monthly
 frequency (the Monday-anchored weeks need a rolling-window rewrite first); "day starts at"

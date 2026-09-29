@@ -559,6 +559,13 @@ the data recoverable, and the 1.3.1 server half or 1.3.1 itself covers it (RELEA
   pull bodies. This is older than 1.3.0. Once the 1.3.1 server half is deployed, every `/v1`
   answer is `no-store`, so 1.3.0 stops caching them. 1.3.1 uses its own session with no cache
   and purges what earlier builds left.
+- **Opening the export share sheet can hang for about 2 seconds** (Sentry STRIDE-APPLE-7,
+  macOS 1.3.0 (19), production, 2026-09-29). The file is written lazily, on demand, when the
+  share sheet asks for it, and ShareKit waits for it on the main thread
+  (`NSSharingServicePicker` → `NSExtensionItem` matching → `NSExtensionURLResult wait:`). On
+  iOS the same lazy write makes the share sheet take 6–7 s to appear (the 1.3.1 simulator runs).
+  The fix is to write the file first and share its URL; it is in DEV-PLAN-1.3.md's backlog. It
+  is not in 1.3.1, which stays a sync release.
 
 ## After submission — external review and the owner's decisions (2026-09-28)
 
