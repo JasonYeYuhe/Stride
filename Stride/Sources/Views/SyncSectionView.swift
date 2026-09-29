@@ -154,8 +154,9 @@ struct SyncSectionView: View {
         var paused = auth.isLoggedIn && (sync.backoff?.reason.showsSyncPaused ?? false)
         // Signed in as the owner: Full Resync has an account to resend to. Not while another
         // account is signed in over this store — nothing syncs until the account screen settles
-        // it, and a resync would only be turned away.
-        var fullResync = auth.isLoggedIn && sync.ownerConflict == nil
+        // it, and a resync would only be turned away. Nor while the session needs signing in
+        // again: every request of it would be answered 401 (E2E R1, the reauth state).
+        var fullResync = auth.isLoggedIn && sync.ownerConflict == nil && !sync.needsReauth
         // Held rows are the server's answers to a signed-in account, and their words and buttons
         // are about "this account" ("Restore them as new copies to add them to this account"):
         // signed out there is none, and Today's pointer to this list is hidden too (SyncStatusLine
