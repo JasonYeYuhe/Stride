@@ -43,7 +43,8 @@ function canonicalizeIds(db) {
     + (SELECT count(*) FROM habits WHERE group_id IS NOT NULL AND group_id <> upper(group_id))
     + (SELECT count(*) FROM habit_entries WHERE id <> upper(id) OR habit_id <> upper(habit_id))
     + (SELECT count(*) FROM habit_groups WHERE id <> upper(id))
-    + (SELECT count(*) FROM deletion_tombstones WHERE entity_id <> upper(entity_id)) AS n`);
+    + (SELECT count(*) FROM deletion_tombstones WHERE entity_id <> upper(entity_id))
+    + (SELECT count(*) FROM deletion_tombstones WHERE habit_id IS NOT NULL AND habit_id <> upper(habit_id)) AS n`);
   if (lowercase === 0) return { lowercase: 0, twins: 0, changed: false };
 
   const twins = count(`SELECT
@@ -66,6 +67,9 @@ function canonicalizeIds(db) {
     UPDATE habit_groups SET id = upper(id) WHERE id <> upper(id);
     UPDATE habits SET group_id = upper(group_id) WHERE group_id IS NOT NULL AND group_id <> upper(group_id);
     UPDATE deletion_tombstones SET entity_id = upper(entity_id) WHERE entity_id <> upper(entity_id);
+    -- An entry tombstone's copy of its row's habit id (E2E S4): the pull compares it with
+    -- habit_entries.habit_id as stored, so it must change case when that does.
+    UPDATE deletion_tombstones SET habit_id = upper(habit_id) WHERE habit_id IS NOT NULL AND habit_id <> upper(habit_id);
   `);
   console.log(`[migrate] upper-cased ${lowercase} id values`);
   return { lowercase, twins: 0, changed: true };

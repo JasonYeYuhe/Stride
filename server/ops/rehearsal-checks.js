@@ -60,6 +60,13 @@ async function main() {
   for (const t of ["sync_snapshot_requests", "usage_counters", "user_clients"]) {
     check(`table ${t} exists after startup migrations`, tables.includes(t));
   }
+  // E2E S4: an entry tombstone's habit and day, added by ALTER TABLE on this copy. Every row
+  // production already holds keeps NULL (nothing has pushed yet), which the pull serves as before.
+  const tombCols = db.prepare("PRAGMA table_info(deletion_tombstones)").all().map((r) => /** @type {any} */ (r).name);
+  const tombRows = /** @type {any} */ (db.prepare("SELECT COUNT(*) AS n, COUNT(habit_id) + COUNT(entry_date) AS named FROM deletion_tombstones").get());
+  check("deletion_tombstones.habit_id and .entry_date added, every existing row NULL",
+    tombCols.includes("habit_id") && tombCols.includes("entry_date") && tombRows.named === 0,
+    `columns=${tombCols.join(",")} rows=${tombRows.n} named=${tombRows.named}`);
 
   // --- unauthenticated surfaces ---
   const health = await call("GET", "/health");
@@ -75,6 +82,10 @@ async function main() {
   const verify = await call("POST", "/v1/auth/verify", { body: { token: demoToken() } });
   const session = verify.json?.sessionToken;
   check("demo token verifies", verify.status === 200 && typeof session === "string");
+  // E2E S9 URL cache: the answer holding the session token must not be stored or revalidated.
+  const noStore = (/** @type {Headers} */ h) => h.get("cache-control") === "no-store" && h.get("etag") === null;
+  check("…the verify answer is Cache-Control: no-store, with no ETag", noStore(verify.headers),
+    `cache-control=${verify.headers.get("cache-control")} etag=${verify.headers.get("etag")}`);
   if (!session) return;
 
   try {
@@ -82,6 +93,8 @@ async function main() {
     const pull = await call("GET", "/v1/sync/pull", { token: session });
     const p = pull.json || {};
     check("full pull 200", pull.status === 200);
+    check("…Cache-Control: no-store, with no ETag", noStore(pull.headers),
+      `cache-control=${pull.headers.get("cache-control")} etag=${pull.headers.get("etag")}`);
     const t = p.totals || {};
     check("totals equal the arrays on a full pull",
       t.habits === p.habits?.length && t.entries === p.entries?.length && t.groups === p.groups?.length,
@@ -165,6 +178,39 @@ async function main() {
     const skip = await call("POST", "/v1/sync/push", { token: session, body: { habits: [], entries: [{ id: ghostEntry, habitId: ghost, date: "2026-09-01", value: 1 }], groups: [] } });
     check("entry for an unknown habit -> 200 with skipped.entries", skip.status === 200 && (skip.json?.skipped?.entries || []).includes(ghostEntry),
       JSON.stringify(skip.json));
+
+    // --- E2E S4 on a real check-in: uncheck + re-check pushed by 1.3.1, then pulled by each app ---
+    // The tombstone must name the row's habit and date exactly as production stores them (seeded
+    // rows included), and only apps < 1.3.1 are spared the deletion; the day stays checked.
+    const real = (p.entries || [])[0];
+    if (!real) {
+      check("E2E S4: the demo account has a check-in to uncheck", false, "no entries");
+    } else {
+      const cursor = (await call("GET", "/v1/sync/pull", { token: session })).json?.serverTime;
+      await new Promise((r) => setTimeout(r, 5));
+      const recheckId = crypto.randomUUID().toUpperCase();
+      const at = new Date().toISOString();
+      const recheck = await call("POST", "/v1/sync/push", { token: session, headers: { "X-Stride-Client": "ios/1.3.1(20)" }, body: {
+        habits: [], groups: [], deletedHabitIds: [], deletedGroupIds: [], deletedEntryIds: [real.id],
+        entries: [{ id: recheckId, habitId: real.habitId, date: real.date, value: real.value, createdAt: at, updatedAt: at }],
+      } });
+      const tomb = /** @type {any} */ (db.prepare(
+        "SELECT habit_id, entry_date FROM deletion_tombstones WHERE entity_type = 'entry' AND entity_id = ?").get(real.id));
+      check("uncheck + re-check with ios/1.3.1(20) -> 200, the tombstone names the row's habit and date as stored",
+        recheck.status === 200 && (recheck.json?.skipped?.entries || []).length === 0
+          && tomb?.habit_id === real.habitId && tomb?.entry_date === real.date,
+        JSON.stringify({ status: recheck.status, skipped: recheck.json?.skipped, tomb, habitId: real.habitId, date: real.date }));
+      for (const [label, client, heldBack] of /** @type {[string, string, boolean][]} */ ([
+        ["ios/1.3.0(19)", "ios/1.3.0(19)", true], ["no header", "", true], ["ios/1.3.1(20)", "ios/1.3.1(20)", false],
+      ])) {
+        const r = await call("GET", `/v1/sync/pull?since=${encodeURIComponent(cursor)}`,
+          { token: session, headers: client ? { "X-Stride-Client": client } : {} });
+        const carries = (r.json?.entries || []).some((e) => e.id === recheckId);
+        const deletes = (r.json?.deletedEntryIds || []).includes(real.id);
+        check(`…pull since, ${label} -> the re-check ${heldBack ? "WITHOUT" : "with"} the deletion`,
+          r.status === 200 && carries && deletes === !heldBack, `${r.status} carries=${carries} deletes=${deletes}`);
+      }
+    }
 
     // --- cursor gating ---
     const old = new Date(Date.now() - 400 * 86400000).toISOString();

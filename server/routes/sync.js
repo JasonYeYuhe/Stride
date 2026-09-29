@@ -569,6 +569,18 @@ router.post("/push", (req, res) => {
   const insertTombstone = db.prepare(
     "INSERT INTO deletion_tombstones (user_id, entity_type, entity_id, deleted_at) VALUES (?, ?, ?, ?)"
   );
+  // An entry's tombstone also names the row's habit and day, as stored (E2E S4: the pull holds
+  // the deletion back from an app < 1.3.1 when that day's replacement is in the same response).
+  // Read before the DELETE, from this account's rows only. An id the account no longer holds —
+  // deleted by an earlier push (a retry), never pushed, another account's, or an entry of a habit
+  // deleted above in this same push (ON DELETE CASCADE got there first; no replacement can
+  // exist for it) — keeps NULL, which the pull treats as it always has.
+  const entryToDelete = db.prepare(
+    "SELECT habit_id, date FROM habit_entries WHERE id = ? AND habit_id IN (SELECT id FROM habits WHERE user_id = ?)"
+  );
+  const insertEntryTombstone = db.prepare(
+    "INSERT INTO deletion_tombstones (user_id, entity_type, entity_id, deleted_at, habit_id, entry_date) VALUES (?, 'entry', ?, ?, ?, ?)"
+  );
 
   const fetchHabitTombstones = db.prepare(
     "SELECT entity_id FROM deletion_tombstones WHERE user_id = ? AND entity_type = 'habit'"
@@ -637,8 +649,9 @@ router.post("/push", (req, res) => {
       blockedHabits.add(id);
     }
     for (const id of deletedEntryIds) {
+      const row = /** @type {{ habit_id: string, date: string } | undefined} */ (entryToDelete.get(id, userId));
       deleteEntry.run(id, userId);
-      insertTombstone.run(userId, "entry", id, now);
+      insertEntryTombstone.run(userId, id, now, row ? row.habit_id : null, row ? row.date : null);
       blockedEntries.add(id);
     }
     for (const id of deletedGroupIds) {
@@ -834,6 +847,62 @@ router.post("/push", (req, res) => {
   });
 });
 
+/*
+ * An app below 1.3.1 never gets an entry's deletion in the same pull as that day's replacement
+ * (E2E S4, found end to end with the real 1.3.0 build 19).
+ *
+ * Unchecking and re-checking a day with no sync in between deletes entry X and creates entry Y,
+ * a new id for the same habit and day; a 1.3.1 device pushes both. Every reconciler before 1.3.1
+ * (1.2.0 through 1.3.0) applies a pull's deletions first, with `context.delete` on the records in
+ * `habit.records`, and then matches each pulled entry to a local record BY DAY
+ * (`habit.records.first(where: same day)`). `Habit.records` has no inverse, so the deleted X is
+ * still in that array: Y matches it, X is re-IDed to Y and takes Y's value, and the save deletes
+ * the object anyway, so Y is lost. The device shows the day unchecked until a full pull, while the
+ * server's data is right. Those apps cannot be updated, so the server must not send them that
+ * combination. Apps >= 1.3.1 get every deletion, as before: their reconciler keeps a record the
+ * same pull deletes out of the day match.
+ *
+ * So for those apps an entry deletion is held back when its tombstone names a habit and day (the
+ * push copies them from the row it deletes) that the same response carries under another id.
+ * Without the deletion the old app day-matches its still-live X, re-IDs it to Y and takes Y's
+ * value: it converges without ever deleting. (1.1 never applied a pulled deletion at all, and
+ * keeps its own record for a day it already has, as it always did.)
+ *
+ * "In the same response" is the whole condition because the replacement's `updated_at` is never
+ * earlier than the deletion: the old row held (habit_id, date) until it was deleted, the table has
+ * one row per (habit_id, date), so the replacement was written after it, and `updated_at` only
+ * moves forward. Any pull whose window includes the deletion therefore also carries the
+ * replacement, if there is one by then. A deletion with no replacement in the response is sent as
+ * before — an uncheck the old app must apply — and so is every tombstone that names no day: rows
+ * written before the 1.3.1 server, and an id the account no longer held when a push listed it.
+ * One id can have several tombstone rows, one per push that listed it; it is held back if any of
+ * its rows in the window names the replaced day, so a retry's NULL row cannot send it anyway.
+ */
+const dayTombstonesSince = db.prepare(`
+  SELECT DISTINCT entity_id, habit_id, entry_date FROM deletion_tombstones
+  WHERE user_id = ? AND deleted_at > ? AND entity_type = 'entry'
+    AND habit_id IS NOT NULL AND entry_date IS NOT NULL`);
+
+/**
+ * The entry deletions in the window whose day this response carries under another id.
+ * Compared exactly as the columns hold them: the tombstone copied habit_id and date from the
+ * row it deleted, and `entries` are rows of the same table.
+ * @param {number} userId @param {string} since @param {EntryRow[]} entries
+ * @returns {Set<string>}
+ */
+function replacedEntryDeletions(userId, since, entries) {
+  const dayKey = (/** @type {unknown} */ habitId, /** @type {unknown} */ date) => JSON.stringify([habitId, date]);
+  /** One entry per (habit_id, date) — the table's UNIQUE — so one id per key. */
+  const carried = new Map(entries.map((e) => [dayKey(e.habit_id, e.date), e.id]));
+  const replaced = new Set();
+  for (const t of /** @type {{ entity_id: string, habit_id: string, entry_date: string }[]} */ (
+    dayTombstonesSince.all(userId, since))) {
+    const id = carried.get(dayKey(t.habit_id, t.entry_date));
+    if (id !== undefined && id !== t.entity_id) replaced.add(t.entity_id);
+  }
+  return replaced;
+}
+
 // GET /sync/pull — mobile app pulls all data from server
 // Optional: ?since=ISO8601 to get only changes after a timestamp
 // Returns { habits, entries, groups, deleted*Ids, serverTime, totals: {habits, entries, groups} }
@@ -874,6 +943,8 @@ router.get("/pull", (req, res) => {
   const GROUP_COLS = "id, name, color_hex, sort_order, created_at, COALESCE(client_updated_at, updated_at) AS updated_at";
   const ENTRY_COLS = "id, habit_id, date, note, value, created_at, COALESCE(client_updated_at, updated_at, created_at) AS updated_at";
   const OWN_HABITS = "SELECT id FROM habits WHERE user_id = ?";
+  // Apps below 1.3.1 day-match a pulled entry onto a record the same pull deleted (E2E S4, above).
+  const holdBackReplaced = !clientAtLeast(req, "1.3.1");
 
   // One read transaction, so `totals` and the arrays describe the same snapshot. The server is
   // not the only writer (seed-demo.js and other scripts write from another process in WAL
@@ -896,16 +967,26 @@ router.get("/pull", (req, res) => {
       ).all(userId, since));
       /** @param {string} type */
       const deletedOf = (type) => tombstones.filter((t) => t.entity_type === type).map((t) => t.entity_id);
+      const entries = /** @type {EntryRow[]} */ (db.prepare(
+        `SELECT ${ENTRY_COLS} FROM habit_entries WHERE habit_id IN (${OWN_HABITS}) AND updated_at > ?`,
+      ).all(userId, since));
+      let deletedEntryIds = deletedOf("entry");
+      let withheld = 0;
+      if (holdBackReplaced && deletedEntryIds.length > 0 && entries.length > 0) {
+        const replaced = replacedEntryDeletions(userId, /** @type {string} */ (since), entries);
+        const sent = deletedEntryIds.filter((id) => !replaced.has(id));
+        withheld = deletedEntryIds.length - sent.length;
+        deletedEntryIds = sent;
+      }
       return {
         totals,
         habits: db.prepare(`SELECT ${HABIT_COLS} FROM habits WHERE user_id = ? AND updated_at > ?`).all(userId, since),
         groups: db.prepare(`SELECT ${GROUP_COLS} FROM habit_groups WHERE user_id = ? AND updated_at > ?`).all(userId, since),
-        entries: db.prepare(
-          `SELECT ${ENTRY_COLS} FROM habit_entries WHERE habit_id IN (${OWN_HABITS}) AND updated_at > ?`,
-        ).all(userId, since),
+        entries,
         deletedHabitIds: deletedOf("habit"),
-        deletedEntryIds: deletedOf("entry"),
+        deletedEntryIds,
         deletedGroupIds: deletedOf("group"),
+        withheld,
       };
     }
     return {
@@ -917,9 +998,10 @@ router.get("/pull", (req, res) => {
       deletedHabitIds: [],
       deletedEntryIds: [],
       deletedGroupIds: [],
+      withheld: 0,
     };
   });
-  const { totals, habits, entries, groups, deletedHabitIds, deletedEntryIds, deletedGroupIds } = read();
+  const { totals, habits, entries, groups, deletedHabitIds, deletedEntryIds, deletedGroupIds, withheld } = read();
 
   // One branch, on the header: >= 1.3.1 compares milliseconds and needs them (wireTimeMs);
   // everything older keeps the whole seconds it can parse (wireTime).
@@ -932,6 +1014,8 @@ router.get("/pull", (req, res) => {
       habits: habits.length, entries: entries.length, groups: groups.length,
       deletions: deletedHabitIds.length + deletedEntryIds.length + deletedGroupIds.length,
     },
+    // Entry deletions held back because their replacement is in this response (E2E S4).
+    ...(withheld > 0 ? { withheld } : {}),
   };
   return res.json({
     habits: habits.map((h) => { const row = /** @type {HabitRow} */ (h); return {

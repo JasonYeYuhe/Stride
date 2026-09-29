@@ -83,13 +83,18 @@ It copies the working tree's `server/` and an online `.backup` of the live `stri
 (no Sentry, no email, no APM), runs [`ops/rehearsal-checks.js`](ops/rehearsal-checks.js)
 against it as the App Review demo account, prints the server log and deletes the directory.
 The live process and database are never touched. The checks: `integrity_check` on the
-migrated copy and the new tables present; `/health`; the AASA file; the demo token signs in;
+migrated copy and the new tables present; `deletion_tombstones.habit_id` / `.entry_date` added
+with every existing row NULL; `/health`; the AASA file; the demo token signs in, and the verify
+and full-pull answers are `Cache-Control: no-store` with no `ETag`;
 a full pull whose `totals` equal its arrays, every entry matched to a habit, every id upper
 case; a 1.2.3-shaped snapshot of the real account applying with nothing skipped and bumping
 no `updated_at` (which is also the LWW re-feed's negative case on real rows: the demo rows carry
 millisecond stamps, so the whole-second echo is strictly older with the same values); a pull
 with `ios/1.3.1(19)` serving fixed-width millisecond stamps for the same instants that
-`ios/1.3.0(18)` and a header-less pull serve in whole seconds; an unknown-habit entry landing in `skipped.entries`; `cursor_expired` only
+`ios/1.3.0(18)` and a header-less pull serve in whole seconds; an unknown-habit entry landing in `skipped.entries`;
+an uncheck + re-check of a real demo check-in pushed as `ios/1.3.1(20)`, whose tombstone names the
+row's habit and date exactly as stored, and whose deletion a `since` pull holds back from
+`ios/1.3.0(19)` and header-less apps but sends to `ios/1.3.1(20)` (E2E S4, below); `cursor_expired` only
 with a ≥ 1.3.1 header; a 20-day-old session sliding to 30 days; and the pause flag answering
 503 then 200.
 
@@ -153,9 +158,40 @@ pull() { curl -s https://stride-api.colorarchive.me/v1/sync/pull -H "Authorizati
 pull 'ios/1.3.1(19)'   # …:SS.mmmZ
 pull 'ios/1.3.0(18)'   # …:SSZ
 pull ''                # …:SSZ — an empty header is a legacy app, like none at all
+curl -s -D - -o /dev/null https://stride-api.colorarchive.me/v1/sync/pull -H "Authorization: Bearer $S" \
+  | grep -iE '^HTTP|^cache-control|^etag'   # 200 and cache-control: no-store — no etag line (E2E S9, below)
 curl -s -o /dev/null -X POST https://stride-api.colorarchive.me/v1/auth/logout \
   -H "Authorization: Bearer $S" -H 'Content-Type: application/json' -d '{}'
 ```
+
+After deploying the 1.3.1 server, two more checks, neither needing an account:
+
+- **API answers are not stored** (E2E S9 URL cache, [below](#api-answers-are-never-stored-e2e-s9-url-cache)).
+  Every `/v1` answer through nginx carries `Cache-Control: no-store` and no `ETag`; the legal
+  pages keep their own validators:
+
+  ```bash
+  curl -sI https://stride-api.colorarchive.me/v1/auth/session | grep -iE '^HTTP|^cache-control|^etag'
+  #   200, cache-control: no-store — and no etag line
+  curl -sI https://stride-api.colorarchive.me/privacy | grep -iE '^HTTP|^cache-control|^etag'
+  #   200, cache-control: public, max-age=0, and an etag line: static pages are unchanged
+  ```
+
+- **The tombstone migration** (E2E S4, [below](#a-deletion-and-its-same-day-replacement-e2e-s4)).
+  Right after the restart the two columns exist and no row that was there before has a value:
+
+  ```bash
+  ssh -o IdentityAgent=none -i ~/.ssh/id_ed25519 azureuser@172.207.80.109 \
+    "sudo sqlite3 /root/stride-server/stride.db 'PRAGMA table_info(deletion_tombstones);'" | cut -d'|' -f2 | xargs
+  #   id user_id entity_type entity_id deleted_at habit_id entry_date
+  ssh -o IdentityAgent=none -i ~/.ssh/id_ed25519 azureuser@172.207.80.109 \
+    "sudo sqlite3 /root/stride-server/stride.db 'SELECT COUNT(*), COUNT(habit_id) FROM deletion_tombstones;'"
+  #   <n>|0 — every tombstone from before the deploy keeps NULL
+  ```
+
+  From then on an entry deletion writes a tombstone that names its habit and day, and a pull
+  that held a deletion back says so on its request line (`withheld=<n>`), e.g.
+  `sudo pm2 logs stride-server --lines 5000 --nostream | grep -c ' withheld='`.
 
 ## Setup on the host
 
@@ -483,7 +519,54 @@ non-optional `Double` — the same whole-pull failure. Pushes can no longer chan
 
 The request log line carries what an operator needs to answer "what did that device send":
 `client=<header or ->`, and for sync `user=… in=… applied=… skipped=… refed=… reasons=…` or
-`pull=full|since out=…` (`refed` only when the LWW re-feed moved a row).
+`pull=full|since out=… withheld=…` (`refed` only when the LWW re-feed moved a row, `withheld`
+only when a pull held back a replaced entry deletion, below).
+
+### A deletion and its same-day replacement (E2E S4)
+
+Found end to end with the real 1.3.0 (build 19). Unchecking and re-checking a day with no sync in
+between deletes entry X and creates entry Y — a new id — for the same habit and day, and a 1.3.1
+device pushes both. Every app below 1.3.1 applies a pull's deletions first and then matches each
+pulled entry to a local record **by day**; `Habit.records` has no inverse, so the deleted X is
+still in the habit's array, Y lands on it, and the save loses Y. That device shows the day
+unchecked until a full pull. The server's data is right and those apps cannot be updated, so the
+pull no longer sends them that combination: to a client below 1.3.1 (no header, 1.2.x, 1.3.0),
+an entry deletion whose habit and day the same response carries under another id is **held
+back**. The old app then day-matches its still-live X, re-IDs it to Y and takes Y's value. A
+deletion with no replacement in the response is sent as before, and ≥ 1.3.1 gets every deletion,
+unchanged. Why "in the same response" is enough is the comment above `replacedEntryDeletions` in
+`routes/sync.js`.
+
+**The migration.** To know a deleted entry's day once its row is gone, `deletion_tombstones` gains
+two nullable `TEXT` columns, `habit_id` and `entry_date`, copied from the row a sync push (or the
+REST uncheck) deletes, exactly as `habit_entries` stored them. It is **additive and idempotent**:
+`db.js` adds each column with `ALTER TABLE … ADD COLUMN` only when `PRAGMA table_info` lacks it,
+in the startup migration transaction on the first boot after the rsync; nothing to run by hand,
+and a second boot changes nothing. No default and no backfill: every existing row keeps NULL (the
+day of a row deleted before the deploy left with the row), and a tombstone that names no day is
+served exactly as before: the hold-back covers deletions pushed after the deploy. A retried push
+that lists a deletion again writes a second row, NULL because the entry was already gone; that
+does not undo the hold-back, since an id is held back when any of its rows in the window names
+the replaced day. Habit and group tombstones never fill the columns. Rolling the code back leaves
+them in place, unused and harmless (the old code names its four columns in every INSERT).
+
+## API answers are never stored (E2E S9 URL cache)
+
+The apps' default `URLCache` kept the `/v1/auth/verify` answer — the live `sessionToken` — and
+`/v1/sync/pull` bodies in `Caches/Cache.db`, and revalidated `GET /v1/auth/session` with Express's
+weak `ETag` into a `304`. The apps are fixed separately; the server now says it too (`index.js`):
+
+- every answer on `/v1/*` and on the legacy `/sync`, `/auth` and `/habits` mounts — errors, 401,
+  429 and 503 included — carries `Cache-Control: no-store`, and their `If-None-Match` /
+  `If-Modified-Since` are ignored, so none of them is ever a `304`;
+- no `ETag` on anything `res.send` answers (`app.set("etag", false)`; Express has no per-router
+  switch): the API, `/health`, `/login` and error bodies;
+- `/login`, which shows a live magic-link token, is `no-store` as well;
+- unchanged: the legal pages (`express.static` keeps its own `ETag`, `Last-Modified` and
+  `Cache-Control: public, max-age=0`, and still answers `304`), and the AASA file, which gets no
+  `Cache-Control` from us because Apple's CDN caches it by its own rules.
+
+nginx passes these headers through unchanged; the `curl -sI` in step 5 checks that.
 
 ## Database Backups
 
@@ -705,7 +788,8 @@ answered more than 90 days ago (`db.sweepStaleData()` in `db.js`). No external c
 **Deletion tombstones are kept indefinitely.** Sweeping them would let a ≤ 1.3.0 app
 resurrect deleted rows: it cannot be told its cursor is too old (it has no
 `cursor_expired` handler — 1.3.0 included), pulls past the swept window, and pushes the
-deleted rows back with its next full snapshot. Tombstones are about 100 bytes each. Sweeping
+deleted rows back with its next full snapshot. Tombstones are about 100 bytes each (an entry's
+about 150 from the 1.3.1 server, which also records its habit and day). Sweeping
 returns — at 365 days, `sweepStaleData({ tombstoneRetentionDays: 365 })` — only after a 426
 minimum-version floor retires ≤ 1.3.0, i.e. a floor of **at least 1.3.1**, and the
 [usage report](#usage-report)'s < 1.3.1 cohort is what says when that is.

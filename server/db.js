@@ -88,9 +88,14 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS deletion_tombstones (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id    INTEGER NOT NULL,
-    entity_type TEXT NOT NULL,  -- 'habit' or 'entry'
+    entity_type TEXT NOT NULL,  -- 'habit', 'entry' or 'group'
     entity_id  TEXT NOT NULL,
     deleted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    -- An 'entry' row's habit and day, copied from the row it deleted (E2E S4, routes/sync.js
+    -- pull). NULL on habit and group rows, on rows from before the 1.3.1 server, and when the
+    -- server no longer held the entry. Added by migrateIfNeeded on an existing database.
+    habit_id   TEXT,
+    entry_date TEXT,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );
 
@@ -222,6 +227,15 @@ const migrateIfNeeded = db.transaction(() => {
   const snapCols = db.prepare("PRAGMA table_info(sync_snapshot_requests)").all().map((c) => /** @type {PragmaColumn} */ (c).name);
   if (!snapCols.includes("answered_at")) db.exec("ALTER TABLE sync_snapshot_requests ADD COLUMN answered_at TEXT");
   if (!snapCols.includes("answered_client")) db.exec("ALTER TABLE sync_snapshot_requests ADD COLUMN answered_client TEXT");
+
+  // E2E S4 (the 1.3.1 server): an entry tombstone names the deleted row's habit and day, so a
+  // pull can hold the deletion back from an app below 1.3.1 when the same response carries that
+  // day's replacement (routes/sync.js). Nullable with no default, so this is additive: every
+  // existing tombstone keeps NULL, which the pull treats exactly as before. Before
+  // canonicalizeIds, which upper-cases habit_id along with the ids it mirrors.
+  const tombCols = db.prepare("PRAGMA table_info(deletion_tombstones)").all().map((c) => /** @type {PragmaColumn} */ (c).name);
+  if (!tombCols.includes("habit_id")) db.exec("ALTER TABLE deletion_tombstones ADD COLUMN habit_id TEXT");
+  if (!tombCols.includes("entry_date")) db.exec("ALTER TABLE deletion_tombstones ADD COLUMN entry_date TEXT");
 
   // Upper-case every stored id so server-generated (lower-case) ids match what the apps
   // send. See migrations/canonicalizeIds.js — it needs this surrounding transaction.

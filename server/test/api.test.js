@@ -2,6 +2,7 @@ const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
+const http = require("node:http");
 const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -7683,7 +7684,8 @@ describe("Id canonicalisation: stored ids are upper case, like the apps'", () =>
     fk.prepare("INSERT INTO habits (id, user_id, name, group_id) VALUES (?, ?, 'Read', ?)").run(habitId, userId, groupId);
     fk.prepare("INSERT INTO habit_entries (id, habit_id, date, created_at, updated_at) VALUES (?, ?, '2026-09-01', '2026-09-01T08:00:00.000Z', '2026-09-01T08:00:00.000Z')").run(entryA, habitId);
     fk.prepare("INSERT INTO habit_entries (id, habit_id, date, created_at, updated_at) VALUES (?, ?, '2026-09-02', '2026-09-02T08:00:00.000Z', '2026-09-02T08:00:00.000Z')").run(entryB, habitId);
-    fk.prepare("INSERT INTO deletion_tombstones (user_id, entity_type, entity_id, deleted_at) VALUES (?, 'entry', ?, '2026-09-03T08:00:00.000Z')").run(userId, goneEntry);
+    // An entry tombstone names its row's habit (E2E S4), a copy of habit_entries.habit_id.
+    fk.prepare("INSERT INTO deletion_tombstones (user_id, entity_type, entity_id, deleted_at, habit_id, entry_date) VALUES (?, 'entry', ?, '2026-09-03T08:00:00.000Z', ?, '2026-09-03')").run(userId, goneEntry, habitId);
   });
 
   after(() => {
@@ -7712,8 +7714,9 @@ describe("Id canonicalisation: stored ids are upper case, like the apps'", () =>
     const entries = fk.prepare("SELECT id, habit_id FROM habit_entries WHERE habit_id = ? ORDER BY date").all(habitId.toUpperCase());
     assert.deepEqual(entries.map((e) => e.id), [entryA.toUpperCase(), entryB.toUpperCase()]);
 
-    const tomb = fk.prepare("SELECT entity_id FROM deletion_tombstones WHERE user_id = ?").get(userId);
+    const tomb = fk.prepare("SELECT entity_id, habit_id FROM deletion_tombstones WHERE user_id = ?").get(userId);
     assert.equal(tomb.entity_id, goneEntry.toUpperCase());
+    assert.equal(tomb.habit_id, habitId.toUpperCase(), "the tombstone's habit id changes case with the entries' (the pull compares them)");
 
     assert.deepEqual(fk.pragma("foreign_key_check"), [], "no entry may be left pointing at the old habit id");
   });
@@ -10334,5 +10337,481 @@ describe("Test hooks: the swept-tombstone switch (rehearsal only, lib/testHooks.
       assert.equal(r.status, 200);
       assert.deepEqual(tombIds(u.userId), []);
     });
+  });
+});
+
+// ===========================================================================
+// E2E S4 — an app below 1.3.1 never gets an entry's deletion in the same pull as that day's
+// replacement (routes/sync.js, above replacedEntryDeletions). Found end to end with the real
+// 1.3.0 build 19: unchecking and re-checking a day on a 1.3.1 device deletes X and creates Y for
+// the same habit and day. A 1.3.0 device pulling both applies the deletion to X — which stays in
+// `habit.records`, a relationship with no inverse — then day-matches Y onto it, and Y is lost on
+// save. Without the deletion it re-IDs its live X to Y. Apps >= 1.3.1 get both, unchanged.
+// ===========================================================================
+
+const s4 = {
+  V130: "ios/1.3.0(19)",   // the build in App Review, the one the finding was made with
+  V131: "ios/1.3.1(20)",
+  /** An incremental pull as `client` (undefined: no header, an app <= 1.2.3). */
+  pull: (token, client, since) => m0.req("GET", "/v1/sync/pull", { token, client, query: since ? { since } : undefined }),
+  /** An entry id's tombstone rows, oldest first, as stored. */
+  tombs: (id) => db.prepare(
+    "SELECT habit_id, entry_date FROM deletion_tombstones WHERE entity_type = 'entry' AND entity_id = ? ORDER BY id",
+  ).all(id).map((r) => ({ ...r })),
+  ids: (rows) => rows.map((r) => r.id).sort(),
+};
+
+describe("E2E S4 push: an entry tombstone records the deleted row's habit and day, as stored", () => {
+  let u, other;
+  before(() => { u = m0.user(); other = m0.user(); });
+  after(() => { m0.cleanup(u.userId); m0.cleanup(other.userId); });
+
+  it("(g) a pushed deletion copies habit_id and date from the row it deletes, exactly as the row held them", async () => {
+    const H = m0.uuid(), X = m0.uuid(), day = "2026-09-20";
+    assert.equal((await m0.push(u.token, { habits: [m0.habit(H)], entries: [m0.entry(X, H, day)] })).status, 200);
+    const row = { ...db.prepare("SELECT habit_id, date FROM habit_entries WHERE id = ?").get(X) };
+    assert.deepEqual(row, { habit_id: H, date: day });
+
+    assert.equal((await m0.push(u.token, { deletedEntryIds: [X] })).status, 200);
+    assert.equal(db.prepare("SELECT 1 FROM habit_entries WHERE id = ?").get(X), undefined, "the row is deleted");
+    assert.deepEqual(s4.tombs(X), [{ habit_id: row.habit_id, entry_date: row.date }]);
+    assert.equal(db.prepare("SELECT typeof(entry_date) AS t FROM deletion_tombstones WHERE entity_id = ?").get(X).t, "text");
+  });
+
+  it("(g) NULL when the account holds no such row: a retry, never pushed, another account's, gone with its habit in the same push", async () => {
+    const day = "2026-09-21";
+    const HR = m0.uuid(), R = m0.uuid(), HC = m0.uuid(), XC = m0.uuid(), G = m0.uuid();
+    assert.equal((await m0.push(u.token, {
+      groups: [m0.group(G)], habits: [m0.habit(HR), m0.habit(HC)], entries: [m0.entry(R, HR, day), m0.entry(XC, HC, day)],
+    })).status, 200);
+    const HO = m0.uuid(), XO = m0.uuid();
+    assert.equal((await m0.push(other.token, { habits: [m0.habit(HO)], entries: [m0.entry(XO, HO, day)] })).status, 200);
+
+    // A retry: the second push lists an id the first one already deleted.
+    for (let i = 0; i < 2; i++) assert.equal((await m0.push(u.token, { deletedEntryIds: [R] })).status, 200);
+    assert.deepEqual(s4.tombs(R), [{ habit_id: HR, entry_date: day }, { habit_id: null, entry_date: null }]);
+
+    // A habit deleted with its check-ins listed, as apps <= 1.3.0 send it: the habit goes first
+    // and ON DELETE CASCADE takes XC before the entry loop reads it.
+    const never = m0.uuid();
+    const r = await m0.push(u.token, { deletedHabitIds: [HC], deletedGroupIds: [G], deletedEntryIds: [XC, never, XO] });
+    assert.equal(r.status, 200);
+    for (const id of [XC, never, XO]) assert.deepEqual(s4.tombs(id), [{ habit_id: null, entry_date: null }], id);
+    assert.deepEqual({ ...db.prepare("SELECT habit_id, date FROM habit_entries WHERE id = ?").get(XO) }, { habit_id: HO, date: day },
+      "another account's check-in is neither deleted nor described");
+    for (const id of [HC, G]) {
+      assert.deepEqual({ ...db.prepare("SELECT habit_id, entry_date FROM deletion_tombstones WHERE entity_id = ?").get(id) },
+        { habit_id: null, entry_date: null }, "habit and group tombstones name no day");
+    }
+  });
+
+  it("(g) the REST uncheck (DELETE /v1/habits/:id/entries/:date) records them too", async () => {
+    const created = await api("POST", "/v1/habits", { token: u.token, body: { name: "Stretch" } });
+    assert.equal(created.status, 201);
+    const H = created.json.habit.id;
+    const checked = await api("POST", `/v1/habits/${H}/entries`, { token: u.token, body: { date: "2026-09-22" } });
+    assert.equal(checked.status, 201);
+    assert.equal((await api("DELETE", `/v1/habits/${H}/entries/2026-09-22`, { token: u.token })).status, 200);
+    assert.deepEqual(s4.tombs(checked.json.entry.id), [{ habit_id: H, entry_date: "2026-09-22" }]);
+  });
+});
+
+describe("E2E S4 pull: the deletion of a re-checked day is held back from apps below 1.3.1", () => {
+  let u;
+  before(() => { u = m0.user(); });
+  after(() => m0.cleanup(u.userId));
+
+  /** A new habit checked on `day`, then pulled by the old device: its cursor. */
+  async function checkedDay(day) {
+    const H = m0.uuid(), X = m0.uuid();
+    assert.equal((await m0.push(u.token, { habits: [m0.habit(H)], entries: [m0.entry(X, H, day)] })).status, 200);
+    const cursor = (await m2.pull(u.token, s4.V130)).json.serverTime;
+    await m0.sleep(5);
+    return { H, X, cursor };
+  }
+
+  /** On a 1.3.1 device: uncheck `day` (delete X) and check it again (Y, a new id) with no sync
+   * in between, pushed in one request or two. */
+  async function uncheckRecheck({ H, X }, day, onePush) {
+    const Y = m0.uuid();
+    const y = m0.entry(Y, H, day, { updatedAt: `${day}T18:00:00.500Z` });
+    if (onePush) {
+      assert.equal((await m0.push(u.token, { deletedEntryIds: [X], entries: [y] }, { client: s4.V131 })).status, 200);
+    } else {
+      assert.equal((await m0.push(u.token, { deletedEntryIds: [X] }, { client: s4.V131 })).status, 200);
+      await m0.sleep(5);
+      assert.equal((await m0.push(u.token, { entries: [y] }, { client: s4.V131 })).status, 200);
+    }
+    return Y;
+  }
+
+  for (const [label, onePush, day] of [["in one push", true, "2026-09-27"], ["in two pushes", false, "2026-09-28"]]) {
+    describe(`unchecked and re-checked ${label}, and one pull covers both`, () => {
+      let c, Y;
+      before(async () => {
+        c = await checkedDay(day);
+        Y = await uncheckRecheck(c, day, onePush);
+      });
+
+      for (const [app, client] of [["(a) ios/1.3.0(19)", s4.V130], ["(c) no header (<= 1.2.3)", undefined]]) {
+        it(`${app}: carries Y and NOT X's deletion`, async () => {
+          const r = await s4.pull(u.token, client, c.cursor);
+          assert.equal(r.status, 200);
+          assert.deepEqual(r.json.entries.map((e) => [e.id, e.habitId, e.date]), [[Y, c.H, day]]);
+          assert.deepEqual(r.json.deletedEntryIds, [], "held back: the old app day-matches its live X and re-IDs it to Y");
+        });
+      }
+
+      it("(b) ios/1.3.1(20): carries Y and X's deletion, as before", async () => {
+        const r = await s4.pull(u.token, s4.V131, c.cursor);
+        assert.equal(r.status, 200);
+        assert.deepEqual(r.json.entries.map((e) => [e.id, e.habitId, e.date]), [[Y, c.H, day]]);
+        assert.deepEqual(r.json.deletedEntryIds, [c.X]);
+      });
+    });
+  }
+
+  it("(d) an uncheck with no replacement is still sent — to 1.3.0 and to header-less apps", async () => {
+    const c = await checkedDay("2026-09-25");
+    assert.equal((await m0.push(u.token, { deletedEntryIds: [c.X] }, { client: s4.V131 })).status, 200);
+    for (const client of [s4.V130, undefined]) {
+      const r = await s4.pull(u.token, client, c.cursor);
+      assert.equal(r.status, 200);
+      assert.deepEqual(r.json.entries, []);
+      assert.deepEqual(r.json.deletedEntryIds, [c.X], client ?? "no header");
+    }
+  });
+
+  it("(d) in one pull: the re-checked day's deletion is held back, while a check-in on another day, or on that date for another habit, replaces nothing", async () => {
+    const H = m0.uuid(), H2 = m0.uuid(), X1 = m0.uuid(), X2 = m0.uuid();
+    const [D1, D2, D3] = ["2026-09-10", "2026-09-11", "2026-09-12"];
+    assert.equal((await m0.push(u.token, {
+      habits: [m0.habit(H), m0.habit(H2, { name: "Read" })], entries: [m0.entry(X1, H, D1), m0.entry(X2, H, D2)],
+    })).status, 200);
+    const cursor = (await m2.pull(u.token, s4.V130)).json.serverTime;
+    await m0.sleep(5);
+    const Y1 = m0.uuid(), V = m0.uuid(), W = m0.uuid();
+    assert.equal((await m0.push(u.token, {
+      deletedEntryIds: [X1, X2], entries: [m0.entry(Y1, H, D1), m0.entry(V, H2, D2), m0.entry(W, H, D3)],
+    }, { client: s4.V131 })).status, 200);
+
+    for (const client of [s4.V130, undefined]) {
+      const old = await s4.pull(u.token, client, cursor);
+      assert.deepEqual(s4.ids(old.json.entries), [Y1, V, W].sort());
+      assert.deepEqual(old.json.deletedEntryIds, [X2], client ?? "no header");
+    }
+    const current = await s4.pull(u.token, s4.V131, cursor);
+    assert.deepEqual([...current.json.deletedEntryIds].sort(), [X1, X2].sort());
+  });
+
+  it("(e) a tombstone that names no day — every row written before this server — is sent as before, replacement or not", async () => {
+    const day = "2026-09-26";
+    const c = await checkedDay(day);
+    const Y = await uncheckRecheck(c, day, true);
+    // What every tombstone on production reads as after the migration.
+    db.prepare("UPDATE deletion_tombstones SET habit_id = NULL, entry_date = NULL WHERE entity_id = ?").run(c.X);
+    for (const client of [s4.V130, undefined]) {
+      const r = await s4.pull(u.token, client, c.cursor);
+      assert.deepEqual(s4.ids(r.json.entries), [Y]);
+      assert.deepEqual(r.json.deletedEntryIds, [c.X], client ?? "no header");
+    }
+  });
+
+  it("a retried deletion (its second tombstone row is NULL: the row was already gone) is still held back", async () => {
+    const day = "2026-09-24";
+    const c = await checkedDay(day);
+    assert.equal((await m0.push(u.token, { deletedEntryIds: [c.X] }, { client: s4.V131 })).status, 200);
+    await m0.sleep(5);
+    // That push's answer was lost, so the device sends it again — now with the re-check.
+    const Y = m0.uuid();
+    assert.equal((await m0.push(u.token, { deletedEntryIds: [c.X], entries: [m0.entry(Y, c.H, day)] }, { client: s4.V131 })).status, 200);
+    assert.deepEqual(s4.tombs(c.X), [{ habit_id: c.H, entry_date: day }, { habit_id: null, entry_date: null }]);
+
+    for (const client of [s4.V130, undefined]) {
+      const r = await s4.pull(u.token, client, c.cursor);
+      assert.deepEqual(s4.ids(r.json.entries), [Y]);
+      assert.deepEqual(r.json.deletedEntryIds, [], "any row in the window that names the replaced day holds the id back");
+    }
+    assert.deepEqual((await s4.pull(u.token, s4.V131, c.cursor)).json.deletedEntryIds, [c.X], "one id, however many rows");
+  });
+
+  it("unchecked and re-checked twice before the pull (X, then Y, both replaced by Z): both deletions held back", async () => {
+    const day = "2026-09-23";
+    const c = await checkedDay(day);
+    const Y = await uncheckRecheck(c, day, true);
+    await m0.sleep(5);
+    const Z = await uncheckRecheck({ H: c.H, X: Y }, day, true);
+    const old = await s4.pull(u.token, s4.V130, c.cursor);
+    assert.deepEqual(s4.ids(old.json.entries), [Z]);
+    assert.deepEqual(old.json.deletedEntryIds, []);
+    const current = await s4.pull(u.token, s4.V131, c.cursor);
+    assert.deepEqual([...current.json.deletedEntryIds].sort(), [c.X, Y].sort());
+  });
+
+  it("a full pull is unchanged: no deletions for anyone, the replacement is simply there", async () => {
+    const day = "2026-09-22";
+    const c = await checkedDay(day);
+    const Y = await uncheckRecheck(c, day, true);
+    for (const client of [s4.V130, undefined, s4.V131]) {
+      const r = await s4.pull(u.token, client);
+      assert.deepEqual(r.json.deletedEntryIds, []);
+      assert.ok(r.json.entries.some((e) => e.id === Y) && !r.json.entries.some((e) => e.id === c.X));
+    }
+  });
+});
+
+describe("E2E S4: withheld= on the pull's request line (second server)", () => {
+  const PORT2 = 3098, BASE2 = `http://localhost:${PORT2}`;
+  let proc, u, stdout = "";
+  before(async () => {
+    u = m0.user();
+    proc = await m0.spawnServer(PORT2, {});
+    proc.stdout.on("data", (d) => { stdout += d; });
+    const H = m0.uuid(), X = m0.uuid(), Y = m0.uuid(), day = "2026-09-21";
+    assert.equal((await m0.push(u.token, { habits: [m0.habit(H)], entries: [m0.entry(X, H, day)] }, { base: BASE2 })).status, 200);
+    const since = (await m0.req("GET", "/v1/sync/pull", { token: u.token, base: BASE2 })).json.serverTime;
+    await m0.sleep(5);
+    assert.equal((await m0.push(u.token, { deletedEntryIds: [X], entries: [m0.entry(Y, H, day)] },
+      { base: BASE2, client: s4.V131 })).status, 200);
+    for (const client of [s4.V130, s4.V131]) {
+      assert.equal((await m0.req("GET", "/v1/sync/pull", { token: u.token, base: BASE2, client, query: { since } })).status, 200);
+    }
+    await m0.stopServer(proc);
+  });
+  after(async () => { await m0.stopServer(proc); m0.cleanup(u.userId); });
+
+  it("the 1.3.0 pull's line counts no deletion and says withheld=1; the 1.3.1 pull's sends it and says nothing more", () => {
+    const lines = stdout.split("\n").filter((l) => l.includes("GET /v1/sync/pull?since="));
+    assert.equal(lines.length, 2, stdout);
+    assert.match(lines[0], /client=ios\/1\.3\.0\(19\) sync .* out=habits:0,entries:1,groups:0,deletions:0 withheld=1$/);
+    assert.match(lines[1], /client=ios\/1\.3\.1\(20\) sync .* out=habits:0,entries:1,groups:0,deletions:1$/);
+  });
+});
+
+describe("E2E S4 migration (f): an existing database gains the two columns, and a second run changes nothing", () => {
+  // The table exactly as every server before 1.3.1 created it, and the users table its foreign
+  // key needs; db.js creates everything else around them, as it does on any boot.
+  const BEFORE = `
+    CREATE TABLE users (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      email      TEXT UNIQUE NOT NULL,
+      tier       TEXT NOT NULL DEFAULT 'free',
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+    CREATE TABLE deletion_tombstones (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id    INTEGER NOT NULL,
+      entity_type TEXT NOT NULL,  -- 'habit' or 'entry'
+      entity_id  TEXT NOT NULL,
+      deleted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );`;
+  const ROWS = [
+    ["habit", m0.uuid(), "2026-08-01T10:00:00.000Z"],
+    ["entry", m0.uuid(), "2026-08-02T11:00:00.250Z"],
+    ["entry", m0.uuid(), "2026-08-02T11:00:00.250Z"],
+    ["group", m0.uuid(), "2026-08-03T12:00:00.000Z"],
+  ];
+  let dir;
+  before(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "stride-s4-migration-"));
+    // db.js opens the stride.db next to itself, so this copy migrates this directory's database.
+    fs.copyFileSync(path.join(__dirname, "..", "db.js"), path.join(dir, "db.js"));
+    fs.mkdirSync(path.join(dir, "migrations"));
+    fs.copyFileSync(path.join(__dirname, "..", "migrations", "canonicalizeIds.js"), path.join(dir, "migrations", "canonicalizeIds.js"));
+    const old = new Database(path.join(dir, "stride.db"));
+    old.exec(BEFORE);
+    const userId = old.prepare("INSERT INTO users (email) VALUES ('before-1.3.1@stride-test.local')").run().lastInsertRowid;
+    const insert = old.prepare("INSERT INTO deletion_tombstones (user_id, entity_type, entity_id, deleted_at) VALUES (?, ?, ?, ?)");
+    for (const [type, id, at] of ROWS) insert.run(userId, type, id, at);
+    old.close();
+  });
+  after(() => { if (dir) fs.rmSync(dir, { recursive: true, force: true }); });
+
+  it("runs twice without error; the columns come once; every tombstone is kept as it was, NULL in both", async () => {
+    // better-sqlite3 from this server's node_modules, found through NODE_PATH: nothing is linked
+    // into the temp directory, so removing it can never reach the real modules.
+    const env = { ...process.env, NODE_PATH: path.join(__dirname, "..", "node_modules") };
+    for (const run of [1, 2]) {
+      const r = await runScript(path.join(dir, "db.js"), [], { env });
+      assert.equal(r.status, 0, `run ${run}: ${r.stderr}`);
+    }
+    const migrated = new Database(path.join(dir, "stride.db"), { readonly: true });
+    try {
+      assert.deepEqual(migrated.prepare("PRAGMA table_info(deletion_tombstones)").all().map((c) => c.name),
+        ["id", "user_id", "entity_type", "entity_id", "deleted_at", "habit_id", "entry_date"]);
+      assert.deepEqual(
+        migrated.prepare("SELECT entity_type, entity_id, deleted_at, habit_id, entry_date FROM deletion_tombstones ORDER BY id").all().map((r) => ({ ...r })),
+        ROWS.map(([entity_type, entity_id, deleted_at]) => ({ entity_type, entity_id, deleted_at, habit_id: null, entry_date: null })));
+      assert.equal(migrated.pragma("integrity_check", { simple: true }), "ok");
+    } finally {
+      migrated.close();
+    }
+  });
+});
+
+// ===========================================================================
+// E2E S9 URL cache — API answers are never stored (index.js). The apps' default URLCache kept
+// the /v1/auth/verify answer (the live sessionToken) and /v1/sync/pull bodies in
+// Caches/Cache.db, and revalidated GET /v1/auth/session with Express's weak ETag into a 304.
+//
+// Conditional requests go through node:http, not fetch: fetch adds `Cache-Control: no-cache` to
+// any request carrying If-None-Match (the Fetch spec), and Express answers such a request 200
+// whatever the ETag — so a "never a 304" case would pass for the wrong reason.
+// ===========================================================================
+
+const s9 = {
+  /** A GET with exactly these headers, through node:http (see above). */
+  raw(urlPath, headers = {}, base = BASE) {
+    return new Promise((resolve, reject) => {
+      const req = http.request(`${base}${urlPath}`, { method: "GET", headers, agent: false }, (res) => {
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (d) => { body += d; });
+        res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body }));
+      });
+      req.on("error", reject);
+      req.end();
+    });
+  },
+  /** @param {Headers} headers a fetch response's */
+  assertNoStore(headers, what) {
+    assert.equal(headers.get("cache-control"), "no-store", `${what}: Cache-Control`);
+    assert.equal(headers.get("etag"), null, `${what}: no ETag`);
+  },
+  /** What a revalidating cache sends: the weak ETag it stored, `*` (which Express answers with a
+   * 304 even when it sent no ETag), and a date. */
+  CONDITIONAL: [
+    { "If-None-Match": 'W/"4c-Yt0uS1bAIOgRUPXxX1K9k0h6vL0"' },
+    { "If-None-Match": "*" },
+    { "If-Modified-Since": new Date(Date.now() + 86400000).toUTCString() },
+  ],
+};
+
+describe("E2E S9 URL cache: every API answer is Cache-Control: no-store, with no ETag, and never a 304", () => {
+  let u;
+  before(async () => {
+    u = m0.user();
+    const H = m0.uuid();
+    assert.equal((await m0.push(u.token, { habits: [m0.habit(H)], entries: [m0.entry(m0.uuid(), H, "2026-09-28")] })).status, 200);
+  });
+  after(() => m0.cleanup(u.userId));
+
+  it("GET /v1/auth/session — the request the app revalidated into a 304", async () => {
+    const r = await m0.req("GET", "/v1/auth/session", { token: u.token, client: s4.V130 });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.user.id, u.userId);
+    s9.assertNoStore(r.headers, "session");
+  });
+
+  it("GET /v1/auth/session revalidated with a stored ETag, `*` or a date: a 200 with the body, never a 304", async () => {
+    for (const cond of s9.CONDITIONAL) {
+      const r = await s9.raw("/v1/auth/session", { Authorization: `Bearer ${u.token}`, ...cond });
+      assert.equal(r.status, 200, JSON.stringify(cond));
+      assert.equal(JSON.parse(r.body).user.id, u.userId);
+      assert.equal(r.headers["cache-control"], "no-store");
+      assert.equal(r.headers.etag, undefined);
+    }
+  });
+
+  it("GET /v1/sync/pull, full and ?since, for every app: no-store, no ETag, never a 304", async () => {
+    for (const client of [undefined, s4.V130, s4.V131]) {
+      for (const since of [undefined, "2026-01-01T00:00:00.000Z"]) {
+        const r = await m0.req("GET", "/v1/sync/pull", { token: u.token, client, query: since ? { since } : undefined });
+        assert.equal(r.status, 200);
+        assert.equal(r.json.entries.length, 1);
+        s9.assertNoStore(r.headers, `pull ${client ?? "no header"} ${since ? "since" : "full"}`);
+      }
+    }
+    for (const cond of s9.CONDITIONAL) {
+      const r = await s9.raw("/v1/sync/pull", { Authorization: `Bearer ${u.token}`, ...cond });
+      assert.equal(r.status, 200, JSON.stringify(cond));
+      assert.equal(JSON.parse(r.body).entries.length, 1);
+      assert.equal(r.headers["cache-control"], "no-store");
+      assert.equal(r.headers.etag, undefined);
+    }
+  });
+
+  it("the push, the REST routes and the legacy mounts (/sync, /auth, /habits)", async () => {
+    s9.assertNoStore((await m0.push(u.token, {})).headers, "push");
+    s9.assertNoStore((await m0.req("GET", "/sync/pull", { token: u.token })).headers, "legacy /sync/pull");
+    s9.assertNoStore((await m0.req("GET", "/auth/session", { token: u.token })).headers, "legacy /auth/session");
+    s9.assertNoStore((await m0.req("GET", "/v1/habits", { token: u.token })).headers, "/v1/habits");
+    s9.assertNoStore((await m0.req("GET", "/habits", { token: u.token })).headers, "legacy /habits");
+  });
+
+  it("error answers too: 400, 401, 404, and the pause switch's 503 from before any session lookup", async () => {
+    const bad = await m0.push(u.token, { habits: "not an array" });
+    assert.equal(bad.status, 400);
+    s9.assertNoStore(bad.headers, "400 invalid_payload");
+    const unauthorized = await m0.req("GET", "/v1/sync/pull");
+    assert.equal(unauthorized.status, 401);
+    s9.assertNoStore(unauthorized.headers, "401");
+    const missing = await m0.req("GET", "/v1/no-such-route", { token: u.token });
+    assert.equal(missing.status, 404);
+    s9.assertNoStore(missing.headers, "404");
+    fs.writeFileSync(PAUSE_FILE, "120");
+    try {
+      const paused = await m0.req("GET", "/v1/sync/pull", { token: u.token });
+      assert.equal(paused.status, 503);
+      s9.assertNoStore(paused.headers, "503 sync_paused");
+    } finally {
+      fs.rmSync(PAUSE_FILE, { force: true });
+    }
+  });
+
+  describe("POST /v1/auth/verify, the answer that holds the session token (second server: the verify limiter has no test bypass, and the suite spends the main server's)", () => {
+    const PORT2 = 3098, BASE2 = `http://localhost:${PORT2}`;
+    let proc, user;
+    before(async () => {
+      user = createTestUser();
+      proc = await m0.spawnServer(PORT2, {});
+    });
+    after(async () => { await m0.stopServer(proc); m0.cleanup(user.userId); });
+
+    it("200 with the sessionToken: no-store, no ETag — and a refused one the same", async () => {
+      const raw = crypto.randomBytes(32).toString("hex");
+      db.prepare("INSERT INTO magic_link_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)")
+        .run(user.userId, hashToken(raw), Date.now() + 30 * 60000);
+      const r = await m0.req("POST", "/v1/auth/verify", { base: BASE2, client: s4.V130, body: { token: raw } });
+      assert.equal(r.status, 200);
+      assert.equal(typeof r.json.sessionToken, "string");
+      s9.assertNoStore(r.headers, "verify");
+      const again = await m0.req("POST", "/v1/auth/verify", { base: BASE2, body: { token: raw } });
+      assert.equal(again.status, 400, "single use");
+      s9.assertNoStore(again.headers, "verify 400");
+    });
+  });
+});
+
+describe("E2E S9 URL cache: what is not an API answer keeps its caching", () => {
+  it("the AASA file: exactly application/json and no Cache-Control from us (Apple's CDN caches it by its own rules), GET and HEAD", async () => {
+    for (const method of ["GET", "HEAD"]) {
+      const r = await fetch(`${BASE}/.well-known/apple-app-site-association`, { method, redirect: "manual" });
+      assert.equal(r.status, 200);
+      assert.equal(r.headers.get("content-type"), "application/json");
+      assert.equal(r.headers.get("cache-control"), null, method);
+    }
+  });
+
+  it("the legal pages keep express.static's ETag and Last-Modified, and still revalidate to a 304", async () => {
+    const first = await s9.raw("/privacy");
+    assert.equal(first.status, 200);
+    assert.ok(first.headers.etag, "serve-static's own ETag: app.set('etag', false) does not reach it");
+    assert.ok(first.headers["last-modified"]);
+    assert.notEqual(first.headers["cache-control"], "no-store");
+    assert.equal((await s9.raw("/privacy", { "If-None-Match": first.headers.etag })).status, 304);
+  });
+
+  it("/login, which shows a live login token: no-store", async () => {
+    const r = await fetch(`${BASE}/login?token=${"ab".repeat(32)}`);
+    assert.equal(r.status, 200);
+    s9.assertNoStore(r.headers, "/login");
+  });
+
+  it("/health: 200 as before, with no ETag (the switch is app-wide)", async () => {
+    const r = await fetch(`${BASE}/health`);
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get("etag"), null);
   });
 });

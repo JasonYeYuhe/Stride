@@ -51,6 +51,27 @@ app.use(helmet({
   },
 }));
 
+// API answers are never stored (E2E S9 URL cache). The apps' default URLCache kept the
+// /v1/auth/verify answer — the live sessionToken — and /v1/sync/pull bodies in
+// Caches/Cache.db, because nothing here said otherwise: no Cache-Control, and Express's weak
+// ETag, with which the app then revalidated GET /v1/auth/session and got a 304. The apps are
+// fixed separately; the server says it too. It covers every mount the apps call, the legacy
+// ones included, and every answer on them — 401, 429, 503 and error bodies too, which is why it
+// runs ahead of every limiter and router. The conditional headers are dropped as well, so no
+// answer here is ever a 304: without an ETag Express still answers `If-None-Match: *` with one.
+app.use(["/v1", "/sync", "/auth", "/habits"], (req, res, next) => {
+  res.setHeader("Cache-Control", "no-store");
+  delete req.headers["if-none-match"];
+  delete req.headers["if-modified-since"];
+  next();
+});
+// And no ETag: Express has no per-router switch, and nothing else res.send answers — /health
+// (its uptime changes every call), /login, error bodies — gains from one. The legal pages keep
+// theirs: express.static (serve-static) sets its own ETag and Last-Modified and never reads
+// this setting. The AASA file below never had one (res.end) and stays as it was, with no
+// Cache-Control from us: Apple's CDN fetches it and caches it by its own rules.
+app.set("etag", false);
+
 // Apple App Site Association: the server half of one-tap sign-in (M1). With it, iOS opens
 // the magic link `/login?token=…` from the email straight in the app instead of the /login
 // page below, which stays for devices without the app update. Apple's CDN fetches this file
@@ -147,6 +168,9 @@ app.get("/login", (req, res) => {
     s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   const safeToken = escapeHtml(token);
+  // The page holds a live login token (viewing it does not consume it), so a browser must not
+  // keep it either — the same reason the API answers are no-store (E2E S9 URL cache, above).
+  res.setHeader("Cache-Control", "no-store");
   res.send(`<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Stride - Complete Login</title>
