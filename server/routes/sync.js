@@ -331,6 +331,10 @@ const CURSOR_RETENTION_DAYS = 365;
 const MAX_ROW_ERROR_LOG_LINES = 5;
 const CURSOR_GRACE_DAYS = 10;
 
+/** The oldest time a cursor may name, as epoch ms: retention less the grace (355 days ago).
+ * Older, a pull `since` it is `cursor_expired`, and `deletionsSince` cannot be listed whole. */
+const cursorHorizon = () => Date.now() - (CURSOR_RETENTION_DAYS - CURSOR_GRACE_DAYS) * 86400000;
+
 /** @param {unknown} v */
 const isRow = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 
@@ -903,9 +907,50 @@ function replacedEntryDeletions(userId, since, entries) {
   return replaced;
 }
 
+/*
+ * `deletionsSince` — the account's deletions since a time, with a FULL pull (DEV-PLAN-1.3.md M2,
+ * "Migrated rows"; review data-safety-1).
+ *
+ * A store 1.3.0 synced reaches 1.3.1 with rows marked delivered by the migration, and 1.3.0 never
+ * read `skipped`: a row it pushed may have been refused (a restore that kept another account's
+ * ids, or ids this account had deleted) and kept only on the device, with the check-ins made on it
+ * since. The first full pull after the update cannot tell such a row from one another device
+ * deleted after this device's last 1.3.0 sync — the snapshot lacks both. 1.3.0 kept that sync's
+ * pull cursor, so the 1.3.1 app asks for the deletions since it: one in the list was deleted
+ * elsewhere and goes as an incremental pull would have removed it; one not in a complete list is
+ * sent again for the push to answer (`tombstoned`, `not_owned`, or inserted).
+ *
+ * The answer is `deletionsSince: {complete: true, habitIds, entryIds, groupIds}` — every
+ * tombstone this account wrote after the time, entry deletions all included (the E2E S4 hold-back
+ * is for apps below 1.3.1, which never get this field) — or `{complete: false}` with no lists
+ * when the time is older than the cursor horizon (`cursorHorizon`: a sweep may only remove
+ * tombstones older than retention, so past the horizon the list could lack a swept one) or is not
+ * a single readable timestamp. Read in the same transaction as the snapshot, so a row deleted
+ * while the pull is being answered (another process writes too: seed-demo.js, the ops scripts)
+ * is either still in the snapshot or in the list — never missing from both, which the app would
+ * take for a refused row and send again. Only for a full pull (an incremental one carries
+ * `deleted*Ids` anyway) by an app >= 1.3.1; otherwise the parameter is ignored and the answer is
+ * byte for byte what it was.
+ */
+
+/**
+ * The time to list deletions after, normalised as stored (`toISOString`), or null when a
+ * complete list cannot be promised for it.
+ * @param {unknown} raw
+ * @returns {string|null}
+ */
+function listableDeletionsSince(raw) {
+  if (typeof raw !== "string") return null;
+  const iso = isoOrNull(raw);
+  if (!iso || new Date(iso).getTime() < cursorHorizon()) return null;
+  return iso;
+}
+
 // GET /sync/pull — mobile app pulls all data from server
 // Optional: ?since=ISO8601 to get only changes after a timestamp
-// Returns { habits, entries, groups, deleted*Ids, serverTime, totals: {habits, entries, groups} }
+// Optional, full pull by >= 1.3.1 only: ?deletionsSince=ISO8601 (above)
+// Returns { habits, entries, groups, deleted*Ids, serverTime, totals: {habits, entries, groups},
+//           deletionsSince?: {complete, habitIds?, entryIds?, groupIds?} }
 router.get("/pull", (req, res) => {
   const userId = req.user.id;
   const rawSince = req.query.since;
@@ -926,8 +971,7 @@ router.get("/pull", (req, res) => {
   // retry the same cursor on every sync, forever — it keeps getting 200, which is correct for as
   // long as tombstones are never swept. A full pull (no since) is never refused.
   if (sinceIso && clientAtLeast(req, "1.3.1")) {
-    const oldest = Date.now() - (CURSOR_RETENTION_DAYS - CURSOR_GRACE_DAYS) * 86400000;
-    if (new Date(sinceIso).getTime() < oldest) {
+    if (new Date(sinceIso).getTime() < cursorHorizon()) {
       res.locals.syncStats = { user: userId, cursorExpired: 1 };
       return res.status(409).json(errorBody(req, "cursor_expired",
         "This device has not synced for too long; a full sync is needed.",
@@ -945,6 +989,10 @@ router.get("/pull", (req, res) => {
   const OWN_HABITS = "SELECT id FROM habits WHERE user_id = ?";
   // Apps below 1.3.1 day-match a pulled entry onto a record the same pull deleted (E2E S4, above).
   const holdBackReplaced = !clientAtLeast(req, "1.3.1");
+  // A full pull by an app >= 1.3.1 may ask for the account's deletions since a time
+  // (`deletionsSince`, above). Not asked: the answer carries no such key.
+  const asksDeletions = !since && req.query.deletionsSince !== undefined && clientAtLeast(req, "1.3.1");
+  const deletionsFrom = asksDeletions ? listableDeletionsSince(req.query.deletionsSince) : null;
 
   // One read transaction, so `totals` and the arrays describe the same snapshot. The server is
   // not the only writer (seed-demo.js and other scripts write from another process in WAL
@@ -987,7 +1035,23 @@ router.get("/pull", (req, res) => {
         deletedEntryIds,
         deletedGroupIds: deletedOf("group"),
         withheld,
+        deletionsSince: undefined,
       };
+    }
+    /** @type {{ complete: boolean, habitIds?: string[], entryIds?: string[], groupIds?: string[] } | undefined} */
+    let deletionsSince;
+    if (asksDeletions) {
+      if (deletionsFrom) {
+        // Inside this transaction, with the snapshot below: see `deletionsSince` above.
+        const tombstones = /** @type {TombstoneRow[]} */ (db.prepare(
+          "SELECT DISTINCT entity_type, entity_id FROM deletion_tombstones WHERE user_id = ? AND deleted_at > ?"
+        ).all(userId, deletionsFrom));
+        /** @param {string} type */
+        const deletedOf = (type) => tombstones.filter((t) => t.entity_type === type).map((t) => t.entity_id);
+        deletionsSince = { complete: true, habitIds: deletedOf("habit"), entryIds: deletedOf("entry"), groupIds: deletedOf("group") };
+      } else {
+        deletionsSince = { complete: false };
+      }
     }
     return {
       totals,
@@ -999,9 +1063,11 @@ router.get("/pull", (req, res) => {
       deletedEntryIds: [],
       deletedGroupIds: [],
       withheld: 0,
+      deletionsSince,
     };
   });
-  const { totals, habits, entries, groups, deletedHabitIds, deletedEntryIds, deletedGroupIds, withheld } = read();
+  const { totals, habits, entries, groups, deletedHabitIds, deletedEntryIds, deletedGroupIds, withheld,
+    deletionsSince } = read();
 
   // One branch, on the header: >= 1.3.1 compares milliseconds and needs them (wireTimeMs);
   // everything older keeps the whole seconds it can parse (wireTime).
@@ -1016,6 +1082,10 @@ router.get("/pull", (req, res) => {
     },
     // Entry deletions held back because their replacement is in this response (E2E S4).
     ...(withheld > 0 ? { withheld } : {}),
+    // How many deletions a migrated store's full pull was listed, or that no list could be given.
+    ...(deletionsSince ? { deletionsSince: deletionsSince.complete
+      ? (deletionsSince.habitIds?.length ?? 0) + (deletionsSince.entryIds?.length ?? 0) + (deletionsSince.groupIds?.length ?? 0)
+      : "incomplete" } : {}),
   };
   return res.json({
     habits: habits.map((h) => { const row = /** @type {HabitRow} */ (h); return {
@@ -1043,6 +1113,8 @@ router.get("/pull", (req, res) => {
     // Rows the server holds for this account, full-pull scope, on every pull. A client may
     // delete local rows missing from a full pull only when these equal the arrays' lengths.
     totals,
+    // Only when asked (`deletionsSince`, above): every other answer is exactly as before.
+    ...(deletionsSince ? { deletionsSince } : {}),
   });
 });
 

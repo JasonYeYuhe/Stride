@@ -1,5 +1,7 @@
 import XCTest
 import SwiftData
+import SwiftUI
+import UIKit
 @testable import Stride
 
 /// The account screen's half of M2 account isolation (DEV-PLAN-1.3.md M2, "Account isolation";
@@ -51,6 +53,8 @@ final class AccountSwitchTests: XCTestCase {
     }
 
     override func tearDown() {
+        // Before the server stops: closing a hosted sheet runs its onDismiss sync.
+        tearDownHostedToday()
         server.stop()
         local.remove()
         appGroup.remove()
@@ -90,14 +94,22 @@ final class AccountSwitchTests: XCTestCase {
     }
 
     /// The real AuthService over the stub, wired to `sync` as the app wires it to
-    /// `SyncService.shared` — sign-out and account deletion included.
+    /// `SyncService.shared` — sign-out, sign-in, account deletion and the 401 flag included.
     private func makeAuth() -> AuthService {
         AuthService(api: server.makeClient(tokenStore: tokens), tokenStore: tokens, defaults: local.defaults,
                     onSignOut: { [weak self] in self?.sync?.signedOut() },
+                    onSignIn: { [weak self] in self?.sync?.signedIn() },
                     onAccountDeleted: { [weak self] account in
                         guard let self else { return }
                         try? self.sync.accountDeleted(account, in: self.context)
-                    })
+                    },
+                    reauthRequested: { [weak self] in self?.sync?.needsReauth ?? false })
+    }
+
+    /// `/v1/auth/session` as the server answers it for `user` (nil: `{user: null}`).
+    private nonisolated static func sessionResponse(id: Int?, email: String = "") -> String {
+        guard let id else { return #"{"user":null}"# }
+        return #"{"user":{"id":\#(id),"email":"\#(email)","created_at":"2026-09-01 10:00:00"}}"#
     }
 
     private func signIn(_ magic: String) async {
@@ -258,11 +270,17 @@ final class AccountSwitchTests: XCTestCase {
     /// "Leaves this device as it is" includes Today's "Sign in again" (review accounts-2). Here A's
     /// session was found gone at launch, and B's sign-in came from that row: the sign-in ended the
     /// row (a user was loaded), and a plain Log Out as the Cancel cleared it again, so A's pending
-    /// edits sat behind a bare "Sign In" — the 1.3.0 state the row exists to end.
+    /// edits sat behind a bare "Sign In" — the 1.3.0 state the row exists to end. The app is quit
+    /// on the account screen and launched again before the Cancel — the screen cannot be swiped
+    /// away, and Settings' owner-choice row reopens it — so what the Cancel restores must outlive
+    /// the process that signed in.
     func testCancelSignsOutAndLeavesTheStoreAndTheOwner() async throws {
         let habit = try seedAsStore()
         tokens.save("tok-A-revoked")
-        server.on("GET", "/v1/auth/session", respond: .ok(#"{"user":null}"#))
+        server.on("GET", "/v1/auth/session") { request in
+            .ok(request.authorization == "Bearer tok-B" ? Self.sessionResponse(id: 8, email: "b@example.com")
+                                                          : Self.sessionResponse(id: nil))
+        }
         relaunchAuth()
         await auth.waitForSessionRestore()
         XCTAssertTrue(auth.sessionExpired, "precondition: A's session was found gone at launch")
@@ -271,7 +289,17 @@ final class AccountSwitchTests: XCTestCase {
         XCTAssertFalse(auth.sessionExpired, "a sign-in ends the row…")
         _ = try conflict(after: sync.settleSignIn(in: context))
 
-        await auth.cancelSignIn()   // AccountSwitchView's Cancel
+        // Quit on the account screen, launched again: B's session checks out, the launch sync
+        // meets the conflict and blocks with no request, and Settings offers the screen again.
+        relaunchAuth()
+        await auth.waitForSessionRestore()
+        XCTAssertEqual(auth.userEmail, "b@example.com")
+        let launchSync = await sync.sync(context: context, trigger: .automatic)
+        XCTAssertFalse(launchSync)
+        XCTAssertNotNil(sync.ownerConflict, "Settings' owner-choice row")
+        XCTAssertFalse(auth.sessionExpired)
+
+        await auth.cancelSignIn()   // AccountSwitchView's Cancel, reopened from Settings
 
         XCTAssertFalse(auth.isLoggedIn)
         XCTAssertNil(tokens.read())
@@ -288,8 +316,11 @@ final class AccountSwitchTests: XCTestCase {
         XCTAssertTrue(syncRequests.isEmpty)
 
         await signIn("magic-A")
+        XCTAssertTrue(local.defaults.bool(forKey: AuthService.signInAgainBeforeSignInKey), "taken at this sign-in too")
         XCTAssertEqual(sync.settleSignIn(in: context), .ready, "A owns it: no screen")
         XCTAssertFalse(auth.sessionExpired)
+        XCTAssertNil(local.defaults.object(forKey: AuthService.signInAgainBeforeSignInKey),
+                     "the owner settled: nothing left for a Cancel to put back")
 
         // A deliberate Log Out leaves no row to bring back: B's sign-in and Cancel add none.
         await auth.logout()
@@ -298,6 +329,85 @@ final class AccountSwitchTests: XCTestCase {
         await auth.cancelSignIn()   // AccountSwitchView's Cancel
         XCTAssertFalse(auth.sessionExpired)
         XCTAssertNil(SyncStatusLine.today(auth: auth, sync: sync, counts: .init()))
+        XCTAssertNil(local.defaults.object(forKey: AuthService.signInAgainBeforeSignInKey))
+    }
+
+    /// Review accounts-2, the other way the row comes up: a sync of this launch answered 401
+    /// (`SyncService.needsReauth`, in memory — `sessionExpired` stays false). The row's tap checks
+    /// the session, offline, so the login sheet opens with A's dead token still stored; back
+    /// online the user signs into B, meets the account screen and cancels. That sign-in replaced
+    /// A's token without ever checking it, so no later launch would raise the row, and the
+    /// Cancel's Log Out ends `needsReauth`: the Cancel must put the row back, persisted. The
+    /// sign-in itself ended the 401's row at once (the next test).
+    func testCancelAfterASignInFromA401sRowBringsTheRowBack() async throws {
+        let habit = try seedAsStore()
+        tokens.save("tok-A")
+        server.on("GET", "/v1/auth/session", respond: .ok(Self.sessionResponse(id: 7, email: "a@example.com")))
+        relaunchAuth()
+        await auth.waitForSessionRestore()
+        XCTAssertTrue(auth.isLoggedIn, "precondition: A signed in at launch")
+        let refused = StubServer.Response(status: 401, body: #"{"error":"Unauthorized"}"#)
+        server.on("POST", "/v1/sync/push", respond: refused)
+        server.on("GET", "/v1/sync/pull", respond: refused)
+        await sync.sync(context: context)   // the foreground sync meets the revoked session
+        XCTAssertTrue(sync.needsReauth)
+        XCTAssertFalse(auth.sessionExpired)
+        XCTAssertEqual(todayLine(), .signInAgain)
+
+        // The row's tap, offline: the check says nothing, so the sheet opens on the dead token.
+        server.on("GET", "/v1/auth/session") { _ in throw URLError(.notConnectedToInternet) }
+        let flow = SignInAgainFlow(auth: auth, sync: sync)
+        await flow.start(context: context)
+        XCTAssertTrue(flow.showingLogin)
+        XCTAssertTrue(auth.hasStoredSession, "A's token is still stored, never checked")
+
+        // Back online: B's code in the sheet, the account screen, Cancel.
+        stubSyncServer()
+        await signIn("magic-B")
+        XCTAssertTrue(local.defaults.bool(forKey: AuthService.signInAgainBeforeSignInKey), "the 401's row, remembered")
+        XCTAssertFalse(sync.needsReauth, "the sign-in ended it")
+        _ = try conflict(after: sync.settleSignIn(in: context))
+        await auth.cancelSignIn()   // AccountSwitchView's Cancel
+
+        XCTAssertFalse(auth.isLoggedIn)
+        XCTAssertNil(tokens.read())
+        XCTAssertTrue(auth.sessionExpired, "the row the sign-in came from is back")
+        XCTAssertTrue(local.defaults.bool(forKey: AuthService.sessionExpiredKey), "persisted: a relaunch keeps it")
+        XCTAssertEqual(todayLine(), .signInAgain)
+        XCTAssertEqual(owners.owner, SyncOwner(accountA))
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Habit>()).map(\.id), [habit.id])
+        XCTAssertEqual(queue.pending().habits, ["a-deleted-offline"])
+    }
+
+    /// A sign-in ends a 401's "Sign in again" at once. `needsReauth` used to last until a sync got
+    /// through, so after the user signed back in the row stayed on Today — for good while that
+    /// sync failed offline. The Cancel of the previous test still puts it back: the sign-in takes
+    /// its snapshot of the row before it clears the flag.
+    func testASignInEndsA401sSignInAgainEvenWhenTheNextSyncFails() async throws {
+        try seedAsStore()
+        tokens.save("tok-A")
+        server.on("GET", "/v1/auth/session", respond: .ok(Self.sessionResponse(id: 7, email: "a@example.com")))
+        relaunchAuth()
+        await auth.waitForSessionRestore()
+        let refused = StubServer.Response(status: 401, body: #"{"error":"Unauthorized"}"#)
+        server.on("POST", "/v1/sync/push", respond: refused)
+        server.on("GET", "/v1/sync/pull", respond: refused)
+        await sync.sync(context: context)
+        XCTAssertTrue(sync.needsReauth)
+        XCTAssertEqual(todayLine(), .signInAgain)
+
+        // Offline from here: nothing the sign-in is followed by can get through.
+        server.on("POST", "/v1/sync/push") { _ in throw URLError(.notConnectedToInternet) }
+        server.on("GET", "/v1/sync/pull") { _ in throw URLError(.notConnectedToInternet) }
+        await signIn("magic-A2")   // the same account, a new session
+
+        XCTAssertFalse(sync.needsReauth, "the refused session is replaced")
+        XCTAssertNotEqual(todayLine(), .signInAgain)
+        XCTAssertEqual(sync.settleSignIn(in: context), .ready)
+        let ran = await sync.sync(context: context)
+        XCTAssertFalse(ran, "offline")
+        XCTAssertFalse(sync.needsReauth)
+        XCTAssertNotEqual(todayLine(), .signInAgain, "and it stays gone while the sync fails")
     }
 
     // MARK: - Owner unknown (sub-decision (e))
@@ -541,6 +651,154 @@ final class AccountSwitchTests: XCTestCase {
         let ranOnClose = await flow.loginClosed(context: context)
         XCTAssertTrue(ranOnClose, "the close's sync runs")
         XCTAssertEqual(syncRequests.count, requests + 1, "a quiet sync: one pull")
+    }
+
+    /// Review critic-1, the presenter itself. The previous test holds the flow's state; this one
+    /// hosts the real TodayView in a window, as the app shows it, so a refactor that hangs the
+    /// login sheet on the row again — the pre-fix structure, which every other test passes — fails
+    /// here: the sign-in removes the row, and SwiftUI closes a sheet whose presenter left the
+    /// hierarchy before its account step appears. From a cold launch whose check found the session
+    /// gone ({user: null}, F1's owner-unknown store), the row is tapped — its accessibility action,
+    /// what VoiceOver's double-tap sends — and the sheet opens on LoginView; the sign-in the sheet
+    /// is for runs. Once the row has left the hierarchy the window's root still presents the same
+    /// sheet, and it shows the account step (Upload / Start), with no sync request before it.
+    func testTodaysSignInAgainSheetOutlivesTheRowOnScreenAndShowsTheAccountStep() async throws {
+        _ = try seedMigratedStore()
+        tokens.save("tok-A-expired")
+        SyncService.prepareLaunch(context: context, defaults: local.defaults, hasStoredSession: true)
+        server.on("GET", "/v1/auth/session", respond: .ok(Self.sessionResponse(id: nil)))
+        stubSyncServer()
+        relaunchAuth()
+        await auth.waitForSessionRestore()
+        XCTAssertEqual(todayLine(), .signInAgain, "precondition: the cold launch's row")
+
+        // TodayView, LoginView and AccountSwitchView read `shared`: while they are up, `shared` is
+        // this test's pair, over the stub server and scratch defaults (tearDown puts them back).
+        AuthService.testOverride = auth
+        SyncService.testOverride = sync
+        // SwiftUI builds the elements an assistive technology reads only while one is running;
+        // this is how XCUITest has it build them in an app under test.
+        let automation = try XCTUnwrap(AccessibilityAutomation.enable(), "the accessibility runtime's automation switch")
+        addTeardownBlock { @MainActor in AccessibilityAutomation.restore(automation) }
+        let window = try hostToday()
+        addTeardownBlock { @MainActor [self] in await closeHostedToday() }
+
+        let rowLabel = appLocalized("Sign in again to keep syncing")
+        let row = try await element(labeled: rowLabel, in: window)
+        XCTAssertTrue(row.accessibilityActivate(), "the row's tap")
+        try await waitUntil("the login sheet opens") { window.rootViewController?.presentedViewController != nil }
+        let sheet = try XCTUnwrap(window.rootViewController?.presentedViewController)
+        _ = try await element(labeled: appLocalized("Email address"), in: sheet.view)   // LoginView's first step
+
+        await signIn("magic-A")   // the sheet's Verify
+        XCTAssertNotEqual(todayLine(), .signInAgain, "the sign-in ends the row…")
+        try await waitUntil("the row left Today") { self.findElement(labeled: rowLabel, in: window) == nil }
+        let accountStep = appLocalized("This device has habits that aren't linked to an account.")
+        _ = try await element(labeled: accountStep, in: sheet.view)
+        // SwiftUI has had the row's removal to act on: a presenter that went with it closes the
+        // sheet within a few frames (it did, with the sheet hung on the row as before the fix).
+        // Watched for a second, not sampled once.
+        for _ in 0..<20 {
+            guard window.rootViewController?.presentedViewController === sheet else {
+                return XCTFail("…and the sheet stays up: TodayView presents it, not the row")
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertNotNil(findElement(labeled: accountStep, in: sheet.view), "still on the account step")
+        XCTAssertEqual(sync.ownerConflict?.isOwnerUnknown, true, "the account step: Upload / Start")
+        XCTAssertTrue(syncRequests.isEmpty, "no sync request before the choice")
+    }
+
+    // MARK: Hosting a real view
+
+    private var hostedWindow: UIWindow?
+
+    /// TodayView as the app shows it (inside a NavigationStack, over this test's store, in the
+    /// picked language's locale as StrideApp sets it — so its text and `appLocalized` agree), in a
+    /// window of its own on the host app's scene, key and visible, so SwiftUI presents its sheets.
+    private func hostToday() throws -> UIWindow {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = UIHostingController(rootView: NavigationStack { TodayView() }
+            .modelContainer(container)
+            .environment(\.locale, LanguageManager.shared.locale ?? .current))
+        window.makeKeyAndVisible()
+        hostedWindow = window
+        return window
+    }
+
+    /// Containers a hosted view used, kept for the life of the process: SwiftUI can run a view's
+    /// task after its window is gone, and a ModelContext whose container was released traps.
+    private static var retiredContainers: [ModelContainer] = []
+
+    /// Closes what `hostToday` put up, before `tearDown` releases the store (a teardown block of
+    /// the test that hosted it). Signed out first: closing the login sheet runs its onDismiss,
+    /// which syncs a signed-in account — against a store `tearDown` is about to release, and that
+    /// sync trapped in SwiftData during the next test.
+    private func closeHostedToday() async {
+        guard let window = hostedWindow else { return }
+        if auth?.isLoggedIn == true { await auth.logout() }
+        if window.rootViewController?.presentedViewController != nil {
+            window.rootViewController?.dismiss(animated: false)
+            let deadline = ContinuousClock.now + .seconds(5)
+            while window.rootViewController?.presentedViewController != nil, ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+        }
+        try? await Task.sleep(for: .milliseconds(200))   // the onDismiss task: signed out, it returns
+        if let container { Self.retiredContainers.append(container) }
+        tearDownHostedToday()
+    }
+
+    /// Gives the app its window and services back (also `tearDown`'s, should a test stop before
+    /// its teardown blocks).
+    private func tearDownHostedToday() {
+        if let window = hostedWindow {
+            window.rootViewController?.dismiss(animated: false)
+            window.isHidden = true
+            window.rootViewController = nil
+            window.windowScene?.windows.first { $0 !== window }?.makeKey()
+            hostedWindow = nil
+            if let container { Self.retiredContainers.append(container) }
+        }
+        AuthService.testOverride = nil
+        SyncService.testOverride = nil
+    }
+
+    /// The accessibility element labelled `label` under `root`, as VoiceOver would reach it.
+    private func findElement(labeled label: String, in root: NSObject) -> NSObject? {
+        if root.isAccessibilityElement, root.accessibilityLabel == label { return root }
+        var children: [NSObject] = (root.accessibilityElements as? [NSObject]) ?? []
+        let count = root.accessibilityElementCount()
+        if children.isEmpty, count != NSNotFound, count > 0 {
+            children = (0..<count).compactMap { root.accessibilityElement(at: $0) as? NSObject }
+        }
+        if let view = root as? UIView { children += view.subviews }
+        for child in children {
+            if let found = findElement(labeled: label, in: child) { return found }
+        }
+        return nil
+    }
+
+    private func element(labeled label: String, in root: NSObject) async throws -> NSObject {
+        var found: NSObject?
+        try await waitUntil("an element labelled “\(label)”") {
+            found = self.findElement(labeled: label, in: root)
+            return found != nil
+        }
+        return try XCTUnwrap(found)
+    }
+
+    /// Lets SwiftUI and UIKit run until `condition` holds, or fails after five seconds.
+    private func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !condition() {
+            guard ContinuousClock.now < deadline else {
+                XCTFail("timed out waiting: \(what)")
+                throw XCTSkip("timed out")
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
     }
 
     /// What Today would draw now.
@@ -837,5 +1095,35 @@ final class AccountSwitchTests: XCTestCase {
         context.insert(new)
         try context.save()
         return (old.id, new.id)
+    }
+}
+
+/// The accessibility runtime's automation mode (libAccessibility's `_AXSAutomationEnabled` /
+/// `_AXSSetAutomationEnabled`), which XCUITest switches on in an app under UI test. With it on,
+/// SwiftUI builds the accessibility elements of what it draws, so a hosted test can find a view by
+/// its label and press a button through its accessibility action. Private and test-only: nil when
+/// the symbols are not there, and the test says so rather than passing without its check.
+@MainActor
+enum AccessibilityAutomation {
+    private typealias Getter = @convention(c) () -> Int32
+    private typealias Setter = @convention(c) (Int32) -> Void
+    private static let library = dlopen("/usr/lib/libAccessibility.dylib", RTLD_NOW)
+
+    private static var functions: (get: Getter, set: Setter)? {
+        guard let library, let get = dlsym(library, "_AXSAutomationEnabled"),
+              let set = dlsym(library, "_AXSSetAutomationEnabled") else { return nil }
+        return (unsafeBitCast(get, to: Getter.self), unsafeBitCast(set, to: Setter.self))
+    }
+
+    /// Switches it on; returns whether it was on before, for `restore`.
+    static func enable() -> Bool? {
+        guard let functions else { return nil }
+        let before = functions.get() != 0
+        functions.set(1)
+        return before
+    }
+
+    static func restore(_ before: Bool) {
+        functions?.set(before ? 1 : 0)
     }
 }

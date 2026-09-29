@@ -1034,30 +1034,70 @@ final class SyncReconcileTests: XCTestCase {
             + context.fetch(FetchDescriptor<HabitGroup>()).filter(\.hasBeenDelivered).count
     }
 
-    /// The same account: its snapshot holds a habit this device delivered, so the marks stand.
-    /// What the snapshot lacks is not deleted by that pull (review data-safety-1): a migrated mark
-    /// says 1.3.0 pushed the row, not that the server took it, so until a pass has run after the
-    /// proof, the pass keeps each such row — a check-in and a group too — and marks it for resend,
-    /// for the push's answer to decide. Verified, the pass deletes what the account lacks, as
-    /// ever. The row made after the last sync is pending throughout.
-    func testAProvingFullPullKeepsTheMarksAndResendsWhatTheAccountLacksUntilVerified() throws {
-        let (read, run, group, fresh) = try seedMarkedStore()
+    /// The proving snapshot of the marks' own account: it holds Read and its check-in, and lacks
+    /// Run, Run's check-in and the group, which this device holds as delivered.
+    private func provingSnapshot(_ read: Habit) throws -> SyncPullResponse {
         let readRecord = try XCTUnwrap(read.records.first)
-        let runRecord = try XCTUnwrap(run.records.first)
-        let snapshot = pull(habits: [remoteHabit(read.id.uuidString.lowercased(), name: "Read")],
-                            entries: [remoteEntry(readRecord.id.uuidString, habit: read.id.uuidString, date: "2026-09-01")])
-        let log = SyncMemoryRecoveryLog()
+        return pull(habits: [remoteHabit(read.id.uuidString.lowercased(), name: "Read")],
+                    entries: [remoteEntry(readRecord.id.uuidString, habit: read.id.uuidString, date: "2026-09-01")])
+    }
 
-        let report = try SyncReconciler.apply(snapshot, to: context, isFullPull: true, proveMarks: true,
-                                              marksUnverified: true, recoveryLog: log)
+    /// Review data-safety-1. The same account: its snapshot holds a habit this device delivered,
+    /// so the marks stand, and the account listed what it deleted since the store's last 1.3.0
+    /// pull: Run and the group (Run's check-in through its habit — the deleting device queued only
+    /// the habit's id). They go by the normal rule, as an incremental pull from that cursor would
+    /// have removed them: quietly, since nobody edited them here. A check-in of a habit this device
+    /// keeps (edited after the last 1.3.0 sync, so never delivered) goes with its habit's listed
+    /// id too; the habit itself waits for the push's `tombstoned`, which archives its edit.
+    func testAnUnverifiedPassDeletesWhatTheAccountListsAsDeletedQuietly() throws {
+        let (read, run, group, fresh) = try seedMarkedStore()
+        let freshRecord = HabitRecord(date: dayKey(2026, 9, 3))
+        fresh.records.append(freshRecord)
+        delivered(freshRecord)
+        try context.save()
+        let log = SyncMemoryRecoveryLog()
+        let listed = SyncDeletedIDs(habits: [run.id.uuidString, fresh.id.uuidString], groups: [group.id.uuidString])
+
+        let report = try SyncReconciler.apply(try provingSnapshot(read), to: context, isFullPull: true, proveMarks: true,
+                                              unverifiedPass: .deletionsListed(listed), recoveryLog: log)
 
         XCTAssertEqual(report.marks, .proven(SyncRowRef(kind: .habit, id: read.id.uuidString)))
+        XCTAssertEqual(report.unverifiedPass, .deletionsListed)
+        XCTAssertEqual(report.deleted, SyncRowCounts(groups: 1, habits: 1, entries: 2))
+        XCTAssertEqual(report.markedForResend, SyncRowCounts())
+        XCTAssertEqual(Set(try habits().map(\.name)), ["Read", "Made after"])
+        XCTAssertTrue(fresh.records.isEmpty, "its delivered check-in went with the habit's listed id")
+        XCTAssertTrue(fresh.isPending, "never delivered: the push's answer decides it")
+        XCTAssertTrue(try context.fetch(FetchDescriptor<HabitGroup>()).isEmpty)
+        XCTAssertTrue(log.lines.isEmpty, "nobody edited them here: nothing to recover")
+        XCTAssertFalse(context.hasChanges, "saved")
+    }
+
+    /// Review data-safety-1. What the snapshot lacks and the account's complete list of deletions
+    /// since the last 1.3.0 pull does not name was never the account's to delete: a row the 1.3.0
+    /// server refused (another account's ids, or ids this account deleted before a restore). It is
+    /// kept and resent as the restore it was — `needsResend` and `restoredAt`, a check-in and a
+    /// group too — for the push's answer to decide. The mark stays. Should a full pull meet it
+    /// before that push, it is held `tombstoned` as a restored row is, never deleted.
+    func testAnUnverifiedPassResendsAsARestoreWhatACompleteListDoesNotName() throws {
+        let (read, run, group, fresh) = try seedMarkedStore()
+        let runRecord = try XCTUnwrap(run.records.first)
+        let snapshot = try provingSnapshot(read)
+        let log = SyncMemoryRecoveryLog()
+        let now = Date(timeIntervalSince1970: 1_790_000_000)
+
+        let report = try SyncReconciler.apply(snapshot, to: context, isFullPull: true, proveMarks: true,
+                                              unverifiedPass: .deletionsListed(SyncDeletedIDs()),
+                                              recoveryLog: log, now: now)
+
+        XCTAssertEqual(report.unverifiedPass, .deletionsListed)
         XCTAssertTrue(report.deletionPassRan)
         XCTAssertEqual(report.deleted, SyncRowCounts())
         XCTAssertEqual(report.markedForResend, SyncRowCounts(groups: 1, habits: 1, entries: 1))
         XCTAssertEqual(Set(try habits().map(\.name)), ["Read", "Run", "Made after"])
         for row in [run, runRecord, group] as [any SyncDeliverable] {
             XCTAssertTrue(row.needsResend)
+            XCTAssertEqual(row.restoredAt, now, "a restore: a tombstone holds it, it is never dropped")
             XCTAssertTrue(row.isPending)
             XCTAssertNotNil(row.syncedAt, "the mark stays: evidence of delivery, as far as this device knows")
         }
@@ -1066,23 +1106,63 @@ final class SyncReconcileTests: XCTestCase {
         XCTAssertTrue(log.lines.isEmpty, "nothing was deleted")
         XCTAssertFalse(context.hasChanges, "saved")
 
-        // Verified (the engine clears the flag once that pass has run): the same snapshot's pass
-        // deletes what the account lacks — rows still waiting for their resend, so archived first.
+        // Verified (the engine clears the flag once that pass has run), a full pull before the
+        // resend holds them `tombstoned`, as any restored row: the user's choice, not a deletion.
         let verified = try SyncReconciler.apply(snapshot, to: context, isFullPull: true, recoveryLog: log)
-        XCTAssertEqual(verified.deleted, SyncRowCounts(groups: 1, habits: 1, entries: 1))
-        XCTAssertEqual(verified.markedForResend, SyncRowCounts())
-        XCTAssertEqual(Set(try habits().map(\.name)), ["Read", "Made after"], "Run was deleted elsewhere")
-        XCTAssertTrue(try context.fetch(FetchDescriptor<HabitGroup>()).isEmpty, "the group too")
-        XCTAssertEqual(log.lines.count, 3)
+        XCTAssertNil(verified.unverifiedPass)
+        XCTAssertEqual(verified.deleted, SyncRowCounts())
+        XCTAssertEqual(Set(verified.heldTombstoned.map(\.id)), [run.id.uuidString, runRecord.id.uuidString, group.id.uuidString])
+        XCTAssertEqual(run.activeHold, .tombstoned)
+        XCTAssertTrue(log.lines.isEmpty)
+    }
+
+    /// Review data-safety-1. With no list — no pinned cursor, one past the server's horizon, or a
+    /// server that does not answer — a deletion made elsewhere and a row the 1.3.0 server refused
+    /// look the same. Each is deleted, as a verified pass would, but archived first whatever its
+    /// state: the habit, its check-in and the group, none of them pending. Nothing is lost, and
+    /// nothing is resent into an account that may have swept the tombstone that would answer it.
+    func testAnUnverifiedPassWithNoListDeletesAndArchivesEveryRowItDeletes() throws {
+        let (read, run, group, fresh) = try seedMarkedStore()
+        let runRecord = try XCTUnwrap(run.records.first)
+        let log = SyncMemoryRecoveryLog()
+
+        let report = try SyncReconciler.apply(try provingSnapshot(read), to: context, isFullPull: true, proveMarks: true,
+                                              unverifiedPass: .deletionsUnknown, recoveryLog: log)
+
+        XCTAssertEqual(report.unverifiedPass, .deletionsUnknown)
+        XCTAssertEqual(report.deleted, SyncRowCounts(groups: 1, habits: 1, entries: 1))
+        XCTAssertEqual(report.markedForResend, SyncRowCounts())
+        XCTAssertEqual(report.archived, 3)
+        XCTAssertEqual(Set(try habits().map(\.name)), ["Read", "Made after"])
+        XCTAssertTrue(fresh.isPending, "never delivered: kept")
+        XCTAssertEqual(Set(log.lines.map(\.item.ref)), [SyncRowRef(kind: .habit, id: run.id.uuidString),
+                                                        SyncRowRef(kind: .entry, id: runRecord.id.uuidString),
+                                                        SyncRowRef(kind: .group, id: group.id.uuidString)])
+        XCTAssertTrue(log.lines.allSatisfy { $0.item.reason == .deletedElsewhere })
+    }
+
+    /// The same absence with verified marks: deleted, and only what is pending or held archived.
+    func testAVerifiedPassDeletesWhatTheAccountLacksArchivingOnlyEdits() throws {
+        let (read, run, _, _) = try seedMarkedStore()
+        let log = SyncMemoryRecoveryLog()
+        let report = try SyncReconciler.apply(try provingSnapshot(read), to: context, isFullPull: true, recoveryLog: log)
+        XCTAssertNil(report.unverifiedPass)
+        XCTAssertEqual(report.deleted, SyncRowCounts(groups: 1, habits: 1, entries: 1))
+        XCTAssertFalse(try habits().contains { $0.id == run.id })
+        XCTAssertTrue(log.lines.isEmpty, "delivered and unedited")
     }
 
     /// An incremental pull runs no absence pass, so unverified marks change nothing there.
     func testUnverifiedMarksMarkNothingOnAnIncrementalPull() throws {
         let (_, run, _, _) = try seedMarkedStore()
-        let report = try SyncReconciler.apply(pull(), to: context, isFullPull: false, marksUnverified: true)
-        XCTAssertEqual(report.markedForResend, SyncRowCounts())
-        XCTAssertFalse(run.needsResend)
-        XCTAssertFalse(run.isPending)
+        for pass in [SyncUnverifiedPass.deletionsListed(SyncDeletedIDs()), .deletionsUnknown] {
+            let report = try SyncReconciler.apply(pull(), to: context, isFullPull: false, unverifiedPass: pass)
+            XCTAssertEqual(report.markedForResend, SyncRowCounts())
+            XCTAssertNil(report.unverifiedPass)
+            XCTAssertEqual(report.deleted, SyncRowCounts())
+            XCTAssertFalse(run.needsResend)
+            XCTAssertFalse(run.isPending)
+        }
     }
 
     /// Another account: its snapshot holds none of this device's rows. Every mark is forgotten

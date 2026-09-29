@@ -59,10 +59,11 @@ import SwiftData
 ///   deletion pass of an account that is not the marks' own finds nothing delivered to delete.
 ///   One whose totals do not match cannot decide, and then applies nothing (review
 ///   data-safety-2).
-/// - Until a full pull's absence pass has run after that proof (`marksUnverified`), the pass
-///   deletes no delivered row the account lacks: it marks it `needsResend`, for the push's
-///   answer to decide, because a migrated mark says 1.3.0 pushed the row, not that the server
-///   took it (review data-safety-1).
+/// - Until a full pull's absence pass has run after that proof (`unverifiedPass`), a delivered row
+///   the account lacks goes by the deletions the account made since the store's last 1.3.0 pull:
+///   listed, by the normal rule; not in a complete list, resent as the restore it was; with no
+///   list, deleted and archived whatever its state — because a migrated mark says 1.3.0 pushed
+///   the row, not that the server took it (review data-safety-1; `SyncMarksProof`).
 @MainActor
 enum SyncReconciler {
     /// The one form ids are compared in: the uppercase `uuidString` of the parsed UUID.
@@ -79,10 +80,13 @@ enum SyncReconciler {
     ///     full pull decides them first (`report.marks`). Ignored on an incremental pull, which
     ///     deletes only by explicit tombstones and cannot show what an account lacks. Undecided,
     ///     the pull applies nothing at all.
-    ///   - marksUnverified: no absence pass has run since the marks' proof
-    ///     (`SyncMarksProof.isUnverified`): this full pull's pass, if it runs, keeps each delivered
-    ///     row the account lacks and marks it `needsResend` (`report.markedForResend`) instead of
-    ///     deleting it. Ignored on an incremental pull, which runs no pass.
+    ///   - unverifiedPass: no absence pass has run since the marks' proof
+    ///     (`SyncMarksProof.isUnverified`), and what this pull says of the account's deletions
+    ///     since the store's last 1.3.0 pull. This full pull's pass, if it runs, deletes a
+    ///     delivered row the account lacks only when it is listed (or, with no list, archiving it
+    ///     first whatever its state); one not in a complete list is kept, marked `needsResend`
+    ///     and `restoredAt` (`report.markedForResend`). nil: verified, the normal rule. Ignored
+    ///     on an incremental pull, which runs no pass.
     ///   - queuedDeletions: this device's deletion queue (`SyncDeletionQueue.pending()`), read
     ///     for this pull. A remote habit, entry or group whose id is queued — or an entry of a
     ///     queued habit — is not applied: the push carrying the deletion is still to come, and
@@ -100,7 +104,7 @@ enum SyncReconciler {
         to context: ModelContext,
         isFullPull: Bool,
         proveMarks: Bool = false,
-        marksUnverified: Bool = false,
+        unverifiedPass: SyncUnverifiedPass? = nil,
         queuedDeletions: SyncDeletionQueue.Batch = .init(),
         recoveryLog: (any SyncRecoveryLogSink)? = nil,
         accountID: String? = nil,
@@ -116,7 +120,7 @@ enum SyncReconciler {
         do {
             try applyValidated(response, entries: parsed, to: context, isFullPull: isFullPull,
                                proveMarks: proveMarks && isFullPull,
-                               marksUnverified: marksUnverified && isFullPull,
+                               unverifiedPass: isFullPull ? unverifiedPass : nil,
                                queuedDeletions: queuedDeletions, report: &report, recoveryLog: recoveryLog,
                                accountID: accountID, now: now)
             return report
@@ -223,7 +227,7 @@ enum SyncReconciler {
         to context: ModelContext,
         isFullPull: Bool,
         proveMarks: Bool,
-        marksUnverified: Bool,
+        unverifiedPass: SyncUnverifiedPass?,
         queuedDeletions: SyncDeletionQueue.Batch,
         report: inout SyncReconcileReport,
         recoveryLog: (any SyncRecoveryLogSink)?,
@@ -462,42 +466,75 @@ enum SyncReconciler {
         // The full-pull absence pass: only on a snapshot validated and applied whole. A skip in
         // the upserts above lands in `issues` too, so this one condition covers both.
         //
-        // While the store's delivery marks are unverified (`marksUnverified`, review
-        // data-safety-1), a delivered row the account lacks is kept and marked for resend
-        // instead of deleted: a migrated mark says 1.3.0 pushed the row, not that the server took
-        // it, and 1.3.0 never read a refusal. The push's answer decides each one: a tombstone
-        // drops it (archived first, as it is pending by then), `not_owned` holds it for Restore
-        // as New Copies, and a row no server holds is inserted. The server refuses an id another
-        // account owns, so no row crosses accounts, and the engine clears the flag once this
-        // pass has run.
+        // While the store's delivery marks are unverified (`unverifiedPass`, review
+        // data-safety-1), a delivered row the account lacks may have been deleted on another
+        // device after the store's last 1.3.0 pull, or refused by the 1.3.0 server and kept only
+        // here — 1.3.0 never read a refusal. The account's deletions since that pull tell them
+        // apart (`SyncMarksProof`, which sets out why each branch holds once tombstones are swept):
+        // - listed: deleted elsewhere. The normal rule, as an incremental pull from 1.3.0's cursor
+        //   would have applied it: quiet for a row nobody edited here.
+        // - not in a complete list: refused. Kept and resent with `restoredAt`, so the push's
+        //   answer decides: `tombstoned` holds it (and the check-ins made on it since) for Restore
+        //   as New Copies / Discard, `not_owned` holds it, a row no server holds is inserted. The
+        //   server refuses an id another account owns, so no row crosses accounts.
+        // - no list: the two cannot be told apart. Deleted, and archived first whatever its state:
+        //   nothing lost, nothing resent into an account that may have swept its tombstone.
+        // The engine clears the flag once this pass has run and saved.
         if isFullPull, report.issues.isEmpty {
             report.deletionPassRan = true
+            report.unverifiedPass = unverifiedPass?.mode
             let remoteHabitIds = Set(response.habits.map { canonicalID($0.id) })
             let remoteEntryIds = parsed.keys
             let remoteGroupIds = Set((response.groups ?? []).map { canonicalID($0.id) })
-            func keptForResend(_ row: some SyncDeliverable, _ count: WritableKeyPath<SyncRowCounts, Int>) -> Bool {
-                guard marksUnverified else { return false }
+
+            /// What becomes of a delivered, unheld row the snapshot lacks. `habit` is a record's.
+            func absence(_ kind: SyncRowKind, _ id: UUID, habit: Habit? = nil) -> AbsentRow {
+                guard let unverifiedPass else { return .delete }
+                guard case .deletionsListed(let deleted) = unverifiedPass else { return .deleteArchiving }
+                let listed: Bool
+                switch kind {
+                case .habit: listed = deleted.habits.contains(id.uuidString)
+                case .group: listed = deleted.groups.contains(id.uuidString)
+                case .entry:
+                    listed = deleted.entries.contains(id.uuidString)
+                        || habit.map { deleted.habits.contains($0.id.uuidString) } == true
+                }
+                return listed ? .delete : .resend
+            }
+            func resend(_ row: some SyncDeliverable, _ count: WritableKeyPath<SyncRowCounts, Int>) {
                 if !row.needsResend { row.markNeedsResend() }
+                if row.restoredAt == nil { row.restoredAt = now }
                 report.markedForResend[keyPath: count] += 1
-                return true
             }
 
             for habit in existingHabits where !remoteHabitIds.contains(habit.id.uuidString) {
-                if absentRowIsKept(habit) || keptForResend(habit, \.habits) { continue }
-                removal.removeHabit(habit)
+                if absentRowIsKept(habit) { continue }
+                switch absence(.habit, habit.id) {
+                case .delete: removal.removeHabit(habit)
+                case .deleteArchiving: removal.removeHabit(habit, archivingEveryRow: true)
+                case .resend: resend(habit, \.habits)
+                }
             }
             // Records of every surviving local habit — duplicates of one id included, and one kept
-            // above as held, never delivered or kept for resend. A habit this pull inserted has
-            // only pulled records.
+            // above as held, never delivered or resent. A habit this pull inserted has only pulled
+            // records.
             for habit in existingHabits where !removal.isRemoving(habit) {
                 for record in habit.records where !remoteEntryIds.contains(record.id.uuidString) {
-                    if absentRowIsKept(record) || keptForResend(record, \.entries) { continue }
-                    removal.removeRecord(record, of: habit)
+                    if absentRowIsKept(record) { continue }
+                    switch absence(.entry, record.id, habit: habit) {
+                    case .delete: removal.removeRecord(record, of: habit)
+                    case .deleteArchiving: removal.removeRecord(record, of: habit, archivingEveryRow: true)
+                    case .resend: resend(record, \.entries)
+                    }
                 }
             }
             for group in existingGroups where !remoteGroupIds.contains(group.id.uuidString) {
-                if absentRowIsKept(group) || keptForResend(group, \.groups) { continue }
-                removal.removeGroup(group)
+                if absentRowIsKept(group) { continue }
+                switch absence(.group, group.id) {
+                case .delete: removal.removeGroup(group)
+                case .deleteArchiving: removal.removeGroup(group, archivingEveryRow: true)
+                case .resend: resend(group, \.groups)
+                }
             }
         }
 
@@ -567,10 +604,24 @@ enum SyncReconciler {
     /// ids is never deleted either: it is held `tombstoned` for the restore-as-copies choice.
     /// Everything else was delivered and the server no longer has it — another device deleted
     /// it — so it goes, `needsResend` or not: after a sweep a resend would be a new insert.
-    /// (The `restoredAt` hold is `SyncLocalRemoval`'s, shared with every other deletion path;
-    /// while the migrated marks are unverified, the pass resends such a row instead.)
+    /// (The `restoredAt` hold is `SyncLocalRemoval`'s, shared with every other deletion path.
+    /// While the migrated marks are unverified, `AbsentRow` decides instead.)
     private static func absentRowIsKept<Row: SyncDeliverable>(_ row: Row) -> Bool {
         row.isHeld || !row.hasBeenDelivered
+    }
+
+    /// What the absence pass does with a delivered, unheld row a validated full pull lacks.
+    private enum AbsentRow {
+        /// Deleted elsewhere: the normal rule — pending and held rows archived first, a restored
+        /// row held `tombstoned` (`SyncLocalRemoval`). Verified marks, or listed in the account's
+        /// deletions since the store's last 1.3.0 pull.
+        case delete
+        /// Unverified marks and no list: deleted, and archived first whatever its state — it may
+        /// be a row the 1.3.0 server refused, whose only copy this is.
+        case deleteArchiving
+        /// Unverified marks, not in the complete list: a row the 1.3.0 server refused. Kept and
+        /// resent with `restoredAt`, for the push's answer to decide.
+        case resend
     }
 
     private static func assign(_ remote: SyncHabit, to local: Habit) {
@@ -765,10 +816,14 @@ struct SyncReconcileReport: Equatable {
     var archived = 0
     /// Rows restored with their ids that a deletion reached: held `tombstoned`, not deleted.
     var heldTombstoned: [SyncRowRef] = []
-    /// Delivered rows the full pull lacked that its pass kept and marked `needsResend`, because
-    /// the store's delivery marks were unverified (`marksUnverified`, review data-safety-1): the
-    /// next push lets the server answer for each.
+    /// Delivered rows the full pull lacked that its pass kept and marked `needsResend` and
+    /// `restoredAt`: the store's delivery marks were unverified and the account's complete list of
+    /// deletions since its last 1.3.0 pull did not name them (`unverifiedPass`, review
+    /// data-safety-1). The next push lets the server answer for each.
     var markedForResend = SyncRowCounts()
+    /// Which rule an absence pass under unverified marks ran by: the account's deletions listed,
+    /// or unknown (every row it deleted archived). nil when the marks were verified or no pass ran.
+    var unverifiedPass: SyncUnverifiedPass.Mode?
     /// Remote values not applied because the local stamp is strictly newer; those rows stay
     /// pending.
     var keptLocalNewer: [SyncRowRef] = []
@@ -809,7 +864,8 @@ enum SyncReconcileError: Error, Equatable {
 ///
 /// - every affected row that is pending or held is archived to the recovery log first, a
 ///   deleted habit's records one by one (checking only the habit missed an offline edit to a
-///   check-in of a habit nobody touched);
+///   check-in of a habit nobody touched) — every affected row, whatever its state, when the
+///   caller cannot tell a deletion elsewhere from a refusal (`archivingEveryRow`);
 /// - a row carrying `restoredAt` is never deleted: it is held `tombstoned`, as a push answered
 ///   `tombstoned` holds it — otherwise the restore-as-copies choice would be decided by whichever
 ///   request came back first. A habit with restored records is held with them: the records
@@ -846,7 +902,10 @@ struct SyncLocalRemoval {
     /// remote entry may be matched onto it by day.
     func touches(_ record: HabitRecord) -> Bool { seen.contains(record.persistentModelID) }
 
-    mutating func removeHabit(_ habit: Habit) {
+    /// `archivingEveryRow`: the habit and each of its records go to the log whatever their state —
+    /// the full-pull pass under unverified marks with no list of the account's deletions, where
+    /// the row may be one the 1.3.0 server refused and this its only copy (review data-safety-1).
+    mutating func removeHabit(_ habit: Habit, archivingEveryRow: Bool = false) {
         guard seen.insert(habit.persistentModelID).inserted else { return }
         let restoredRecords = habit.records.filter { $0.restoredAt != nil }
         if habit.restoredAt != nil || !restoredRecords.isEmpty {
@@ -856,10 +915,10 @@ struct SyncLocalRemoval {
             }
             return
         }
-        if habit.isPending || habit.isHeld { archive.append(item(habit)) }
+        if archivingEveryRow || habit.isPending || habit.isHeld { archive.append(item(habit)) }
         for record in habit.records.sorted(by: { $0.date < $1.date }) {
             guard seen.insert(record.persistentModelID).inserted else { continue }
-            if record.isPending || record.isHeld { archive.append(item(record, of: habit)) }
+            if archivingEveryRow || record.isPending || record.isHeld { archive.append(item(record, of: habit)) }
             deleted.entries += 1
         }
         habits.append(habit)
@@ -868,23 +927,23 @@ struct SyncLocalRemoval {
     }
 
     /// `habit` is the record's owner, for the archived line (`Habit.records` has no inverse).
-    mutating func removeRecord(_ record: HabitRecord, of habit: Habit?) {
+    mutating func removeRecord(_ record: HabitRecord, of habit: Habit?, archivingEveryRow: Bool = false) {
         guard seen.insert(record.persistentModelID).inserted else { return }
         if record.restoredAt != nil {
             hold(record, ref: SyncRowRef(kind: .entry, id: record.id.uuidString)); return
         }
-        if record.isPending || record.isHeld { archive.append(item(record, of: habit)) }
+        if archivingEveryRow || record.isPending || record.isHeld { archive.append(item(record, of: habit)) }
         records.append(record)
         deleted.entries += 1
     }
 
-    mutating func removeGroup(_ group: HabitGroup) {
+    mutating func removeGroup(_ group: HabitGroup, archivingEveryRow: Bool = false) {
         guard seen.insert(group.persistentModelID).inserted else { return }
         if group.restoredAt != nil {
             hold(group, ref: SyncRowRef(kind: .group, id: group.id.uuidString)); return
         }
         // An offline rename of a group deleted elsewhere is an edit too (review 2).
-        if group.isPending || group.isHeld { archive.append(item(group)) }
+        if archivingEveryRow || group.isPending || group.isHeld { archive.append(item(group)) }
         groups.append(group)
         deleted.groups += 1
     }

@@ -362,13 +362,16 @@ final class SyncServiceTests: XCTestCase {
     /// The migrated-rows rule runs before the first 1.3.1 sync: a row older than 1.3.0's last
     /// sync was in that sync's snapshot, so it counts as delivered, and one the account still
     /// holds is not uploaded again. The marks stand because the snapshot holds a row this device
-    /// delivered (the proof, `SyncMarksProof`). A marked row the account no longer has (deleted on
-    /// another device) is not deleted by that first full pull, whose marks cannot tell it from a
-    /// row the 1.3.0 server refused (review data-safety-1): it goes up with the row made after the
-    /// last 1.3.0 sync, and the server's `tombstoned` drops it, into the recovery log first.
+    /// delivered (the proof, `SyncMarksProof`). A marked row the account no longer has was deleted
+    /// on another device after that sync: the pull asks for the account's deletions since the
+    /// cursor 1.3.0 kept (review data-safety-1) — through APIClient, on the wire — and the server
+    /// lists it, so it goes as an incremental pull would have removed it: quietly, not resent and
+    /// not in Recovered Edits. Only the row made after the last 1.3.0 sync goes up.
     func testMigratedRowsCountAsDeliveredOnTheFirstSync() async throws {
         let lastSync130 = Date().addingTimeInterval(-3_600)
+        let cursor130 = SyncTimestamp.millisecondString(from: lastSync130.addingTimeInterval(-SyncCursor.overlap))
         local.defaults.set(SyncTimestamp.string(from: lastSync130), forKey: SyncDeliveryMigration.lastSyncTimeKey)
+        local.defaults.set(cursor130, forKey: SyncDefaultsCursorStore.legacyKey)
         let old = Habit(name: "Deleted on the iPad")
         old.createdAt = SyncTimestamp.floorToMillisecond(lastSync130.addingTimeInterval(-86_400))
         old.updatedAt = old.createdAt
@@ -381,23 +384,30 @@ final class SyncServiceTests: XCTestCase {
         context.insert(new)
         try context.save()
         let oldID = old.id, newID = new.id, keptID = kept.id
-        let snapshot = SyncStubBodies.pull(habits: [SyncStubBodies.habit(kept)])
-        let tombstonedOld = #"""
-            {"ok":true,"skipped":{"habits":["\#(oldID.uuidString)"],"entries":[],"groups":[]},
-             "skippedReasons":{"habits":{"\#(oldID.uuidString)":"tombstoned"},"entries":{},"groups":{}}}
-            """#
-        server.on("POST", "/v1/sync/push", respond: .ok(tombstonedOld))
+        let snapshot = withDeletionsSince(SyncStubBodies.pull(habits: [SyncStubBodies.habit(kept)]), habitIDs: [oldID])
+        server.on("POST", "/v1/sync/push", respond: .ok(SyncStubBodies.pushOK))
         server.on("GET", "/v1/sync/pull") { request in .ok(request.query["since"] == nil ? snapshot : SyncStubBodies.pull()) }
 
         await sync.sync(context: context)
 
-        let pushed = try XCTUnwrap(syncRequests.first { $0.path == "/v1/sync/push" }?.json?["habits"] as? [[String: Any]])
-        XCTAssertEqual(Set(pushed.compactMap { $0["id"] as? String }), [oldID.uuidString, newID.uuidString],
-                       "never the row the account holds")
+        let pulls = syncRequests.filter { $0.path == "/v1/sync/pull" }
+        XCTAssertNil(pulls.first?.query["since"], "the proof is a full pull")
+        XCTAssertEqual(pulls.first?.query["deletionsSince"], cursor130, "1.3.0's cursor, as the migration pinned it")
+        XCTAssertTrue(pulls.dropFirst().allSatisfy { $0.query["deletionsSince"] == nil }, "only that pull asks")
+        XCTAssertEqual(pushedHabitIDs, [newID.uuidString], "never the row the account holds, nor the one it deleted")
         XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Habit>()).map(\.id)), [keptID, newID])
-        XCTAssertEqual(try recovery.log.lineCount(accountID: owner), 1, "the dropped row, archived before it went")
+        XCTAssertEqual(try recovery.log.lineCount(accountID: owner), 0, "nobody edited it here: nothing to recover")
         XCTAssertFalse(marks.isAwaited)
         XCTAssertFalse(marks.isUnverified)
+        XCTAssertNil(marks.deletionsSince, "the pin goes with the flag")
+    }
+
+    /// `body` with the `deletionsSince` a server >= 1.3.1 adds to a full pull that asked.
+    private func withDeletionsSince(_ body: String, habitIDs: [UUID]) -> String {
+        var json = (try? JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any]) ?? [:]
+        json["deletionsSince"] = ["complete": true, "habitIds": habitIDs.map(\.uuidString), "entryIds": [String](),
+                                  "groupIds": [String]()] as [String: Any]
+        return String(decoding: (try? JSONSerialization.data(withJSONObject: json)) ?? Data(), as: UTF8.self)
     }
 
     /// A 1.3.0 store with one row stamped by the migrated-rows rule's cutoff and one after it,
@@ -1067,11 +1077,14 @@ final class SyncServiceTests: XCTestCase {
         XCTAssertTrue(queue.pending().isEmpty)
     }
 
-    /// An erased store has no delivery marks, so none wait for a proof, or for the pass after it.
+    /// An erased store has no delivery marks, so none wait for a proof, or for the pass after it,
+    /// and 1.3.0's pinned cursor goes with them.
     func testResetSyncStateSettlesTheMarksProof() {
         marks.require()
+        marks.pinDeletionsSince("2026-09-20T11:59:00.000Z")
         sync.resetSyncState()
         XCTAssertFalse(marks.isAwaited)
         XCTAssertFalse(marks.isUnverified)
+        XCTAssertNil(local.defaults.object(forKey: SyncMarksProof.deletionsSinceKey))
     }
 }

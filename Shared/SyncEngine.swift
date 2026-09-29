@@ -54,8 +54,10 @@ protocol SyncTransport: AnyObject {
     /// POST /v1/sync/push with exactly `body` — the bytes the planner measured against the
     /// 1 MB bound (`SyncPushChunk.body`). Never re-encode.
     func push(body: Data, token: String) async -> SyncTransportResponse
-    /// GET /v1/sync/pull, `?since=` when `since` is non-nil (a full pull otherwise).
-    func pull(since: String?, token: String) async -> SyncTransportResponse
+    /// GET /v1/sync/pull, `?since=` when `since` is non-nil (a full pull otherwise), and
+    /// `&deletionsSince=` when `deletionsSince` is: only a full pull under unverified migrated
+    /// marks asks, with 1.3.0's pinned cursor (`SyncMarksProof.deletionsSince`).
+    func pull(since: String?, deletionsSince: String?, token: String) async -> SyncTransportResponse
 }
 
 // MARK: - Run binding (the owner check)
@@ -108,7 +110,11 @@ final class SyncDefaultsCursorStore: SyncCursorStore {
     /// The first 1.3.1 sync therefore full-pulls, which is the settling pass the migrated-rows
     /// rule wants anyway. `adoptLegacyCursor` is there if the wrapper decides otherwise.
     static let key = "stride_sync_cursors_by_owner"
-    static let legacyKey = "stride_sync_cursor"
+    /// 1.3.0's cursor: the server's time of its last pull less the overlap. Never adopted, but
+    /// read once, by the delivery migration, which pins it for the pass that verifies the
+    /// migrated marks (`SyncMarksProof.deletionsSince`, review data-safety-1). `nonisolated`: a
+    /// constant, read by that migration off the main actor's isolation.
+    nonisolated static let legacyKey = "stride_sync_cursor"
 
     let defaults: UserDefaults
 
@@ -238,8 +244,12 @@ struct SyncRunSummary: Equatable {
     var deletionsDelivered = 0
     var heldTombstoned: [SyncRowRef] = []
     /// Delivered rows a full pull lacked that its pass kept for the push to resend, because the
-    /// migrated delivery marks were unverified (review data-safety-1).
+    /// migrated delivery marks were unverified and the account's deletions since the store's last
+    /// 1.3.0 pull did not name them (review data-safety-1).
     var markedForResend = SyncRowCounts()
+    /// Which rule the pass under unverified marks ran by (`SyncReconcileReport.unverifiedPass`);
+    /// nil when no pull in the run ran one.
+    var unverifiedPass: SyncUnverifiedPass.Mode?
     var pullIssues: [SyncPullIssue] = []
     var deletionPassSkipped = false
     /// What a proving full pull decided about the store's migrated delivery marks
@@ -381,7 +391,8 @@ final class SyncEngine {
     ///   is pushed, and nothing deleted by absence, before the account is proven. A proving pull
     ///   that cannot decide (its totals do not match) applies nothing, and the run ends there,
     ///   before any push (review data-safety-2). Until a full pull's pass has run after the
-    ///   proof, that pass resends what it would have deleted (review data-safety-1).
+    ///   proof, that pull asks for the account's deletions since 1.3.0's pinned cursor, and its
+    ///   pass decides by them (review data-safety-1; `SyncMarksProof`).
     /// - It pulls BEFORE pushing when there is no cursor, when the cursor is older than
     ///   `cursorLifetime` (cleared: a full pull) or `cursorProbeAge` (so the server's
     ///   `cursor_expired` comes before the push), or when any row waits on a forced resend: the
@@ -586,7 +597,13 @@ private final class SyncRun {
         var since = initial
         while true {
             try check()
-            let response = await engine.transport.pull(since: since, token: binding.token)
+            let proving = since == nil && engine.marks.isAwaited
+            // A full pull under unverified marks runs the pass that verifies them, and asks for
+            // the account's deletions since 1.3.0's pinned cursor to run it by (review
+            // data-safety-1). A proving pull asks too: proven, its own pass is that pass.
+            let verifying = since == nil && engine.marks.isUnverified
+            let deletionsSince = verifying ? engine.marks.deletionsSince : nil
+            let response = await engine.transport.pull(since: since, deletionsSince: deletionsSince, token: binding.token)
             try check()
             let answer = answer(response)
             var record = SyncRequestRecord(endpoint: .pull, status: answer.status, code: answer.code,
@@ -607,16 +624,14 @@ private final class SyncRun {
                 summary.requests.append(record)
                 try check()
                 let reconciled: SyncReconcileReport
-                let proving = since == nil && engine.marks.isAwaited
-                let verifying = since == nil && engine.marks.isUnverified
                 do {
                     // Read now, not at the run's start: the push before this pull acknowledged
                     // what it delivered, and whatever is still queued must not come back.
-                    reconciled = try SyncReconciler.apply(pulled, to: context, isFullPull: since == nil,
-                                                          proveMarks: proving, marksUnverified: verifying,
-                                                          queuedDeletions: engine.deletionQueue.pending(),
-                                                          recoveryLog: engine.recoveryLog,
-                                                          accountID: binding.ownerID, now: engine.now())
+                    reconciled = try SyncReconciler.apply(
+                        pulled, to: context, isFullPull: since == nil, proveMarks: proving,
+                        unverifiedPass: verifying ? SyncUnverifiedPass(asked: deletionsSince, answer: pulled.deletionsSince) : nil,
+                        queuedDeletions: engine.deletionQueue.pending(), recoveryLog: engine.recoveryLog,
+                        accountID: binding.ownerID, now: engine.now())
                 } catch SyncReconcileError.recoveryLogFailed {
                     throw SyncRunStop(reason: .recoveryLogFailed)
                 } catch {
@@ -635,13 +650,15 @@ private final class SyncRun {
                     case .undecided: break
                     }
                 }
-                // The pass that resent what the marks could not vouch for has run and is saved:
+                // The pass that settled what the marks could not vouch for has run and is saved:
                 // from here a delivered row the account lacks was deleted elsewhere (review
-                // data-safety-1). Never before the proof: an undecided pull runs no pass.
+                // data-safety-1), and the pinned cursor goes with the flag. Never before the
+                // proof: an undecided pull runs no pass.
                 if verifying, reconciled.deletionPassRan { engine.marks.markVerified() }
                 summary.archived += reconciled.archived
                 summary.heldTombstoned += reconciled.heldTombstoned
                 summary.markedForResend += reconciled.markedForResend
+                if let mode = reconciled.unverifiedPass { summary.unverifiedPass = mode }
                 summary.pullIssues += reconciled.issues
                 if reconciled.deletionPassSkipped { summary.deletionPassSkipped = true }
                 if let diagnostic = reconciled.diagnostic { engine.report(diagnostic) }

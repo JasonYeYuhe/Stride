@@ -30,7 +30,15 @@ import os.log
 @MainActor
 @Observable
 final class SyncService {
+    #if DEBUG
+    /// The app's instance — or, in StrideAppTests only, the test's own while a hosted test renders
+    /// real views that read `shared` (the critic-1 presenter test; `AuthService.shared`).
+    static var shared: SyncService { testOverride ?? live }
+    static var testOverride: SyncService?
+    private static let live = SyncService()
+    #else
     static let shared = SyncService()
+    #endif
 
     private(set) var isSyncing = false
     /// When this device last synced, by its own clock — shown in Settings, and nothing else.
@@ -303,6 +311,16 @@ final class SyncService {
         backoff = nil
     }
 
+    /// A sign-in completed (`AuthService.verifyToken`, through its `onSignIn`): the session a 401
+    /// refused has been replaced, so "Sign in again" has nothing left to ask. Until now the flag
+    /// lasted until a sync got through, so the row stayed on Today after the user signed back in —
+    /// for good while that sync failed offline, or waited on the account screen's choice. The
+    /// sign-in took its snapshot of the row first (`AuthService.signInAgainBeforeSignInKey`), so
+    /// the account screen's Cancel still puts the row back (review accounts-2).
+    func signedIn() {
+        needsReauth = false
+    }
+
     /// Erase Local Data (DataExportService), after its sign-out: the store is about to be empty,
     /// so nothing this device knew about any account's server state is true any more.
     ///
@@ -379,6 +397,9 @@ final class SyncService {
             refreshBackoff()
             refreshRecoveredEdits()
         }
+        // Settled — here for `.ready` and for the sync after Start or Upload: a sign-in's
+        // account screen is over (review accounts-2).
+        if conflict == nil { sessions.signedInAccountOwnsTheStore() }
         return conflict == nil
     }
 
@@ -726,10 +747,15 @@ protocol SyncSessionSource: AnyObject {
     /// ask the user to sign in again (`AuthService.sessionExpired`; the phase C leftovers, the
     /// owner's decision 2).
     func localDataErased()
+    /// The signed-in account owns the store now (`settleOwner`): no account screen is pending,
+    /// so its Cancel has no "Sign in again" to put back (`AuthService.cancelSignIn`, review
+    /// accounts-2).
+    func signedInAccountOwnsTheStore()
 }
 
 extension SyncSessionSource {
     func localDataErased() {}
+    func signedInAccountOwnsTheStore() {}
 }
 
 // `SyncAccount`, `SyncOwner`, `SyncOwnerConflict`, `SyncOwnerStore` and the owner rule itself
@@ -758,8 +784,8 @@ final class APISyncTransport: SyncTransport {
         await record(.push, await api.syncPush(body: body, token: token))
     }
 
-    func pull(since: String?, token: String) async -> SyncTransportResponse {
-        await record(.pull, await api.syncPull(since: since, token: token))
+    func pull(since: String?, deletionsSince: String?, token: String) async -> SyncTransportResponse {
+        await record(.pull, await api.syncPull(since: since, deletionsSince: deletionsSince, token: token))
     }
 
     private func record(_ endpoint: SyncEndpoint, _ exchange: APIClient.SyncExchange) async -> SyncTransportResponse {

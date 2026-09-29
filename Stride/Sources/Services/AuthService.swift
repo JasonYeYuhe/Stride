@@ -6,7 +6,17 @@ import os.log
 @MainActor
 @Observable
 final class AuthService {
+    #if DEBUG
+    /// The app's instance — or, in StrideAppTests only, the test's own while a hosted test
+    /// renders real views that read `shared` (TodayView, LoginView, AccountSwitchView), so a view
+    /// under test signs in through the stub server, never the host app's Keychain item (the
+    /// critic-1 presenter test). Release builds keep the plain `static let`.
+    static var shared: AuthService { testOverride ?? live }
+    static var testOverride: AuthService?
+    private static let live = AuthService()
+    #else
     static let shared = AuthService()
+    #endif
 
     private(set) var currentUser: APIUser?
     private(set) var isLoading = false
@@ -54,16 +64,20 @@ final class AuthService {
     /// account again"). 1.3.0 reset the cursor here; that was what let the next account on the
     /// device receive the previous one's never-pushed rows.
     private let onSignOut: @MainActor () -> Void
-    /// After a sign-in completes (a magic link verified). Nothing in the app subscribes: the M2
-    /// slice used it to end the launch session's claim on a store's migrated delivery marks, and
-    /// the owner's rule that replaced that claim — the adopting account's first full pull proves
-    /// the marks (`SyncMarksProof`) — needs no sign-in hook. TODO(M2): remove it together with
-    /// the argument StrideAppTests/AuthServiceTests.swift passes.
+    /// After a sign-in completes (a magic link verified, typed or tapped): `SyncService.signedIn`,
+    /// which ends a 401's "Sign in again" (`needsReauth`) — the refused session is replaced, and
+    /// the row must not wait for a sync that may not come or may fail offline. Called after
+    /// `verifyToken` has taken its snapshot of the row for the account screen's Cancel. A closure
+    /// for the same reason as `onSignOut`; tests pass their own.
     private let onSignIn: @MainActor () -> Void
     /// After `deleteAccount` has signed out: the deleted account's local traces go
     /// (`SyncService.accountDeleted` — its rows if it owned the store, its owner record, recovery
     /// log and backoff). A closure for the same reason as `onSignOut`; tests pass their own.
     private let onAccountDeleted: @MainActor (SyncAccount) -> Void
+    /// `SyncService.needsReauth`: a sync this launch was answered 401 — the in-memory half of
+    /// Today's "Sign in again" row. Read by `verifyToken` only, so creating `shared` still creates
+    /// no SyncService; tests pass their own.
+    private let reauthRequested: @MainActor () -> Bool
 
     /// The defaults are what `shared` has always used. StrideAppTests passes an APIClient over a
     /// stubbed URLSession and the same in-memory token store it gave that client — the two must
@@ -74,8 +88,9 @@ final class AuthService {
         tokenStore: SessionTokenStore = KeychainSessionTokenStore(),
         defaults: UserDefaults = .standard,
         onSignOut: @escaping @MainActor () -> Void = { SyncService.shared.signedOut() },
-        onSignIn: @escaping @MainActor () -> Void = {},
-        onAccountDeleted: @escaping @MainActor (SyncAccount) -> Void = { AuthService.eraseAfterAccountDeletion($0) }
+        onSignIn: @escaping @MainActor () -> Void = { SyncService.shared.signedIn() },
+        onAccountDeleted: @escaping @MainActor (SyncAccount) -> Void = { AuthService.eraseAfterAccountDeletion($0) },
+        reauthRequested: @escaping @MainActor () -> Bool = { SyncService.shared.needsReauth }
     ) {
         self.api = api
         self.tokenStore = tokenStore
@@ -83,6 +98,7 @@ final class AuthService {
         self.onSignOut = onSignOut
         self.onSignIn = onSignIn
         self.onAccountDeleted = onAccountDeleted
+        self.reauthRequested = reauthRequested
         self.sessionExpired = defaults.bool(forKey: Self.sessionExpiredKey)
         // Check session on init if we have a stored token
         if tokenStore.read() != nil {
@@ -205,7 +221,9 @@ final class AuthService {
             // out: that token's account is unknown, so the store's rows are too.
             SyncOwnerStore(defaults: defaults).storedSessionEnded()
             // Before `setUser` ends it: the account screen's Cancel puts it back (`cancelSignIn`).
-            sessionExpiredBeforeSignIn = sessionExpired
+            // Either half of the row counts — the persisted `sessionExpired`, or a 401 this launch
+            // (`reauthRequested`), which Log Out would end for good.
+            setSignInAgainBeforeSignIn(sessionExpired || reauthRequested())
             setUser(response.user)
             onSignIn()
             isLoading = false
@@ -307,11 +325,31 @@ final class AuthService {
         rememberSessionAccount(nil)
         // Signed out on purpose: nothing to ask the user to sign back into.
         setSessionExpired(false)
+        setSignInAgainBeforeSignIn(false)
         onSignOut()
     }
 
-    /// Whether "Sign in again" was up when the last sign-in began (`verifyToken`), which ended it.
-    @ObservationIgnored private var sessionExpiredBeforeSignIn = false
+    /// Whether "Sign in again" was up when the last sign-in began (`verifyToken`), which ended it:
+    /// what the account screen's Cancel puts back (`cancelSignIn`).
+    ///
+    /// Persisted, and from either half of the row (review accounts-2). Held in memory, it was lost
+    /// by a relaunch between the sign-in and the Cancel — the account screen can wait across one:
+    /// it cannot be swiped away, and after a relaunch Settings' owner-choice row opens it again —
+    /// and it saw only `sessionExpired`, never a 401 of this launch (`SyncService.needsReauth`,
+    /// which the Cancel's Log Out ends). Either way the Cancel signed out with no row, and the
+    /// token it replaced had never been checked, so no later launch raised the row either.
+    /// Cleared once the signed-in account owns the store (`signedInAccountOwnsTheStore`: the owner
+    /// resumed or adopted, or Start / Upload settled it), by a deliberate Log Out, an account
+    /// deletion and Erase Local Data.
+    static let signInAgainBeforeSignInKey = "stride_session_expired_before_sign_in"
+
+    private func setSignInAgainBeforeSignIn(_ shown: Bool) {
+        if shown {
+            defaults.set(true, forKey: Self.signInAgainBeforeSignInKey)
+        } else {
+            defaults.removeObject(forKey: Self.signInAgainBeforeSignInKey)
+        }
+    }
 
     /// The account screen's Cancel (AccountSwitchView): signs out of the account just signed into,
     /// as Log Out does, and leaves the device as it was before that sign-in — Today's "Sign in
@@ -322,8 +360,7 @@ final class AuthService {
     /// an owner, or rows whose owner is unknown; an erase meanwhile emptied the device, and
     /// "Sign in again" went with it (the owner's decision 2).
     func cancelSignIn() async {
-        let restoresRow = sessionExpiredBeforeSignIn
-        sessionExpiredBeforeSignIn = false
+        let restoresRow = defaults.bool(forKey: Self.signInAgainBeforeSignInKey)
         await logout()
         let owners = SyncOwnerStore(defaults: defaults)
         if restoresRow, owners.owner != nil || owners.ownerUnknown {
@@ -358,6 +395,7 @@ final class AuthService {
             try await api.deleteAccount()
         } catch APIError.unauthorized {
             sessionFoundGone()
+            setSignInAgainBeforeSignIn(false)
             onSignOut()
             throw APIError.unauthorized
         }
@@ -365,6 +403,7 @@ final class AuthService {
         tokenStore.delete()
         rememberSessionAccount(nil)
         setSessionExpired(false)
+        setSignInAgainBeforeSignIn(false)
         onSignOut()
         if let account { onAccountDeleted(account) }
     }
@@ -432,6 +471,14 @@ extension AuthService: SyncSessionSource {
     /// owner's decision 2). The next sign-in is an ordinary one.
     func localDataErased() {
         setSessionExpired(false)
+        setSignInAgainBeforeSignIn(false)
+    }
+
+    /// The signed-in account owns the store now (`SyncService.settleOwner`): the sign-in, if any,
+    /// needed no account screen, or its Start / Upload settled it. Nothing is left for a Cancel to
+    /// put back (review accounts-2).
+    func signedInAccountOwnsTheStore() {
+        setSignInAgainBeforeSignIn(false)
     }
 
     /// Waits out the launch session check, and asks the server once more when a token is stored

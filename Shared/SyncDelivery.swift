@@ -345,13 +345,15 @@ enum SyncWireStamp {
 /// it decides them before its deletion pass (`SyncReconciler`, owner decision 2026-09-28).
 ///
 /// Proven, a mark still says only that 1.3.0 PUSHED the row, not that the server took it: 1.3.0
-/// never read `skipped`, so a restore that kept another account's ids, or a row a tombstone
-/// refused, was pushed and refused on every sync, with the check-ins made on it since kept only
+/// never read `skipped`, so a restore that kept another account's ids, or ids this account had
+/// deleted, was pushed and refused on every sync, with the check-ins made on it since kept only
 /// here (review data-safety-1). The marks are therefore also **unverified** until one full-pull
-/// absence pass has run after the proof, and that pass resends what it would have deleted, for
-/// the server to answer row by row (`SyncMarksProof.isUnverified`). A row deleted elsewhere is
-/// then answered by its tombstone, so that first pass leans on tombstones being kept: the
-/// resurrection above is prevented from the next pass on, not at the first.
+/// absence pass has run after the proof, and that pass has to tell such a row from one another
+/// device deleted after this device's last 1.3.0 sync — the snapshot lacks both. 1.3.0 kept that
+/// sync's pull cursor (`SyncDefaultsCursorStore.legacyKey`: the server's time less the overlap),
+/// so the rule pins it at its first attempt, next to the last-sync time, and the pass's pull asks
+/// the server for the account's deletions since it (`SyncMarksProof.deletionsSince`, where the
+/// branches and why each holds after a sweep are set out).
 enum SyncDeliveryMigration {
     /// Written by 1.3.0's `SyncService` (whole seconds, `SyncTimestamp.string`) and still by
     /// 1.3.1's, for the Settings display — which is why the rule must run before 1.3.1's first
@@ -440,12 +442,17 @@ enum SyncDeliveryMigration {
     static func runOnceIfNeeded(in context: ModelContext, defaults: UserDefaults) -> Outcome {
         guard !defaults.bool(forKey: doneKey) else { return .alreadyDone }
 
+        let proof = SyncMarksProof(defaults: defaults)
         let lastSync: String?
         if let pinned = defaults.string(forKey: pinnedLastSyncKey) {
             lastSync = pinned.isEmpty ? nil : pinned
         } else {
             lastSync = defaults.string(forKey: lastSyncTimeKey)
             defaults.set(lastSync ?? "", forKey: pinnedLastSyncKey)
+            // 1.3.0's pull cursor, pinned with the time it was written at: the pass that verifies
+            // the marks asks for the deletions since it (review data-safety-1). Pinned, a later
+            // removal of 1.3.0's key (an erase, an account deletion) cannot change what it asks.
+            proof.pinDeletionsSince(defaults.string(forKey: SyncDefaultsCursorStore.legacyKey))
         }
 
         do {
@@ -454,10 +461,12 @@ enum SyncDeliveryMigration {
             // (the retry finds them stamped and stamps nothing, so it would never set them). Flags
             // whose marks were rolled back are harmless — the proof finds nothing to forget. Both
             // flags: the proof, and the first absence pass after it (review data-safety-1).
-            if counts.total > 0 { SyncMarksProof(defaults: defaults).require() }
+            if counts.total > 0 { proof.require() }
             if context.hasChanges { try context.save() }
             defaults.set(true, forKey: doneKey)
             defaults.removeObject(forKey: pinnedLastSyncKey)
+            // No mark waits for that pass: nothing will ask for deletions since the cursor.
+            if !proof.isUnverified { proof.unpinDeletionsSince() }
             return .stamped(counts)
         } catch {
             // Not fatal: until it succeeds every row is merely "never delivered", which the
@@ -496,28 +505,72 @@ enum SyncDeliveryMigration {
 ///   would otherwise be taken for proof by the next one).
 ///
 /// Proven, the marks are still **unverified** until a full-pull absence pass has run after the
-/// proof (review data-safety-1). A mark says 1.3.0 pushed the row, not that the server took it:
-/// a restore that kept another account's ids went up and came back `not_owned` on every 1.3.0
-/// sync, unread, and the check-ins made on it since exist only here. So that first pass deletes
-/// no delivered row the account lacks. It marks it `needsResend`, and the push lets the server
-/// answer for each one: `tombstoned` drops it (archived first, as the row is pending),
-/// `not_owned` holds it for Restore as New Copies, and a row no server holds is inserted. Rows
-/// the server refuses as another account's stay here, so nothing crosses accounts, and the pass
-/// runs only after a proof: a store whose marks were forgotten has no delivered row to resend.
+/// proof (review data-safety-1). A mark says 1.3.0 pushed the row, not that the server took it,
+/// and a delivered row that pass finds absent from the account is one of two things:
+///
+/// - (a) deleted on another device after this store's last 1.3.0 pull — the everyday case for
+///   anyone with two devices: an untap on the iPad, a habit deleted there;
+/// - (b) refused by the 1.3.0 server and kept only here, since 1.3.0 never read `skipped`: a
+///   restore that kept another account's ids (`not_owned`), or ids this account had deleted
+///   before the restore (`tombstoned`), with every check-in made on it since. A row deleted
+///   before that pull and still here can only be such a restore: every 1.3.0 pull applied the
+///   deletions it carried, and a full pull deleted what the account lacked.
+///
+/// The snapshot lacks both. So the pass's pull sends 1.3.0's cursor, pinned by the migration
+/// (`deletionsSince`), and the server lists, in the snapshot's own transaction, every habit, entry
+/// and group the account deleted after it (`SyncPullResponse.deletionsSince`). The pass
+/// (`SyncReconciler.apply`, `SyncUnverifiedPass`):
+///
+/// - **Listed** — its id is in the lists, a record's also when its habit's is: (a). Deleted by the
+///   normal rule, as an incremental pull from that cursor would have: quietly for a row nobody
+///   edited here, archived first when pending or held, held when restored.
+/// - **Not listed, lists complete**: (b). Resent (`needsResend`) with `restoredAt` set, as the
+///   restore it was, and the push's answer decides: `tombstoned` holds it — a habit with its
+///   check-ins and those made on it since — for Restore as New Copies / Discard; `not_owned` holds
+///   it; a row no server holds is inserted. The server refuses an id another account owns, so no
+///   row crosses accounts.
+/// - **No lists** — no cursor was pinned (1.3.0 never finished a sync on this store, or it came
+///   from 1.2.2 or earlier, whose cursor was the device's clock), the cursor is past the server's
+///   horizon (the device slept more than 355 days), or the server does not answer the field: (a)
+///   and (b) cannot be told apart. Every such row is deleted, and archived first, pending or not.
+///
+/// Why each holds once tombstones are swept again (M0: only behind a 426 floor ≥ 1.3.1, and only
+/// tombstones older than retention, 365 days). The server lists only for a cursor inside its
+/// horizon — retention less the 10 days' grace, the `cursor_expired` rule — so every tombstone
+/// newer than the cursor still exists, and a complete list misses no deletion made after it: a
+/// row deleted elsewhere after the last 1.3.0 sync is never resent. Past the horizon nothing is
+/// resent at all. What a resend can still insert after a sweep is a row whose deletion is older
+/// than the cursor and older than retention: only (b)'s same-account restore, which today comes
+/// back held `tombstoned` for the user's choice and after such a sweep is inserted — the restore
+/// the user made, not a resurrection. Nothing is lost on any branch: (b) is held or inserted, and
+/// what the no-lists branch deletes is in the recovery log.
+///
+/// Residuals. A (b) row another device deletes between this pull and the push that resends it is
+/// held `tombstoned`, not dropped (its `restoredAt`), as a restored row is: the user's choice, not
+/// a loss. A row deleted elsewhere after the last 1.3.0 sync and then brought back here by a 1.3.0
+/// restore is listed and goes, unarchived when unedited, as 1.3.0's own next pull would have
+/// removed it; the backup still holds it. The no-lists branch puts (a)'s rows in Recovered Edits
+/// though nobody edited them here, and (b)'s there instead of the Restore as New Copies row. A
+/// proving pull that decides but skips its absence pass (a row-level issue) leaves the marks
+/// unverified until the next full pull, whenever that is, and by then the pinned cursor may be
+/// past the horizon (no lists); incremental pulls meanwhile apply deletions as ever.
 ///
 /// Settled by the deciding pull, by "Upload these habits to this account" (`forgetMarks`), and
 /// by an erase (`SyncService.resetSyncState`: no rows, no marks). A sign-in to the same account
-/// later needs no proof — the owner and its cursor resume. Two residuals, both harmless while
-/// tombstones are kept: a store whose every delivered row was deleted elsewhere holds nothing the
-/// snapshot can show, so it re-uploads (see DEV-PLAN-1.3.md M2, "Migrated rows"); and the
-/// unverified pass resends what the account deleted, which only a tombstone answers. After a
-/// sweep, a 1.3.0 device whose first 1.3.1 full pull comes later re-inserts those rows — a
-/// restore the user can undo, not a loss; the build that sweeps again (M0) must revisit both.
+/// later needs no proof — the owner and its cursor resume. One residual of the proof itself: a
+/// store whose every delivered row was deleted elsewhere holds nothing the snapshot can show, so
+/// its marks are forgotten and it re-uploads. While tombstones are kept the answers are
+/// `tombstoned` and the rows land in the recovery log; after a sweep they come back into the
+/// account — a restore the user can undo, not a loss (DEV-PLAN-1.3.md M2, "Migrated rows").
 struct SyncMarksProof {
     static let key = "stride_delivery_marks_unproven"
     /// Set with `key`, cleared by the first full-pull absence pass after the proof (review
     /// data-safety-1; `isUnverified`).
     static let unverifiedKey = "stride_delivery_marks_unverified"
+    /// 1.3.0's pull cursor (`SyncDefaultsCursorStore.legacyKey`) as the migration found it at its
+    /// first attempt; "" = there was none. What the pass that verifies the marks asks the server
+    /// for the deletions since (`deletionsSince`). Removed with the unverified flag.
+    static let deletionsSinceKey = "stride_delivery_marks_deletions_since"
 
     /// Where `SyncService` keeps the cursors and the owner (`UserDefaults.standard` in the app).
     let defaults: UserDefaults
@@ -525,10 +578,24 @@ struct SyncMarksProof {
     /// The marks wait for the first full pull of the adopting account.
     var isAwaited: Bool { defaults.bool(forKey: Self.key) }
 
-    /// No full-pull absence pass has run since the proof: the next one keeps and resends a
-    /// delivered row the account lacks instead of deleting it (`SyncReconciler.apply`'s
-    /// `marksUnverified`).
+    /// No full-pull absence pass has run since the proof: the next one asks for the deletions
+    /// since 1.3.0's cursor and decides by them (`SyncReconciler.apply`'s `unverifiedPass`).
     var isUnverified: Bool { defaults.bool(forKey: Self.unverifiedKey) }
+
+    /// The pinned 1.3.0 cursor, while it is a timestamp; nil when none was pinned (or it does not
+    /// parse, which no server could list deletions since either).
+    var deletionsSince: String? {
+        guard let pinned = defaults.string(forKey: Self.deletionsSinceKey),
+              SyncTimestamp.parse(pinned) != nil else { return nil }
+        return pinned
+    }
+
+    /// The migration's first attempt: `cursor` is what 1.3.0 left under its key, nil for none.
+    func pinDeletionsSince(_ cursor: String?) {
+        defaults.set(cursor ?? "", forKey: Self.deletionsSinceKey)
+    }
+
+    func unpinDeletionsSince() { defaults.removeObject(forKey: Self.deletionsSinceKey) }
 
     /// The migration stamped rows: they wait for the proof, and for the first pass after it.
     func require() {
@@ -540,15 +607,20 @@ struct SyncMarksProof {
     /// stand. They stay unverified until an absence pass has run (`markVerified`).
     func markProven() { defaults.removeObject(forKey: Self.key) }
 
-    /// A full pull's absence pass ran after the proof and resent what it would have deleted. From
-    /// here on a delivered row the account lacks was deleted elsewhere, and the pass deletes it.
-    func markVerified() { defaults.removeObject(forKey: Self.unverifiedKey) }
+    /// A full pull's absence pass ran after the proof and settled what the marks could not vouch
+    /// for. From here on a delivered row the account lacks was deleted elsewhere, and the pass
+    /// deletes it; the pinned cursor has done its job.
+    func markVerified() {
+        defaults.removeObject(forKey: Self.unverifiedKey)
+        unpinDeletionsSince()
+    }
 
     /// Nothing is left to prove or verify: every mark was forgotten (a proof that found none of
     /// the rows, "Upload these habits") or erased with the rows.
     func settle() {
         defaults.removeObject(forKey: Self.key)
         defaults.removeObject(forKey: Self.unverifiedKey)
+        unpinDeletionsSince()
     }
 
     /// "Upload these habits to this account" (the account screen, M2 phase C; sub-decision (e)).
@@ -572,4 +644,40 @@ enum SyncMarksVerdict: Equatable {
     /// It holds none, but its totals are missing or do not match its arrays: nothing decided,
     /// nothing applied, and the run ends before its push (review data-safety-2).
     case undecided
+}
+
+/// What the first full-pull absence pass after the proof knows of the account's deletions since
+/// this store's last 1.3.0 pull (`SyncMarksProof`, review data-safety-1), and so what it does with
+/// a delivered row the account lacks.
+enum SyncUnverifiedPass: Equatable {
+    /// Every deletion since that pull is listed: a row in the lists goes by the normal rule, one
+    /// not in them is resent as the restore it was.
+    case deletionsListed(SyncDeletedIDs)
+    /// No list (no pinned cursor, one past the server's horizon, a server that does not answer):
+    /// such a row is deleted, and archived first whatever its state.
+    case deletionsUnknown
+
+    /// The lists only when the pull asked for them (`asked`, the pinned cursor it sent) and the
+    /// server answered them complete. A list the pull did not ask for could be about any time.
+    @MainActor
+    init(asked: String?, answer: SyncDeletionsSince?) {
+        if asked != nil, let lists = answer?.lists {
+            self = .deletionsListed(lists)
+        } else {
+            self = .deletionsUnknown
+        }
+    }
+
+    /// Which of the two ran, for the report and the run's summary (without the lists).
+    enum Mode: Equatable {
+        case deletionsListed
+        case deletionsUnknown
+    }
+
+    var mode: Mode {
+        switch self {
+        case .deletionsListed: return .deletionsListed
+        case .deletionsUnknown: return .deletionsUnknown
+        }
+    }
 }

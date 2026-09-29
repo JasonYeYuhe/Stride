@@ -786,12 +786,14 @@ struct Scenarios {
 
     // S14 — the first full pull proves the account (owner decision 2026-09-28; slice review R1).
     // Device D ran 1.3.0 on account A, synced, and went dormant; its session expired, which
-    // deletes the token and keeps `stride_last_sync_time`, so nothing says which account its
-    // rows were delivered to. Meanwhile A's phone deleted a habit. D updates: the real migration
-    // marks its rows delivered, provisionally, and D signs in — to A again, or to B. Proven, the
-    // marks are still unverified for that first pass (review data-safety-1: a mark says 1.3.0
-    // pushed the row, not that the server took it), so the habit A deleted is resent once and
-    // A's tombstone drops it, archived first, instead of the pass deleting it unrecorded.
+    // deletes the token and keeps `stride_last_sync_time` and `stride_sync_cursor`, so nothing
+    // says which account its rows were delivered to. Meanwhile A's phone deleted a habit. D
+    // updates: the real migration marks its rows delivered, provisionally, and pins 1.3.0's
+    // cursor, and D signs in — to A again, or to B. Proven, the marks are still unverified for
+    // that first pass (review data-safety-1: a mark says 1.3.0 pushed the row, not that the
+    // server took it), so the proving pull asks the real server for A's deletions since that
+    // cursor: the habit A's phone deleted is listed and goes quietly, as an incremental pull
+    // would have removed it — not resent, not archived.
     func migratedMarksProof() async throws {
         let accountA = try Account.create(), accountB = try Account.create()
         let old = SnapshotDevice("D on 1.3.0", shape: .v130, account: accountA)
@@ -808,6 +810,7 @@ struct Scenarios {
         let synced = try await old.sync()
         guard synced.push == 200, synced.pull == 200 else { throw Missing(description: "1.3.0 sync: \(synced)") }
         let lastSync130 = SyncTimestamp.string(from: Date())    // what 1.3.0 wrote after that sync
+        let cursor130 = try unwrap(old.cursor, "1.3.0's cursor")  // and its cursor, the server's time less 60 s
         old.habit("Made after the last 1.3.0 sync", days: [3])  // an offline edit, never pushed
         try old.save()
         _ = await phone.sync()
@@ -820,6 +823,7 @@ struct Scenarios {
             defer { d.remove() }
             try d.open130Store(from: old)
             d.defaults.set(lastSync130, forKey: SyncDeliveryMigration.lastSyncTimeKey)
+            d.defaults.set(cursor130, forKey: SyncDefaultsCursorStore.legacyKey)
             let migrated = SyncDeliveryMigration.runOnceIfNeeded(in: d.context, defaults: d.defaults)
             let before = try d.digest()
 
@@ -835,23 +839,21 @@ struct Scenarios {
 
             if account.userId == accountA.userId {
                 let onServer = try await serverSnapshot(accountA)
-                report.check("SAME account: the first sync is a full pull before any push, and it proves the marks",
-                             migrated != .failed && isSynced(first) && fullFirst && { if case .proven = first.summary?.marks { return true }; return false }()
-                                && !d.marks.isAwaited && !d.marks.isUnverified,
-                             "\(describe(first)); marks \(describe(first.summary?.marks)); \(describe(ex1))")
+                let asked = ex1.first?.deletionsSince
+                report.check("SAME account: the first sync is a full pull before any push, asks for A's deletions since 1.3.0's cursor, and proves the marks",
+                             migrated != .failed && isSynced(first) && fullFirst && asked == cursor130
+                                && { if case .proven = first.summary?.marks { return true }; return false }()
+                                && first.summary?.unverifiedPass == .deletionsListed
+                                && !d.marks.isAwaited && !d.marks.isUnverified && d.marks.deletionsSince == nil,
+                             "\(describe(first)); marks \(describe(first.summary?.marks)); asked \(asked ?? "nothing"); \(describe(ex1))")
                 let logged = d.logItems()
-                let stretchLogged: Bool = {
-                    guard logged.count == 1, let line = logged.first, line.reason == .tombstoned,
-                          case .habit(let habit) = line.row else { return false }
-                    return habit.name == "Stretch"
-                }()
-                report.check("SAME account: nothing deleted but the habit A's phone deleted while D slept — resent once, dropped by A's tombstone, archived",
-                             names == ["Read", "Run", "Made after the last 1.3.0 sync"] && stretchLogged
+                report.check("SAME account: nothing deleted but the habit A's phone deleted while D slept — listed, so gone quietly: not resent, nothing archived",
+                             names == ["Read", "Run", "Made after the last 1.3.0 sync"] && logged.isEmpty
                                 && !onServer.habits.contains { $0.name == "Stretch" }
                                 && after.difference(from: StoreDigest(pull: onServer)) == nil,
                              "D \(after.summary) \(names.sorted()); server \(StoreDigest(pull: onServer).summary); log \(logged.count)")
-                report.check("SAME account: only the row made after the last 1.3.0 sync and Stretch's resend go up; the next sync pushes 0/0/0",
-                             totalPushed(ex1).rows == 3 && totalPushed(ex1).habits == 2 && quiet,
+                report.check("SAME account: only the row made after the last 1.3.0 sync goes up; the next sync pushes 0/0/0",
+                             totalPushed(ex1).rows == 2 && totalPushed(ex1).habits == 1 && quiet,
                              "first pushed \(totalPushed(ex1)); second: \(describe(ex2))")
             } else {
                 // What A holds now — the same-account run above uploaded D's newest row there,
@@ -880,6 +882,93 @@ struct Scenarios {
                 report.check("ANOTHER account: the next sync pushes 0/0/0 (held rows wait for an edit)",
                              quiet, describe(ex2))
             }
+        }
+    }
+
+    // S24 — the pass that verifies migrated marks, with no list to decide by (review
+    // data-safety-1). (a) D slept on 1.3.0 for over a year: its last sync pushed "Kept" and "Gone",
+    // A's phone deleted "Gone" since, and the real sweep has taken the tombstones — which it may
+    // only do past retention, so 1.3.0's cursor is past the server's horizon. The real server
+    // answers `deletionsSince: {complete: false}`, and the pass deletes "Gone" and archives every
+    // row of it to the recovery-log file: never resent, so the account never gets the deleted habit
+    // back. (b) A server without its 1.3.1 half (the field stripped from the real answer): the
+    // same, with a recent cursor.
+    func migratedMarksWithNoList() async throws {
+        for mode in ["past the horizon, tombstones swept", "a server that does not answer the field"] {
+            let pastHorizon = mode.hasPrefix("past")
+            let account = try Account.create()
+            let old = SnapshotDevice("D on 1.3.0", shape: .v130, account: account)
+            let phone = Device131("A's phone", account: account)
+            defer { old.remove(); phone.remove() }
+            let slept: TimeInterval = pastHorizon ? 400 * 86_400 : 0
+            let stamp = SyncTimestamp.floorToMillisecond(Date().addingTimeInterval(-slept - 86_400))
+            let kept = old.habit("Kept", days: [0, 1]), gone = old.habit("Gone", days: [2, 3, 4])
+            for habit in [kept, gone] {
+                habit.createdAt = stamp
+                habit.updatedAt = stamp
+                habit.records.forEach { $0.updatedAt = stamp }
+            }
+            try old.save()
+            let goneRows = Set([gone.id.uuidString] + gone.records.map(\.id.uuidString))
+            let synced = try await old.sync()
+            guard synced.push == 200, synced.pull == 200 else { throw Missing(description: "1.3.0 sync: \(synced)") }
+            _ = await phone.sync()
+            try phone.deleteHabit(try unwrap(phone.habit(id: gone.id), "the phone has Gone"))
+            _ = await phone.sync()
+            var swept = 0
+            if pastHorizon {
+                try await Task.sleep(nanoseconds: 20_000_000)   // the tombstones strictly before "now"
+                swept = try await sweepTombstones(olderThanDays: 0)
+            }
+            let lastSync130 = SyncTimestamp.string(from: Date().addingTimeInterval(-slept))
+            let cursor130 = pastHorizon ? SyncTimestamp.millisecondString(from: Date().addingTimeInterval(-slept - 60))
+                                        : try unwrap(old.cursor, "1.3.0's cursor")
+
+            let d = Device131("D on 1.3.1 (\(mode))", account: account)
+            defer { d.remove() }
+            try d.open130Store(from: old)
+            d.defaults.set(lastSync130, forKey: SyncDeliveryMigration.lastSyncTimeKey)
+            d.defaults.set(cursor130, forKey: SyncDefaultsCursorStore.legacyKey)
+            let migrated = SyncDeliveryMigration.runOnceIfNeeded(in: d.context, defaults: d.defaults)
+            // What the real server answered on the full pull, before (b) strips it.
+            var serverSaid: SyncDeletionsSince?
+            d.transport.transformPull = { since, response in
+                guard since == nil, response.status == 200,
+                      var json = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any]
+                else { return response }
+                serverSaid = (try? JSONDecoder().decode(SyncPullResponse.self, from: response.body))?.deletionsSince
+                guard !pastHorizon else { return response }
+                json.removeValue(forKey: "deletionsSince")
+                var stripped = response
+                stripped.body = (try? JSONSerialization.data(withJSONObject: json)) ?? response.body
+                return stripped
+            }
+
+            let first = await d.sync()
+            let ex1 = d.transport.exchanges
+            let mark = d.transport.mark()
+            let second = await d.sync()
+            let ex2 = d.transport.since(mark)
+            let onServer = try await serverSnapshot(account)
+            let logged = d.logItems()
+            let names = Set(try d.habits().map(\.name))
+            let asked = ex1.first?.deletionsSince
+
+            report.check("NO LIST (\(mode)): the proving pull asks with 1.3.0's cursor and gets no complete list, so the pass runs without one",
+                         migrated != .failed && isSynced(first) && asked == cursor130
+                            && { if case .proven = first.summary?.marks { return true }; return false }()
+                            && (pastHorizon ? serverSaid == SyncDeletionsSince(complete: false) && swept >= 4
+                                            : serverSaid?.lists?.habits == [gone.id.uuidString])
+                            && first.summary?.unverifiedPass == .deletionsUnknown && !d.marks.isUnverified,
+                         "\(describe(first)); asked \(asked ?? "nothing"); server said \(String(describing: serverSaid)); swept \(swept)")
+            report.check("NO LIST (\(mode)): Gone and each of its check-ins are in the recovery-log file, and gone from D; Kept stays",
+                         names == ["Kept"] && Set(logged.map(\.ref.id)) == goneRows && logged.count == goneRows.count
+                            && logged.allSatisfy { $0.reason == .deletedElsewhere },
+                         "D \(names.sorted()); log \(logged.map { "\($0.reason.rawValue) \($0.ref.kind)" })")
+            report.check("NO LIST (\(mode)): nothing resent — the account holds only Kept — and the next sync pushes 0/0/0",
+                         totalPushed(ex1).rows == 0 && onServer.habits.map(\.name) == ["Kept"]
+                            && isSynced(second) && pushes(ex2).isEmpty,
+                         "first pushed \(totalPushed(ex1)); server \(onServer.habits.map(\.name)); second: \(describe(ex2))")
         }
     }
 

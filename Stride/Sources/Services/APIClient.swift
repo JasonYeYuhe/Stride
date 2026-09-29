@@ -120,9 +120,12 @@ actor APIClient {
         return await exchange(request)
     }
 
-    /// GET /v1/sync/pull, `?since=` when `since` is non-nil, with the run's `token`.
-    func syncPull(since: String?, token: String) async -> SyncExchange {
-        var request = URLRequest(url: url("/v1/sync/pull", query: since.map { [URLQueryItem(name: "since", value: $0)] }))
+    /// GET /v1/sync/pull, `?since=` when `since` is non-nil, with the run's `token`; and
+    /// `deletionsSince=` when that is (a full pull verifying migrated marks, SyncMarksProof).
+    func syncPull(since: String?, deletionsSince: String? = nil, token: String) async -> SyncExchange {
+        let query = [since.map { URLQueryItem(name: "since", value: $0) },
+                     deletionsSince.map { URLQueryItem(name: "deletionsSince", value: $0) }].compactMap { $0 }
+        var request = URLRequest(url: url("/v1/sync/pull", query: query))
         request.httpMethod = "GET"
         addHeaders(&request, token: token)
         return await exchange(request)

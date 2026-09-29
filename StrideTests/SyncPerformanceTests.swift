@@ -266,7 +266,7 @@ final class SyncPerformanceTests: XCTestCase {
             return SyncTransportResponse(status: 200, body: Data(#"{"ok":true}"#.utf8))
         }
 
-        func pull(since: String?, token: String) async -> SyncTransportResponse {
+        func pull(since: String?, deletionsSince: String?, token: String) async -> SyncTransportResponse {
             SyncTransportResponse(status: 200, body: pullBody(since))
         }
     }

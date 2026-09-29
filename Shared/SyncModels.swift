@@ -79,12 +79,61 @@ struct SyncPullResponse: Decodable {
     /// timed-out query must never purge the local store. Optional and last, so older servers'
     /// responses parse and existing memberwise call sites compile unchanged.
     var totals: SyncTotals? = nil
+    /// A full pull that asked (`?deletionsSince=`, a 1.3.1 server): the account's deletions since
+    /// that time (review data-safety-1). Absent from every other answer, and from a server before
+    /// 1.3.1's, which ignores the parameter.
+    var deletionsSince: SyncDeletionsSince? = nil
 }
 
 struct SyncTotals: Codable, Equatable {
     let habits: Int
     let entries: Int
     let groups: Int
+}
+
+/// `deletionsSince` in a full pull's answer (routes/sync.js, above `listableDeletionsSince`): every
+/// habit, entry and group id the account deleted after the time the pull named, read in the same
+/// transaction as the snapshot — or `complete: false` and no lists, when that time is past the
+/// server's cursor horizon (a sweep may have removed a tombstone after it) or unreadable.
+///
+/// Decoded leniently: a malformed field must not fail the decode of the whole pull, which the
+/// engine would take for an unreadable 200 and back off on. Anything but a complete answer with all
+/// three lists reads as "not listed" (`lists` nil), which the pass treats like a server that sent
+/// nothing: it deletes by absence and archives every row it deletes.
+struct SyncDeletionsSince: Decodable, Equatable {
+    var complete = false
+    var habitIds: [String]? = nil
+    var entryIds: [String]? = nil
+    var groupIds: [String]? = nil
+
+    init(complete: Bool, habitIds: [String]? = nil, entryIds: [String]? = nil, groupIds: [String]? = nil) {
+        (self.complete, self.habitIds, self.entryIds, self.groupIds) = (complete, habitIds, entryIds, groupIds)
+    }
+
+    init(from decoder: Decoder) throws {
+        guard let c = try? decoder.container(keyedBy: Keys.self) else { return }
+        complete = (try? c.decodeIfPresent(Bool.self, forKey: .complete)) ?? false
+        habitIds = try? c.decodeIfPresent([String].self, forKey: .habitIds)
+        entryIds = try? c.decodeIfPresent([String].self, forKey: .entryIds)
+        groupIds = try? c.decodeIfPresent([String].self, forKey: .groupIds)
+    }
+
+    private enum Keys: String, CodingKey { case complete, habitIds, entryIds, groupIds }
+
+    /// The three lists, canonical (`SyncReconciler.canonicalID`), when the answer is complete.
+    @MainActor var lists: SyncDeletedIDs? {
+        guard complete, let habitIds, let entryIds, let groupIds else { return nil }
+        return SyncDeletedIDs(habits: Set(habitIds.map(SyncReconciler.canonicalID)),
+                              entries: Set(entryIds.map(SyncReconciler.canonicalID)),
+                              groups: Set(groupIds.map(SyncReconciler.canonicalID)))
+    }
+}
+
+/// Ids the account deleted, per kind, canonical: what `SyncDeletionsSince.lists` gives the pass.
+struct SyncDeletedIDs: Equatable {
+    var habits: Set<String> = []
+    var entries: Set<String> = []
+    var groups: Set<String> = []
 }
 
 /// The `/v1/sync/push` answer (routes/sync.js, "The incremental-push contract"). Before 1.3.1

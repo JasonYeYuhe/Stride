@@ -142,6 +142,8 @@ struct Exchange {
     /// reconcile, save) — what the timing scenario reports.
     var started = Date()
     var finished = Date()
+    /// A full pull's `deletionsSince` (the pass that verifies migrated marks asks for it).
+    var deletionsSince: String? = nil
 }
 
 /// URLSession → the local server, with the header of the build it stands for, and seams to
@@ -218,16 +220,18 @@ final class HTTPTransport: SyncTransport {
         return response
     }
 
-    func pull(since: String?, token: String) async -> SyncTransportResponse {
+    func pull(since: String?, deletionsSince: String? = nil, token: String) async -> SyncTransportResponse {
         var components = URLComponents(url: Rehearsal.base.appendingPathComponent("v1/sync/pull"),
                                        resolvingAgainstBaseURL: false)!
-        if let since { components.queryItems = [URLQueryItem(name: "since", value: since)] }
+        let query = [since.map { URLQueryItem(name: "since", value: $0) },
+                     deletionsSince.map { URLQueryItem(name: "deletionsSince", value: $0) }].compactMap { $0 }
+        if !query.isEmpty { components.queryItems = query }
         let started = Date()
         var response = await send(URLRequest(url: components.url!), token: token)
         if let transformPull { response = transformPull(since, response) }
         exchanges.append(Exchange(endpoint: .pull, since: since, token: token, status: response.status,
                                   requestBytes: 0, responseBytes: response.body.count, pushed: WireCounts(),
-                                  started: started, finished: Date()))
+                                  started: started, finished: Date(), deletionsSince: deletionsSince))
         return response
     }
 

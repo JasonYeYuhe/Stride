@@ -10199,6 +10199,206 @@ describe("M2 aliases: an entry written onto another id's row for its day is name
 });
 
 // ----------------------------------------------------------------
+// M2 `deletionsSince` (routes/sync.js, above listableDeletionsSince; review data-safety-1): a store
+// 1.3.0 synced asks, with its first 1.3.1 full pull, for the account's deletions since the pull
+// cursor 1.3.0 kept. One in the list was deleted elsewhere and goes quietly; a row the snapshot
+// lacks that is not in a complete list is one the 1.3.0 server refused, and is sent again.
+
+const dsn = {
+  /** A pull as `client` asking for the deletions since `value` (undefined: not asking), plus `query`. */
+  pull: (token, client, value, { query = {}, base } = {}) => m0.req("GET", "/v1/sync/pull", {
+    token, client, base, query: value === undefined ? query : { ...query, deletionsSince: value },
+  }),
+  daysAgo: (n) => new Date(Date.now() - n * 86400000).toISOString(),
+  sorted: (ids) => [...ids].sort(),
+};
+
+describe("M2 deletionsSince: a full pull lists the account's deletions since a time (>= 1.3.1)", () => {
+  let u, other, since;
+  const [G1, G2, H1, H2, HOLD] = [m0.uuid(), m0.uuid(), m0.uuid(), m0.uuid(), m0.uuid()];
+  const [E1, EOLD, X, Y, THEIRS] = [m0.uuid(), m0.uuid(), m0.uuid(), m0.uuid(), m0.uuid()];
+  before(async () => {
+    u = m0.user();
+    other = m0.user();
+    assert.equal((await m0.push(u.token, {
+      groups: [m0.group(G1), m0.group(G2, { name: "Evening" })],
+      habits: [m0.habit(H1, { groupId: G1 }), m0.habit(H2, { name: "Read" }), m0.habit(HOLD, { name: "Old" })],
+      entries: [m0.entry(E1, H2, "2026-09-01"), m0.entry(EOLD, H2, "2026-09-02"), m0.entry(X, H2, "2026-09-03")],
+    })).status, 200);
+    // Deleted before the time: already applied by the device that asks, never listed.
+    assert.equal((await m0.push(u.token, { deletedHabitIds: [HOLD], deletedEntryIds: [EOLD] })).status, 200);
+    await m0.sleep(5);
+    since = (await m2.pull(u.token, m0.V131)).json.serverTime;   // what the old app kept as its cursor
+    await m0.sleep(5);
+    // After it: a habit, a check-in, a group, and a day unchecked and checked again in one push —
+    // whose deletion an app below 1.3.1 would be spared on an incremental pull (E2E S4), but not here.
+    assert.equal((await m0.push(u.token, {
+      deletedHabitIds: [H1], deletedEntryIds: [E1, X], deletedGroupIds: [G1], entries: [m0.entry(Y, H2, "2026-09-03")],
+    })).status, 200);
+    assert.equal((await m0.push(other.token, { habits: [m0.habit(THEIRS)] })).status, 200);
+    assert.equal((await m0.push(other.token, { deletedHabitIds: [THEIRS] })).status, 200);
+  });
+  after(() => { m0.cleanup(u.userId); m0.cleanup(other.userId); });
+
+  it("lists every habit, entry and group this account deleted after the time — none from before it, none of another account's", async () => {
+    const r = await dsn.pull(u.token, m0.V131, since);
+    assert.equal(r.status, 200);
+    const { deletionsSince } = r.json;
+    assert.deepEqual(Object.keys(deletionsSince).sort(), ["complete", "entryIds", "groupIds", "habitIds"]);
+    assert.equal(deletionsSince.complete, true);
+    assert.deepEqual(dsn.sorted(deletionsSince.habitIds), [H1]);
+    assert.deepEqual(dsn.sorted(deletionsSince.entryIds), dsn.sorted([E1, X]), "the re-checked day's deletion is listed too");
+    assert.deepEqual(dsn.sorted(deletionsSince.groupIds), [G1]);
+    // The rest is the full pull as ever: the snapshot, no deleted*Ids, totals equal to the arrays.
+    assert.deepEqual(r.json.habits.map((h) => h.id), [H2]);
+    assert.deepEqual(r.json.entries.map((e) => e.id), [Y]);
+    assert.deepEqual(r.json.groups.map((g) => g.id), [G2]);
+    assert.deepEqual([r.json.deletedHabitIds, r.json.deletedEntryIds, r.json.deletedGroupIds], [[], [], []]);
+    assert.deepEqual(r.json.totals, { habits: 1, entries: 1, groups: 1 });
+  });
+
+  it("from any later version, on the legacy /sync mount too, and compared in the stored form", async () => {
+    for (const client of ["macos/1.3.1(20)", "ios/1.4.0(30)"]) {
+      assert.deepEqual(dsn.sorted((await dsn.pull(u.token, client, since)).json.deletionsSince.habitIds), [H1], client);
+    }
+    const legacy = await m0.req("GET", "/sync/pull", { token: u.token, client: m0.V131, query: { deletionsSince: since } });
+    assert.deepEqual(dsn.sorted(legacy.json.deletionsSince.habitIds), [H1]);
+    // A whole-second time is brought to toISOString()'s form before the string comparison, as
+    // `since` is: "…:18Z" sorts after "…:18.500Z", and would miss the rest of its own second.
+    const SAME_SECOND = m0.uuid();
+    const at = new Date(Date.now() - 60000);
+    at.setUTCMilliseconds(500);
+    db.prepare("INSERT INTO deletion_tombstones (user_id, entity_type, entity_id, deleted_at) VALUES (?, 'habit', ?, ?)")
+      .run(u.userId, SAME_SECOND, at.toISOString());
+    try {
+      const r = await dsn.pull(u.token, m0.V131, at.toISOString().replace(/\.\d{3}Z$/, "Z"));
+      assert.equal(r.json.deletionsSince.complete, true);
+      assert.ok(r.json.deletionsSince.habitIds.includes(SAME_SECOND));
+    } finally {
+      db.prepare("DELETE FROM deletion_tombstones WHERE entity_id = ?").run(SAME_SECOND);
+    }
+  });
+
+  it("the edge is the cursor horizon, 355 days: inside it the list is complete; past it, or unreadable, complete false and no lists", async () => {
+    // A deletion 300 days old: inside the horizon, so a time before it lists it.
+    const ANCIENT = m0.uuid();
+    db.prepare("INSERT INTO deletion_tombstones (user_id, entity_type, entity_id, deleted_at) VALUES (?, 'habit', ?, ?)")
+      .run(u.userId, ANCIENT, dsn.daysAgo(300));
+    const inside = (await dsn.pull(u.token, m0.V131, dsn.daysAgo(354))).json.deletionsSince;
+    assert.equal(inside.complete, true);
+    assert.deepEqual(dsn.sorted(inside.habitIds), dsn.sorted([ANCIENT, HOLD, H1]));
+    for (const value of [dsn.daysAgo(356), dsn.daysAgo(400), "2020-01-01T00:00:00Z", "garbage", ""]) {
+      const r = await dsn.pull(u.token, m0.V131, value);
+      assert.equal(r.status, 200, value);
+      assert.deepEqual(r.json.deletionsSince, { complete: false }, value);
+      assert.deepEqual(r.json.habits.map((h) => h.id), [H2], "the snapshot is served all the same");
+    }
+    // Two values are not one timestamp.
+    const repeated = await m0.req("GET", `/v1/sync/pull?deletionsSince=${encodeURIComponent(since)}&deletionsSince=${encodeURIComponent(since)}`,
+      { token: u.token, client: m0.V131 });
+    assert.equal(repeated.status, 200);
+    assert.deepEqual(repeated.json.deletionsSince, { complete: false });
+  });
+
+  for (const [label, client] of [["ios/1.3.0(19)", "ios/1.3.0(19)"], ["no header (<= 1.2.3)", undefined],
+    ["a malformed header", "ios/1.3.1-beta(19)"]]) {
+    it(`${label}: the parameter is ignored, and the answer is the one it gets without it`, async () => {
+      const asked = await dsn.pull(u.token, client, since);
+      const plain = await dsn.pull(u.token, client, undefined);
+      assert.equal(asked.status, 200);
+      assert.equal("deletionsSince" in asked.json, false);
+      assert.deepEqual({ ...asked.json, serverTime: "" }, { ...plain.json, serverTime: "" });
+    });
+  }
+
+  it(">= 1.3.1: a full pull that does not ask has exactly the keys it always had, and an incremental pull that asks is answered as an incremental pull", async () => {
+    const plain = await dsn.pull(u.token, m0.V131, undefined);
+    assert.deepEqual(Object.keys(plain.json).sort(),
+      ["deletedEntryIds", "deletedGroupIds", "deletedHabitIds", "entries", "groups", "habits", "serverTime", "totals"]);
+    const incremental = await dsn.pull(u.token, m0.V131, dsn.daysAgo(30), { query: { since } });
+    assert.equal(incremental.status, 200);
+    assert.equal("deletionsSince" in incremental.json, false);
+    assert.deepEqual(dsn.sorted(incremental.json.deletedHabitIds), [H1], "its own deletions, as ever");
+  });
+});
+
+describe("M2 deletionsSince: listed in the snapshot's own read transaction (second server, statement spy)", () => {
+  // The handler is synchronous, so no request to the same process can land between its reads;
+  // another process can (seed-demo.js and the ops scripts write in WAL mode), at a moment no test
+  // can time. So the second server runs with a preload that tags every SELECT with the
+  // transaction it ran in: a list read outside the snapshot's transaction could miss a row
+  // deleted between the two reads from both, and the app would send that row again.
+  const PORT2 = 3098, BASE2 = `http://localhost:${PORT2}`;
+  const spyFile = path.join(os.tmpdir(), `stride-test-tx-spy-${process.pid}.js`);
+  const spyLog = path.join(os.tmpdir(), `stride-test-tx-spy-${process.pid}.log`);
+  let proc, u, since;
+  before(async () => {
+    fs.writeFileSync(spyFile, `
+      const Database = require(${JSON.stringify(require.resolve("better-sqlite3"))});
+      const fs = require("fs");
+      let seq = 0, current = 0;
+      const transaction = Database.prototype.transaction;
+      Database.prototype.transaction = function (fn) {
+        return transaction.call(this, function (...args) {
+          const outer = current;
+          current = ++seq;
+          try { return fn.apply(this, args); } finally { current = outer; }
+        });
+      };
+      const prepare = Database.prototype.prepare;
+      Database.prototype.prepare = function (sql) {
+        const stmt = prepare.call(this, sql);
+        if (/^\\s*SELECT/i.test(sql)) {
+          for (const method of ["all", "get"]) {
+            const run = stmt[method];
+            stmt[method] = function (...args) {
+              fs.appendFileSync(${JSON.stringify(spyLog)}, current + "\\t" + sql.replace(/\\s+/g, " ").trim() + "\\n");
+              return run.apply(this, args);
+            };
+          }
+        }
+        return stmt;
+      };`);
+    u = m0.user();
+    const H = m0.uuid();
+    assert.equal((await m0.push(u.token, { habits: [m0.habit(H)] })).status, 200);
+    since = new Date(Date.now() - 1000).toISOString();
+    assert.equal((await m0.push(u.token, { deletedHabitIds: [H] })).status, 200);
+    proc = await m0.spawnServer(PORT2, { NODE_OPTIONS: `--require ${spyFile}` });
+  });
+  after(async () => {
+    await m0.stopServer(proc);
+    m0.cleanup(u.userId);
+    fs.rmSync(spyFile, { force: true });
+    fs.rmSync(spyLog, { force: true });
+  });
+
+  it("the totals, the three snapshot arrays and the deletion list carry one transaction's tag", async () => {
+    fs.rmSync(spyLog, { force: true });
+    const r = await dsn.pull(u.token, m0.V131, since, { base: BASE2 });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.deletionsSince.habitIds.length, 1, "the spy watched a pull that listed a deletion");
+    const reads = fs.readFileSync(spyLog, "utf8").trim().split("\n").map((line) => {
+      const [tag, sql] = line.split("\t");
+      return { tag: Number(tag), sql };
+    });
+    const tagOf = (pattern) => {
+      const hits = reads.filter((r) => pattern.test(r.sql));
+      assert.equal(hits.length, 1, `one read matching ${pattern}: ${JSON.stringify(reads)}`);
+      return hits[0].tag;
+    };
+    const list = tagOf(/FROM deletion_tombstones WHERE user_id = \? AND deleted_at > \?/);
+    assert.ok(list > 0, "the list is read inside a transaction");
+    for (const pattern of [/COUNT\(\*\) AS n FROM habits /, /COUNT\(\*\) AS n FROM habit_entries /,
+      /COUNT\(\*\) AS n FROM habit_groups /, /AS updated_at FROM habits WHERE user_id = \?$/,
+      /AS updated_at FROM habit_groups WHERE user_id = \?$/,
+      /AS updated_at FROM habit_entries WHERE habit_id IN \(SELECT id FROM habits WHERE user_id = \?\)$/]) {
+      assert.equal(tagOf(pattern), list, String(pattern));
+    }
+  });
+});
+
+// ----------------------------------------------------------------
 
 describe("Test hooks: the swept-tombstone switch (rehearsal only, lib/testHooks.js)", () => {
   const { mountTestHooks, testHooksEnabled } = require("../lib/testHooks");

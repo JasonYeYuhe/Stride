@@ -641,6 +641,47 @@ final class SyncDeliveryTests: XCTestCase {
         XCTAssertTrue(habit.isPending)
     }
 
+    /// 1.3.0's pull cursor is pinned at the rule's first attempt, beside its last-sync time, for
+    /// the pass that verifies the marks to ask for the deletions since it (review data-safety-1).
+    /// A retry keeps what the first attempt pinned, whatever became of 1.3.0's key meanwhile — an
+    /// erase or an account deletion removes it.
+    func testThe130CursorIsPinnedAtTheFirstAttemptAndKeptByARetry() throws {
+        let proof = SyncMarksProof(defaults: defaults)
+        let habit = Habit(name: "A")
+        habit.updatedAt = date("2026-09-01T00:00:00Z")
+        context.insert(habit)
+        try context.save()
+        let cursor130 = "2026-09-20T11:59:00.250Z"
+        defaults.set("2026-09-20T12:00:00Z", forKey: SyncDeliveryMigration.lastSyncTimeKey)
+        defaults.set(cursor130, forKey: SyncDefaultsCursorStore.legacyKey)
+
+        XCTAssertEqual(SyncDeliveryMigration.runOnceIfNeeded(in: context, defaults: defaults),
+                       .stamped(.init(habits: 1, records: 0, groups: 0)))
+        XCTAssertEqual(proof.deletionsSince, cursor130)
+        XCTAssertEqual(defaults.string(forKey: SyncDefaultsCursorStore.legacyKey), cursor130, "1.3.0's own key is left as it was")
+
+        // A retry (the first attempt's save failed): the pinned value, not the key's current one.
+        defaults.removeObject(forKey: SyncDeliveryMigration.doneKey)
+        defaults.set("2026-09-20T12:00:00Z", forKey: SyncDeliveryMigration.pinnedLastSyncKey)
+        defaults.removeObject(forKey: SyncDefaultsCursorStore.legacyKey)
+        habit.syncedAt = nil
+        try context.save()
+        XCTAssertEqual(SyncDeliveryMigration.runOnceIfNeeded(in: context, defaults: defaults),
+                       .stamped(.init(habits: 1, records: 0, groups: 0)))
+        XCTAssertEqual(proof.deletionsSince, cursor130)
+
+        // No 1.3.0 cursor at all (a store from 1.2.2 or earlier): nothing pinned to ask with.
+        proof.settle()
+        defaults.removeObject(forKey: SyncDeliveryMigration.doneKey)
+        habit.syncedAt = nil
+        try context.save()
+        XCTAssertEqual(SyncDeliveryMigration.runOnceIfNeeded(in: context, defaults: defaults),
+                       .stamped(.init(habits: 1, records: 0, groups: 0)))
+        XCTAssertTrue(proof.isUnverified)
+        XCTAssertNil(proof.deletionsSince)
+        XCTAssertEqual(defaults.string(forKey: SyncMarksProof.deletionsSinceKey), "", "pinned as none")
+    }
+
     /// Owner decision 2026-09-28: the marks the rule infers are for an account 1.3.0 never
     /// recorded, so a store it stamped waits for the first full pull of the account that adopts
     /// it (`SyncMarksProof`), and — a mark says 1.3.0 pushed the row, not that the server took it
@@ -652,9 +693,11 @@ final class SyncDeliveryTests: XCTestCase {
         habit.updatedAt = date("2026-09-01T00:00:00Z")
         context.insert(habit)
         try context.save()
+        defaults.set("2026-09-20T11:59:00.000Z", forKey: SyncDefaultsCursorStore.legacyKey)
         XCTAssertEqual(SyncDeliveryMigration.runOnceIfNeeded(in: context, defaults: defaults), .stamped(.init()))
         XCTAssertFalse(proof.isAwaited, "no last-sync time: nothing stamped")
         XCTAssertFalse(proof.isUnverified)
+        XCTAssertNil(defaults.object(forKey: SyncMarksProof.deletionsSinceKey), "no mark to verify: nothing kept pinned")
 
         defaults.removeObject(forKey: SyncDeliveryMigration.doneKey)
         defaults.set("2026-09-20T12:00:00Z", forKey: SyncDeliveryMigration.lastSyncTimeKey)
@@ -662,23 +705,33 @@ final class SyncDeliveryTests: XCTestCase {
                        .stamped(.init(habits: 1, records: 0, groups: 0)))
         XCTAssertTrue(proof.isAwaited)
         XCTAssertTrue(proof.isUnverified)
+        XCTAssertEqual(proof.deletionsSince, "2026-09-20T11:59:00.000Z")
     }
 
     /// The two flags part at the proof: proven, the marks stand but stay unverified until an
-    /// absence pass has run; forgotten or erased, nothing is left to verify either.
+    /// absence pass has run; forgotten or erased, nothing is left to verify either. The pinned
+    /// 1.3.0 cursor goes with the unverified flag.
     func testTheProofAndTheFirstPassAfterItAreSettledApart() {
         let proof = SyncMarksProof(defaults: defaults)
         proof.require()
+        proof.pinDeletionsSince("2026-09-20T11:59:00.000Z")
         proof.markProven()
         XCTAssertFalse(proof.isAwaited)
         XCTAssertTrue(proof.isUnverified)
+        XCTAssertEqual(proof.deletionsSince, "2026-09-20T11:59:00.000Z", "kept for the pass")
         proof.markVerified()
         XCTAssertFalse(proof.isUnverified)
+        XCTAssertNil(defaults.object(forKey: SyncMarksProof.deletionsSinceKey))
 
         proof.require()
+        proof.pinDeletionsSince("2026-09-20T11:59:00.000Z")
         proof.settle()
         XCTAssertFalse(proof.isAwaited)
         XCTAssertFalse(proof.isUnverified)
+        XCTAssertNil(defaults.object(forKey: SyncMarksProof.deletionsSinceKey))
+
+        proof.pinDeletionsSince("not a time")
+        XCTAssertNil(proof.deletionsSince, "nothing a server could list deletions since")
     }
 
     /// "Upload these habits to this account": every mark forgotten and saved, holds and
@@ -756,6 +809,44 @@ final class SyncDeliveryTests: XCTestCase {
         let with = try JSONDecoder().decode(SyncPullResponse.self,
                                             from: Data("{\(base),\"totals\":{\"habits\":1,\"entries\":2,\"groups\":3}}".utf8))
         XCTAssertEqual(with.totals, SyncTotals(habits: 1, entries: 2, groups: 3))
+    }
+
+    /// A full pull's `deletionsSince` (routes/sync.js; review data-safety-1): the lists, canonical,
+    /// only from a complete answer that carries all three. Anything else — incomplete, a list
+    /// missing, a field that is not what the server sends — reads as "not listed", and never fails
+    /// the decode of the pull it came with (the engine would take that for an unreadable 200).
+    func testAPullsDeletionsSinceDecodesLenientlyAndListsOnlyWhenComplete() throws {
+        let base = #""habits":[],"entries":[],"groups":[],"serverTime":"2026-09-28T00:00:00.000Z""#
+        func decode(_ field: String) throws -> SyncPullResponse {
+            try JSONDecoder().decode(SyncPullResponse.self, from: Data("{\(base)\(field)}".utf8))
+        }
+        let habit = UUID(), entry = UUID(), group = UUID()
+        let complete = try decode(#","deletionsSince":{"complete":true,"habitIds":["\#(habit.uuidString.lowercased())"],"entryIds":["\#(entry.uuidString)"],"groupIds":["\#(group.uuidString)"]}"#)
+        XCTAssertEqual(complete.deletionsSince?.lists,
+                       SyncDeletedIDs(habits: [habit.uuidString], entries: [entry.uuidString], groups: [group.uuidString]))
+        XCTAssertNil(try decode("").deletionsSince, "absent: a pull that did not ask, or a server before 1.3.1")
+        for field in [#","deletionsSince":{"complete":false}"#,
+                      #","deletionsSince":{"complete":true,"habitIds":[],"entryIds":[]}"#,
+                      #","deletionsSince":{"habitIds":[],"entryIds":[],"groupIds":[]}"#,
+                      #","deletionsSince":{"complete":"yes","habitIds":[],"entryIds":[],"groupIds":[]}"#,
+                      #","deletionsSince":{"complete":true,"habitIds":[1],"entryIds":[],"groupIds":[]}"#,
+                      #","deletionsSince":7"#, #","deletionsSince":null"#] {
+            let response = try decode(field)
+            XCTAssertNil(response.deletionsSince?.lists, field)
+        }
+    }
+
+    /// The engine's side: lists only for a pull that asked (it sent the pinned cursor) and was
+    /// answered complete.
+    func testTheUnverifiedPassUsesTheListsOnlyWhenItAskedAndTheAnswerIsComplete() {
+        let lists = SyncDeletionsSince(complete: true, habitIds: ["h"], entryIds: [], groupIds: [])
+        XCTAssertEqual(SyncUnverifiedPass(asked: "2026-09-28T00:00:00.000Z", answer: lists),
+                       .deletionsListed(SyncDeletedIDs(habits: ["H"])))
+        XCTAssertEqual(SyncUnverifiedPass(asked: nil, answer: lists), .deletionsUnknown, "a list nobody asked for")
+        XCTAssertEqual(SyncUnverifiedPass(asked: "2026-09-28T00:00:00.000Z", answer: nil), .deletionsUnknown,
+                       "a server that ignores the parameter")
+        XCTAssertEqual(SyncUnverifiedPass(asked: "2026-09-28T00:00:00.000Z", answer: SyncDeletionsSince(complete: false)),
+                       .deletionsUnknown, "past the horizon")
     }
 
     // MARK: - Migration from the 1.3.0 schema, on disk
