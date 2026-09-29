@@ -943,7 +943,7 @@ struct SyncOwnerStore {
     /// evidence of being signed in: a 1.2.3 device keeps a dead token (only 1.3.0 started
     /// deleting them), and a device that auto-updated while dormant still holds the one that
     /// expired meanwhile. Settled by the first answer about that token
-    /// (`storedSessionConfirmed` / `storedSessionEnded`).
+    /// (`storedSessionConfirmed(account:)` / `storedSessionEnded`).
     static let ownerUnknownPendingKey = "stride_sync_owner_unknown_pending"
 
     let defaults: UserDefaults
@@ -983,11 +983,21 @@ struct SyncOwnerStore {
     }
 
     /// The server named the stored token's user: the device was signed in at its first 1.3.1
-    /// launch, and that account adopts the store at its first sync (its marks still wait for the
-    /// proof — a live token is not evidence that its account is the one the marks were inferred
-    /// for).
-    func storedSessionConfirmed() {
+    /// launch, so that account owns the store from this answer on (M2: "A device signed in at its
+    /// first 1.3.1 launch takes that account as owner"). Its marks still wait for the proof — a
+    /// live token is not evidence that its account is the one the marks were inferred for — so
+    /// `SyncMarksProof` stays awaited, and the owner's first sync full-pulls.
+    ///
+    /// Recorded now, not left to that account's first sync (review accounts-1): the answer can
+    /// come with no sync after it — a login link's recheck of a token whose launch check failed —
+    /// and a Log Out in that gap left rows with no owner and no owner-unknown flag, which the next
+    /// account signed into adopted without the account screen, uploading the ones this account
+    /// never pushed. Does nothing unless the first launch left the question open.
+    func storedSessionConfirmed(account: SyncAccount) {
+        guard defaults.bool(forKey: Self.ownerUnknownPendingKey) else { return }
         defaults.removeObject(forKey: Self.ownerUnknownPendingKey)
+        guard owner == nil else { return }
+        set(SyncOwner(account))
     }
 
     /// The stored token turned out dead (`{user: null}`), or a new sign-in replaced it before the

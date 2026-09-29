@@ -59,4 +59,21 @@ struct ScratchRecoveryLog {
     }
 
     func remove() { try? FileManager.default.removeItem(at: directory) }
+
+    /// The 5 MB cap in miniature (review recovery-backup-1). Appends `lines` large lines for
+    /// `accountID` and returns a log over the same directory whose cap sits just above them, so
+    /// the next line of ordinary size makes the trim drop exactly the oldest one: the line count
+    /// stays where it was while an edit nobody has seen arrives. Every line here is far larger
+    /// than any line a test archives after it, so one drop always makes room.
+    func filledToTheCap(accountID: String?, lines: Int = 4) throws -> SyncRecoveryLog {
+        let items = (0..<lines).map { index -> SyncRecoveryItem in
+            let habit = Habit(name: "Recovered edit \(index)")
+            habit.note = String(repeating: "x", count: 2_000)
+            let row = DataBackup.snapshot(habits: [habit], groups: []).habits[0]
+            return SyncRecoveryItem(archivedAt: Date(), reason: .deletedElsewhere, row: .habit(row))
+        }
+        try log.append(items, accountID: accountID)
+        let bytes = try log.summary(accountID: accountID).bytes
+        return SyncRecoveryLog(directory: directory, capBytes: bytes + 16)
+    }
 }

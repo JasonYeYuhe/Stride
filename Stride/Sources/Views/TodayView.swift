@@ -20,6 +20,10 @@ struct TodayView: View {
     /// Pending and held counts for the sync line, read from the store when it changes — not on
     /// every render (`SyncStatusCounts`). Zero while signed out, when nothing reads them.
     @State private var syncCounts = SyncStatusCounts.Counts()
+    /// "Sign in again": the row's tap and the login sheet it opens, presented from here because
+    /// the sign-in removes the row, and a sheet the row presented closed with it before its account
+    /// step could appear (review critic-1).
+    @State private var signInAgain = SignInAgainFlow()
     private var auth = AuthService.shared
     private var sync = SyncService.shared
 
@@ -76,12 +80,12 @@ struct TodayView: View {
                             total: habits.count
                         )
                         if let syncStatus {
-                            SyncStatusRow(line: syncStatus)
+                            SyncStatusRow(line: syncStatus, signInAgain: signInAgain)
                         }
                     }
                     .padding(.horizontal)
                 } else if let syncStatus, syncStatus == .signInAgain {
-                    SyncStatusRow(line: syncStatus)
+                    SyncStatusRow(line: syncStatus, signInAgain: signInAgain)
                         .padding(.horizontal)
                 }
 
@@ -128,6 +132,14 @@ struct TodayView: View {
         }
         .sheet(isPresented: $showingAddHabit) {
             AddHabitView()
+        }
+        // The "Sign in again" row's sign-in. Here, not on the row: the sign-in removes the row,
+        // and the sheet has to stay for its next step — the account screen, when the device holds
+        // another account's habits or habits of unknown owner — and for the sync as it closes.
+        .sheet(isPresented: Bindable(signInAgain).showingLogin, onDismiss: {
+            Task { await signInAgain.loginClosed(context: modelContext) }
+        }) {
+            LoginView()
         }
         // Coming back to the app the next morning, and midnight passing while it is open.
         .onChange(of: scenePhase) { _, phase in

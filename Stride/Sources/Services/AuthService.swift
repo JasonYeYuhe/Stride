@@ -23,8 +23,10 @@ final class AuthService {
     /// Persisted, unlike `needsReauth`: a 401 flags the run in memory, but the next COLD launch's
     /// session check is what then meets the dead token, deletes it and leaves the device looking
     /// merely signed out — no row, only "Sign In" in Settings, the 1.3.0 state the row exists to
-    /// end. Cleared by a sign-in, a Log Out, an account deletion and Erase Local Data (nothing
-    /// is left to sync then — `localDataErased`).
+    /// end. Also set by a 401 from Delete Account (`sessionFoundGone`). Cleared by a sign-in, a Log
+    /// Out, an account deletion and Erase Local Data (nothing is left to sync then —
+    /// `localDataErased`); the account screen's Cancel puts back what its sign-in cleared
+    /// (`cancelSignIn`).
     private(set) var sessionExpired = false
     static let sessionExpiredKey = "stride_session_expired"
 
@@ -133,18 +135,29 @@ final class AuthService {
         guard tokenStore.read() == sentToken else { return }
         setUser(response.user)
         guard sentToken != nil else { return }
-        // The first 1.3.1 launch left "signed in or not?" open for a store with rows and no
-        // owner until this answer (SyncOwnerStore.noteFirstLaunch). Same defaults as SyncService's
-        // owner record: `.standard` in the app, the test's suite in tests.
-        let owners = SyncOwnerStore(defaults: defaults)
-        if response.user == nil {
-            tokenStore.delete()
-            rememberSessionAccount(nil)
-            owners.storedSessionEnded()
-            setSessionExpired(true)
+        if let user = response.user {
+            // The first 1.3.1 launch left "signed in or not?" open for a store with rows and no
+            // owner until this answer (SyncOwnerStore.noteFirstLaunch): signed in, so this account
+            // owns the store from now — not from its first sync, which may never come before a
+            // Log Out (a login link's recheck syncs nothing; review accounts-1). Same defaults as
+            // SyncService's owner record: `.standard` in the app, the test's suite in tests.
+            SyncOwnerStore(defaults: defaults).storedSessionConfirmed(account: SyncAccount(user))
         } else {
-            owners.storedSessionConfirmed()
+            sessionFoundGone()
         }
+    }
+
+    /// The server says the stored session is gone — `{user: null}` for it, or a 401 from Delete
+    /// Account — rather than ended here by Log Out: the user, the token and its account are
+    /// forgotten, a first-launch owner question still open is settled as signed out
+    /// (`SyncOwnerStore.storedSessionEnded`), and Today's "Sign in again" row goes up and stays
+    /// across launches (`sessionExpired`).
+    private func sessionFoundGone() {
+        currentUser = nil
+        tokenStore.delete()
+        rememberSessionAccount(nil)
+        SyncOwnerStore(defaults: defaults).storedSessionEnded()
+        setSessionExpired(true)
     }
 
     /// `currentUser`, and the account the stored session belongs to (`sessionAccountKey`), which
@@ -191,6 +204,8 @@ final class AuthService {
             // failed offline, and a typed code replaced it) settles the owner question as signed
             // out: that token's account is unknown, so the store's rows are too.
             SyncOwnerStore(defaults: defaults).storedSessionEnded()
+            // Before `setUser` ends it: the account screen's Cancel puts it back (`cancelSignIn`).
+            sessionExpiredBeforeSignIn = sessionExpired
             setUser(response.user)
             onSignIn()
             isLoading = false
@@ -295,6 +310,27 @@ final class AuthService {
         onSignOut()
     }
 
+    /// Whether "Sign in again" was up when the last sign-in began (`verifyToken`), which ended it.
+    @ObservationIgnored private var sessionExpiredBeforeSignIn = false
+
+    /// The account screen's Cancel (AccountSwitchView): signs out of the account just signed into,
+    /// as Log Out does, and leaves the device as it was before that sign-in — Today's "Sign in
+    /// again" row included (review accounts-2). A sign-in ends the row whichever account it is
+    /// into, and Log Out ends it again, so a sign-in started from the row, into the wrong account
+    /// and cancelled, left the owner's unsynced edits behind a bare "Sign In": the 1.3.0 state
+    /// the row exists to end. It comes back only while the store still holds what it is about —
+    /// an owner, or rows whose owner is unknown; an erase meanwhile emptied the device, and
+    /// "Sign in again" went with it (the owner's decision 2).
+    func cancelSignIn() async {
+        let restoresRow = sessionExpiredBeforeSignIn
+        sessionExpiredBeforeSignIn = false
+        await logout()
+        let owners = SyncOwnerStore(defaults: defaults)
+        if restoresRow, owners.owner != nil || owners.ownerUnknown {
+            setSessionExpired(true)
+        }
+    }
+
     /// Deletes the account on the server, signs out, and then clears what this device kept for
     /// it (M2: "`deleteAccount` erases local data and clears the owner"): its habits, check-ins
     /// and groups if it owned the store, the owner record, its recovery log (its lines hold that
@@ -308,11 +344,23 @@ final class AuthService {
     /// removed. A store owned by ANOTHER account (the deleted one was signed in while the account
     /// screen waited) is left alone.
     ///
-    /// Throws only when the server refused: nothing local changed then.
+    /// Throws when the server refused, and no data on this device is touched then. A 401 — the
+    /// session was already gone: revoked, expired, or the account deleted on another device — also
+    /// ends the session here, as the launch check's `{user: null}` does (`sessionFoundGone`: signed
+    /// out, "Sign in again" on Today; review accounts-3). APIClient has deleted the token by then,
+    /// and a device left "signed in" without one synced nothing, silently: every run found no
+    /// session, Today kept its last "Synced" line, and no row offered the way back in. The store
+    /// and its owner stay, so the owner signing in again resumes.
     func deleteAccount() async throws {
         // Before the sign-out forgets it: whose data to clear.
         let account = currentSyncSession()?.account ?? currentUser.map(SyncAccount.init)
-        try await api.deleteAccount()
+        do {
+            try await api.deleteAccount()
+        } catch APIError.unauthorized {
+            sessionFoundGone()
+            onSignOut()
+            throw APIError.unauthorized
+        }
         currentUser = nil
         tokenStore.delete()
         rememberSessionAccount(nil)

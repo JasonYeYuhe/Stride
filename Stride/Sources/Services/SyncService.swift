@@ -352,10 +352,12 @@ final class SyncService {
     ///
     /// - The owner signed in → yes.
     /// - No owner (a fresh 1.3.1 install, an erased store, a 1.3.0 store signed in at its first
-    ///   1.3.1 launch) → the signed-in account adopts the store and its rows. Rows the
-    ///   migrated-rows rule marked delivered keep that mark only provisionally: the adopting
-    ///   account's first full pull proves it or forgets every mark before its deletion pass
-    ///   (`SyncMarksProof`, run by the engine).
+    ///   1.3.1 launch that had no rows then — with rows, the session check's answer already made
+    ///   its account the owner, `SyncOwnerStore.storedSessionConfirmed(account:)`) → the
+    ///   signed-in account adopts the store and its rows. Rows the migrated-rows rule marked
+    ///   delivered keep that mark only provisionally: the adopting account's first full pull
+    ///   proves it or forgets every mark before its deletion pass (`SyncMarksProof`, run by the
+    ///   engine).
     /// - Owner unknown (`SyncOwnerStore.ownerUnknown`: the device reached 1.3.1 signed out, with
     ///   rows) → no, until the account screen's choice: "Upload these habits to this account"
     ///   (`uploadLocalHabits`, which forgets every mark first) or "Start from this account's
@@ -429,18 +431,20 @@ final class SyncService {
     /// Clear: the owner's lines and dropped count are gone. The UI confirms first — this is the
     /// only copy of those edits.
     ///
-    /// `expectedLines`: the count the confirmation was shown for. A sync between that dialog and
-    /// the tap can archive more lines — the only copy of an edit the user never saw, counted or
-    /// exported — so when the file holds a different count now, nothing is cleared and this
-    /// returns false; the refreshed count is on screen for the user to export and try again. The
-    /// count is read and the file cleared in one main-actor turn, and archiving happens on the
-    /// main actor too, so no line can land in between. A log that cannot be read is not cleared.
+    /// `expectedTotal`: what the confirmation was shown for, as `Summary.archivedTotal`. A sync
+    /// between that dialog and the tap can archive more lines — the only copy of an edit the user
+    /// never saw, counted or exported — so when the file holds a different total now, nothing is
+    /// cleared and this returns false; the refreshed count is on screen for the user to export and
+    /// try again. The total, not the line count: at the log's 5 MB cap an append drops the oldest
+    /// line as it adds its own, and the count reads the same (review recovery-backup-1). It is
+    /// read and the file cleared in one main-actor turn, and archiving happens on the main actor
+    /// too, so no line can land in between. A log that cannot be read is not cleared.
     @discardableResult
-    func clearRecoveredEdits(expectedLines: Int? = nil) throws -> Bool {
+    func clearRecoveredEdits(expectedTotal: Int? = nil) throws -> Bool {
         defer { refreshRecoveredEdits() }
-        if let expectedLines {
+        if let expectedTotal {
             guard let now = try? recoveryLog.summary(accountID: owners.owner?.id),
-                  now.lines == expectedLines else { return false }
+                  now.archivedTotal == expectedTotal else { return false }
         }
         try recoveryLog.clear(accountID: owners.owner?.id)
         return true

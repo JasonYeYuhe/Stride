@@ -65,11 +65,13 @@ extension SyncStatusLine {
 /// The reauth row or the status line, for one `SyncStatusLine`.
 struct SyncStatusRow: View {
     let line: SyncStatusLine
+    /// The reauth row's tap and the sheet it opens — TodayView's, which outlives this row.
+    let signInAgain: SignInAgainFlow
 
     var body: some View {
         switch line {
         case .signInAgain:
-            SignInAgainRow()
+            SignInAgainRow(flow: signInAgain)
         case .paused:
             SyncStatusLabel(systemImage: "pause.circle") { Text("Sync paused") }
         case .offline(let count, let until):
@@ -171,37 +173,24 @@ private struct SyncedText: View {
 
 // MARK: - Sign in again
 
-/// "Sign in again to keep syncing" (M2, "Sign-in that stays"): the last sync was answered 401.
+/// "Sign in again to keep syncing" (M2, "Sign-in that stays"): the last sync was answered 401, or
+/// the launch check found the session gone (`AuthService.sessionExpired`).
 ///
 /// Until 1.3.1 the only signal was "Please log in again" in red at the foot of Settings, which
 /// nobody sees from Today; the device went on looking signed in and synced nothing. Nothing was
 /// reset by the 401 — rows keep `syncedAt` and holds, the cursor and the deletion queue stay —
 /// so signing back into the same account resumes and uploads nothing twice.
 ///
-/// The tap first asks the server about the stored session (`AuthService.checkSession`):
-/// - `{user: null}` — the session is gone: the dead token is deleted and the device is signed
-///   out, so the login sheet behaves as a normal sign-in. Without this, a login link tapped in
-///   Mail would be ignored as "already signed in" (`handleLoginLink` refuses to replace a stored
-///   session), and the sheet would never close (it closes when `isLoggedIn` turns true, and it
-///   never turned false);
-/// - a user — the session is fine (a 401 on a run's captured token that has since been
-///   replaced): a sync runs instead, and the row goes away if it succeeds;
-/// - no answer (offline) — the sheet opens anyway; its own errors say why nothing can be sent.
-///
-/// After the sheet closes signed in, a sync runs at once (user-initiated, so no backoff), as
-/// Settings does; a different account signed in there meets the account screen, not a merge.
+/// The row only draws and takes the tap. What the tap does, and the login sheet it opens, are
+/// `SignInAgainFlow`'s, which TodayView holds: the sign-in removes this row.
 private struct SignInAgainRow: View {
+    let flow: SignInAgainFlow
     @Environment(\.modelContext) private var modelContext
-    private var auth = AuthService.shared
-    private var sync = SyncService.shared
-
-    @State private var showingLogin = false
-    @State private var isChecking = false
     @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         Button {
-            Task { await signInAgain() }
+            Task { await flow.start(context: modelContext) }
         } label: {
             HStack(spacing: 12) {
                 Image(systemName: "person.crop.circle.badge.exclamationmark")
@@ -216,7 +205,7 @@ private struct SignInAgainRow: View {
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)
-                if isChecking {
+                if flow.isChecking {
                     ProgressView()
                         .controlSize(.small)
                 } else if !typeSize.isAccessibilitySize {
@@ -235,28 +224,73 @@ private struct SignInAgainRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(isChecking)
+        .disabled(flow.isChecking)
         .accessibilityHint("Opens sign-in")
-        .sheet(isPresented: $showingLogin, onDismiss: syncIfSignedIn) {
-            LoginView()
-        }
+    }
+}
+
+/// The "Sign in again" flow: the row's tap, and the login sheet it opens (TodayView presents
+/// `showingLogin` and calls `loginClosed` when the sheet goes).
+///
+/// Held by TodayView, not by the row (review critic-1). The sign-in the sheet is for ends the row's
+/// reason — `setUser` clears `sessionExpired`, and Today's line moves on — so the row leaves the
+/// hierarchy the moment the sign-in completes, and SwiftUI closes a sheet whose presenter is gone.
+/// The sheet's next step never appeared: the account screen, which F1's owner-unknown store always
+/// meets at its next sign-in (the owner's decision 1), as does another account's store. The
+/// device stayed signed in with every sync blocked and nothing on screen pointing at the choice.
+/// One level up, the sheet stays until the sign-in flow ends, as Settings' sheets hang on its List
+/// for the same reason.
+@MainActor
+@Observable
+final class SignInAgainFlow {
+    /// The login sheet.
+    var showingLogin = false
+    /// The tap's session check, or the sync after it, is running: the row shows a spinner and
+    /// takes no second tap.
+    private(set) var isChecking = false
+
+    private let auth: AuthService
+    private let sync: SyncService
+
+    /// nil = the app's services (a default argument is evaluated off the main actor, where
+    /// `shared` is not reachable). Tests pass their own.
+    init(auth: AuthService? = nil, sync: SyncService? = nil) {
+        self.auth = auth ?? .shared
+        self.sync = sync ?? .shared
     }
 
-    private func signInAgain() async {
+    /// The row's tap. It first asks the server about the stored session
+    /// (`AuthService.checkSession`):
+    /// - `{user: null}` — the session is gone: the dead token is deleted and the device is signed
+    ///   out, so the login sheet behaves as a normal sign-in. Without this, a login link tapped in
+    ///   Mail would be ignored as "already signed in" (`handleLoginLink` refuses to replace a
+    ///   stored session), and the sheet would never close (it closes when `isLoggedIn` turns true,
+    ///   and it never turned false);
+    /// - a user — the session is fine (a 401 on a run's captured token that has since been
+    ///   replaced): a sync runs instead, and the row goes away if it succeeds;
+    /// - no answer (offline) — the sheet opens anyway; its own errors say why nothing can be sent.
+    /// With no session stored at all (the launch check already deleted a dead one), the sheet opens
+    /// at once.
+    func start(context: ModelContext) async {
+        guard !isChecking else { return }
         isChecking = true
         defer { isChecking = false }
         if auth.hasStoredSession {
             await auth.checkSession()
             if auth.isLoggedIn {
-                await sync.sync(context: modelContext)
+                await sync.sync(context: context)
                 if !sync.needsReauth { return }
             }
         }
         showingLogin = true
     }
 
-    private func syncIfSignedIn() {
-        guard auth.isLoggedIn else { return }
-        Task { await sync.sync(context: modelContext) }
+    /// The sheet closed. Signed in: a sync at once (user-initiated, so no backoff), as Settings
+    /// runs one; a different account signed in there met the account screen, not a merge, and a
+    /// choice left unmade blocks this sync (it makes no request). Returns whether it ran.
+    @discardableResult
+    func loginClosed(context: ModelContext) async -> Bool {
+        guard auth.isLoggedIn else { return false }
+        return await sync.sync(context: context)
     }
 }

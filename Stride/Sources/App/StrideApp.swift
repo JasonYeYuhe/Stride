@@ -122,11 +122,18 @@ struct StrideApp: App {
                     OnboardingView(isPresented: $showOnboarding)
                 }
                 // A Mac app can stay open for days; re-read entitlements when it comes forward so
-                // a lapsed or renewed subscription is reflected without a relaunch.
+                // a lapsed or renewed subscription is reflected without a relaunch — and sync, as
+                // iOS does on willEnterForeground. Without it nothing on the Mac met a revoked
+                // session's 401 or the pause switch's 503 until a relaunch or Sync Now, so Today's
+                // "Sign in again" row and "Sync paused" (acceptance (9)) never showed on a Mac left
+                // open (review critic-3). Automatic: it waits out the owner's backoff window.
                 .onReceive(NotificationCenter.default.publisher(
                     for: NSApplication.didBecomeActiveNotification
                 )) { _ in
-                    Task { @MainActor in await StoreService.shared.refreshPurchasedProducts() }
+                    Task { @MainActor in
+                        await StoreService.shared.refreshPurchasedProducts()
+                        await syncIfLoggedIn()
+                    }
                 }
                 #endif
         }

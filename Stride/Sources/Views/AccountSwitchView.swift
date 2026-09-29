@@ -17,7 +17,8 @@ import WidgetKit
 ///   1.3.1 signed out with rows 1.3.0 never tied to an account (sub-decision (e)). It forgets
 ///   every delivery mark first (`SyncService.uploadLocalHabits`), so nothing is deleted by
 ///   absence from the account's snapshot.
-/// - **Cancel** signs out of the account just signed into; the store and its owner are untouched.
+/// - **Cancel** signs out of the account just signed into; the store and its owner are untouched,
+///   and Today's "Sign in again" row, if it was up before that sign-in, is up again.
 ///
 /// There is no "keep these habits and add them to this account" for a known owner: reactive
 /// `not_owned` handling cannot find a habit the other account created offline and never pushed,
@@ -289,12 +290,13 @@ struct AccountSwitchView: View {
     }
 
     /// Cancel: sign out of the account just signed into (`signedOut` clears `ownerConflict`); the
-    /// store, its owner, its cursor and its queue are untouched.
+    /// store, its owner, its cursor and its queue are untouched, and a "Sign in again" row the
+    /// sign-in ended comes back (`AuthService.cancelSignIn`, review accounts-2).
     private func cancel() async {
         guard !isDemo else { return onFinish() }
         working = .cancel
         defer { working = nil }
-        await auth.logout()
+        await auth.cancelSignIn()
         onFinish()
     }
 

@@ -227,23 +227,26 @@ enum DataExportService {
     /// key, shown again only if that account ever owns the store — for a user who asked to erase
     /// this device, a copy of their edits nobody can see.
     ///
-    /// `recoveredEditLinesShown`: the count the confirmation was built from. The pre-erase sync
-    /// can archive more — an edit here to a row another device deleted — and those lines were
-    /// never counted, shown or offered for export; clearing them with the rest (or hiding them
-    /// under the old owner's key) would lose the only copy of an edit the user never saw. So when
-    /// the count moved, nothing is erased (`.recoveredEditsChanged`) and Settings asks again.
+    /// `recoveredEditTotalShown`: what the confirmation was built from, as the log's
+    /// `Summary.archivedTotal` (lines + dropped). The pre-erase sync can archive more — an edit
+    /// here to a row another device deleted — and those lines were never counted, shown or offered
+    /// for export; clearing them with the rest (or hiding them under the old owner's key) would
+    /// lose the only copy of an edit the user never saw. So when the total moved, nothing is
+    /// erased (`.recoveredEditsChanged`) and Settings asks again. Not the line count: at the log's
+    /// 5 MB cap the sync's line pushes the oldest out, and the count reads the same (review
+    /// recovery-backup-1).
     @MainActor
     static func eraseLocalData(in context: ModelContext,
                                clearingRecoveredEdits: Bool = false,
-                               recoveredEditLinesShown: Int? = nil,
+                               recoveredEditTotalShown: Int? = nil,
                                auth: AuthService? = nil,
                                sync: SyncService? = nil) async -> EraseOutcome {
         let auth = auth ?? .shared, sync = sync ?? .shared   // see `restore` for the optionals
         if auth.isLoggedIn || auth.hasStoredSession {
             guard await sync.syncAfterInFlight(context: context) else { return .syncFailed }
-            if let shown = recoveredEditLinesShown {
+            if let shown = recoveredEditTotalShown {
                 sync.refreshRecoveredEdits()
-                guard (sync.recoveredEdits?.lines ?? 0) == shown else { return .recoveredEditsChanged }
+                guard (sync.recoveredEdits?.archivedTotal ?? 0) == shown else { return .recoveredEditsChanged }
             }
             await auth.logout()
         }

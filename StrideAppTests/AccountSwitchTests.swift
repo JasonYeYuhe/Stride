@@ -254,17 +254,31 @@ final class AccountSwitchTests: XCTestCase {
     /// Cancel signs out of B and changes nothing else: A's rows, owner, cursor, queue, recovered
     /// edits and backoff are as they were, and no sync request was made. Signing back into A
     /// afterwards resumes.
+    ///
+    /// "Leaves this device as it is" includes Today's "Sign in again" (review accounts-2). Here A's
+    /// session was found gone at launch, and B's sign-in came from that row: the sign-in ended the
+    /// row (a user was loaded), and a plain Log Out as the Cancel cleared it again, so A's pending
+    /// edits sat behind a bare "Sign In" — the 1.3.0 state the row exists to end.
     func testCancelSignsOutAndLeavesTheStoreAndTheOwner() async throws {
         let habit = try seedAsStore()
+        tokens.save("tok-A-revoked")
+        server.on("GET", "/v1/auth/session", respond: .ok(#"{"user":null}"#))
+        relaunchAuth()
+        await auth.waitForSessionRestore()
+        XCTAssertTrue(auth.sessionExpired, "precondition: A's session was found gone at launch")
         stubSyncServer()
         await signIn("magic-B")
+        XCTAssertFalse(auth.sessionExpired, "a sign-in ends the row…")
         _ = try conflict(after: sync.settleSignIn(in: context))
 
-        await auth.logout()   // AccountSwitchView's Cancel
+        await auth.cancelSignIn()   // AccountSwitchView's Cancel
 
         XCTAssertFalse(auth.isLoggedIn)
         XCTAssertNil(tokens.read())
         XCTAssertNil(sync.ownerConflict)
+        XCTAssertTrue(auth.sessionExpired, "…and the Cancel that undid the sign-in brings it back for A")
+        XCTAssertTrue(local.defaults.bool(forKey: AuthService.sessionExpiredKey), "persisted, as the launch check left it")
+        XCTAssertEqual(SyncStatusLine.today(auth: auth, sync: sync, counts: .init()), .signInAgain)
         XCTAssertEqual(owners.owner, SyncOwner(accountA))
         XCTAssertEqual(try context.fetch(FetchDescriptor<Habit>()).map(\.id), [habit.id])
         XCTAssertEqual(cursors.cursor(for: accountA.id), recentCursor)
@@ -275,6 +289,15 @@ final class AccountSwitchTests: XCTestCase {
 
         await signIn("magic-A")
         XCTAssertEqual(sync.settleSignIn(in: context), .ready, "A owns it: no screen")
+        XCTAssertFalse(auth.sessionExpired)
+
+        // A deliberate Log Out leaves no row to bring back: B's sign-in and Cancel add none.
+        await auth.logout()
+        await signIn("magic-B")
+        _ = try conflict(after: sync.settleSignIn(in: context))
+        await auth.cancelSignIn()   // AccountSwitchView's Cancel
+        XCTAssertFalse(auth.sessionExpired)
+        XCTAssertNil(SyncStatusLine.today(auth: auth, sync: sync, counts: .init()))
     }
 
     // MARK: - Owner unknown (sub-decision (e))
@@ -438,6 +461,94 @@ final class AccountSwitchTests: XCTestCase {
         XCTAssertTrue(syncRequests.isEmpty)
     }
 
+    /// The first launch's check did not answer (offline, or past `waitForSessionRestore`'s 10 s),
+    /// so no launch sync ran. Later a login link rechecks the stored token and the server names
+    /// A: the device WAS signed in at its first 1.3.1 launch, so A owns the store from that answer
+    /// on. It used to only close the question and leave the store owner-less until a sync reached
+    /// `settleOwner` — and the link path runs none. A Log Out in that gap, then B's link, adopted
+    /// A's rows with no account screen, and B's first sync uploaded the ones A never pushed
+    /// (review accounts-1).
+    func testASessionConfirmedAfterAFailedFirstLaunchCheckMakesItsAccountTheOwner() async throws {
+        _ = try seedMigratedStore()
+        tokens.save("tok-A")
+        SyncService.prepareLaunch(context: context, defaults: local.defaults, hasStoredSession: true)
+        server.on("GET", "/v1/auth/session") { _ in throw URLError(.notConnectedToInternet) }
+        stubSyncServer()
+        relaunchAuth()
+        await auth.waitForSessionRestore()
+        XCTAssertFalse(auth.isLoggedIn, "precondition: the launch check failed")
+        XCTAssertNil(owners.owner)
+
+        // Online again. B's link is tapped; the stored token is asked about first, and it is A's.
+        server.on("GET", "/v1/auth/session",
+                  respond: .ok(#"{"user":{"id":7,"email":"a@example.com","created_at":"2026-09-01 10:00:00"}}"#))
+        let link = try XCTUnwrap(URL(string: "https://stride-api.colorarchive.me/login?token=\(Self.linkTokenB)"))
+        let ignored = await auth.handleLoginLink(link)
+
+        XCTAssertEqual(ignored, .ignoredAlreadySignedIn)
+        XCTAssertEqual(owners.owner, SyncOwner(accountA), "the server named the first launch's session")
+        XCTAssertFalse(owners.ownerUnknown)
+        XCTAssertTrue(marks.isAwaited, "its marks still wait for A's first full pull")
+
+        await auth.logout()
+        let signedIn = await auth.handleLoginLink(link)   // the same link, never spent
+        XCTAssertEqual(signedIn, .signedIn)
+
+        let conflict = try conflict(after: sync.settleSignIn(in: context))
+        XCTAssertEqual(conflict, SyncOwnerConflict(owner: SyncOwner(accountA), signedIn: accountB))
+        let ran = await sync.sync(context: context)   // StrideApp's post-link sync
+        XCTAssertFalse(ran)
+        XCTAssertTrue(syncRequests.isEmpty, "nothing of A's went to B: \(syncRequests.map(\.path))")
+        XCTAssertTrue(pushedHabitIDs.isEmpty)
+    }
+
+    /// F1's way back in is Today's "Sign in again" row: the launch check found the session dead,
+    /// and the next sign-in meets Upload / Start (the owner's decision 1). The row's tap opens
+    /// the login sheet, and the sign-in ends the row — `setUser` clears `sessionExpired` — so the
+    /// sheet cannot be the row's: it was, and it closed with the row before its account step
+    /// appeared, leaving the device signed in with every sync blocked (review critic-1). The flow
+    /// is TodayView's (`SignInAgainFlow`): its sheet is still up once the row is gone, the next
+    /// step is the account screen, and the sheet's close runs the sync the choice unblocked.
+    func testTheSignInAgainSheetOutlivesTheRowAndContinuesWithTheAccountStep() async throws {
+        let (oldID, newID) = try seedMigratedStore()
+        tokens.save("tok-A-expired")
+        SyncService.prepareLaunch(context: context, defaults: local.defaults, hasStoredSession: true)
+        server.on("GET", "/v1/auth/session", respond: .ok(#"{"user":null}"#))
+        stubSyncServer()
+        relaunchAuth()
+        await auth.waitForSessionRestore()
+        let flow = SignInAgainFlow(auth: auth, sync: sync)
+        XCTAssertEqual(todayLine(), .signInAgain, "precondition: the cold launch's row")
+
+        await flow.start(context: context)   // the row's tap
+        XCTAssertTrue(flow.showingLogin, "the dead token is gone: straight to the login sheet")
+        XCTAssertFalse(flow.isChecking)
+
+        await signIn("magic-A")   // the sheet's Verify
+        XCTAssertNotEqual(todayLine(), .signInAgain, "the sign-in ends the row…")
+        XCTAssertTrue(flow.showingLogin, "…and the sheet stays: it is not the row's")
+
+        let conflict = try conflict(after: sync.settleSignIn(in: context))   // LoginView.continueSignIn
+        XCTAssertTrue(conflict.isOwnerUnknown, "the sheet's next step: Upload / Start")
+        XCTAssertEqual(conflict.signedIn, accountA)
+        XCTAssertTrue(syncRequests.isEmpty)
+
+        let uploaded = await sync.uploadLocalHabits(conflict, in: context)   // the step's choice
+        XCTAssertTrue(uploaded)
+        XCTAssertEqual(pushedHabitIDs, [oldID.uuidString, newID.uuidString])
+        flow.showingLogin = false   // the step's onFinish closes the sheet
+        let requests = syncRequests.count
+        let ranOnClose = await flow.loginClosed(context: context)
+        XCTAssertTrue(ranOnClose, "the close's sync runs")
+        XCTAssertEqual(syncRequests.count, requests + 1, "a quiet sync: one pull")
+    }
+
+    /// What Today would draw now.
+    private func todayLine() -> SyncStatusLine? {
+        let counts = (try? SyncStatusCounts.read(in: context, deletions: queue.pending())) ?? .init()
+        return SyncStatusLine.today(auth: auth, sync: sync, counts: counts)
+    }
+
     /// A launch: a new AuthService (it checks the stored token when created) and the SyncService
     /// that asks it who is signed in.
     private func relaunchAuth() {
@@ -516,6 +627,44 @@ final class AccountSwitchTests: XCTestCase {
         XCTAssertTrue(syncRequests.isEmpty)
     }
 
+    /// Delete Account answered 401: the session was already gone (revoked, or the account deleted
+    /// on another device). APIClient deletes the token on a 401, and the device used to stay
+    /// "signed in" with no token — every sync returned quietly, and Today kept its last "Synced"
+    /// line with no way back in (review accounts-3). It ends the session here as the launch
+    /// check's `{user: null}` does: signed out, "Sign in again" on Today. Nothing local goes: the
+    /// server refused, and A's rows wait for A.
+    func testADeleteAccountAnswered401EndsTheSessionAndShowsSignInAgain() async throws {
+        let habit = try seedAsStore()
+        await signIn("magic-A")
+        server.on("POST", "/v1/auth/delete-account", respond: .init(status: 401, body: #"{"error":"Unauthorized"}"#))
+        stubSyncServer()
+
+        do {
+            try await auth.deleteAccount()
+            XCTFail("a refused deletion throws")
+        } catch APIError.unauthorized {
+        } catch {
+            XCTFail("expected unauthorized, got \(error)")
+        }
+
+        XCTAssertFalse(auth.isLoggedIn)
+        XCTAssertNil(tokens.read())
+        XCTAssertNil(auth.currentSyncSession())
+        XCTAssertTrue(auth.sessionExpired)
+        XCTAssertEqual(SyncStatusLine.today(auth: auth, sync: sync, counts: .init()), .signInAgain)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Habit>()).map(\.id), [habit.id])
+        XCTAssertEqual(owners.owner, SyncOwner(accountA))
+        XCTAssertEqual(try recovery.log.lineCount(accountID: accountA.id), 1)
+        XCTAssertEqual(cursors.cursor(for: accountA.id), recentCursor)
+        let ran = await sync.sync(context: context)
+        XCTAssertFalse(ran)
+        XCTAssertTrue(syncRequests.isEmpty)
+
+        await signIn("magic-A")
+        XCTAssertFalse(auth.sessionExpired)
+        XCTAssertEqual(sync.settleSignIn(in: context), .ready, "A signs back in and resumes")
+    }
+
     /// B deleted while the account screen waited over A's habits: A's store is not B's to erase.
     func testDeletingAnAccountThatDoesNotOwnTheStoreLeavesItsRows() async throws {
         let habit = try seedAsStore()
@@ -570,7 +719,7 @@ final class AccountSwitchTests: XCTestCase {
     /// The step's rules on their own: an empty store has no backup to offer; a log that could not
     /// be counted (nil) is offered, as on the restore hand-over; signed out there is no step.
     func testDeleteAccountStepRules() {
-        let empty = DeleteAccountStep(email: "a@example.com", erasesDevice: true, hasLocalData: false, recoveredEdits: 0)
+        let empty = DeleteAccountStep(email: "a@example.com", erasesDevice: true, hasLocalData: false, recoveredEdits: .empty)
         XCTAssertFalse(empty.offersBackup)
         XCTAssertFalse(empty.offersRecoveredEdits)
         let unreadable = DeleteAccountStep(email: "a@example.com", erasesDevice: true, hasLocalData: false, recoveredEdits: nil)
@@ -614,9 +763,36 @@ final class AccountSwitchTests: XCTestCase {
         try recovery.log.clear(accountID: accountA.id)
         let emptied = await changed.recheck(sync: sync)
         XCTAssertNil(emptied)
-        let otherOwner = DeleteAccountStep(email: "b@example.com", erasesDevice: false, hasLocalData: true, recoveredEdits: 0)
+        let otherOwner = DeleteAccountStep(email: "b@example.com", erasesDevice: false, hasLocalData: true, recoveredEdits: .empty)
         let untouched = await otherOwner.recheck(sync: sync)
         XCTAssertNil(untouched)
+    }
+
+    /// The same recheck with the recovery log at its cap (review recovery-backup-1): an append
+    /// there drops the oldest line as it adds its own, so the count the step offered comes back
+    /// unchanged over a line nobody offered. The step compares lines + dropped, which only grows
+    /// until a clear.
+    func testDeleteAccountStepAtTheCapRechecksWhatArrivedNotOnlyTheCount() async throws {
+        try seedAsStore()
+        try recovery.log.clear(accountID: accountA.id)
+        let capped = try recovery.filledToTheCap(accountID: accountA.id)
+        sync = SyncService(api: server.makeClient(tokenStore: tokens), defaults: local.defaults,
+                           deletionQueue: queue, sessions: auth, recoveryLog: capped)
+        await signIn("magic-A")
+        let step = try XCTUnwrap(DeleteAccountStep.current(auth: auth, sync: sync, hasLocalData: true))
+
+        let row = DataBackup.snapshot(habits: [Habit(name: "Archived after Continue")], groups: []).habits[0]
+        try capped.append([SyncRecoveryItem(archivedAt: Date(), reason: .deletedElsewhere, row: .habit(row))],
+                          accountID: accountA.id)
+        XCTAssertEqual(try capped.lineCount(accountID: accountA.id), step.recoveredEditLines,
+                       "precondition: at the cap the count did not move")
+
+        let rebuilt = await step.recheck(sync: sync)
+        let changed = try XCTUnwrap(rebuilt, "a line nobody offered: do not delete")
+        XCTAssertTrue(changed.recoveredEditsChanged)
+        XCTAssertTrue(changed.offersRecoveredEdits)
+        let confirmed = await changed.recheck(sync: sync)
+        XCTAssertNil(confirmed, "shown what is on disk now: delete")
     }
 
     /// Erase Local Data's API: the owner's recovered edits go only when the caller asks (after

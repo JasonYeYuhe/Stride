@@ -172,6 +172,15 @@ final class SyncRecoveryLog: Sendable {
 
         static let empty = Summary(lines: 0, dropped: 0, unreadable: 0, bytes: 0)
 
+        /// Every line archived since the last clear: those still here and those the cap dropped.
+        /// What a guard compares — Clear, Erase and Delete Account refuse when it moved since
+        /// their confirmation — while the UI shows `lines` (review recovery-backup-1). `lines`
+        /// alone can read the same over an edit nobody has seen: at the cap an append drops the
+        /// oldest line as it adds its own. This only grows until a clear: every append adds at
+        /// least one line, and a trim moves each line it removes into `dropped`, which the header
+        /// carries forward.
+        var archivedTotal: Int { lines + dropped }
+
         var description: String { "lines=\(lines) dropped=\(dropped) unreadable=\(unreadable) bytes=\(bytes)" }
     }
 

@@ -45,9 +45,10 @@ struct SettingsView: View {
     /// Whether the erase confirmed on screen said the recovered edits go too: fixed when Erase
     /// is tapped, so a count that changes under the dialog cannot clear lines it did not name.
     @State private var eraseClearsRecoveredEdits = false
-    /// The recovered-edit count that confirmation was built from; the erase stops if its own
-    /// pre-erase sync archives more (`DataExportService.eraseLocalData`).
-    @State private var eraseRecoveredEditLines = 0
+    /// The recovery log as that confirmation was built from it (`Summary.archivedTotal`, lines +
+    /// dropped); the erase stops if its own pre-erase sync archives more
+    /// (`DataExportService.eraseLocalData`).
+    @State private var eraseRecoveredEditTotal = 0
     @State private var isErasing = false
     @State private var eraseError: String?
 
@@ -573,7 +574,7 @@ struct SettingsView: View {
                         Button(role: .destructive) {
                             eraseError = nil
                             eraseClearsRecoveredEdits = recoveredEditLines > 0
-                            eraseRecoveredEditLines = recoveredEditLines
+                            eraseRecoveredEditTotal = sync.recoveredEdits?.archivedTotal ?? 0
                             showingEraseConfirm = true
                         } label: {
                             HStack {
@@ -934,7 +935,7 @@ struct SettingsView: View {
         // DataExportService.eraseLocalData for why "a session" includes a stored token.
         switch await DataExportService.eraseLocalData(in: modelContext,
                                                       clearingRecoveredEdits: eraseClearsRecoveredEdits,
-                                                      recoveredEditLinesShown: eraseRecoveredEditLines) {
+                                                      recoveredEditTotalShown: eraseRecoveredEditTotal) {
         case .erased:
             break
         case .syncFailed:
@@ -1048,8 +1049,9 @@ struct SettingsView: View {
     private func presentDemoSheet() {
         switch SyncSectionDemo.current {
         case .deleteAccount:
-            deleteAccountStep = DeleteAccountStep(email: SyncSectionDemo.demoSignedIn, erasesDevice: true,
-                                                  hasLocalData: true, recoveredEdits: 2, isDemo: true)
+            deleteAccountStep = DeleteAccountStep(
+                email: SyncSectionDemo.demoSignedIn, erasesDevice: true, hasLocalData: true,
+                recoveredEdits: SyncRecoveryLog.Summary(lines: 2, dropped: 0, unreadable: 0, bytes: 0), isDemo: true)
         case .restoreHandover:
             let owner = BackupAccount(id: "demo-owner", email: SyncSectionDemo.demoPreviousOwner)
             pendingHandover = PendingHandover(
@@ -1167,6 +1169,9 @@ struct DeleteAccountStep: Identifiable, Equatable {
     let offersRecoveredEdits: Bool
     /// The owner's line count the step was built from (nil: it could not be counted).
     let recoveredEditLines: Int?
+    /// Lines + dropped at the same read (`SyncRecoveryLog.Summary.archivedTotal`): what `recheck`
+    /// compares, since at the log's cap the line count alone can stay put.
+    let recoveredEditTotal: Int?
     /// Rebuilt by `recheck`: lines arrived after Continue, so the sheet says so over the export.
     var recoveredEditsChanged = false
     /// The DEBUG screenshot scenario (`SyncSectionDemo.deleteAccount`): the final button only
@@ -1174,32 +1179,38 @@ struct DeleteAccountStep: Identifiable, Equatable {
     var isDemo = false
     private let hasLocalData: Bool
 
-    init(email: String, erasesDevice: Bool, hasLocalData: Bool, recoveredEdits: Int?, isDemo: Bool = false) {
+    /// `recoveredEdits`: the owner's recovery log as counted now (`SyncService.recoveredEdits`);
+    /// nil when it could not be read.
+    init(email: String, erasesDevice: Bool, hasLocalData: Bool, recoveredEdits: SyncRecoveryLog.Summary?,
+         isDemo: Bool = false) {
         self.email = email
         self.erasesDevice = erasesDevice
         self.hasLocalData = hasLocalData
         offersBackup = erasesDevice && hasLocalData
-        offersRecoveredEdits = erasesDevice && recoveredEdits != 0
-        recoveredEditLines = recoveredEdits
+        offersRecoveredEdits = erasesDevice && recoveredEdits?.lines != 0
+        recoveredEditLines = recoveredEdits?.lines
+        recoveredEditTotal = recoveredEdits?.archivedTotal
         self.isDemo = isDemo
     }
 
     /// The F4 rule at the final button. `accountDeleted` clears the owner's recovery log without
-    /// asking, so the count this step offered must still be the count on disk: a sync since
-    /// Continue — the foreground sync after the user saved the JSON in Files, or one already
-    /// running — can archive a line nobody counted or offered. Then this returns the step rebuilt
-    /// with the new count and the account must not be deleted yet; nil means go ahead. It waits
-    /// out a sync in flight first. A log that now reads 0 has nothing to lose, and a store
-    /// another account owns loses none of its lines, so neither stops the deletion. (A sync that
-    /// starts after this check and finishes inside the deletion request is not covered; one still
+    /// asking, so what this step offered must still be what is on disk: a sync since Continue —
+    /// the foreground sync after the user saved the JSON in Files, or one already running — can
+    /// archive a line nobody counted or offered. Then this returns the step rebuilt with the new
+    /// count and the account must not be deleted yet; nil means go ahead. It compares lines +
+    /// dropped (`recoveredEditTotal`), not the count: at the log's 5 MB cap the new line pushes
+    /// the oldest out, and the count reads the same (review recovery-backup-1). It waits out a
+    /// sync in flight first. A log that now reads 0 lines has nothing to lose, and a store another
+    /// account owns loses none of its lines, so neither stops the deletion. (A sync that starts
+    /// after this check and finishes inside the deletion request is not covered; one still
     /// running when the request returns is stopped by the sign-out, `SyncService.signedOut`.)
     @MainActor
     func recheck(sync: SyncService) async -> DeleteAccountStep? {
         guard erasesDevice else { return nil }
         await sync.waitUntilIdle()
         sync.refreshRecoveredEdits()
-        let now = sync.recoveredEdits?.lines
-        guard now != recoveredEditLines, now != 0 else { return nil }
+        let now = sync.recoveredEdits
+        guard now?.archivedTotal != recoveredEditTotal, now?.lines != 0 else { return nil }
         var step = DeleteAccountStep(email: email, erasesDevice: true, hasLocalData: hasLocalData,
                                      recoveredEdits: now)
         step.recoveredEditsChanged = true
@@ -1215,7 +1226,7 @@ struct DeleteAccountStep: Identifiable, Equatable {
         return DeleteAccountStep(email: user.email,
                                  erasesDevice: sync.storeOwner?.id == SyncAccount(user).id,
                                  hasLocalData: hasLocalData,
-                                 recoveredEdits: sync.recoveredEdits?.lines)
+                                 recoveredEdits: sync.recoveredEdits)
     }
 }
 

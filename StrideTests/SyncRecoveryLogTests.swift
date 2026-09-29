@@ -248,6 +248,29 @@ final class SyncRecoveryLogTests: XCTestCase {
         XCTAssertEqual(try log.summary(accountID: "42").dropped + kept.count, 13)
     }
 
+    /// At the cap an append drops the oldest line as it adds its own, so `lines` reads the same
+    /// before and after an edit nobody has seen — and Clear, Erase and Delete Account compared
+    /// exactly that (review recovery-backup-1). `archivedTotal` (lines + dropped) moves with every
+    /// archived line, and only a clear takes it back.
+    func testAtTheCapTheLineCountStaysPutWhileTheArchivedTotalMoves() throws {
+        let lineBytes = try oneLineBytes()
+        let log = makeLog(cap: lineBytes * 5 + 100)
+        for i in 1...8 { try log.append([padded(i)], accountID: "42") }
+        let before = try log.summary(accountID: "42")
+        XCTAssertGreaterThan(before.dropped, 0, "precondition: at the cap")
+        XCTAssertEqual(before.archivedTotal, 8)
+
+        for i in 9...11 {
+            try log.append([padded(i)], accountID: "42")
+            let now = try log.summary(accountID: "42")
+            XCTAssertEqual(now.lines, before.lines, "the count a guard used to compare did not move")
+            XCTAssertEqual(now.archivedTotal, i, "the total did")
+        }
+
+        try log.clear(accountID: "42")
+        XCTAssertEqual(try log.summary(accountID: "42").archivedTotal, 0)
+    }
+
     /// The encoded size of one `padded` line, newline included.
     private func oneLineBytes() throws -> Int {
         let probe = makeLog(directory: root.appendingPathComponent("probe"))

@@ -74,11 +74,12 @@ struct SyncSectionActions {
         try await sync.discardHeldRows(reason, in: context)
     }
 
-    /// Clears only the `expectedLines` the user was shown; false (nothing cleared) when a sync
-    /// has archived more since (`SyncService.clearRecoveredEdits(expectedLines:)`).
+    /// Clears only what the user was shown (`expectedTotal`, the log's `Summary.archivedTotal`
+    /// then); false (nothing cleared) when a sync has archived more since
+    /// (`SyncService.clearRecoveredEdits(expectedTotal:)`).
     @discardableResult
-    func clearRecoveredEdits(expectedLines: Int? = nil) throws -> Bool {
-        try sync.clearRecoveredEdits(expectedLines: expectedLines)
+    func clearRecoveredEdits(expectedTotal: Int? = nil) throws -> Bool {
+        try sync.clearRecoveredEdits(expectedTotal: expectedTotal)
     }
 
     /// Full Resync: every row `needsResend`, a pull on the current cursor, the push, then the
@@ -110,9 +111,10 @@ struct SyncSectionView: View {
     @State private var busyReason: SyncHoldReason?
     @State private var discardReason: SyncHoldReason?
     @State private var showingClearConfirm = false
-    /// The count the Clear confirmation was opened for: a sync meanwhile can archive more lines,
-    /// and Clear must not take ones the user never saw (`SyncService.clearRecoveredEdits`).
-    @State private var clearExpectedLines = 0
+    /// What the Clear confirmation was opened for, as `Summary.archivedTotal` (lines + dropped —
+    /// at the log's cap the line count alone can stay put): a sync meanwhile can archive more
+    /// lines, and Clear must not take ones the user never saw (`SyncService.clearRecoveredEdits`).
+    @State private var clearExpectedTotal = 0
     @State private var showingFullResyncConfirm = false
     @State private var isResyncing = false
     @State private var actionError: String?
@@ -368,14 +370,15 @@ struct SyncSectionView: View {
 
         Button(role: .destructive) {
             actionError = nil
-            clearExpectedLines = count
+            // The summary `count` was drawn from (the row shows only while it could be read).
+            clearExpectedTotal = sync.recoveredEdits?.archivedTotal ?? 0
             showingClearConfirm = true
         } label: {
             Label("Clear Recovered Edits…", systemImage: "trash")
                 .foregroundStyle(.red)
         }
         .confirmationDialog("Clear Recovered Edits?", isPresented: $showingClearConfirm, titleVisibility: .visible) {
-            Button("Clear", role: .destructive) { clearRecoveredEdits(expectedLines: clearExpectedLines) }
+            Button("Clear", role: .destructive) { clearRecoveredEdits(expectedTotal: clearExpectedTotal) }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This is the only copy of these edits. Export them first if you might need them.")
@@ -463,10 +466,10 @@ struct SyncSectionView: View {
         }
     }
 
-    private func clearRecoveredEdits(expectedLines: Int) {
+    private func clearRecoveredEdits(expectedTotal: Int) {
         actionError = nil
         do {
-            guard try actions.clearRecoveredEdits(expectedLines: expectedLines) else {
+            guard try actions.clearRecoveredEdits(expectedTotal: expectedTotal) else {
                 // More lines than the dialog was opened for: the row above shows the new count.
                 let message = appLocalized("New recovered edits arrived. Export them, then try again.")
                 actionError = message

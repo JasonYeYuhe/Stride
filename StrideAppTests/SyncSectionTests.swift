@@ -88,10 +88,11 @@ final class SyncSectionTests: XCTestCase {
                            isPaused: false, offersFullResync: signedIn)
     }
 
-    private func appendRecoveredEdit(named name: String = "Edited offline", for account: String?) throws {
+    private func appendRecoveredEdit(named name: String = "Edited offline", for account: String?,
+                                     into log: SyncRecoveryLog? = nil) throws {
         let row = DataBackup.snapshot(habits: [Habit(name: name)], groups: []).habits[0]
-        try recovery.log.append([SyncRecoveryItem(archivedAt: Date(), reason: .deletedElsewhere, row: .habit(row))],
-                                accountID: account)
+        try (log ?? recovery.log).append([SyncRecoveryItem(archivedAt: Date(), reason: .deletedElsewhere, row: .habit(row))],
+                                         accountID: account)
     }
 
     // MARK: - What the section shows
@@ -435,11 +436,12 @@ final class SyncSectionTests: XCTestCase {
                                defaults: local.defaults, onSignOut: { [unowned self] in self.sync.signedOut() })
         await auth.waitForSessionRestore()
         sync.refreshRecoveredEdits()
-        let shown = try XCTUnwrap(sync.recoveredEdits?.lines)
-        XCTAssertEqual(shown, 1, "what the confirmation counted")
+        let shown = try XCTUnwrap(sync.recoveredEdits)
+        XCTAssertEqual(shown.lines, 1, "what the confirmation counted")
 
         let outcome = await DataExportService.eraseLocalData(in: context, clearingRecoveredEdits: true,
-                                                             recoveredEditLinesShown: shown, auth: auth, sync: sync)
+                                                             recoveredEditTotalShown: shown.archivedTotal,
+                                                             auth: auth, sync: sync)
 
         XCTAssertEqual(outcome, .recoveredEditsChanged)
         XCTAssertEqual(try recovery.log.lineCount(accountID: owner), 2, "the new line is kept, to be offered first")
@@ -450,7 +452,7 @@ final class SyncSectionTests: XCTestCase {
 
         // Erase again, confirmed for the two lines: it goes through.
         let again = await DataExportService.eraseLocalData(in: context, clearingRecoveredEdits: true,
-                                                           recoveredEditLinesShown: 2, auth: auth, sync: sync)
+                                                           recoveredEditTotalShown: 2, auth: auth, sync: sync)
         XCTAssertEqual(again, .erased)
         XCTAssertEqual(try recovery.log.lineCount(accountID: owner), 0)
         XCTAssertNil(owners.owner)
@@ -462,15 +464,86 @@ final class SyncSectionTests: XCTestCase {
         owners.set(SyncOwner(SyncSession.accountA.account))
         try appendRecoveredEdit(for: owner)
         sync.refreshRecoveredEdits()
-        let shown = try XCTUnwrap(sync.recoveredEdits?.lines)
+        let shown = try XCTUnwrap(sync.recoveredEdits?.archivedTotal)
         try appendRecoveredEdit(named: "Archived while the dialog was up", for: owner)
 
-        XCTAssertFalse(try actions.clearRecoveredEdits(expectedLines: shown))
+        XCTAssertFalse(try actions.clearRecoveredEdits(expectedTotal: shown))
         XCTAssertEqual(try recovery.log.lineCount(accountID: owner), 2)
         XCTAssertEqual(sync.recoveredEdits?.lines, 2, "the row shows the new count")
 
-        XCTAssertTrue(try actions.clearRecoveredEdits(expectedLines: 2))
+        XCTAssertTrue(try actions.clearRecoveredEdits(expectedTotal: 2))
         XCTAssertEqual(try recovery.log.lineCount(accountID: owner), 0)
+    }
+
+    // MARK: - The F4 guards at the recovery log's cap
+
+    // Review recovery-backup-1: once the log is at its 5 MB cap, an append drops the oldest line
+    // as it adds its own, so a line count taken before and after an archive can be equal — over
+    // an edit nobody saw. The guards compare lines + dropped (`Summary.archivedTotal`), which
+    // only grows until a clear. Here the cap is `filledToTheCap`'s miniature one.
+
+    /// A line archived while the Clear dialog is up, at the cap: the count did not move, and
+    /// Clear still takes nothing.
+    func testClearAtTheCapTakesOnlyTheLinesItWasConfirmedFor() throws {
+        owners.set(SyncOwner(SyncSession.accountA.account))
+        let capped = try recovery.filledToTheCap(accountID: owner)
+        sync = SyncService(api: server.makeClient(tokenStore: tokens), defaults: local.defaults,
+                           deletionQueue: queue, sessions: sessions, recoveryLog: capped)
+        sync.refreshRecoveredEdits()
+        let shown = try XCTUnwrap(sync.recoveredEdits)
+
+        try appendRecoveredEdit(named: "Archived while the dialog was up", for: owner, into: capped)
+        XCTAssertEqual(try capped.lineCount(accountID: owner), shown.lines, "precondition: at the cap the count did not move")
+
+        XCTAssertFalse(try actions.clearRecoveredEdits(expectedTotal: shown.archivedTotal))
+        XCTAssertEqual(try capped.summary(accountID: owner).dropped, 1, "nothing cleared")
+        XCTAssertEqual(try capped.lineCount(accountID: owner), shown.lines)
+        XCTAssertEqual(sync.recoveredEdits?.archivedTotal, shown.archivedTotal + 1, "the row's summary is the new one")
+
+        // Confirmed again for what is there now: it clears, dropped count and all.
+        XCTAssertTrue(try actions.clearRecoveredEdits(expectedTotal: shown.archivedTotal + 1))
+        XCTAssertEqual(try capped.summary(accountID: owner), .empty)
+    }
+
+    /// The erase's own pre-erase sync archives an edit into a log at its cap: the count the
+    /// confirmation showed comes back unchanged, and the erase still stops.
+    func testEraseAtTheCapStopsWhenItsOwnSyncArchivedAnEditTheConfirmationNeverCounted() async throws {
+        owners.set(SyncOwner(SyncSession.accountA.account))   // no cursor: the sync full-pulls
+        let capped = try recovery.filledToTheCap(accountID: owner)
+        sync = SyncService(api: server.makeClient(tokenStore: tokens), defaults: local.defaults,
+                           deletionQueue: queue, sessions: sessions, recoveryLog: capped)
+        let edited = Habit(name: "Edited offline; deleted on another device")
+        context.insert(edited)
+        edited.updatedAt = SyncTimestamp.floorToMillisecond(Date())
+        edited.syncedAt = SyncTimestamp.floorToMillisecond(Date().addingTimeInterval(-3_600))
+        try context.save()
+        stubHappyServer()   // the account's snapshot no longer has the habit
+        server.on("GET", "/v1/auth/session",
+                  respond: .ok(#"{"user":{"id":7,"email":"a@example.com","created_at":"2026-09-01 10:00:00"}}"#))
+        server.on("POST", "/v1/auth/logout", respond: .ok(#"{"ok":true}"#))
+        let auth = AuthService(api: server.makeClient(tokenStore: tokens), tokenStore: tokens,
+                               defaults: local.defaults, onSignOut: { [unowned self] in self.sync.signedOut() })
+        await auth.waitForSessionRestore()
+        sync.refreshRecoveredEdits()
+        let shown = try XCTUnwrap(sync.recoveredEdits)
+
+        let outcome = await DataExportService.eraseLocalData(in: context, clearingRecoveredEdits: true,
+                                                             recoveredEditTotalShown: shown.archivedTotal,
+                                                             auth: auth, sync: sync)
+
+        XCTAssertEqual(try capped.lineCount(accountID: owner), shown.lines, "at the cap the count did not move…")
+        XCTAssertEqual(try capped.summary(accountID: owner).dropped, 1, "…because the sync's line pushed the oldest out")
+        XCTAssertEqual(outcome, .recoveredEditsChanged)
+        XCTAssertNotNil(tokens.read(), "still signed in: nothing was erased")
+        XCTAssertEqual(owners.owner?.id, owner)
+        XCTAssertFalse(server.paths.contains("/v1/auth/logout"))
+
+        // Confirmed again for what is there now: the erase goes through.
+        let again = await DataExportService.eraseLocalData(in: context, clearingRecoveredEdits: true,
+                                                           recoveredEditTotalShown: shown.archivedTotal + 1,
+                                                           auth: auth, sync: sync)
+        XCTAssertEqual(again, .erased)
+        XCTAssertEqual(try capped.summary(accountID: owner), .empty)
     }
 }
 
