@@ -215,6 +215,229 @@ delete nothing (review M2-1).
   - the "Sign in again" row
   Each language reuses its catalog's UI strings.
 
+### The whole-M2 review (2026-09-29)
+
+Codex could not run: its usage limit held it until 19:00, and at 19:05 it moved to a weekly
+limit that lasts until **2026-10-04 11:40**. So the final review of `1b33b4a..HEAD` was done
+internally, adversarially:
+- **Reviewers:** four, one per dimension: data safety, delivery, accounts and session
+  lifecycle, and the recovery log / backup / tests.
+- **Checks:** each dimension's findings went to a skeptic told to refute them, and a
+  completeness critic looked for what nobody had covered.
+- **Result:** 12 findings confirmed, 3 of them major. The critic added 3 more, 1 major.
+
+It found three bugs the phase reviews had missed, plus the critic's:
+- **Refused rows deleted at the upgrade** (data-safety-1). The migrated delivery marks also
+  covered rows the 1.3.0 server had refused. 1.3.0 never read `skipped`, so this includes a
+  restore that kept another account's ids, and a restore of habits the server had deleted.
+  After the proof, the first full pull deleted those rows and the check-ins made on them since,
+  with no recovery-log line. The fix went through two rounds (round two below).
+- **Check-in lost on a restored habit** (delivery-1). A push answered `tombstoned_habit` deleted
+  a check-in made after a same-account restore. The pull path keeps such a check-in with its
+  held habit. Fixed in `7a853d4`: the entry stays pending, and Restore as New Copies moves it with
+  the habit.
+- **Owner left unrecorded at the first launch** (accounts-1). A session confirmed at the first
+  1.3.1 launch left the store owner-less until a sync ran. A Log Out in that gap let the next
+  account adopt the previous account's rows with no account screen. This is the leak M2 exists to
+  close. Fixed in `4746fb6`: the owner is recorded when the server first names the stored token's
+  user.
+- **Sign-in sheet torn down early** (critic-1). Today's "Sign in again" row presented the login
+  sheet, and the sign-in removed the row. That tore the sheet down before the account screen
+  could appear, so a device owed the Upload / Start choice stayed signed in with every sync
+  blocked. Fixed in `4746fb6`: the sheet's presenter outlives the row.
+
+Minors fixed in `7a853d4`, `deb5ebc`, `4746fb6` and `22691e0`:
+- **Undecided proving pull** (data-safety-2): it applies nothing and stops before the push, so
+  its own upserts can't "prove" the next pull.
+- **Day-match rename** (data-safety-3): a record renamed to the server's id for its day takes
+  the server's value unless it is pending or held.
+- **Uncheck deleting nothing** (data-safety-4, older than M2): unchecking a day whose server row
+  kept another device's id deleted nothing. The push answer now names the stored id (`aliases`,
+  ≥ 1.3.1 only), and the app realigns the id as it acknowledges.
+- **Double pull after Full Resync** (delivery-2): every later sync pulled twice. Fixed.
+- **Hours of backoff after being offline** (critic-2): a failure with no HTTP answer now waits
+  about a minute and never doubles. "Offline" shows only while that window is open. It used to
+  back off for up to 6 h after an offline day.
+- **macOS never synced on activation** (critic-3). It now does.
+- **Cancel losing the reauth state** (accounts-2): a Cancel on the account screen keeps the
+  owner's "Sign in again".
+- **401 on Delete Account** (accounts-3): it now leaves the reauth state, not a silent
+  signed-in-but-dead device.
+- **Recovered-edit guards blind at the cap** (recovery-backup-1): the Clear / Erase / Delete
+  Account guards compare lines + dropped, so at the 5 MB cap they still catch an edit archived
+  after the count was shown.
+- **Checks that could not fail** (recovery-backup-2 and -3): a trim test and a rehearsal check.
+
+Two skeptics re-reviewed the fix commits. Every finding was closed except three, all closed in
+round two (`51da3f8`):
+- the data-safety-1 design;
+- a persistence gap in the accounts-2 fix;
+- the missing test for critic-1's presenter.
+
+Gates on `22691e0`:
+- StrideTests 422 (en and ja, 2 expected skips)
+- hosted 136
+- server 451
+- rehearsal 74 PASS / 0 FAIL / 1 SKIPPED (LARGE 79/0/1)
+- the generic iOS and macOS product checks
+
+### The simulator end-to-end run (2026-09-29)
+
+This was the first run of the device checks on real builds, before the owner's device pass. The
+setup:
+- **Builds:** Debug 1.3.1 (20) from this branch and 1.3.0 (19) from `release/1.3.0`, in the
+  iPhone 17 Pro and 17 Pro Max simulators.
+- **Server:** a throwaway local copy of `server/` with a fresh database, no `.env`, port 3002
+  (where Debug builds point), and request logging added to the copy only.
+- **Sign-in:** through the app's paste-token field, with magic-link rows minted in that
+  database.
+
+Nothing touched production. The kit lives in the session scratchpad, not in the repo.
+
+Results:
+- **(5) account switch: PASS.**
+  - No sync request from the device until the choice.
+  - Export is offered first.
+  - Start leaves none of A's rows on the device or in B, and A's rows are byte-identical.
+  - Cancel changes nothing.
+  - Back into A resumes with 0/0/0.
+- **(6) restore as new copies: PASS**, including the held "deleted on another device" row and
+  Restore as New Copies.
+- **Delete Account hand-off: PASS.**
+  - The alert → Continue opens the Export step.
+  - The recheck catches an edit archived after Continue, updates the sheet in place and deletes
+    nothing.
+  - The final delete removes the account server-side, erases the device, clears the recovery log
+    and the Keychain token.
+- **(4) mixed fleet: PASS as specified.** A 1.3.0 and a 1.3.1 device converge after interleaved
+  taps, a rename, and an uncheck/re-check with a sync in between.
+- **(9) reauth and pause: PASS on Today.** The reauth row and "Sync paused" show with a 503 in
+  the log. But Settings showed a red "Please log in again" under a green "Signed in" (round two).
+
+It found:
+- **Old apps lose a same-day re-check** (major, in 1.3.0 build 19 and live 1.2.3). A peer
+  unchecks and re-checks a day with no sync in between, which deletes entry X and creates Y for
+  the same day. An app below 1.3.1 that pulls both in one response then loses Y. Its reconciler
+  deletes X, which stays in `habit.records` (no inverse, the build-18 ghost), day-matches Y onto
+  that ghost, and the save drops it. The day shows unchecked until a full pull, while the server
+  is right. Old apps can't be fixed, so the server now handles it (next section). 1.3.0 is not
+  pulled again: 1.2.3, live today, has the same flaw, and the server fix reaches every old app
+  without an update.
+- **The session token was cached on disk** (pre-existing). `URLSession.shared`'s cache stored
+  the `/v1/auth/verify` answer, with the live `sessionToken`, in `Caches/Cache.db`, along with
+  pull bodies. The server fix is in the next section; the app fix is in round two.
+- UI and behaviour items, fixed in round two:
+  - the Settings reauth state
+  - Sync Now doing nothing while the account choice is pending
+  - a stray `text.txt` next to every exported JSON
+  - export temp files, a deleted account's among them, never removed, with three copies per tap
+  - Delete Account sheet text truncating after the in-place update, and its warning drawn fainter
+    than the footer
+  - the recheck offering Export as JSON for an empty store
+  - "them" under a singular held-row title
+  - Start looking like a safe button
+  - Settings' "in 0s" label that never refreshed
+
+### Old apps never get a deletion with its same-day replacement (server, `41c8fea`)
+
+Part of the 1.3.1 server half: not deployed yet, and deployed with the rest after 1.3.0 is live.
+- **Schema:** `deletion_tombstones` gains nullable `habit_id` and `entry_date`. The ALTER is
+  additive, idempotent and PRAGMA-guarded; existing rows keep NULL. Both are filled from the
+  row that a sync push or the REST uncheck deletes.
+- **Pull:** a pull from an app below 1.3.1 holds back an entry deletion whose day the same
+  response carries under another id. The old app then day-matches its still-live X, re-IDs it to
+  Y and converges without deleting. This is always sufficient: the replacement is written after
+  the deletion, so any window that includes the deletion also carries it.
+- **Unchanged:** 1.3.1+ get every deletion, as before. Tombstones written before the deploy name
+  no day, so they are sent as before.
+- **Logging:** the pull's log line counts `withheld=`.
+- **No-store:** every answer on `/v1` and the legacy mounts, errors included, is `Cache-Control:
+  no-store`, and conditional headers are ignored. ETags are off app-wide. `/login` is no-store
+  too, since the page shows a live token. Static pages and the AASA file are unchanged.
+- **Checks:** `server/ops/rehearsal-checks.js` checks the columns, the no-store answers, and a
+  real uncheck + re-check pulled as 1.3.0, header-less and 1.3.1. DEPLOY.md has the migration and
+  the post-deploy checks.
+- **Tests:** server 478 on the combined tree, and the rehearsal 74/0/1.
+- **Still open:** one case is inferred and not reproduced. If the deletion and the re-check
+  reach an old app in two separate pulls within one app session, the ghost might still eat the
+  re-check. S4 saw a later pull in the same session heal the day, which suggests the reconciler's
+  fresh context does not keep the ghost. The simulator re-run checks it explicitly.
+
+### Round two (2026-09-29): the upgrade pass decided by the account's deletions (`51da3f8`, `cc272aa`)
+
+**Why `deb5ebc` was not the end of data-safety-1.** Its first pass after the upgrade resent
+every delivered row the account lacked, instead of deleting it. That protected the rows the 1.3.0
+server had refused. The re-review found two costs:
+- **Resurrection after a sweep (major).** Once tombstones are swept, the resend becomes an
+  insert. A long-dormant device would then bring back rows deleted elsewhere, which is exactly
+  the case the migrated marks exist for (owner decision R1).
+- **Noise (minor).** Every ordinary deletion or untap made on another device since this
+  device's last 1.3.0 sync came back `tombstoned` and landed in Recovered Edits. One untap on
+  the iPad gave "Recovered Edits (1)"; a deleted two-year habit gave about 731 lines.
+
+**v2.** The two cases can be told apart by the account's deletions since the store's last 1.3.0
+pull. 1.3.0 kept that pull's server-time cursor (`stride_sync_cursor`).
+- **Pinning:** the delivery migration pins the cursor as `stride_delivery_marks_deletions_since`.
+- **Asking:** the full pull that verifies the marks sends it as `deletionsSince`. The server
+  (≥ 1.3.1, full pulls only) answers `deletionsSince: {complete, habitIds, entryIds, groupIds}`,
+  read in the same transaction as the snapshot. Past the 355-day cursor horizon it answers
+  `{complete: false}`.
+- **The pass:**
+  - A row that is listed was deleted elsewhere. It goes by the normal rule, quietly unless it
+    was edited here.
+  - A row missing from a complete list was refused. It is resent with `restoredAt`, so a
+    `tombstoned` or `not_owned` answer holds it, and its check-ins, for Restore as New Copies. A
+    row no server holds is inserted.
+  - With no list, the row is deleted and every row is archived first: nothing lost, nothing
+    resurrected.
+- **Harness result:**
+  - H1 (swept, cursor past the horizon): 0 rows pushed, 4 lines archived, nothing re-inserted.
+  - H2 and H3 (deleted or untapped elsewhere): 0 pushed, 0 lines.
+  - With `deb5ebc`, H1 re-inserted; H2 gave 4 pushed / 4 lines, H3 1 / 1.
+- **The one rule v2 relies on:** tombstones are kept at least 365 days, so a list the server
+  calls complete really is. `sweepStaleData` now enforces that: it refuses a younger retention
+  unless the caller is the rehearsal hook or a test.
+
+**Also in `51da3f8`:**
+- **accounts-2:** what Cancel restores is persisted (`stride_session_expired_before_sign_in`,
+  from `sessionExpired || needsReauth`). It survives a relaunch and covers a 401 met this launch.
+- **The reauth row after sign-in:** a successful sign-in clears `needsReauth`, so the row no
+  longer waits for the first sync to succeed.
+- **critic-1 test:** a hosted test puts the real TodayView in a window from a `{user: null}`
+  cold launch, taps the row and signs in. It checks that the same sheet stays up and shows the
+  account step. It fails on the old structure.
+- **Test seams:** the test needs two, both outside the shipped app. `testOverride` on
+  `AuthService.shared` / `SyncService.shared` is Debug-only. The accessibility automation switch
+  is reached through `dlopen` inside the StrideAppTests bundle only.
+
+**`cc272aa`: the simulator run's app findings.**
+- **Session token on disk:** the app talks through its own ephemeral session, with no URL
+  cache and no cookie store. Every launch purges what earlier builds left in the shared cache
+  and the API hosts' cookies.
+- **Settings' Account section in the reauth state:** it shows Today's "Sign in again to keep
+  syncing" row, with the email and the same sheet. The red error is gone.
+- **Sync Now while the account choice is pending:** it opens that account screen.
+- **Exports:**
+  - one file per share, and no stray `text.txt`;
+  - every `StrideExport-*` folder is removed at launch, after an erase, after Delete Account,
+    and after Start from This Account's Data.
+- **The Delete Account sheet:**
+  - the footer wraps after the in-place update;
+  - the warning is drawn at the footer's own contrast;
+  - the recheck re-reads whether there is anything to export;
+  - the backup advice shows only when there is something to back up.
+- **Held-row wording:** held-row bodies follow the count, with plural keys in six languages.
+- **Start from This Account's Data:** tinted as destructive.
+- **Settings' last-sync label:** reads like Today's and refreshes every minute; no more "in 0s".
+- **Sign-in sheet:** opened from a "Sign in again" row, it starts with the account's email.
+
+Gates on the merged tree (`cc272aa` + `5dca011`):
+- StrideTests 432, en and ja, 2 expected skips (the real-container test and an iOS-only one)
+- hosted 151
+- server 488, typecheck clean
+- rehearsal 80 PASS / 0 FAIL / 1 SKIPPED (LARGE 85/0/1)
+- the generic iOS and macOS product checks
+
 ## Known limitations
 
 - **Count habits merge by last-write-wins per entry**, not additively. 3 glasses logged offline
@@ -229,6 +452,15 @@ delete nothing (review M2-1).
   device holds nothing a snapshot can show. Its marks are forgotten and the rows re-uploaded.
   While tombstones are kept, the answer is `tombstoned` and the rows land in the recovery log.
   After a sweep they would come back into the account: a restore the user can undo, not a loss.
+- **A store with no list of its deletions.** Three cases get archive-then-delete for the rows
+  its account lacks at the first pass after the upgrade:
+  - a store that slept more than 355 days;
+  - a store that came from an app with no server-time cursor (≤ 1.2.2);
+  - a store that meets a server without `deletionsSince`, i.e. the server half not deployed.
+
+  Nothing is lost or resurrected, but deletions made elsewhere land in Recovered Edits. Rows the
+  1.3.0 server refused are archived rather than held for Restore as New Copies. So deploy the
+  server half before 1.3.1 reaches users.
 - **Recovered edits are export-only.** Settings shows a count with Export / Clear, not a
   browsable list. The spec allows that list to move to a later 1.3.x.
 - **macOS: a widget edit made while the app stays frontmost** does not refresh the "changes
@@ -251,19 +483,34 @@ delete nothing (review M2-1).
 
 ### Review
 
-- [ ] **Codex review** of the whole M2 diff (`1b33b4a..HEAD`), queued since the slice after its
-  usage reset. Fact-check every claim against the code before adopting it, as for 1.3.0.
-- [ ] Final full review of the phase C follow-up round (decisions 2–4 above), and a native read
-  of the short labels "Habits from" / "Signed in as" in ja (習慣のアカウント) and ko
-  (습관 소유 계정), of "Changes from" (restore hand-over caption: ja 変更元のアカウント, which
-  wraps to two lines at AX-XXXL, ko 변경 사항 소유 계정), and of ja 復旧した編集.
+- [ ] **Codex review** of the final branch (`1b33b4a..HEAD`). Blocked by its weekly usage limit
+  until **2026-10-04 11:40**; run it on the branch that will be submitted. Fact-check every claim
+  against the code before adopting it, as for 1.3.0.
+- [x] Final full review: the internal cross-phase review and its re-review (above).
+- [x] Phase C follow-up round (decisions 2–4) reviewed and fixed (`7181628`).
+- [ ] **Native read.** Gemini 3.1 Pro read the 1.3.1 strings and What's New; its ko and zh
+  What's New findings were fixed (`97e9697`), and its ja "Synced %@" claim was wrong. A human
+  native read is still open for:
+  - the short labels "Habits from" / "Signed in as": ja 習慣のアカウント, ko 습관 소유 계정
+  - "Changes from": ja 変更元のアカウント, which wraps at AX-XXXL; ko 변경 사항 소유 계정
+  - ja 復旧した編集
 
 ### Server — deploy only after 1.3.0 is live
 
 - [ ] 1.3.0 (19) approved **and released** (`release.py release 1.3.0`, on the owner's go).
-- [ ] Deploy the header-gated millisecond pull and the LWW re-feed (`f911248`, plus the phase B
-  server commits) with the prod-copy rehearsal (`scripts/rehearse_server.sh`), before any
-  1.3.1 build reaches a user. Confirm the tombstone-sweep hook is not mounted in production.
+- [ ] Deploy the 1.3.1 server half with the prod-copy rehearsal (`scripts/rehearse_server.sh`),
+  before any 1.3.1 build reaches a user. Confirm the tombstone-sweep hook is not mounted in
+  production. The half includes:
+  - the header-gated millisecond pull and the LWW re-feed (`f911248`, plus the phase B server
+    commits)
+  - the id aliases (`22691e0`)
+  - the `deletion_tombstones` migration, the old-app hold-back and no-store (`41c8fea`)
+  - `deletionsSince` on a ≥ 1.3.1 full pull (`51da3f8`), which the upgrade pass needs; without
+    it the pass falls back to archive-then-delete
+  - the 365-day floor in `sweepStaleData` (`5dca011`)
+
+  The deploy also helps live 1.2.3 users (the same-day re-check). Run DEPLOY.md's post-deploy
+  checks for both `41c8fea` fixes.
 - [ ] Acceptance (7): against production, a pull with `X-Stride-Client: ios/1.3.1(20)` shows
   millisecond `updatedAt`, and one without the header shows whole seconds (curl, DEPLOY.md's
   post-deploy check).
@@ -285,7 +532,10 @@ delete nothing (review M2-1).
 ### Device checks (acceptance 4, 5, 6, 9)
 
 - [ ] (4) Mixed fleet on real builds: a 1.3.0 (or 1.2.3) device and a 1.3.1 device on one test
-  account. Tap one habit on each and sync both; both show both taps.
+  account. Tap one habit on each and sync both; both show both taps. Also uncheck and re-check a
+  day on the 1.3.1 device with no sync in between, then sync the old device: the day stays
+  checked there. This needs the deployed server half; the simulators passed it against a local
+  copy.
 - [ ] (5) Sign out of A and sign into B on one device. The server log shows no sync request from
   that device until the choice. The screen offers Export first. "Start from this account's
   data" leaves none of A's habits on the device or in B. Signing back into A instead resumes,
@@ -293,8 +543,13 @@ delete nothing (review M2-1).
 - [ ] (6) Export a backup on A and restore it as new copies on a device signed into B. The
   habits are in B after a sync and still there after a full pull. A restored habit that another
   device deleted is held, and "Restore as New Copies" brings it back.
-- [ ] (9) Revoke the session server-side: Today shows the reauth row on the next foreground.
-  Flip the pause switch: "Sync paused" shows, with no error.
+- [ ] (9) Revoke the session server-side: Today shows the reauth row on the next foreground,
+  and Settings shows the same state with no red text. Tap the row and sign in to a different
+  account: the account screen appears inside that sheet (critic-1). Flip the pause switch:
+  "Sync paused" shows, with no error. On the Mac, bringing the app forward is enough (critic-3).
+- [ ] Delete Account on a device with a recovered edit: alert → Continue → Export step → an edit
+  archived while the sheet is up updates it in place and deletes nothing (the simulators passed
+  this).
 - [ ] The screens no script captures (see Known limitations), on a device and on a Mac.
 
 ### Release mechanics

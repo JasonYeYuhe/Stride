@@ -97,7 +97,10 @@ rehearsal is what caught 1.2.3's NULL `updated_at`):
   unlimited) until a 426 minimum-version floor **≥ 1.3.1** has retired the ≤1.3.0 cohort.
   A shipped client that pulls past the retention window has no handler for `cursor_expired`
   and would resurrect whatever was swept on its next snapshot push; tombstone rows are ~100 B,
-  so the cost of keeping them is nothing. Once the floor exists, retention returns to 365 d.
+  so the cost of keeping them is nothing. Once the floor exists, retention returns to 365 d —
+  and never less: `sweepStaleData` refuses a younger retention outside the rehearsal hook and
+  the tests *(2026-09-29)*, because M2's upgrade pass trusts a `deletionsSince` list the server
+  calls complete (M2, "Migrated rows").
   *(Amended 2026-09-28: this said ≤1.2.3. 1.3.0 also pushes a full snapshot on every sync and
   has no `cursor_expired` handler — the server gates that 409 on ≥ 1.3.1 — so it is in the
   cohort too. Account-level usage data cannot prove the cohort gone: one account with an
@@ -386,7 +389,9 @@ the data they have; only a device with a known, different owner is restricted to
 **The safe core ships together in 1.3.1:** the delivery state, the chunked push, the per-answer
 rules, account isolation, the millisecond stamp, the `cursor_expired` handler, the reauth row,
 and the full-pull deletion rule with its recovery log and restore-as-copies — and on the
-server, deployed first, the millisecond pull and the LWW re-feed *(review 2)*. None is safe
+server, deployed first, the millisecond pull and the LWW re-feed *(review 2)*, plus the id
+aliases, `deletionsSince`, the old-app hold-back of a deletion with its same-day replacement,
+and no-store answers *(2026-09-29, RELEASE-1.3.1.md)*. None is safe
 alone: incremental push without account isolation uploads the previous account's never-pushed
 rows; the deletion rule without the held state deletes quarantined rows; a hold without
 restore-as-copies leaves rows nobody can resolve. Only optional UX may move to a later 1.3.x:
@@ -485,6 +490,44 @@ from what it took, and record the new number in the progress log before building
   New DEBUG screenshot hooks `-scrollTo <anchor>[@bottom]` and `-demoScenario deleteAccount|restoreHandover`.
   StrideTests 403 (en and ja), hosted 129, server 443, rehearsal 72/0/1 (LARGE 77/0/1).
   Device-check list gains: the real alert → Continue → sheet → recheck hand-off.
+- 2026-09-29 — **the whole-M2 review, a simulator run, and two fix rounds** (`7a853d4`,
+  `deb5ebc`, `4746fb6`, `22691e0`, `41c8fea`, `51da3f8`, `cc272aa`, `5dca011`;
+  RELEASE-1.3.1.md has the details).
+  - **Review.** Codex is blocked by its weekly limit until 2026-10-04, so the review of
+    `1b33b4a..HEAD` was internal: four dimensions, each verified by a skeptic, plus a
+    completeness critic. It confirmed 12 findings, 3 of them major, and the critic added 1
+    major:
+    - refused rows deleted at the upgrade (data-safety-1);
+    - a check-in lost on a restored tombstoned habit (delivery-1);
+    - the owner left unrecorded until the first sync, so a Log Out in that gap let the next
+      account adopt the store (accounts-1);
+    - the reauth row tearing down its own sign-in sheet (critic-1).
+
+    All are fixed, with fail-before tests. A re-review found that the first data-safety-1 fix
+    (resend every absent row) would resurrect after a sweep and turn untaps into Recovered
+    Edits noise. The second fix decides by the account's deletions since 1.3.0's cursor
+    (`deletionsSince`, "Migrated rows" above), and tombstones are now never swept younger than
+    365 days (M0).
+  - **Simulator end-to-end run.** Real Debug builds of 1.3.1 and 1.3.0 ran against a
+    throwaway local server:
+    - acceptance 5, 6 and the Delete Account hand-off pass;
+    - 4 passes as specified;
+    - 9 passes on Today, but Settings showed a red "Please log in again" (fixed).
+
+    It found that apps below 1.3.1, including live 1.2.3, lose a same-day re-check when a
+    deletion and its replacement arrive in one pull (the build-18 ghost). The server now holds
+    that deletion back from them (`41c8fea`, with the `deletion_tombstones` habit/day columns).
+    It also found the session token in `URLSession.shared`'s disk cache: the server now answers
+    no-store and the app uses an ephemeral session and purges old copies. The remaining UI
+    findings are fixed in `cc272aa`.
+  - **New persisted keys:** `stride_delivery_marks_unverified`,
+    `stride_delivery_marks_deletions_since`, `stride_session_expired_before_sign_in`.
+  - **Decisions (orchestrator):**
+    - 1.3.0 is not pulled again: 1.2.3 has the same re-check flaw, and the server fix reaches
+      every old app.
+    - The server half, now including `deletionsSince`, deploys before any 1.3.1 build reaches
+      a user. Without it the upgrade pass falls back to archive-then-delete.
+    - The Codex review runs on the final branch after 2026-10-04.
 - 2026-09-28 — owner decision on the migrated-marks question (review R1 of the slice): **the first
   full pull proves the account.** A 1.3.0 session that expires keeps `stride_last_sync_time`, so
   "the device signed out" cannot be inferred from the key. The migration marks a store's rows
@@ -572,6 +615,31 @@ that makes a mixed fleet safe):
   account: proven, only its newer row goes up, then 0/0/0, nothing deleted but what A deleted
   meanwhile; into another: marks forgotten, nothing deleted, A's rows held `not_owned`, the rest
   uploaded).
+  **The first pass after the proof goes by the account's deletions** *(2026-09-29, review
+  data-safety-1, second fix)*. A proven mark says 1.3.0 PUSHED a row, not that the server took it.
+  1.3.0 never read `skipped`, so a restore that kept another account's ids, or ids the account
+  had deleted, was refused on every sync, and the check-ins made on it since exist only on the
+  device. The snapshot lacks such a row exactly as it lacks one deleted elsewhere after the
+  device's last 1.3.0 sync. So the migration pins 1.3.0's server-time cursor
+  (`stride_sync_cursor` → `stride_delivery_marks_deletions_since`). Until one full-pull absence
+  pass has run after the proof (`SyncMarksProof.isUnverified`, `stride_delivery_marks_unverified`),
+  the full pull sends it as `deletionsSince`. The server (≥ 1.3.1, full pulls only) answers with
+  the account's deletions since then from the same read transaction, or `complete: false` past
+  the 355-day cursor horizon. In that pass, a delivered row the account lacks is:
+  - **listed**: deleted elsewhere. The normal rule, quiet for a row nobody edited here;
+  - **not in a complete list**: refused. Resent with `restoredAt`, so `tombstoned` and
+    `not_owned` hold it (and its check-ins) for Restore as New Copies, and a row no server holds is
+    inserted;
+  - **no list** (no pinned cursor, past the horizon, a server without the field): deleted,
+    archiving every row whatever its state. Nothing lost, nothing resurrected.
+
+  It stays safe after a sweep because tombstones are never swept younger than 365 days (M0),
+  so a list the server calls complete is complete. The first fix, `deb5ebc`, resent every absent
+  row. That resurrected deleted rows once tombstones were swept, and it turned every untap made
+  elsewhere since the last 1.3.0 sync into a Recovered Edits line. Residuals, documented in
+  `SyncMarksProof`: a refused row that another device deletes between the proving pull and the
+  resend is held `tombstoned`, not dropped; a same-account 1.3.0 restore of rows whose tombstones
+  were swept is inserted, which is the user's own restore.
 - **Millisecond edit stamps from 1.3.1** *(revised)*. The app sends whole seconds
   (`SyncTimestamp.string`) and the server's guard is `excluded.client_updated_at >= stored`
   plus a values-differ check (`routes/sync.js` :385, :408, :431), so two different edits of
@@ -701,6 +769,10 @@ that makes a mixed fleet safe):
     Delete wins even over an offline edit here, because "skip all pending rows" would resurrect
     deletions on a device whose cursor expired. The edit is not lost: every pending or held row
     the deletion takes, descendants included, goes to the recovery log first.
+  - **except in the one pass that verifies a 1.3.0 store's migrated marks** *(2026-09-29)*. There
+    a delivered row the account lacks is deleted only if the account's deletions since 1.3.0's
+    cursor list it. One missing from a complete list is resent as a restore; with no list it is
+    deleted with every row archived (see "Migrated rows").
 - **Forced resend waits until deletions are settled** *(review 2)*. Re-sending a delivered row
   the server lacks is safe only while its tombstone exists to answer `tombstoned`. Once
   sweeping returns (after the ≥ 1.3.1 floor, M0), the server treats it as a new insert, and a
