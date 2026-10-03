@@ -4,7 +4,7 @@
 
 ## 现在的状态（2026-09-30）
 
-- **1.3.0（build 19）已上架** iOS + macOS（M1），tag `v1.3.0`；PR JasonYeYuhe/Stride#4（`release/1.3.0` → `main`）CI 绿后合并。
+- **1.3.0（build 19）已上架** iOS + macOS（M1），tag `v1.3.0`；PR JasonYeYuhe/Stride#4 已于 2026-10-03 合并进 `main`。
 - **1.3.1 的服务端部分已部署到生产**（2026-09-29 16:25 UTC，服务端代码树 `5dca011`），验收 (7) 已在生产上验证。内容：毫秒级 pull、LWW re-feed、id aliases、`deletionsSince`、对 1.3.1 以下旧 App 扣住"删除+同日替换"、`no-store` 响应头、tombstone 两个新列、365 天清扫下限。
 - **1.3.1（M2，增量推送）的客户端**在分支 `release/1.3.1` 上**代码完成**。它经过了全量内部对抗审查和两轮修复，并在模拟器里用真实 1.3.0/1.3.1 构建对着本地服务器跑完了端到端验证，全部通过。门禁：StrideTests 432（en/ja）、hosted 151、server 488、sync_rehearsal 80/0/1。**还没打包、没上传、没提交。**
 
