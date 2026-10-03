@@ -292,7 +292,7 @@ setup:
 - **Sign-in:** through the app's paste-token field, with magic-link rows minted in that
   database.
 
-Nothing touched production. The kit lives in the session scratchpad, not in the repo.
+Nothing touched production. The kit lived in that session's scratchpad and is gone; this section and the re-run below describe it well enough to rebuild in about an hour.
 
 Results:
 - **(5) account switch: PASS.**
