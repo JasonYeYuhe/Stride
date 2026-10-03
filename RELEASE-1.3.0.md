@@ -1,7 +1,13 @@
 # Stride v1.3.0 — release record
 
 App ID `6761262334`, bundle `yyh.stride.habittracker`. **In progress**: M0 (server, CI, ops)
-is done and the server half is live; the 1.3.0 client (DEV-PLAN-1.3.md M1) has not been built.
+is done and the server half is live. The 1.3.0 client (DEV-PLAN-1.3.md M1) is built — `0a59bf3`
+plus the completion round `3fed14b` — and **resubmitted on 2026-09-29 as build 19** with one
+shipped-bug fix (below; build 18 was pulled). Originally submitted 2026-09-28: build 18 on
+iOS (review submission `c15dd36b-3144-4695-846e-4a9e6408222d`) and macOS
+(`13f289d2-0fdf-4c62-a554-7fba8a8e97b6`), both `WAITING_FOR_REVIEW`. The owner chose to submit
+without the TestFlight device checks; they stay listed below as post-release checks, and the
+privacy-page publication is still open ([TODO](#todo--before-130-is-submitted-m1)).
 
 1.2.3 (build 17) has been `READY_FOR_SALE` on iOS and macOS since 2026-09-17. This release
 follows [DEV-PLAN-1.3.md](DEV-PLAN-1.3.md): M0 lands everything the incremental-push client
@@ -26,7 +32,9 @@ is a row that never syncs. So:
   rows from the previous account after an account switch (re-id them), `missing_field` /
   `row_error` mean quarantine. One bad row never fails the request: SQLite errors are caught
   per row and reported as `row_error`, because the 1.3.1 client backs off on 5xx, and a row
-  that 500'd its chunk would have stopped that account for good.
+  that 500'd its chunk would have stopped that account for good. *(M1's completion round adds
+  `invalid_value` — a number no app can produce — also quarantine; built and tested, not yet
+  deployed. See [Numbers that cannot crash](#numbers-from-sync-that-cannot-crash-the-app).)*
 - **A pull says how much there is.** `totals:{habits,entries,groups}`, read in the same
   transaction as the arrays, so a client deletes local rows missing from a full pull only when
   the pull is provably complete.
@@ -180,14 +188,474 @@ _Not yet run. Fill in with run links._
   the production DSN; the 2026-09-27 test runs filed abnormal sessions against live 1.2.3+17
   (ignore that release's sessions from 08:00–11:00 UTC that day; Sentry cannot delete them).
 
-## TODO — the 1.3.0 client (M1)
+## M1 — the 1.3.0 client
 
-_Not started. Per DEV-PLAN-1.3.md M1, plus what M0 added to it:_
+Branch `release/1.3.0`, built 2026-09-27 as eight parallel pieces (plurals and catalogs,
+Dynamic Type, reminders, the large widget, backup/restore/erase, one-tap sign-in, Settings and
+the small items, the accessibility sweep), then reviewed adversarially and put through two fix
+passes. No schema change: every model is as 1.2.3 left it. Commits: `0a59bf3` (the client),
+then the [completion round](#completion-round) (`3fed14b`, with the server half in `55c8c72`), which closed
+what a completeness review of `0a59bf3` found still open.
 
-- [ ] `APIClient` sends `X-Stride-Client` and decodes `{error, code?, message?}`: match on
-  `code`, display `message ?? error`.
-- [ ] The associated-domains entitlement for the AASA file now being served; the
-  `verify_archive.sh --exported` check activates itself once the entitlement is declared.
-- [x] Drop the planned intro-offer disclosure line (see decisions; DEV-PLAN-1.3.md amended).
-- [ ] Release notes, verification, demo-account check and what was deliberately not done, in
-  the style of RELEASE-1.2.3.md.
+### Plurals, and the English catalog that did not exist
+
+- **`Localizable.stringsdict` in six `.lproj`s**, including a new `Shared/en.lproj`. 22 keys:
+  every count the plan listed, plus the restore preview's `%lld habits` / `%lld groups` and
+  the two five-argument Stats/Share VoiceOver labels (Spanish read "racha de 1 días" inside
+  them). ja/ko/zh get a single `other` form built from their existing translation, so every
+  language has the same keys.
+- **A plural key lives only in the stringsdict.** When a key is in both files Foundation returns
+  the stringsdict form — proved on a scratch bundle and kept as a test — so a `.strings` copy
+  is dead text that drifts. `testNoKeyIsInBothFiles` enforces it.
+- **Choosing English in the in-app picker did nothing on a non-English device.** With no
+  `en.lproj`, `LanguageManager.bundle` for English fell back to the system language, so every
+  `appLocalized` string — VoiceOver announcements, Settings values, sync and restore errors —
+  stayed Japanese (or whatever the device ran). An older archive confirms `en.lproj` never
+  shipped. Found while adding the English plurals; fixed by the same files.
+- **The plural form follows the locale, not the bundle** — found by the review, running the
+  suites under `-testLanguage ja`: `String(localized:bundle:)` with the Spanish bundle on a
+  Japanese device returned "Racha de 1 días", because the plural rule comes from
+  `Locale.current`. `appLocalized` now passes `locale:` from a new `LanguageManager.stringLocale`
+  (the picked language, or `<resolved language>_<device region>` for System). The mutation run
+  with `locale:` removed failed on exactly those five strings.
+- **`weeks`** (in no catalog, so English in every language) and the **share card's "1 días de
+  racha"** became unit-only, count-bearing keys — `"days (unit after %lld)"`,
+  `"day streak (label under %lld)"` — because the number is drawn separately and larger, and
+  merging the two into one `Text` would move pixels at the default size.
+- **`LocalizationSourceScanTests`** rebuilds runtime keys from `Stride/Sources` and
+  `StrideWidget/Sources` (the Mirror rule, not `-exportLocalizations`) and fails on a literal
+  with no ja entry, on a string literal inside an interpolation, and on an interpolated
+  expression it cannot type. Widened after review to `ProgressView`, `Link`, `ShareLink`,
+  `help`, `shortTitle:` and friends, where it immediately found three AppShortcut titles
+  ("Complete Habit", "Check Streak", "List Habits") in no catalog.
+- Today's week strip reads weekday names from `appCalendar`, and two Stats labels format with
+  the app's locale, so they follow the picker. The widget's gallery placeholder is eight
+  habits named after the templates: the gallery preview had been English everywhere.
+
+### Dynamic Type
+
+- The 8–10 pt fonts go through a new `scaledSystemFont(size:relativeTo:)` (`@ScaledMetric`).
+  SwiftUI has no `Font.system(size:relativeTo:)`, and `.caption2` is 11 pt, which would have
+  moved every chart label at the default size.
+- One breakpoint, `isAccessibilitySize`: the 12-week heatmap becomes a horizontally scrolling
+  strip that opens on the current week; the 8-week trend and By Weekday become one row per
+  item; the four streak tiles stack; the Today progress ring (which read "1…") moves under its
+  text; the week strip (which split "21" and "Mon" across lines) scrolls; the paywall price
+  cards (which broke "Life/tim/e" and "$19.9/9") stack. Decorative 50–60 pt symbols scale
+  relative to `.largeTitle`, capped at `.accessibility2`.
+- **`scripts/a11y_sweep.sh`** captures Today, Stats, Settings and the paywall at a chosen
+  content size on iPhone 17 Pro Max under a mutex, and restores size, appearance, status bar
+  and boot state from an EXIT trap — the same device takes the store screenshots. `-paywall`
+  opens the paywall at launch and is compiled only into DEBUG, so a store build has no path
+  that shows a sheet without a tap.
+
+### Reminders on a fresh install
+
+A reminder switched on in the New Habit sheet was scheduled while permission was still
+`.notDetermined`, and never delivered; the only permission request lived behind the Settings
+Daily Reminder toggle. Save now settles permission first, so the system prompt appears over
+the sheet at the moment of the user's own tap. On "Don't Allow" the sheet stays open once with
+the footer Settings already shows, and nothing has been saved yet, so the next Save cannot
+insert a duplicate. The habit keeps `reminderEnabled`, and the launch pass schedules it once
+notifications are allowed. The review then found the other half: the first grant scheduled
+only the habit being saved, so habits restored or synced earlier stayed silent until the next
+launch. A grant now schedules every reminder-on habit in the store.
+
+### The large widget, and a midnight that does not depend on WidgetKit
+
+- `.systemLarge` (eight rows at default text size, fewer at larger sizes, measured by
+  rendering the real views at the smallest iOS 17 large widget) and `.systemExtraLarge` (iPad,
+  two columns). macOS desktop widgets are not built.
+- **Rollover.** `Shared/WidgetTimelinePlan.swift` is pure and hands WidgetKit two entries, now
+  and the next local midnight, with `.after(midnight + 1 h)` as the safety net. The midnight
+  entry's rows come from each habit's own `isCompletedOn` / `currentStreak`, called with UTC
+  day-keys the plan builds itself: `HabitCalendar.dayKey`'s idempotency shortcut reads an
+  instant exactly on a UTC midnight as tomorrow in negative-offset zones. Midnight is
+  `startOfDay(startOfDay(now) + 36 h)`, correct on 23- and 25-hour days, on days with no 00:00
+  (São Paulo 2018) and on a skipped day (Samoa 2011). A failed store read retries in 15 minutes
+  instead of showing "No habits yet" until tomorrow.
+- Yes/no rows are `Toggle(isOn:intent:)`, so the tap shows at once; count habits stay
+  `Button(intent:)` through `HabitCheckIn.tap`, so a tap adds one and never deletes the day
+  (the 1.2.3 fix), and part-way to the goal they draw a partial ring.
+
+### Backup, restore and erase
+
+- **Export v2** (`Shared/DataBackup.swift`): every model field, groups, and each habit's
+  records with their ids and edit times; sorted keys, deterministic order, timestamps rounded
+  to milliseconds, so `export(restore(export(store)))` is byte-identical and the test asserts
+  it. The export folds rows that share an id: the pre-1.2.3 lowercase-id bug left duplicate
+  `Habit` rows in real stores, and exported verbatim they make a file restore must reject — the
+  user would find out only when they need it. CSV keeps the five 1.2.3 columns in place and
+  appends value, target, unit and schedule, with a UTF-8 BOM so Excel shows emoji and CJK.
+  Both are `Transferable` items that serialise only when the user picks a destination; the old
+  Settings body ran both serialisations on every render.
+- **Restore into an empty store only**, with a preview and a confirmation. It keeps ids,
+  `createdAt` and `updatedAt` and never calls `touch()` — restored rows are the account's own
+  rows, and re-stamping them would make a months-old backup win every conflict. A 1.2.3 export,
+  a newer schema, a damaged file and "not a backup" each get their own sentence; out-of-range
+  numbers (which would trap in `Int(value)` elsewhere) are rejected as damaged. Restore
+  withdraws any queued sync deletion of the ids it brings back, and waits out a sync in flight,
+  whose pull would otherwise have removed what it just inserted.
+- **Erase Local Data**: when a session exists — a loaded user *or* a stored token, since an
+  offline session check leaves only the token — it syncs once, and if that sync fails it
+  erases nothing and says so; otherwise it signs out and clears the cursor, then deletes.
+  Signing out first matters: a signed-in incremental cursor would never re-fetch, and the next
+  pull would not bring the account back.
+
+### One-tap sign-in, and the server's error codes
+
+- `applinks:stride-api.colorarchive.me` in both apps' entitlements (an entitlement, not a
+  plist key). `Shared/LoginLink.swift` accepts only https, that host, path exactly `/login`,
+  one token of 16–512 url-safe characters. Both `.onOpenURL` and `onContinueUserActivity` are
+  wired, a second delivery of the same tap is ignored (the token is single-use), and a link
+  arriving on a device that already has a session is ignored and logged without the token.
+  `/login` keeps the copy-paste page, and the login sheet now accepts a pasted full link.
+- The review found `GET /session` answers 200 `{user:null}` for a dead session, which the
+  client treated as "offline, keep the token": such a device ignored every login link. A
+  `{user:null}` now deletes the token, as a 401 does.
+- `APIClient` sends `X-Stride-Client: ios|macos/<version>(<build>)` (omitted rather than sent
+  malformed), decodes `{error, code?, message?}`, shows `message ?? error`, and gives
+  `sync_paused` and `rate_limited` their own translated sentences, so no raw code reaches the
+  Settings footer.
+
+### Small items
+
+- The SAVE badge is computed from the real prices, rounded down: 44% at $2.99 / $19.99.
+- The share card renders once in `.task`; Weekly Review has an empty state and its Stats
+  toolbar button hides with no habits.
+- **Analytics removed**: `AnalyticsService`, every call site, the Settings toggle, and the
+  `ProductInteraction` entry in the privacy manifest. The appID was a placeholder; nothing was
+  ever sent.
+
+### Completion round
+
+A completeness review of `0a59bf3` against the plan listed what was still open; this round
+closed it (commit: `3fed14b`).
+
+#### Numbers from sync that cannot crash the app
+
+- **The gap.** Restore was bounded, but sync was not: `TodayView` and `StrideShortcuts` formatted
+  amounts with `String(Int(value))`, which traps on ±infinity or |value| ≥ 9.2e18, and
+  `/v1/sync/push` stored `value` / `targetValue` unchecked. One bad row pushed by anything —
+  a third-party client, a corrupted store — would crash every device on that account that
+  pulled it, which is the opposite of M1's goal.
+- **Client: `Shared/SafeNumber.swift`, which never traps.** `amount` formats as before ("8",
+  "2.5", "1000000"), shows "—" for NaN / ±inf and `%.3g` from 1e15 up; `wholeNumber(_:in:)` is a
+  clamped truncation, safe even for `Int.min...Int.max` (where `Double(Int.max)` rounds up to
+  2^63); `unitInterval` clamps to 0…1. Today's five amount sites and the Shortcuts formatter
+  use it (the Shortcuts `amount` name stays, so the localization scan still matches), Today's
+  count ring clamps `habit.progress` — `Habit.progress` has no floor, so a negative synced value
+  drew the ring below zero — and AddHabitView reads the target through
+  `wholeNumber(…, in: 1...Int(DataBackup.maxAmount))`, keeping targets above the stepper's
+  1,000. Every other `Int(…)` in the app, widget and `Shared/` was checked: rates in [0,1] by
+  construction, dates, and `Int(habit.sortOrder)`, whose every writer is bounded. 8
+  `SafeNumberTests`, including an end-to-end model test with absurd synced check-ins.
+- **Server: `invalid_value`.** `routes/sync.js` bounds every pushed number, read once in either
+  casing (so the snake_case counters are not doubled): entry `value` and habit `targetValue`
+  finite within ±1e9 (= `DataBackup.checkAmount`, negatives included, so nothing a 1.3.0
+  restore accepts is refused — refusing a negative would let the next full pull delete it);
+  habit `sortOrder` whole within ±1e15 (every app decodes it as a Swift `Int`, and one fraction
+  fails the whole pull); group `sortOrder` finite within ±1e15; `reminderHour` 0…23,
+  `reminderMinute` 0…59, `timesPerWeek` 1…7, `activeDaysMask` 0…127, whole. Absent or null
+  still takes the column default; strings and booleans are invalid. A failing row is skipped
+  with reason `invalid_value` and the rest of the push applies, still 200 for every client —
+  a shipped app decodes only `ok`. Drop reasons and ownership reasons win over it; entries of a
+  refused new habit read `skipped_habit`. **Pull is deliberately not filtered**: a 1.2.3 app
+  deletes whatever a full pull lacks, so hiding a stored bad row would delete it on every old
+  device. Server suite 375 → 394 (19 bound tests, both casings, raw `1e999`, and a legacy
+  headerless snapshot with one bad habit and one bad entry that applies the rest).
+  [server/DEPLOY.md](server/DEPLOY.md)'s contract section lists the reason, what a 1.3.1
+  client does with it (quarantine), and a pre-deploy audit SQL. **Deployed 2026-09-27**
+  (`55c8c72`): production audit 0 / 0 / 0, rehearsal 20/20 (the demo account's 176 real
+  entries pushed back 1.2.3-shaped, nothing skipped), and a live push of `value: 1e19` on a
+  real demo habit answered `invalid_value` with nothing stored.
+- **`AuthService.loginWithSessionToken` removed**, with its one test. No app code ever called
+  it (`git log -S`); it came with `f27321a` for a web-login redirect that was never built, and
+  it would have stored a token straight from a URL if anyone wired it. Sign-in from a link goes
+  only through `handleLoginLink`, which verifies the token with the server.
+
+#### Dynamic Type, VoiceOver and the gates
+
+- **The last fixed symbols**: LoginView (56 pt) and OnboardingView (72 pt) use
+  `scaledSystemFont(…, relativeTo: .largeTitle)` capped at `.accessibility2`, like the rest.
+  Weekly Review's ring (a 36 pt number in a 120 pt circle, which the plan did not list) became
+  `@ScaledMetric` in its own view, so the cap is in the environment the metrics read; its
+  "This Week" caption gained a one-line limit and an inset, because a render showed "Esta
+  semana" already running into the old ring's stroke at xxxLarge. Old and new ring renders are
+  byte-identical at the default size; AX5 renders identical to AX2.
+- **Widget count rows** carry the progress in `accessibilityValue` — a percentage rounded
+  **down**, so 999 of 1,000 is never read as "100%, not completed" — then the streak phrase.
+  VoiceOver used to say only "not completed" at 6 of 8. System-formatted, no new key.
+- **A hole in the localization gate**: `case ",", "{", "}" where depth == 0` guarded only `}`, so
+  a comma inside nested parentheses ended the ternary scan and `Text(f(a, b) ? "A" : "B")`
+  escaped it (the compiler had been warning). Fixed and pinned by a test that fails on the old
+  line; a probe ternary in WeeklyReviewView failed the gate, and the widened scan found nothing
+  new in the real sources.
+- zh-Hant description: 習慣群組 → 習慣分組, the app's own term.
+
+#### Evidence the first sweep could not give
+
+- **`-demo` is deterministic, and DEBUG-only**: `DemoData.populate` clears the store with
+  `DataBackup.eraseLocalData(in:)`, groups and orphaned check-ins included — the leftover
+  "Morning" group had put a header into the default-size sweep. `-demo` itself is now inside
+  `#if DEBUG` (it was not, since 1.0): `StrideApp` is compiled into StrideMac, where
+  `open -a Stride --args -demo` reached a Release build and wiped the real store with no
+  tombstones — on a signed-in account the next push spread the demo set everywhere. Only
+  `a11y_sweep.sh` passes it, on a Debug build. DEBUG-only `-demoScenario
+  plurals|weekly` puts one exact number on screen: one habit with one check-in today, and one
+  3-a-week habit with a 4-week current and 5-week best streak.
+- **Stats below the fold**: DEBUG-only `-statsScrollTo detail|insights|trend|weekday|heatmap`
+  (anchors that are `.id`s, compiled out of Release), and `a11y_sweep.sh` captures Stats five
+  times — four distinct views without Pro, since insights and trend both land on the locked
+  card (the XXXL files are byte-identical, so no capture shows the trend chart's labels). At XXXL: By Weekday switches to full day names at body size; the heatmap's letters,
+  cells (≈31 pt against 14) and legend scale, and 10 of its 12–13 week columns are visible,
+  ending at the current week, so the strip scrolls. At the default size every new capture
+  matches the baseline's hand-scrolled one within sub-pixel tolerance: insights, weekday and
+  heatmap 0 pixels, trend 12 pixels, none by more than 16/255.
+- **Acceptance (1) and (2) on screen**, iPhone 17 Pro Max, in English, Spanish and Japanese:
+  "1 day streak" / "Racha de 1 día" / "1日連続"; Settings "1 check-in" / "1 registro" /
+  "1回チェックイン"; the weekly habit's Stats tiles "4 weeks / 5 weeks", "4 semanas / 5
+  semanas", "4 週 / 5 週". No screen shows "1 days", "1 check-ins", "Racha de 1 días" or "1
+  hábitos".
+- **Not shown**, and why: the widget line (`simctl` cannot place a widget — a device check);
+  the Pro-only Insights and 8-week trend at XXXL (no purchase on the simulator: both captures
+  are the locked card); Today's lower rows and the Settings habit rows at XXXL were captured
+  by hand-swiping, since only Stats scrolls itself on launch — every Today row wraps and
+  nothing is cut off.
+
+### Verification
+
+Runs for `0a59bf3`, on the shared tree, 2026-09-27, before the orchestrator's merge:
+
+- `StrideTests` on macOS: **179 tests, 0 failures** (119 when M1 started; plan floor 160). The two
+  localization suites also pass under `-testLanguage ja -testRegion JP` (12/0; 19 failures
+  before the locale fix).
+- Hosted `StrideAppTests` on iPhone 17 Pro, run as `STRIDE_HOSTED_ALL=1` once (212/0, the
+  StrideTests suite on iOS included) and last on its own: **54 passed, 0 failed**.
+- `scripts/ci/build_ios_generic.sh`: all product checks pass. StrideMac builds.
+- Mutation checks, each restored afterwards: a naive `startOfDay + 24 h` midnight fails 12 of
+  14 widget-plan tests; restore stamping `updatedAt = Date()` fails the round trip; removing
+  three review fixes at once fails exactly six new hosted tests; `appLocalized` without
+  `locale:` fails five assertions under ja; `Text("Zzz test")` fails the source scan.
+- **Default text size, against the pre-M1 baseline** (`a11y_sweep.sh --size default`): Today
+  and Stats 0 pixels differ, Settings 8 pixels, none by more than 16/255 (sub-pixel text); the paywall differs only inside the SAVE badge (the
+  computed "SAVE 44%"). Acceptance (7) holds. The baseline run first had to move a leftover
+  store aside: `DemoData.populate` did not delete groups (fixed in the completion round).
+- On the simulator by hand: erase, restore from a v2 file (preview, then both habits, the group
+  and the streak back), the v1-file error, the paywall and Settings at accessibility-XXXL.
+
+Completion round, each agent on its own derived data while the others edited the same tree:
+
+- `StrideTests` on macOS: **188 tests, 0 failures**, and 188/0 again under `-testLanguage ja
+  -testRegion JP`.
+- Server: `npm run typecheck` clean, **394/394**.
+- Hosted `StrideAppTests`: **53/0 on the combined tree** (the fixer's run, after
+  `testMalformedDeepLinkTokenIsNeverStored` went with `loginWithSessionToken`); earlier 53/0 and
+  54/0 were on partial trees. Server 394/394 again after the ±1e9 amount bound; `StrideTests`
+  188/0; generic iOS build with product checks and StrideMac pass on the same tree.
+- Generic iOS build with product checks, a Release simulator build (the `#if DEBUG` launch
+  arguments compile out), StrideMac: all pass.
+- Mutation and probe checks: the old scan guard fails the new scanner test twice; a probe ternary
+  with nested commas fails the gate.
+- `a11y_sweep.sh` at accessibility-XXXL and at default on iPhone 17 Pro Max, and the plural
+  acceptance captures (18 PNGs, `-demoScenario`) in en / es / ja — described in
+  [Evidence](#evidence-the-first-sweep-could-not-give). These images come from the shared tree
+  mid-round; the sweep is re-run on the merged tree before submission.
+
+### Decisions and deviations from DEV-PLAN-1.3.md
+
+| Plan said | Done | Why |
+|---|---|---|
+| Restore inserts with `touch()` so the next push carries it | Keeps the backup's timestamps; never `touch()` | A backup is the account's own history; stamping it now would let an old file beat newer edits on every other device. 1.3.0 still pushes the whole store on every sync, so restored rows reach the server regardless. |
+| Records carry `{date, value, note}` (+ createdAt in an early draft) | Also `id` and `updatedAt`; no `createdAt` | `HabitRecord` has no creation time; M1 does not change the schema, so the file invents none. |
+| `+N more` stays only on medium | Also on large, as the last of its rows | A list that stops at eight looks complete; a ninth habit would look lost. |
+| Route `appLocalized` through `NSLocalizedString` if stringsdict is skipped | Not needed; `locale:` added instead | `String(localized:bundle:)` does read the stringsdict; what was wrong was the plural *rule*, which follows the locale. |
+| Sweep on "the shared iPhone 17 Pro" | iPhone 17 Pro Max | The Pro is held by hosted test runs; the Pro Max is the screenshot device. |
+| `.xcstrings` migration "here if it fits" | M3 | The `.strings` + `.stringsdict` split is covered by parity and no-overlap tests. |
+| Acceptance (1): the **medium** widget shows "1 remaining" | Checked on **small and large** | `HabitEntry.statusText` is drawn only by those two; the medium widget has no status line. It also needs a habit not yet done today — with the one habit done the line reads "All done! 🎉". DEV-PLAN-1.3.md amended. |
+| (not in the plan) | The server bounds pushed numbers: `invalid_value` | The plan assumed the server validated what it stores; `/v1/sync/push` did not, and one absurd number crashes every device on the account that pulls it. The client's `SafeNumber` makes 1.3.0 survive such a row; the bound stops new ones reaching ≤ 1.2.3 devices. M2's skip-reason handling amended. |
+
+### Deliberately not done
+
+- **Restoring ids the server has tombstoned — until M2.** A habit deleted on another device
+  and synced comes back locally, then goes again on the first full pull after sign-in (the
+  push skips it as `tombstoned`). Re-keying it needs M2's per-row push acknowledgement, and
+  whether a restore should undo another device's deletion is a product question. The other
+  half — a deletion still *queued* on this device — is fixed: restore withdraws it.
+- **Merge-import** into a populated store: M6+, under M2's sync rules.
+- **Plural rules in SwiftUI `Text` on a device language Stride does not ship** (fr, ru) — M3,
+  with the String Catalog. `appLocalized` is fixed (such a device resolves to
+  `en_<region>`), but the widget and `LocalizedStringKey` still take the rule from
+  `Locale.current`, which could read "0 habit" in French. Setting the root `\.locale` would also
+  turn dates English on those devices, and whether iOS already hands the app `en_FR` was not
+  checked; decide on a French device.
+- **AppShortcut phrases** are English in every language — M3: they need `AppShortcuts.strings`
+  (or a String Catalog), a different mechanism from `Localizable`. Their short titles are
+  translated since this release.
+- CSV cells starting with `=`, `+`, `-` or `@` are written as typed: the data is the user's
+  own, and a leading quote would corrupt ordinary notes such as "- felt good".
+- **After a sync's 401, `AuthService.currentUser` stays set** while the token is gone
+  (pre-existing): Settings shows signed in with no session, and Erase refuses safely and says
+  to log out. Until M2's `needsReauth`, which observes the 401.
+- **Out-of-range rows already stored on the server** keep being served on pull (filtering them
+  would delete them on every 1.2.3 device); ≤ 1.2.3 devices on such an account can still crash
+  until the row is repaired by hand, which is what the pre-deploy audit is for. A ≤ 1.2.3
+  device that already holds a bad value locally crashes until it updates.
+- **Negative amounts are stored and served**: no UI writes one, but none traps on one
+  (`String(Int(-3))` is fine, a negative ring draws nothing, a target ≤ 0 is guarded), and a
+  1.3.0 restore accepts them down to −1e9. The first cut of the bounds refused them, which
+  would have made a restored habit with a negative target vanish: skipped on push, its entries
+  `skipped_habit`, then deleted locally by the next full pull. Server and restore now agree
+  (±1e9).
+- AddHabitView still truncates a fractional target (2.5 → 2) when the edit sheet is saved, as
+  1.2.3 did.
+- ~~`AuthService.loginWithSessionToken` has no caller … a removal candidate.~~ Removed in the
+  completion round, with its test.
+- The Mac shows "Go to Settings → Stride" for notifications, as it did before; "System
+  Settings" would be a new key.
+
+## Build 18 pulled, build 19 resubmitted (2026-09-29)
+
+M2's hardening (1.3.1 branch) found, and a simulator run of the **submitted** build 18 confirmed,
+that once a habit is unchecked it cannot be checked again that day until the app is relaunched:
+uncheck Morning Run → 4/5; tap again → still 4/5; tap a third time → still 4/5. `Habit.records`
+has no inverse, and a habit already loaded keeps the deleted record in that array after the
+save; `HabitCheckIn` found it and "deleted" it again on every tap. The same code is in the live
+1.2.3. Count habits lost a +1 the same way, and Siri's "complete" could do nothing.
+
+Fix `fed7665` (a cherry-pick of `1e9d293`): `HabitCheckIn` asks the store which of the day's
+records still exist. Six ghost tests, including a deletion saved by the widget's context. On the
+same build path in the simulator: uncheck → 4/5, re-tap → 5/5, streak back to 4.
+
+The owner chose to pull 1.3.0 from review (iOS was waiting; **macOS was already in review**) and
+resubmit it as build 19 = build 18 + this fix + one What's New line in six languages (`01c6612`).
+`release.py cancel <version>` was added for it — it cancels only a submission that holds that
+version. Before resubmitting: both platforms archived and exported through every gate (1.3.0 (19),
+Distribution-signed, no `get-task-allow`, associated domains present), `check_demo_account.sh`
+green (0 rows rejected). **Resubmitted 2026-09-29**: iOS `ed4cf26e-1103-42ce-9edf-626cbbc06ba1`,
+macOS `f703917a-366a-4475-b885-80c71bdfae1f`, both `WAITING_FOR_REVIEW`, release type still
+`MANUAL`. 1.3.1 (M2) builds from 20.
+
+## After submission — external review and the owner's decisions (2026-09-28)
+
+The state and ten decisions above were put to Codex (gpt-6-astra) and Gemini 3.8 Flash
+independently (same brief, `agy` / `codex exec`, read-only on the repo), and every factual
+claim either made was checked against the code. Codex's code claims held up almost without
+exception; Gemini had the operational picture right and several specifics wrong (offsite
+backups are not Mac-only — the VM pushes to Blob every 6 h; there is no `SyncPushPlanner.swift`
+yet; restoring a backup is not a way to move data between accounts). What changed:
+
+- **Release held.** `release.py` created every version with `releaseType: AFTER_APPROVAL`, so an
+  approval would have published 1.3.0 before any device check. Both platforms were switched to
+  `MANUAL` while `WAITING_FOR_REVIEW` (the submission was not disturbed), `release.py` now
+  creates versions `MANUAL`, and `release.py release <version>` publishes a held version.
+  Before running it: the Mail/Gmail link, a fresh-install reminder and the large widget on a
+  device (TestFlight build 18).
+- **Privacy policy published** (stride-site `422d22e`, and this repo's Pages copy via #5) — but
+  version-aware: the draft said Sentry reports carry no network data and no record of screens
+  or taps, which is true from 1.3.0 and false for the live 1.2.1–1.2.3 (their Sentry attaches
+  UI and network breadcrumbs). The page says which versions send that trail.
+- **"Product Interaction" stays declared** in App Store Connect (reversing the earlier plan to
+  remove it): Sentry session records are per app launch and are used to count devices per
+  version. 1.3.1 re-declares it in `PrivacyInfo.xcprivacy`.
+- **Server Sentry made safe before the DSN goes in** (1.3.1 branch): tracing off by default, a
+  scrubber for tokens, cookies, bodies and addresses, failed magic-link emails reported, a
+  `/health` that reads a real table.
+- **A 1.3.0 limitation found by the fact-check:** a backup made under account A, restored on a
+  device that then signs into account B, is skipped by the server as `not_owned` and removed
+  from the device by the first full pull (the file still has it). M2 adds "restore as new
+  copies".
+- **M2 revised** before implementation (DEV-PLAN-1.3.md "## M2"): account switch is "start from
+  this account's data" only; quarantine is its own state and is never deleted by a full pull;
+  an offline edit displaced by a delete goes to a recoverable local archive; millisecond edit
+  times for ≥ 1.3.1; chunks bounded by bytes too; per-reason handling instead of 400
+  bisection; the retirement cohort is ≤ 1.3.0 (1.3.0 has no `cursor_expired` handler either);
+  restore into another account as new copies. The safe core ships together in 1.3.1.
+
+Raw material: the brief, both answers and the fact-check were kept with the session's notes.
+
+## TODO — before 1.3.0 is submitted (M1)
+
+### Code still open
+
+All six items found after `0a59bf3` are closed in the completion round:
+
+- [x] `Shared/DemoData.swift` clears groups too, so `-demo` is deterministic.
+- [x] Widget count rows: the progress is in `accessibilityValue`.
+- [x] `TodayView` / `StrideShortcuts` format through `SafeNumber`; the server refuses
+  `invalid_value`.
+- [x] `LoginView` / `OnboardingView` symbols (and the Weekly Review ring) scale, capped.
+- [x] `docs/privacy.html` rewritten to match the binary: no analytics, Sentry crash reports,
+  what the optional account stores; last updated 2026-09-27. A review then found sentry-cocoa
+  8.58.3's defaults sending more than the page said — an event per sync-server 5xx
+  (`enableCaptureFailedRequests`), a breadcrumb per request with its URL, status and the pull's
+  `since` cursor (`enableNetworkBreadcrumbs`; `beforeSend` clears `event.request`, not
+  breadcrumbs), and screen/tap breadcrumbs (`enableAutoBreadcrumbTracking`). Those three are
+  turned off in `Shared/SentryBootstrap.swift`; the page now also discloses the per-launch
+  session record (the crash-free-rate denominator, kept on) and the StoreKit
+  verification-error report, which names the product.
+- [x] DEV-PLAN-1.3.md amended: restore keeps timestamps, `+N more` on large, acceptance (1)'s
+  widget, `invalid_value` in M2.
+
+### Publication and privacy (owner)
+
+- [ ] **Privacy policy online**: `docs/privacy.html` reaches GitHub Pages only when `main` is
+  updated, and the public `stride-site` repo holds a copy; both are publications, so they need
+  the owner's go. The stride-site copy is the one that matters for review: the app's Settings
+  link, the six descriptions and ASC's `privacyPolicyUrl` all point at
+  `jasonyeyuhe.github.io/stride-site/privacy`. Copy it there before submission.
+- [ ] **ASC App Privacy**: remove "Product Interaction" (analytics); keep Email Address and
+  Other User Content (linked, app functionality) and Crash Data / Other Diagnostic Data (not
+  linked) — the same as `Stride/PrivacyInfo.xcprivacy`.
+
+### Server (`invalid_value`) — deployed 2026-09-27
+
+- [x] Before the rsync: the audit SQL in DEPLOY.md's contract section against the production
+  backup — all three counts (entry, habit, group) 0. It checks the whole-number fields for
+  fractions too, and `habit_groups` (an `inf` group `sortOrder` is served as `null` and fails
+  every app's pull decode). A non-zero count is an account whose ≤ 1.2.3 devices can already
+  crash or fail to pull; push can no longer change that row, so repair it by hand.
+- [x] `scripts/rehearse_server.sh`: its "1.2.3-shaped snapshot of the real account → 200,
+  nothing skipped" check now also proves the demo account holds no out-of-bounds row; a FAIL
+  with `invalid_value` means the demo data or `seed-demo.js` writes one. (Optional: a
+  rehearsal check that pushes `targetValue: 1e19` and expects `invalid_value` with 200.)
+- [ ] After the deploy, watch the request log's `reasons=` for `invalid_value` on real
+  accounts: a client writing bad numbers, or a device re-sending a row it pulled before.
+
+### Device checks (simulators cannot do these)
+
+- [ ] Acceptance (9): request a link on a device with a Release/TestFlight build (Debug talks to
+  `localhost:3002`) and tap it in Apple Mail — signed in, no paste — and in Gmail (the
+  copy-paste page). Allow a few hours for Apple's CDN to fetch the AASA after installing.
+- [ ] Acceptance (5): fresh install, New Habit → Reminder on → Save shows the system prompt
+  before the sheet closes, and the reminder fires.
+- [ ] Acceptance (6): place Large (and Extra Large on an iPad) from the gallery; a yes/no row
+  flips at once on tap; VoiceOver on a Toggle row does not double "switch"; leave it overnight
+  and see the header date and rows flip at midnight.
+- [ ] Restore from a file in iCloud Drive that is not downloaded yet.
+
+### Release mechanics
+
+- [x] Provisioning: automatic signing (`-allowProvisioningUpdates`) enabled Associated Domains
+  on its own — no portal step. Both exports: Distribution-signed, no `get-task-allow`,
+  `applinks:stride-api.colorarchive.me` (`verify_archive.sh --exported`).
+- [x] Tests on the committed tree: CI ran StrideTests (macOS) and the hosted suite on `60394a1`,
+  green; `check_demo_account.sh` green on the 1.3.0 code. The default-size sweep
+  (`build/review/1.3.0/`) ran on the working tree just before the completion commit — the
+  only later client change is `SentryBootstrap`, which draws nothing.
+- [x] Version: 1.3.0 (18), `60394a1`; CI green on that commit (Apple job on Xcode 27, 4m40s).
+- [x] `scripts/push_metadata.py 1.3.0`: the six descriptions now say small, medium and large (and
+  extra large on iPad), with the tap-to-check claim extended to large. The Spanish description
+  is 3,989 of 4,000 characters.
+- [x] `scripts/release.py prepare 1.3.0` — both version records `PREPARE_FOR_SUBMISSION`, What's
+  New in six locales; `build-appstore.sh all --upload` — build 18 uploaded on both platforms
+  (iOS `VALID` in TestFlight the same evening).
+- [x] **`scripts/release.py finish 1.3.0 18`** on the owner's go (2026-09-28, without the
+  TestFlight device checks). Just before: both builds `VALID`; `check_demo_account.sh` green —
+  180 entries, all six habits on a live streak (1–5), 30-day rates 43–90 % — after the first
+  unattended night on the host (backup integrity ok, top-up +4 check-ins, restore drill ok).
+  ⚠️ `push_metadata.py` used to submit for review as a side effect (and cancel any waiting
+  submission); since `d66d200` it only pushes metadata, so `finish` is the one submitting step. The sign-in line in What's New assumes the device check above passes; if the link
+  does not open the app in Mail, drop that bullet before `prepare`.
+- [ ] Screenshots: only if the store set should show the large widget; the default-size app
+  screens did not change.

@@ -98,10 +98,13 @@ struct OnboardingView: View {
             // VoiceOver leaves the rendered layout unchanged.
             VStack(spacing: 24) {
                 Image(systemName: page.symbol)
-                    .font(.system(size: 72))
+                    .scaledSystemFont(size: 72, relativeTo: .largeTitle)
                     .foregroundStyle(.green)
                     .symbolRenderingMode(.hierarchical)
                     .accessibilityHidden(true)
+                    // Decoration: past .accessibility2 it only pushes the page's text and, on
+                    // the last page, Get Started toward the bottom of a page that does not scroll.
+                    .dynamicTypeSize(...DynamicTypeSize.accessibility2)
 
                 Text(page.title)
                     .font(.largeTitle)
@@ -193,7 +196,6 @@ struct OnboardingView: View {
 
     private func completeOnboarding() {
         UserDefaults.standard.set(true, forKey: "stride_onboarding_completed")
-        AnalyticsService.shared.send("onboardingCompleted")
         withAnimation {
             isPresented = false
         }

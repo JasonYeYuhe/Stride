@@ -41,21 +41,10 @@
 				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
 			</array>
 		</dict>
-		<!-- Declared but currently dormant: AnalyticsService is hard-guarded off
-		     until a real TelemetryDeck App ID is set (AnalyticsService.swift:56), so
-		     nothing is sent today. Kept so the label stays correct the moment it is. -->
-		<dict>
-			<key>NSPrivacyCollectedDataType</key>
-			<string>NSPrivacyCollectedDataTypeProductInteraction</string>
-			<key>NSPrivacyCollectedDataTypeLinked</key>
-			<false/>
-			<key>NSPrivacyCollectedDataTypeTracking</key>
-			<false/>
-			<key>NSPrivacyCollectedDataTypePurposes</key>
-			<array>
-				<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
-			</array>
-		</dict>
+		<!-- No ProductInteraction since 1.3.0. Through 1.2.3 it was declared for AnalyticsService
+		     (TelemetryDeck), whose appID was never set: every send was guarded off, so the
+		     declared collection never happened. The service and its Settings toggle were
+		     deleted rather than kept dormant. CrashData / OtherDiagnosticData below are Sentry. -->
 		<dict>
 			<key>NSPrivacyCollectedDataType</key>
 			<string>NSPrivacyCollectedDataTypeCrashData</string>

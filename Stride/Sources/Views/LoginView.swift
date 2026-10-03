@@ -22,9 +22,12 @@ struct LoginView: View {
 
                 // Icon
                 Image(systemName: step == .checkInbox ? "envelope.open.fill" : "person.crop.circle.fill")
-                    .font(.system(size: 56))
+                    .scaledSystemFont(size: 56, relativeTo: .largeTitle)
                     .foregroundStyle(.green)
                     .accessibilityHidden(true)
+                    // Decoration: past .accessibility2 it only pushes the email field and its
+                    // button further down a panel that does not scroll.
+                    .dynamicTypeSize(...DynamicTypeSize.accessibility2)
 
                 switch step {
                 case .email:
@@ -66,6 +69,12 @@ struct LoginView: View {
             .onChange(of: auth.error) { _, newError in
                 guard let newError else { return }
                 AccessibilityNotification.Announcement(appLocalized("Error: \(newError)")).post()
+            }
+            // The one place this sheet closes on success, for both ways in: a pasted token, and
+            // the login link tapped in Mail while this waits on "Check your email" (StrideApp
+            // signs in from the link; nothing here knows that happened except this).
+            .onChange(of: auth.isLoggedIn) { _, loggedIn in
+                if loggedIn { dismiss() }
             }
         }
     }
@@ -135,7 +144,7 @@ struct LoginView: View {
                 #endif
 
             Button {
-                Task { await verifyAndDismiss() }
+                Task { await verify() }
             } label: {
                 if auth.isLoading {
                     ProgressView()
@@ -179,7 +188,7 @@ struct LoginView: View {
                 #endif
 
             Button {
-                Task { await verifyAndDismiss() }
+                Task { await verify() }
             } label: {
                 if auth.isLoading {
                     ProgressView()
@@ -213,9 +222,14 @@ struct LoginView: View {
         }
     }
 
-    private func verifyAndDismiss() async {
-        let success = await auth.verifyToken(verificationToken)
+    /// Dismissal is the `isLoggedIn` onChange above, not here, so there is one dismissal
+    /// however the sign-in happened.
+    private func verify() async {
+        let pasted = verificationToken.trimmingCharacters(in: .whitespacesAndNewlines)
         verificationToken = "" // Clear token from memory
-        if success { dismiss() }
+        // Someone who copied the whole link from the email (a Gmail user, whose link never opens
+        // the app) can paste it as it is.
+        let token = URL(string: pasted).flatMap(LoginLink.token(from:)) ?? pasted
+        _ = await auth.verifyToken(token)
     }
 }

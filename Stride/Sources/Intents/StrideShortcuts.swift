@@ -58,9 +58,8 @@ struct CompleteHabitIntent: AppIntent {
         return .result(value: String(localized: "Completed \(habit.emoji) \(habit.name)!"))
     }
 
-    private static func amount(_ value: Double) -> String {
-        value == value.rounded() ? String(Int(value)) : String(format: "%.1f", value)
-    }
+    /// `SafeNumber`, not `String(Int(value))`, which trapped on a synced 1e19 or infinity.
+    private static func amount(_ value: Double) -> String { SafeNumber.amount(value) }
 }
 
 // MARK: - Check Streak Intent

@@ -17,7 +17,6 @@
 "Halfway done! Nice!" = "¡A medio camino! ¡Bien!";
 "Good start! Keep it up!" = "¡Buen comienzo! ¡Sigue así!";
 "Let's get started!" = "¡Empecemos!";
-"%lld day streak" = "Racha de %lld días";
 "Start Your Journey" = "Comienza tu viaje";
 "Add your first habit and begin\nbuilding better routines." = "Añade tu primer hábito y comienza\na construir mejores rutinas.";
 "Add First Habit" = "Añadir primer hábito";
@@ -39,7 +38,6 @@
 "Best Streak" = "Mejor racha";
 "30d Avg" = "Prom. 30d";
 "Current Streak" = "Racha actual";
-"days" = "días";
 "30-Day Rate" = "Tasa 30 días";
 "Total" = "Total";
 "By Weekday" = "Por día";
@@ -66,11 +64,8 @@
 "Reminders" = "Recordatorios";
 "Notifications are disabled. Go to Settings → Stride to enable." = "Las notificaciones están desactivadas. Ve a Ajustes → Stride para activarlas.";
 "You'll receive a reminder to check your habits at the time above." = "Recibirás un recordatorio para revisar tus hábitos a la hora indicada.";
-"Active Habits (%lld)" = "Hábitos activos (%lld)";
-"%lld check-ins" = "%lld registros";
 "Delete" = "Eliminar";
 "Archive" = "Archivar";
-"Archived (%lld)" = "Archivados (%lld)";
 "Restore" = "Restaurar";
 "About" = "Acerca de";
 "Version" = "Versión";
@@ -115,7 +110,6 @@
 "Yearly" = "Anual";
 "Monthly" = "Mensual";
 "BEST VALUE" = "MEJOR VALOR";
-"Save 44%" = "Ahorra 44%";
 "Restore Purchases" = "Restaurar compras";
 "Payment will be charged to your Apple ID account. Subscription automatically renews unless cancelled at least 24 hours before the end of the current period." = "El pago se cargará a tu cuenta de Apple ID. La suscripción se renueva automáticamente a menos que se cancele al menos 24 horas antes del final del período actual.";
 "Terms" = "Términos";
@@ -144,12 +138,9 @@
 /* Widget */
 "of %lld" = "de %lld";
 "All done! 🎉" = "¡Todo hecho! 🎉";
-"%lld remaining" = "%lld restantes";
 "+%lld more" = "+%lld más";
 "Tap to add habits" = "Toca para añadir hábitos";
 "Stride: No habits yet" = "Stride: Sin hábitos aún";
-"🔥 All %lld habits done!" = "🔥 ¡%lld hábitos completados!";
-"🏃 %lld/%lld habits done" = "🏃 %lld/%lld hábitos hechos";
 "Stride Habits" = "Hábitos Stride";
 "Track your daily habit progress at a glance." = "Sigue tu progreso diario de un vistazo.";
 
@@ -168,9 +159,7 @@
 "Add a note for today's check-in." = "Añade una nota al registro de hoy.";
 "Rest day" = "Día de descanso";
 "%lld/%lld this week" = "%lld/%lld esta semana";
-"%lld week streak" = "Racha de %lld semanas";
 "Ungrouped" = "Sin grupo";
-"%@, %lld habits" = "%@, %lld hábitos";
 "Add one to %@" = "Sumar uno a %@";
 "Mark %@ complete" = "Marcar %@ como completado";
 "Mark %@ incomplete" = "Marcar %@ como pendiente";
@@ -180,8 +169,6 @@
 "%@, completed" = "%@, completado";
 "%@, not completed" = "%@, sin completar";
 "%@, selected" = "%@, seleccionado";
-"%lld of %lld habits completed" = "%lld de %lld hábitos completados";
-"%lld of %lld habits completed, %lld percent" = "%lld de %lld hábitos completados, %lld por ciento";
 "Double tap to toggle completion" = "Toca dos veces para cambiar el estado";
 "Browse Templates" = "Explorar plantillas";
 "Edit Habit" = "Editar hábito";
@@ -274,15 +261,12 @@
 "Best: %@ %@" = "Mejor: %@ %@";
 "Needs work: %@ %@" = "A mejorar: %@ %@";
 "Done" = "Listo";
-"day streak" = "días de racha";
-"week streak" = "semanas de racha";
 "best streak" = "mejor racha";
 "30-day rate" = "tasa 30 días";
 "last 14 days" = "últimos 14 días";
 "Habit Groups" = "Grupos de hábitos";
 "Organize habits into collapsible groups" = "Organiza tus hábitos en grupos plegables";
 "Lifetime" = "De por vida";
-"SAVE" = "AHORRA";
 "Billed annually" = "Facturación anual";
 "One-time purchase — yours forever" = "Pago único, para siempre";
 "/mo" = "/mes";
@@ -312,7 +296,6 @@
 "Stride Habits Export" = "Exportación de hábitos de Stride";
 "CSV export of all habits" = "Exportación CSV de todos los hábitos";
 "JSON export of all habits" = "Exportación JSON de todos los hábitos";
-"Share Anonymous Analytics" = "Compartir análisis anónimos";
 "Legal" = "Legal";
 "%lldd" = "%lld d";
 "Complete a Habit" = "Completar un hábito";
@@ -331,8 +314,6 @@
 "%@ %@ is already completed today." = "%@ %@ ya está completado hoy.";
 "Logged %@ %@: %@ of %@%@." = "Registrado %@ %@: %@ de %@%@.";
 "Completed %@ %@!" = "¡%@ %@ completado!";
-"%@ %@: %lld day streak" = "%@ %@: racha de %lld días";
-"%@ %@: %lld week streak" = "%@ %@: racha de %lld semanas";
 
 /* VoiceOver and accessibility strings (1.2.3). */
 "Collapsed" = "Contraído";
@@ -359,6 +340,46 @@
 "%@ %@, %lld percent" = "%@ %@, %lld por ciento";
 "Up %lld percent vs last week" = "%lld por ciento más que la semana pasada";
 "Down %lld percent vs last week" = "%lld por ciento menos que la semana pasada";
-"%@, %lld day streak, best streak %lld, 30-day rate %lld percent, %lld of the last 14 days completed" = "%@, racha de %lld días, mejor racha %lld, tasa de 30 días %lld por ciento, %lld de los últimos 14 días completados";
-"%@, %lld week streak, best streak %lld, 30-day rate %lld percent, %lld of the last 14 days completed" = "%@, racha de %lld semanas, mejor racha %lld, tasa de 30 días %lld por ciento, %lld de los últimos 14 días completados";
-"%lld more habits" = "%lld hábitos más";
+
+/* ------------------------------------------------------------
+   Added in 1.3.0. Plural keys (streaks, check-ins, habit counts, the Stats
+   streak unit) moved to Localizable.stringsdict in this folder.
+   ------------------------------------------------------------ */
+
+/* Settings > Export Data: backup and restore */
+"Restore from Backup…" = "Restaurar desde copia de seguridad…";
+"Restore from Backup?" = "¿Restaurar desde copia de seguridad?";
+"Choose a JSON backup exported from Stride 1.3 or later." = "Elige una copia de seguridad JSON exportada desde Stride 1.3 o posterior.";
+"Export as JSON saves a complete backup, which can be restored on a device with no habits." = "«Exportar como JSON» guarda una copia de seguridad completa, que se puede restaurar en un dispositivo sin hábitos.";
+"Stride couldn't read this file." = "Stride no pudo leer este archivo.";
+"Backup restored." = "Copia de seguridad restaurada.";
+"This file is too large to restore." = "Este archivo es demasiado grande para restaurarlo.";
+"This file isn't a Stride backup." = "Este archivo no es una copia de seguridad de Stride.";
+"This file was exported by an older version of Stride and doesn't contain everything needed to restore. Export a new backup from Stride 1.3 or later." = "Este archivo se exportó con una versión anterior de Stride y no contiene todo lo necesario para restaurar. Exporta una nueva copia de seguridad desde Stride 1.3 o posterior.";
+"This backup was made by a newer version of Stride. Update the app to restore it." = "Esta copia de seguridad se creó con una versión más reciente de Stride. Actualiza la app para restaurarla.";
+"This backup is damaged and can't be restored." = "Esta copia de seguridad está dañada y no se puede restaurar.";
+"Restore works only when there are no habits on this device. Erase local data first, then restore." = "Solo se puede restaurar cuando no hay hábitos en este dispositivo. Borra primero los datos locales y luego restaura.";
+"Erase Local Data…" = "Borrar datos locales…";
+"Erase Local Data?" = "¿Borrar datos locales?";
+"Erase" = "Borrar";
+"Removes every habit, check-in and group from this device only, and signs you out. Your account's data on the server is not affected: sign in again to download it." = "Elimina todos los hábitos, registros y grupos solo de este dispositivo y cierra tu sesión. Los datos de tu cuenta en el servidor no se ven afectados: inicia sesión de nuevo para descargarlos.";
+"Removes every habit, check-in and group from this device. Export a backup first if you want to keep them." = "Elimina todos los hábitos, registros y grupos de este dispositivo. Exporta antes una copia de seguridad si quieres conservarlos.";
+"Stride syncs one last time, signs you out, then deletes every habit, check-in and group on this device. Your account's data on the server is not touched: sign in again to download it." = "Stride sincroniza una última vez, cierra tu sesión y después elimina todos los hábitos, registros y grupos de este dispositivo. Los datos de tu cuenta en el servidor no se tocan: inicia sesión de nuevo para descargarlos.";
+"Every habit, check-in and group on this device will be deleted. This cannot be undone." = "Se eliminarán todos los hábitos, registros y grupos de este dispositivo. Esta acción no se puede deshacer.";
+"Couldn't sync, so nothing was erased. Check your connection and try again, or log out first to erase without syncing." = "No se pudo sincronizar, así que no se borró nada. Comprueba tu conexión e inténtalo de nuevo, o cierra sesión primero para borrar sin sincronizar.";
+
+/* Paywall */
+"SAVE %lld%%" = "AHORRA %lld%%";
+
+/* Sync and sign-in errors (APIClient.displayMessage) */
+"Sync is paused for maintenance. Your data is safe on this device and will sync when the pause ends." = "La sincronización está en pausa por mantenimiento. Tus datos están a salvo en este dispositivo y se sincronizarán cuando termine la pausa.";
+"Too many sync requests. Please try again in a few minutes." = "Demasiadas solicitudes de sincronización. Inténtalo de nuevo en unos minutos.";
+"Request failed" = "La solicitud falló";
+"Please log in again" = "Vuelve a iniciar sesión";
+"Invalid server response" = "Respuesta del servidor no válida";
+
+/* Siri & Shortcuts: AppShortcut short titles (the tiles in the Shortcuts app). They had no entry
+   in any catalog until the source scan learned `shortTitle:`. */
+"Complete Habit" = "Completar hábito";
+"Check Streak" = "Consultar racha";
+"List Habits" = "Ver hábitos";

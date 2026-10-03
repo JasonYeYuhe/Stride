@@ -54,14 +54,12 @@ final class APIClientTests: XCTestCase {
 
     /// Only 401 signs out. A 5xx or 429 — M0's pause switch and per-user limiter — is the
     /// server's problem, and clearing the token for it would sign every user out during an
-    /// outage. Both bodies server/lib/clientVersion.js `errorBody` can send must still surface
-    /// as `APIError.server` with a message, not "Request failed" or a decode error:
-    /// - without X-Stride-Client (every build up to this one): the sentence in `error`, which
-    ///   this build shows verbatim in the Settings footer;
-    /// - with the header (from 1.3.0): `{error: code, code, message}`. This build shows `error`,
-    ///   i.e. the code. M1 switches APIClient to prefer `message`; change the second assertion
-    ///   then, deliberately — until then it pins that the extra keys do not break decoding.
-    func testServerErrorsKeepTheTokenAndSurfaceTheirMessage() async {
+    /// outage. Both bodies server/lib/clientVersion.js `errorBody` can send surface as
+    /// `APIError.server` with the code and the SENTENCE, never the code as the message:
+    /// - with X-Stride-Client, which this build sends: `{error: code, code, message}`. 1.3.0
+    ///   briefly showed `error`, i.e. "rate_limited", in the Settings footer — `message` first;
+    /// - without it (a header the server could not parse): the sentence in `error`.
+    func testServerErrorsKeepTheTokenAndSurfaceTheSentenceNotTheCode() async {
         let sentence = "Sync is paused for maintenance. Your data is safe on this device; it will sync when the pause ends."
         server.on("GET", "/v1/sync/pull", respond: .init(
             status: 503, body: #"{"error":"\#(sentence)","code":"sync_paused","retryAfterSeconds":60}"#))
@@ -74,9 +72,10 @@ final class APIClientTests: XCTestCase {
         do {
             _ = try await api.pullChanges()
             XCTFail("a 503 must throw")
-        } catch APIError.server(let status, let shown) {
+        } catch APIError.server(let status, let code, let message) {
             XCTAssertEqual(status, 503)
-            XCTAssertEqual(shown, sentence)
+            XCTAssertEqual(code, "sync_paused")
+            XCTAssertEqual(message, sentence, "legacy shape: the sentence is `error`")
         } catch {
             XCTFail("expected APIError.server, got \(error)")
         }
@@ -85,14 +84,122 @@ final class APIClientTests: XCTestCase {
             try await api.pushChanges(SyncPushPayload(habits: [], entries: [], groups: [],
                                                       deletedHabitIds: [], deletedEntryIds: [], deletedGroupIds: []))
             XCTFail("a 429 must throw")
-        } catch APIError.server(let status, let shown) {
+        } catch let error as APIError {
+            guard case .server(let status, let code, let message) = error else {
+                return XCTFail("expected APIError.server, got \(error)")
+            }
             XCTAssertEqual(status, 429)
-            XCTAssertEqual(shown, "rate_limited")
+            XCTAssertEqual(code, "rate_limited")
+            XCTAssertEqual(message, "Too many sync requests, please try again later", "code-first shape: `message`, not `error`")
+            XCTAssertEqual(error.localizedDescription, "Too many sync requests, please try again later")
+        } catch {
+            XCTFail("expected APIError, got \(error)")
+        }
+
+        XCTAssertEqual(tokens.read(), "tok-123")
+    }
+
+    /// The routes that predate codes (`{error: "Invalid or expired login link"}`) still show their
+    /// sentence, and a body that is not JSON (nginx's 502 page mid-deploy) is still an
+    /// `APIError.server`, with no message rather than a decode error.
+    func testLegacyAndNonJSONErrorBodies() async {
+        server.on("POST", "/v1/auth/verify", respond: .init(status: 400, body: #"{"error":"Invalid or expired login link"}"#))
+        server.on("GET", "/v1/sync/pull", respond: .init(status: 502, body: "<html><body>502 Bad Gateway</body></html>"))
+
+        do {
+            _ = try await api.verifyToken("used-token-0123456789")
+            XCTFail("a 400 must throw")
+        } catch APIError.server(let status, let code, let message) {
+            XCTAssertEqual(status, 400)
+            XCTAssertNil(code)
+            XCTAssertEqual(message, "Invalid or expired login link")
         } catch {
             XCTFail("expected APIError.server, got \(error)")
         }
 
-        XCTAssertEqual(tokens.read(), "tok-123")
+        do {
+            _ = try await api.pullChanges()
+            XCTFail("a 502 must throw")
+        } catch APIError.server(let status, let code, let message) {
+            XCTAssertEqual(status, 502)
+            XCTAssertNil(code)
+            XCTAssertNil(message)
+        } catch {
+            XCTFail("expected APIError.server, got \(error)")
+        }
+    }
+
+    /// What the Settings footer and the login sheet show (`APIError.displayMessage`). Codes this
+    /// build knows get its own, translated sentence — never the code, whichever body shape it
+    /// came in; unknown codes get the server's sentence.
+    @MainActor
+    func testDisplayMessageIsNeverARawCode() {
+        let rateLimited = APIError.server(statusCode: 429, code: "rate_limited", message: "Too many sync requests, please try again later")
+        XCTAssertEqual(APIError.displayMessage(for: rateLimited),
+                       appLocalized("Too many sync requests. Please try again in a few minutes."))
+        // A client whose header the server could not parse gets the sentence in `error`; the
+        // code still decides.
+        let paused = APIError.server(statusCode: 503, code: "sync_paused", message: "Sync is paused for maintenance.")
+        XCTAssertEqual(APIError.displayMessage(for: paused),
+                       appLocalized("Sync is paused for maintenance. Your data is safe on this device and will sync when the pause ends."))
+        let unknown = APIError.server(statusCode: 400, code: "invalid_payload", message: "Sync data was malformed.")
+        XCTAssertEqual(APIError.displayMessage(for: unknown), "Sync data was malformed.")
+        XCTAssertEqual(APIError.displayMessage(for: APIError.server(statusCode: 502, code: nil, message: nil)),
+                       appLocalized("Request failed"))
+        XCTAssertEqual(APIError.displayMessage(for: APIError.unauthorized), appLocalized("Please log in again"))
+
+        for error in [rateLimited, paused, unknown] {
+            XCTAssertFalse(APIError.displayMessage(for: error).contains("_"), "\(error) displayed as a code")
+        }
+    }
+
+    // MARK: - X-Stride-Client
+
+    /// The header decides which contract the server speaks to this app (server/lib/clientVersion.js).
+    /// Its regex, verbatim: a value it rejects makes the server treat this build as <= 1.2.3.
+    private static let serverClientRegex = #"^(ios|macos)/(\d{1,4})\.(\d{1,4})(?:\.(\d{1,4}))?\((\d{1,9})\)$"#
+
+    func testEveryRequestSendsTheClientHeaderTheServerParses() async throws {
+        server.on("GET", "/v1/sync/pull", respond: .ok(Self.emptyPull))
+        server.on("POST", "/v1/auth/request-link", respond: .ok(#"{"ok":true}"#))
+
+        _ = try await api.pullChanges()
+        tokens.delete()
+        try await api.requestMagicLink(email: "a@example.com")   // unauthenticated requests too
+
+        let info = Bundle.main.infoDictionary ?? [:]
+        let version = try XCTUnwrap(info["CFBundleShortVersionString"] as? String)
+        let build = try XCTUnwrap(info["CFBundleVersion"] as? String)
+        let expected = "ios/\(version)(\(build))"
+        XCTAssertNotNil(expected.range(of: Self.serverClientRegex, options: .regularExpression),
+                        "\(expected) would not parse on the server — check the host app's versions")
+
+        let requests = server.requests
+        guard requests.count == 2 else { return XCTFail("expected 2 requests, got \(requests.count)") }
+        for request in requests {
+            XCTAssertEqual(request.header("X-Stride-Client"), expected, request.path)
+        }
+    }
+
+    /// Values the server's regex would reject are not sent at all, rather than sent and silently
+    /// read as a legacy client.
+    func testClientHeaderFormatMatchesTheServerRegex() {
+        let accepted = [
+            APIClient.clientHeader(platform: "ios", version: "1.3.0", build: "18"),
+            APIClient.clientHeader(platform: "macos", version: "1.3", build: "18"),
+        ]
+        XCTAssertEqual(accepted, ["ios/1.3.0(18)", "macos/1.3(18)"])
+        for value in accepted.compactMap({ $0 }) {
+            XCTAssertNotNil(value.range(of: Self.serverClientRegex, options: .regularExpression), value)
+        }
+        let rejected: [(String?, String?)] = [
+            (nil, "18"), ("1.3.0", nil), ("1", "18"), ("1.3.0.1", "18"), ("1.3.0-beta", "18"),
+            ("1..0", "18"), ("12345.0", "18"), ("1.3.0", "1.0"), ("1.3.0", "1234567890"), ("1.3.0", ""), ("", "18"),
+        ]
+        for (version, build) in rejected {
+            XCTAssertNil(APIClient.clientHeader(platform: "ios", version: version, build: build),
+                         "\(version ?? "nil") (\(build ?? "nil"))")
+        }
     }
 
     func testRequestsCarryTheStoredTokenAsBearerAndNoneWithoutOne() async throws {

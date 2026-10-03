@@ -67,17 +67,198 @@ final class AuthServiceTests: XCTestCase {
         XCTAssertEqual(syncResets, 1)
     }
 
-    /// The deep-link path takes a token from a URL — anything can open a URL. Only a plausible
-    /// token may reach the Keychain.
-    func testMalformedDeepLinkTokenIsNeverStored() {
+    // MARK: - One-tap sign-in (the universal link)
+
+    private static let linkToken = "3f2b8c1e9a7d4c05b6e1f0a2d3c4b5a69788f1e2d3c4b5a6978801a2b3c4d5e6"
+    private static let loginLink = URL(string: "https://stride-api.colorarchive.me/login?token=\(linkToken)")!
+    private static let verifyOK = #"""
+    {"ok":true,"user":{"id":7,"email":"a@example.com","tier":"free","created_at":"2026-09-01 10:00:00"},
+     "sessionToken":"sess-from-link"}
+    """#
+
+    /// Signed out: the link's token is verified and the device is signed in — no paste.
+    func testLoginLinkSignsInWhenSignedOut() async {
+        server.on("POST", "/v1/auth/verify", respond: .ok(Self.verifyOK))
         let auth = makeAuth()
 
-        auth.loginWithSessionToken("abc def")
-        auth.loginWithSessionToken("<script>")
-        auth.loginWithSessionToken(String(repeating: "a", count: 513))
-        auth.loginWithSessionToken("   ")
+        let outcome = await auth.handleLoginLink(Self.loginLink)
 
-        XCTAssertNil(tokens.read())
-        XCTAssertTrue(server.requests.isEmpty, "nothing to check a session with")
+        XCTAssertEqual(outcome, .signedIn)
+        XCTAssertTrue(auth.isLoggedIn)
+        XCTAssertEqual(tokens.read(), "sess-from-link")
+        XCTAssertEqual(server.paths, ["/v1/auth/verify"])
+        XCTAssertEqual(server.requests.first?.json?["token"] as? String, Self.linkToken)
     }
+
+    /// Signed in: the link is NOT used. Verifying it would switch this device to the link's
+    /// account and push this device's habits into it on the next sync (M2 builds the choice).
+    func testLoginLinkIsIgnoredWhenAlreadySignedIn() async {
+        tokens.save("sess-current")
+        server.on("GET", "/v1/auth/session", respond: .ok(#"{"user":{"id":1,"email":"me@example.com","created_at":"2026-09-01 10:00:00"}}"#))
+        server.on("POST", "/v1/auth/verify", respond: .ok(Self.verifyOK))
+        let auth = makeAuth()
+
+        // No waitForSessionRestore() first, on purpose: a link that launched the app arrives
+        // while the stored session is still being checked, and must wait for that check rather
+        // than read the not-yet-loaded user as "signed out".
+        let outcome = await auth.handleLoginLink(Self.loginLink)
+
+        XCTAssertEqual(outcome, .ignoredAlreadySignedIn)
+        XCTAssertEqual(tokens.read(), "sess-current")
+        XCTAssertEqual(auth.userEmail, "me@example.com")
+        XCTAssertFalse(server.paths.contains("/v1/auth/verify"), "the link's token must never be spent")
+    }
+
+    /// A session check that failed offline leaves `currentUser` nil but the token stored — that
+    /// device is still signed in, and the link must not replace its session.
+    func testLoginLinkIsIgnoredWhenTheSessionCheckFailedOffline() async {
+        tokens.save("sess-current")
+        server.on("GET", "/v1/auth/session") { _ in throw URLError(.notConnectedToInternet) }
+        server.on("POST", "/v1/auth/verify", respond: .ok(Self.verifyOK))
+        let auth = makeAuth()
+        await auth.waitForSessionRestore()
+        XCTAssertFalse(auth.isLoggedIn, "precondition: no user loaded")
+
+        let outcome = await auth.handleLoginLink(Self.loginLink)
+
+        XCTAssertEqual(outcome, .ignoredAlreadySignedIn)
+        XCTAssertEqual(tokens.read(), "sess-current")
+        XCTAssertFalse(server.paths.contains("/v1/auth/verify"))
+        XCTAssertNotNil(auth.error, "an open login sheet says why the tap did nothing")
+    }
+
+    /// `/v1/auth/session` answers 200 `{user: null}` for an expired, signed-out or deleted
+    /// session — never 401 — so APIClient's 401 path never cleared the token. The device showed
+    /// "Log In" and then ignored every login link as "already signed in": one-tap sign-in failed
+    /// for exactly the people returning after 30 days. The dead token goes at the launch check.
+    func testADeadSessionAtLaunchDeletesTheTokenAndALoginLinkSignsIn() async {
+        tokens.save("sess-expired")
+        server.on("GET", "/v1/auth/session", respond: .ok(#"{"user":null}"#))
+        server.on("POST", "/v1/auth/verify", respond: .ok(Self.verifyOK))
+        let auth = makeAuth()
+        await auth.waitForSessionRestore()
+        XCTAssertFalse(auth.isLoggedIn)
+        XCTAssertNil(tokens.read(), "the server said this session is gone")
+        XCTAssertFalse(auth.hasStoredSession)
+
+        let outcome = await auth.handleLoginLink(Self.loginLink)
+
+        XCTAssertEqual(outcome, .signedIn)
+        XCTAssertEqual(tokens.read(), "sess-from-link")
+        XCTAssertEqual(server.paths, ["/v1/auth/session", "/v1/auth/verify"])
+    }
+
+    /// The launch check failed offline; by the time the user taps a link the network is back.
+    /// The link asks again rather than trusting the old failure: a live session means signed
+    /// in (the link is not spent), a dead one means the link signs in.
+    func testALoginLinkRechecksASessionCheckThatFailedAtLaunch() async {
+        for (answer, expected) in [(#"{"user":{"id":1,"email":"me@example.com","created_at":"2026-09-01 10:00:00"}}"#,
+                                    AuthService.LoginLinkOutcome.ignoredAlreadySignedIn),
+                                   (#"{"user":null}"#, .signedIn)] {
+            server.stop()
+            server = StubServer()
+            tokens = InMemoryTokenStore("sess-current")
+            let calls = Counter()
+            server.on("GET", "/v1/auth/session") { _ in
+                if calls.next() == 1 { throw URLError(.notConnectedToInternet) }
+                return .ok(answer)
+            }
+            server.on("POST", "/v1/auth/verify", respond: .ok(Self.verifyOK))
+            let auth = makeAuth()
+            await auth.waitForSessionRestore()
+            XCTAssertFalse(auth.isLoggedIn, "precondition: the launch check failed")
+
+            let outcome = await auth.handleLoginLink(Self.loginLink)
+
+            XCTAssertEqual(outcome, expected, answer)
+            XCTAssertTrue(auth.isLoggedIn, answer)
+            XCTAssertNil(auth.error, answer)
+            if expected == .signedIn {
+                XCTAssertEqual(tokens.read(), "sess-from-link")
+            } else {
+                XCTAssertEqual(tokens.read(), "sess-current")
+                XCTAssertFalse(server.paths.contains("/v1/auth/verify"), "the link's token must never be spent")
+            }
+        }
+    }
+
+    /// An answer about the old token must not delete a new one: a pasted token verified while
+    /// the launch check was in flight replaced it.
+    func testADeadSessionAnswerDoesNotDeleteATokenThatReplacedIt() async {
+        tokens.save("sess-expired")
+        server.on("GET", "/v1/auth/session") { request in
+            // Like the server: only the old token's session is gone.
+            guard request.header("Authorization") == "Bearer sess-expired" else {
+                return .ok(#"{"user":{"id":7,"email":"a@example.com","created_at":"2026-09-01 10:00:00"}}"#)
+            }
+            Thread.sleep(forTimeInterval: 0.3)   // the launch check is still in flight…
+            return .ok(#"{"user":null}"#)
+        }
+        server.on("POST", "/v1/auth/verify", respond: .ok(Self.verifyOK))
+        let auth = makeAuth()
+
+        let verified = await auth.verifyToken("magic-123")   // …when a pasted token signs in
+        await auth.waitForSessionRestore()
+
+        XCTAssertTrue(verified)
+        XCTAssertEqual(tokens.read(), "sess-from-link")
+        XCTAssertTrue(auth.isLoggedIn, "the stale answer must not sign the new session out")
+    }
+
+    /// Only an exact login link reaches the server; any other URL the app is handed does nothing.
+    func testNonLoginURLsDoNothing() async {
+        let auth = makeAuth()
+        for string in ["https://evil.example/login?token=\(Self.linkToken)",
+                       "stride://login?token=\(Self.linkToken)",
+                       "https://stride-api.colorarchive.me/privacy",
+                       "https://stride-api.colorarchive.me/login?token=<script>"] {
+            let outcome = await auth.handleLoginLink(URL(string: string)!)
+            XCTAssertEqual(outcome, .notALoginLink, string)
+        }
+        XCTAssertTrue(server.requests.isEmpty)
+        XCTAssertNil(tokens.read())
+    }
+
+    /// One tap can arrive through both `.onOpenURL` and `.onContinueUserActivity`. The token is
+    /// single-use, so a second verify would fail and show "Invalid or expired login link" under
+    /// a sign-in that worked.
+    func testASecondDeliveryOfTheSameLinkIsNotVerifiedAgain() async {
+        server.on("POST", "/v1/auth/verify") { _ in
+            Thread.sleep(forTimeInterval: 0.2)   // keep the first verify in flight
+            return .ok(Self.verifyOK)
+        }
+        let auth = makeAuth()
+
+        async let first = auth.handleLoginLink(Self.loginLink)
+        async let second = auth.handleLoginLink(Self.loginLink)
+        let outcomes = await [first, second]
+
+        XCTAssertEqual(Set(outcomes), [.signedIn, .ignoredInProgress])
+        XCTAssertEqual(server.paths, ["/v1/auth/verify"])
+        XCTAssertNil(auth.error)
+
+        let third = await auth.handleLoginLink(Self.loginLink)
+        XCTAssertEqual(third, .ignoredAlreadySignedIn)
+        XCTAssertEqual(server.paths.count, 1)
+    }
+
+    /// A used or expired link fails visibly (the login sheet shows `error`) and stores nothing.
+    func testAnExpiredLinkFailsWithTheServersSentence() async {
+        server.on("POST", "/v1/auth/verify", respond: .init(status: 400, body: #"{"error":"Invalid or expired login link"}"#))
+        let auth = makeAuth()
+
+        let outcome = await auth.handleLoginLink(Self.loginLink)
+
+        XCTAssertEqual(outcome, .failed)
+        XCTAssertFalse(auth.isLoggedIn)
+        XCTAssertNil(tokens.read())
+        XCTAssertEqual(auth.error, "Invalid or expired login link")
+    }
+}
+
+/// Counts calls to a stub handler, which runs on the URL loading system's thread.
+final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    func next() -> Int { lock.withLock { value += 1; return value } }
 }

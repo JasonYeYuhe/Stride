@@ -1,6 +1,8 @@
 import SwiftUI
 import SwiftData
+import UniformTypeIdentifiers
 import UserNotifications
+import WidgetKit
 
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
@@ -25,6 +27,19 @@ struct SettingsView: View {
     @State private var morningEnabled = NotificationService.shared.isMorningMotivationEnabled
     @State private var notificationDenied = false
 
+    // Backup, restore, erase
+    @State private var showingBackupImporter = false
+    /// Reading the picked file, or waiting for a sync in flight before restoring it.
+    @State private var isRestoring = false
+    @State private var pendingRestore: PendingRestore?
+    @State private var restoreError: String?
+    /// Set when a restore was refused as `storeNotEmpty` although no habit or group is listed:
+    /// check-ins orphaned by an old bug. Offers the erase that clears them.
+    @State private var storeHasHiddenRows = false
+    @State private var showingEraseConfirm = false
+    @State private var isErasing = false
+    @State private var eraseError: String?
+
     // Store
     @State private var showingPaywall = false
     @State private var showingLogin = false
@@ -39,6 +54,17 @@ struct SettingsView: View {
 
     private var archivedHabits: [Habit] {
         allHabits.filter { $0.isArchived }
+    }
+
+    private var isStoreEmpty: Bool {
+        allHabits.isEmpty && allGroups.isEmpty
+    }
+
+    /// Whether erase has to sync and sign out first, and which erase text applies: a loaded user
+    /// OR a stored token (see DataExportService.eraseLocalData). The check is a Keychain read,
+    /// so it is not made unless the erase row is on screen.
+    private var eraseSignsOut: Bool {
+        auth.isLoggedIn || auth.hasStoredSession
     }
 
     var body: some View {
@@ -301,7 +327,7 @@ struct SettingsView: View {
                                     if streak > 0 {
                                         HStack(spacing: 2) {
                                             Image(systemName: "flame.fill")
-                                                .font(.system(size: 9))
+                                                .scaledSystemFont(size: 9, relativeTo: .caption2)
                                             Text(habit.streakUnit == "week" ? "\(streak)w" : "\(streak)d")
                                                 .font(.caption2)
                                         }
@@ -452,28 +478,96 @@ struct SettingsView: View {
 
                 // Export Data
                 Section {
-                    let csvString = DataExportService.exportCSV(habits: allHabits)
-                    let jsonString = DataExportService.exportJSON(habits: allHabits)
-
+                    // Transferable files holding only the container: nothing is serialised until
+                    // the user picks a destination. Two `let`s used to stand here, running the
+                    // CSV and the JSON export of the whole history on every render of this
+                    // screen — every sync tick, entitlement refresh and edit — on the main thread.
                     ShareLink(
-                        item: csvString,
+                        item: HabitsCSVFile(container: modelContext.container),
                         subject: Text("Stride Habits Export"),
                         message: Text("CSV export of all habits"),
-                        preview: SharePreview("stride_export.csv")
+                        preview: SharePreview(DataExportService.fileName("Stride-Export", extension: "csv"))
                     ) {
                         Label("Export as CSV", systemImage: "tablecells")
                     }
 
                     ShareLink(
-                        item: jsonString,
+                        item: BackupJSONFile(container: modelContext.container),
                         subject: Text("Stride Habits Export"),
                         message: Text("JSON export of all habits"),
-                        preview: SharePreview("stride_export.json")
+                        preview: SharePreview(DataExportService.fileName("Stride-Backup", extension: "json"))
                     ) {
                         Label("Export as JSON", systemImage: "curlybraces")
                     }
+
+                    // Offered only into an empty store (fresh install, or after the erase below):
+                    // merging a backup into live data has to obey sync rules 1.3.1 introduces.
+                    if isStoreEmpty && !storeHasHiddenRows {
+                        Button {
+                            restoreError = nil
+                            showingBackupImporter = true
+                        } label: {
+                            HStack {
+                                Label("Restore from Backup…", systemImage: "clock.arrow.circlepath")
+                                if isRestoring {
+                                    Spacer()
+                                    ProgressView()
+                                        .controlSize(.small)
+                                }
+                            }
+                        }
+                        // Not under a sync either: its full pull would land after the restore
+                        // and remove what it restored (performRestore also waits it out).
+                        .disabled(isRestoring || sync.isSyncing)
+                    }
                 } header: {
                     Text("Export Data")
+                } footer: {
+                    if let restoreError {
+                        inlineError(restoreError)
+                    } else if isStoreEmpty && !storeHasHiddenRows {
+                        Text("Choose a JSON backup exported from Stride 1.3 or later.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Export as JSON saves a complete backup, which can be restored on a device with no habits.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                // Erase local data. Clears this device, never the account: no sync deletions are
+                // queued (DataBackup.eraseLocalData), and a signed-in device syncs and signs out
+                // first, so nothing unsynced is lost and the next sync cannot pull it all back.
+                if !isStoreEmpty || storeHasHiddenRows {
+                    Section {
+                        Button(role: .destructive) {
+                            eraseError = nil
+                            showingEraseConfirm = true
+                        } label: {
+                            HStack {
+                                Label("Erase Local Data…", systemImage: "trash")
+                                if isErasing {
+                                    Spacer()
+                                    ProgressView()
+                                        .controlSize(.small)
+                                }
+                            }
+                        }
+                        .disabled(isErasing || sync.isSyncing)
+                    } footer: {
+                        if let eraseError {
+                            inlineError(eraseError)
+                        } else if eraseSignsOut {
+                            Text("Removes every habit, check-in and group from this device only, and signs you out. Your account's data on the server is not affected: sign in again to download it.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("Removes every habit, check-in and group from this device. Export a backup first if you want to keep them.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
 
                 Section("About") {
@@ -486,13 +580,6 @@ struct SettingsView: View {
                         #endif
                     }
                     LabeledContent("Data Storage", value: auth.isLoggedIn ? appLocalized("Synced") : appLocalized("On Device"))
-                    Toggle(isOn: Binding(
-                        get: { AnalyticsService.shared.isEnabled },
-                        set: { AnalyticsService.shared.isEnabled = $0 }
-                    )) {
-                        Label("Share Anonymous Analytics", systemImage: "chart.bar.xaxis")
-                    }
-                    .tint(.green)
                 }
 
                 Section("Legal") {
@@ -516,7 +603,6 @@ struct SettingsView: View {
                         for record in habit.records {
                             SyncService.shared.trackDeletedEntry(record.id.uuidString)
                         }
-                        AnalyticsService.shared.send("habitDeleted")
                         modelContext.delete(habit)
                         do {
                             try modelContext.save()
@@ -580,6 +666,41 @@ struct SettingsView: View {
                 Button("Save") { renameGroup() }
                 Button("Cancel", role: .cancel) { groupToRename = nil }
             }
+            .fileImporter(isPresented: $showingBackupImporter, allowedContentTypes: [.json]) { result in
+                switch result {
+                case .success(let url):
+                    Task { await readBackup(at: url) }
+                case .failure:
+                    showRestoreError(appLocalized("Stride couldn't read this file."))
+                }
+            }
+            .alert(
+                "Restore from Backup?",
+                isPresented: Binding(
+                    get: { pendingRestore != nil },
+                    set: { if !$0 { pendingRestore = nil } }
+                ),
+                presenting: pendingRestore
+            ) { pending in
+                Button("Cancel", role: .cancel) {}
+                Button("Restore") {
+                    Task { await performRestore(pending.document) }
+                }
+            } message: { pending in
+                Text(verbatim: pending.summary)
+            }
+            .confirmationDialog("Erase Local Data?", isPresented: $showingEraseConfirm, titleVisibility: .visible) {
+                Button("Erase", role: .destructive) {
+                    Task { await performErase() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                if eraseSignsOut {
+                    Text("Stride syncs one last time, signs you out, then deletes every habit, check-in and group on this device. Your account's data on the server is not touched: sign in again to download it.")
+                } else {
+                    Text("Every habit, check-in and group on this device will be deleted. This cannot be undone.")
+                }
+            }
             .onChange(of: auth.isLoggedIn) { _, loggedIn in
                 if loggedIn {
                     Task { await sync.sync(context: modelContext) }
@@ -591,6 +712,138 @@ struct SettingsView: View {
             }
     }
 
+    // MARK: - Backup, Restore, Erase
+
+    private struct PendingRestore {
+        let document: BackupDocument
+        /// Built once when the file is read, not on every render of the alert.
+        let summary: String
+    }
+
+    private func readBackup(at url: URL) async {
+        isRestoring = true
+        defer { isRestoring = false }
+        do {
+            // Off the main actor: a multi-year history is tens of MB of JSON to decode.
+            let document = try await Task.detached(priority: .userInitiated) {
+                try DataExportService.readBackup(at: url)
+            }.value
+            restoreError = nil
+            pendingRestore = PendingRestore(document: document, summary: backupSummary(document))
+        } catch let error as DataBackupError {
+            showRestoreError(error.userMessage)
+        } catch {
+            showRestoreError(appLocalized("Stride couldn't read this file."))
+        }
+    }
+
+    /// "6 habits / 133 check-ins / 2 groups / Aug 2 – Sep 27, 2026", one fact per line: each
+    /// count is its own plural key, and a line break needs no locale's list punctuation.
+    private func backupSummary(_ document: BackupDocument) -> String {
+        let preview = DataBackup.preview(of: document)
+        var lines = [
+            appLocalized("\(preview.habits) habits"),
+            appLocalized("\(preview.checkIns) check-ins"),
+        ]
+        if preview.groups > 0 {
+            lines.append(appLocalized("\(preview.groups) groups"))
+        }
+        if let first = preview.firstDay, let last = preview.lastDay {
+            let formatter = DateIntervalFormatter()
+            formatter.dateStyle = .medium
+            formatter.timeStyle = .none
+            formatter.locale = LanguageManager.shared.locale ?? .current
+            // Day-keys are UTC midnights: in any zone west of UTC they would read as the day before.
+            formatter.timeZone = TimeZone(identifier: "UTC")
+            lines.append(formatter.string(from: first, to: last))
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func performRestore(_ document: BackupDocument) async {
+        isRestoring = true
+        defer { isRestoring = false }
+        do {
+            // Waits for a sync in flight first; see DataExportService.restore.
+            try await DataExportService.restore(document, into: modelContext)
+        } catch DataBackupError.storeNotEmpty {
+            // No habit or group, yet not empty: check-ins orphaned by an old bug — offer the
+            // erase. (A sync that finished during the wait may instead have brought the
+            // account's habits down; then the erase row is showing anyway.)
+            let habits = (try? modelContext.fetchCount(FetchDescriptor<Habit>())) ?? 0
+            let groups = (try? modelContext.fetchCount(FetchDescriptor<HabitGroup>())) ?? 0
+            storeHasHiddenRows = habits == 0 && groups == 0
+            showRestoreError(DataBackupError.storeNotEmpty.userMessage)
+            return
+        } catch let error as DataBackupError {
+            showRestoreError(error.userMessage)
+            return
+        } catch {
+            showRestoreError(appLocalized("Unable to save changes. Please try again."))
+            return
+        }
+        restoreError = nil
+        let container = modelContext.container
+        // Restored habits carry their reminder settings, but nothing scheduled them. No
+        // permission prompt here: a habit whose reminder is on asks when it is next edited, and
+        // the launch-time reschedule keeps these in place once permission exists.
+        NotificationService.shared.rescheduleAllHabitReminders(modelContainer: container)
+        NotificationService.shared.updateBadge(modelContainer: container)
+        WidgetCenter.shared.reloadAllTimelines()
+        // The restore row the user activated has just disappeared; say what happened.
+        AccessibilityNotification.Announcement(appLocalized("Backup restored.")).post()
+    }
+
+    private func performErase() async {
+        isErasing = true
+        defer { isErasing = false }
+
+        // With a session: sync first (after any sync in flight), and erase nothing if that
+        // fails — the user was promised the account keeps everything; then sign out, which
+        // resets the cursor so signing back in re-downloads the account. See
+        // DataExportService.eraseLocalData for why "a session" includes a stored token.
+        switch await DataExportService.eraseLocalData(in: modelContext) {
+        case .erased:
+            break
+        case .syncFailed:
+            showEraseError(appLocalized("Couldn't sync, so nothing was erased. Check your connection and try again, or log out first to erase without syncing."))
+            return
+        case .saveFailed:
+            showEraseError(appLocalized("Unable to save changes. Please try again."))
+            return
+        }
+        eraseError = nil
+        storeHasHiddenRows = false
+        let container = modelContext.container
+        // With no habits left, this prunes every per-habit reminder (and clears the badge).
+        NotificationService.shared.rescheduleAllHabitReminders(modelContainer: container)
+        NotificationService.shared.updateBadge(modelContainer: container)
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    // Footers sit several elements below the button that caused them; VoiceOver hears them now.
+    private func showRestoreError(_ message: String) {
+        restoreError = message
+        AccessibilityNotification.Announcement(message).post()
+    }
+
+    private func showEraseError(_ message: String) {
+        eraseError = message
+        AccessibilityNotification.Announcement(message).post()
+    }
+
+    private func inlineError(_ message: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .font(.caption)
+                .accessibilityHidden(true)
+            Text(verbatim: message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
     // MARK: - Notification Logic
 
     private func handleReminderToggle(_ enabled: Bool) {
@@ -600,6 +853,10 @@ struct SettingsView: View {
                 if granted {
                     NotificationService.shared.isReminderEnabled = true
                     notificationDenied = false
+                    // Per-habit reminders that arrived by sync or restore, or were saved while
+                    // permission was undecided, were passed over by the launch pass; schedule
+                    // them now rather than at the next cold launch, which can be days away.
+                    NotificationService.shared.scheduleAllHabitReminders(modelContainer: modelContext.container)
                 } else {
                     let status = await NotificationService.shared.checkPermission()
                     if status == .denied {

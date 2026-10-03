@@ -9155,3 +9155,230 @@ describe("M0 request log: X-Stride-Client, sanitised", () => {
     assert.equal(sanitizeClientHeader("é日本"), "___");
   });
 });
+
+describe("Push bounds: a number no app can produce is skipped as invalid_value", () => {
+  // Every shipped app (<= 1.2.3) traps on `Int(value)` past 9.2e18 or at infinity, and fails the
+  // decode of a whole pull on a fractional or huge Int field. The server stored such rows and
+  // handed them to every device on the account; routes/sync.js PUSH_BOUNDS stops that.
+  let a;
+  before(() => { a = m0.user(); });
+  after(() => { m0.cleanup(a.userId); });
+
+  const toSnake = (k) => k.replace(/[A-Z]/g, (c) => "_" + c.toLowerCase());
+  const snakeRow = (row) => Object.fromEntries(Object.entries(row).map(([k, v]) => [toSnake(k), v]));
+
+  /** POST a body with literal numbers JSON.stringify cannot write (`1e999` parses to Infinity). */
+  async function pushRaw(token, body, { client = m0.V131, literals = {} } = {}) {
+    let text = JSON.stringify({
+      habits: [], entries: [], groups: [], deletedHabitIds: [], deletedEntryIds: [], deletedGroupIds: [], ...body,
+    });
+    for (const [marker, literal] of Object.entries(literals)) text = text.split(JSON.stringify(marker)).join(literal);
+    const headers = { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" };
+    if (client) headers["X-Stride-Client"] = client;
+    const res = await fetch(`${BASE}/v1/sync/push`, { method: "POST", headers, body: text });
+    return { status: res.status, json: await res.json().catch(() => null) };
+  }
+
+  const habitColumn = {
+    sortOrder: "sort_order", targetValue: "target_value", reminderHour: "reminder_hour",
+    reminderMinute: "reminder_minute", timesPerWeek: "times_per_week", activeDaysMask: "active_days_mask",
+  };
+  // Each field: values an app can write (or a 1.3.0 restore can bring back), then values none can.
+  const habitCases = {
+    targetValue: { ok: [0, 1, 8, 2.5, 1000, 5000, 1e9, -1, -0.5, -1e9], bad: [1e9 + 1, -1e9 - 1, 1e19, -1e19, "8", true] },
+    sortOrder: { ok: [0, 3000, 1790000000, -5, 1e15, -1e15], bad: [2.5, 1e15 + 1, -1e15 - 1, 1e19, "0"] },
+    reminderHour: { ok: [0, 20, 23], bad: [-1, 24, 7.5, 1e19, "20"] },
+    reminderMinute: { ok: [0, 30, 59], bad: [-1, 60, 0.5, "0"] },
+    timesPerWeek: { ok: [1, 3, 7], bad: [0, 8, 3.5, -1, 1e19] },
+    activeDaysMask: { ok: [0, 62, 127], bad: [-1, 128, 1.5, 1e19] },
+  };
+
+  for (const [key, { ok, bad }] of Object.entries(habitCases)) {
+    for (const casing of ["camelCase", "snake_case"]) {
+      it(`habit ${key} (${casing}): ${ok.map((v) => JSON.stringify(v)).join(", ")} apply; ${bad.map((v) => JSON.stringify(v)).join(", ")} are invalid_value`, async () => {
+        const rows = [...ok, ...bad].map((v) => ({ id: m0.uuid(), v }));
+        const habits = rows.map(({ id, v }) => {
+          const row = m0.habit(id, { [key]: v });
+          return casing === "snake_case" ? snakeRow(row) : row;
+        });
+        // snake_case is what <= 1.2.1 sends, with no header.
+        const r = await m0.push(a.token, { habits }, { client: casing === "snake_case" ? null : m0.V131 });
+        assert.equal(r.status, 200);
+        assert.equal(r.json.applied.habits, ok.length);
+        const badIds = rows.slice(ok.length).map((x) => x.id);
+        assert.deepEqual(r.json.skippedReasons.habits,
+          Object.fromEntries(badIds.map((id) => [id, "invalid_value"])));
+        for (const { id, v } of rows.slice(0, ok.length)) {
+          assert.equal(db.prepare(`SELECT ${habitColumn[key]} AS v FROM habits WHERE id = ?`).get(id).v, v, `${key}=${v}`);
+        }
+        for (const id of badIds) assert.equal(db.prepare("SELECT 1 FROM habits WHERE id = ?").get(id), undefined);
+      });
+    }
+  }
+
+  // Negatives apply: a 1.3.0 restore accepts them (DataBackup.checkAmount, ±1e9), and refusing
+  // one made the next full pull delete the restored row on that device.
+  it("entry value: within ±1e9 apply (fractions and negatives too); past ±1e9 and non-numbers are invalid_value", async () => {
+    const H = m0.uuid();
+    await m0.push(a.token, { habits: [m0.habit(H)] });
+    const ok = [0, 1, 2.5, 8, 1500, 1e9, -1, -0.5, -1e9];
+    const bad = [1e9 + 1, -1e9 - 1, 1e19, -1e19, "1", false];
+    const rows = [...ok, ...bad].map((v, i) => ({ id: m0.uuid(), v, date: `2026-08-${String(i + 1).padStart(2, "0")}` }));
+    const r = await m0.push(a.token, { entries: rows.map(({ id, v, date }) => m0.entry(id, H, date, { value: v })) });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.applied.entries, ok.length);
+    assert.deepEqual(r.json.skippedReasons.entries,
+      Object.fromEntries(rows.slice(ok.length).map(({ id }) => [id, "invalid_value"])));
+    for (const { id, v } of rows.slice(0, ok.length)) {
+      assert.equal(db.prepare("SELECT value FROM habit_entries WHERE id = ?").get(id).value, v);
+    }
+  });
+
+  it("group sortOrder: finite within ±1e15, fractions allowed (a Double in the apps), in both casings", async () => {
+    const ok = [0, 1, 2.5, -3, 1e15], bad = [1e15 + 1, 1e19, -1e19, "0"];
+    const rows = [...ok, ...bad].map((v) => ({ id: m0.uuid(), v }));
+    for (const casing of ["camelCase", "snake_case"]) {
+      const ids = rows.map(({ id }) => `${id}-${casing}`);
+      const groups = rows.map(({ v }, i) => {
+        const g = m0.group(ids[i], { sortOrder: v });
+        return casing === "snake_case" ? snakeRow(g) : g;
+      });
+      const r = await m0.push(a.token, { groups }, { client: casing === "snake_case" ? null : m0.V131 });
+      assert.equal(r.status, 200);
+      assert.equal(r.json.applied.groups, ok.length, casing);
+      assert.deepEqual(r.json.skippedReasons.groups,
+        Object.fromEntries(ids.slice(ok.length).map((id) => [id, "invalid_value"])), casing);
+      rows.slice(0, ok.length).forEach(({ v }, i) => {
+        assert.equal(db.prepare("SELECT sort_order AS v FROM habit_groups WHERE id = ?").get(ids[i]).v, v);
+      });
+    }
+  });
+
+  it("1e999 and -1e999 (±Infinity once parsed) are invalid_value for value, targetValue and sortOrder, not a 500", async () => {
+    const H = m0.uuid(), Hinf = m0.uuid(), Hneg = m0.uuid(), E = m0.uuid(), Einf = m0.uuid(), Eneg = m0.uuid();
+    const r = await pushRaw(a.token, {
+      habits: [m0.habit(H), m0.habit(Hinf, { targetValue: "__INF__" }), m0.habit(Hneg, { sortOrder: "__NEGINF__" })],
+      entries: [
+        m0.entry(E, H, "2026-07-01"),
+        m0.entry(Einf, H, "2026-07-02", { value: "__INF__" }),
+        m0.entry(Eneg, H, "2026-07-03", { value: "__NEGINF__" }),
+      ],
+    }, { literals: { __INF__: "1e999", __NEGINF__: "-1e999" } });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json.applied, { habits: 1, entries: 1, groups: 0 });
+    assert.deepEqual(r.json.skippedReasons, {
+      habits: { [Hinf]: "invalid_value", [Hneg]: "invalid_value" },
+      entries: { [Einf]: "invalid_value", [Eneg]: "invalid_value" },
+      groups: {},
+    });
+  });
+
+  it("absent and null numbers still take the column defaults (apps before `kind` send no target)", async () => {
+    const Habsent = m0.uuid(), Hnull = m0.uuid(), E = m0.uuid();
+    const absent = m0.habit(Habsent);
+    for (const k of Object.keys(habitColumn)) delete absent[k];
+    const r = await m0.push(a.token, {
+      habits: [absent, m0.habit(Hnull, Object.fromEntries(Object.keys(habitColumn).map((k) => [k, null])))],
+      entries: [{ ...m0.entry(E, Habsent, "2026-07-04"), value: undefined }],
+    });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json.applied, { habits: 2, entries: 1, groups: 0 });
+    for (const id of [Habsent, Hnull]) {
+      const row = db.prepare(`SELECT sort_order, target_value, reminder_hour, reminder_minute, times_per_week,
+        active_days_mask FROM habits WHERE id = ?`).get(id);
+      assert.deepEqual({ ...row }, {
+        sort_order: 0, target_value: 1, reminder_hour: 20, reminder_minute: 0, times_per_week: 7, active_days_mask: 127,
+      });
+    }
+    assert.equal(db.prepare("SELECT value FROM habit_entries WHERE id = ?").get(E).value, 1);
+  });
+
+  it("an invalid edit of an existing row leaves the stored row, and the change feed, untouched", async () => {
+    const H = m0.uuid(), E = m0.uuid();
+    await m0.push(a.token, { habits: [m0.habit(H)], entries: [m0.entry(E, H, "2026-07-05", { value: 3 })] });
+    const before = m0.clocks(a.userId);
+    const r = await m0.push(a.token, {
+      habits: [m0.habit(H, { name: "Renamed", targetValue: 1e19, updatedAt: "2030-01-01T00:00:00Z" })],
+      entries: [m0.entry(E, H, "2026-07-05", { value: 1e19, updatedAt: "2030-01-01T00:00:00Z" })],
+    });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json.skippedReasons.habits, { [H]: "invalid_value" });
+    assert.deepEqual(r.json.skippedReasons.entries, { [E]: "invalid_value" });
+    const h = db.prepare("SELECT name, target_value FROM habits WHERE id = ?").get(H);
+    assert.deepEqual({ ...h }, { name: "Water", target_value: 8 });
+    assert.equal(db.prepare("SELECT value FROM habit_entries WHERE id = ?").get(E).value, 3);
+    assert.deepEqual(m0.clocks(a.userId), before);
+  });
+
+  it("drop reasons win: an invalid entry of a deleted habit reads tombstoned_habit; of a refused new habit, skipped_habit", async () => {
+    const Hdel = m0.uuid(), Hbad = m0.uuid(), Edel = m0.uuid(), Ebad = m0.uuid();
+    await m0.push(a.token, { habits: [m0.habit(Hdel)] });
+    await m0.push(a.token, { deletedHabitIds: [Hdel] });
+    const r = await m0.push(a.token, {
+      habits: [m0.habit(Hbad, { timesPerWeek: 9 })],
+      entries: [m0.entry(Edel, Hdel, "2026-07-06", { value: 1e19 }), m0.entry(Ebad, Hbad, "2026-07-06")],
+    });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json.skippedReasons, {
+      habits: { [Hbad]: "invalid_value" },
+      entries: { [Edel]: "tombstoned_habit", [Ebad]: "skipped_habit" },
+      groups: {},
+    });
+  });
+
+  it("a legacy full snapshot (no header) with one bad row applies the rest, and the pull never serves the bad one", async () => {
+    const b = m0.user();
+    try {
+      const G = m0.uuid(), H1 = m0.uuid(), H2 = m0.uuid(), Hbad = m0.uuid();
+      const entries = [
+        m0.entry(m0.uuid(), H1, "2026-09-20", { value: 8 }),
+        m0.entry(m0.uuid(), H1, "2026-09-21", { value: 3 }),
+        m0.entry(m0.uuid(), H2, "2026-09-21", { value: 1 }),
+      ];
+      const Ebad = m0.uuid(), EofBad = m0.uuid();
+      // What a 1.2.3 phone sends: camelCase, everything, every time — here with one habit and one
+      // check-in another client had corrupted before this server refused them.
+      const r = await pushRaw(b.token, {
+        groups: [m0.group(G)],
+        habits: [
+          m0.habit(H1, { sortOrder: 1790000000, groupId: G }),
+          m0.habit(H2, { name: "Read", kind: "binary", targetValue: 1, sortOrder: 1790000001, scheduleKind: "timesPerWeek", timesPerWeek: 3 }),
+          m0.habit(Hbad, { name: "Broken", targetValue: 1e19 }),
+        ],
+        entries: [...entries, m0.entry(Ebad, H1, "2026-09-22", { value: "__INF__" }), m0.entry(EofBad, Hbad, "2026-09-22")],
+      }, { client: null, literals: { __INF__: "1e999" } });
+      assert.equal(r.status, 200);
+      assert.equal(r.json.ok, true);
+      assert.deepEqual(r.json.applied, { habits: 2, entries: 3, groups: 1 });
+      assert.deepEqual(r.json.skippedReasons, {
+        habits: { [Hbad]: "invalid_value" },
+        entries: { [Ebad]: "invalid_value", [EofBad]: "skipped_habit" },
+        groups: {},
+      });
+
+      const pull = await m0.req("GET", "/v1/sync/pull", { token: b.token });
+      assert.equal(pull.status, 200);
+      assert.deepEqual(pull.json.habits.map((h) => h.id).sort(), [H1, H2].sort());
+      assert.deepEqual(pull.json.entries.map((e) => e.value).sort((x, y) => x - y), [1, 3, 8]);
+      for (const h of pull.json.habits) {
+        assert.ok(Number.isInteger(h.sortOrder) && Number.isFinite(h.targetValue), JSON.stringify(h));
+      }
+
+      // The next snapshot — the same rows again, as 1.2.3 does on every sync — changes nothing.
+      const clocks = m0.clocks(b.userId);
+      const again = await pushRaw(b.token, {
+        groups: [m0.group(G)],
+        habits: [
+          m0.habit(H1, { sortOrder: 1790000000, groupId: G }),
+          m0.habit(H2, { name: "Read", kind: "binary", targetValue: 1, sortOrder: 1790000001, scheduleKind: "timesPerWeek", timesPerWeek: 3 }),
+          m0.habit(Hbad, { name: "Broken", targetValue: 1e19 }),
+        ],
+        entries,
+      }, { client: null });
+      assert.equal(again.status, 200);
+      assert.deepEqual(m0.clocks(b.userId), clocks);
+    } finally {
+      m0.cleanup(b.userId);
+    }
+  });
+});

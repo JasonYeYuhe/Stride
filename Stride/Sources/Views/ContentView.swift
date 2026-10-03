@@ -11,12 +11,28 @@ struct ContentView: View {
         return 0
     }()
     @State private var showingAddHabit = false
+    // `-paywall` opens the Pro paywall on launch so scripts/a11y_sweep.sh can capture it at every
+    // text size without tapping through a Pro-locked card. DEBUG-only on purpose: launch arguments
+    // cannot reach a store build anyway (only Xcode, simctl and XCUITest pass them), but compiling
+    // it out keeps release free of any sheet that appears without a user action.
+    #if DEBUG
+    @State private var showingLaunchPaywall = CommandLine.arguments.contains("-paywall")
+    #endif
 
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var sizeClass
     #endif
 
     var body: some View {
+        #if DEBUG
+        layout.sheet(isPresented: $showingLaunchPaywall) { ProPaywallView() }
+        #else
+        layout
+        #endif
+    }
+
+    @ViewBuilder
+    private var layout: some View {
         #if os(macOS)
         NavigationSplitView {
             SidebarView(selectedTab: $selectedTab)

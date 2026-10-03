@@ -20,17 +20,54 @@ struct StatsView: View {
     private var store = StoreService.shared
 
     var body: some View {
+        #if DEBUG
+        ScrollViewReader { proxy in
+            statsContent
+                .task { await scrollToLaunchAnchor(proxy) }
+        }
+        #else
         statsContent
+        #endif
     }
+
+    #if DEBUG
+    @State private var didScrollToLaunchAnchor = false
+
+    /// `-statsScrollTo detail|insights|trend|weekday|heatmap` scrolls to that card once, on launch,
+    /// so scripts/a11y_sweep.sh can capture what sits below the fold. `simctl` has no touch input,
+    /// and at accessibility-XXXL the charts this release made scale (acceptance (4)) start two
+    /// screens down — the first sweep's PNGs proved the top of the screen only. DEBUG-only for the
+    /// same reason as ContentView's `-paywall`, and it draws nothing: the anchors are `.id`s that
+    /// a release build never compiles.
+    ///
+    /// Insights and the trend are Pro-only. Without Pro both anchors land on the locked card that
+    /// replaces them, so a sweep on a simulator with no purchase shows that card twice.
+    private func scrollToLaunchAnchor(_ proxy: ScrollViewProxy) async {
+        let arguments = CommandLine.arguments
+        guard !didScrollToLaunchAnchor,
+              let idx = arguments.firstIndex(of: "-statsScrollTo"), idx + 1 < arguments.count
+        else { return }
+        didScrollToLaunchAnchor = true
+        var anchor = arguments[idx + 1]
+        if !store.isPro, anchor == "insights" || anchor == "trend" { anchor = "analytics" }
+        // After the first layout pass (and the @Query's first fetch): a scrollTo issued before
+        // the target has a frame does nothing, silently.
+        try? await Task.sleep(for: .milliseconds(500))
+        proxy.scrollTo(anchor, anchor: .top)
+    }
+    #endif
 
     private var statsContent: some View {
         ScrollView {
             if habits.isEmpty {
                 VStack(spacing: 12) {
                     Image(systemName: "chart.bar")
-                        .font(.system(size: 50))
+                        .scaledSystemFont(size: 50, relativeTo: .largeTitle)
                         .foregroundStyle(.secondary)
                         .accessibilityHidden(true)
+                        // Decoration: past .accessibility2 it would only push the text that
+                        // explains the empty screen below the fold.
+                        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
                     Text("No habits yet")
                         .font(.title3)
                         .foregroundStyle(.secondary)
@@ -64,17 +101,23 @@ struct StatsView: View {
                     if let habit = selectedHabit {
                         VStack(spacing: 16) {
                             HabitDetailStatsCard(habit: habit)
+                                .statsLaunchAnchor("detail")
                             if store.isPro {
                                 InsightsCard(habit: habit)
+                                    .statsLaunchAnchor("insights")
                                 TrendCard(habit: habit)
+                                    .statsLaunchAnchor("trend")
                             } else {
                                 ProLockedCard(
                                     title: "Advanced Analytics",
                                     message: "8-week trends, insights & weekly review"
                                 ) { showingPaywall = true }
+                                .statsLaunchAnchor("analytics")
                             }
                             WeeklyBarChart(habit: habit)
+                                .statsLaunchAnchor("weekday")
                             HeatmapView(habit: habit)
+                                .statsLaunchAnchor("heatmap")
                         }
                         .padding(.horizontal)
                     }
@@ -85,13 +128,17 @@ struct StatsView: View {
         .background(Color.appBackground)
         .navigationTitle("Statistics")
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    if store.isPro { showingWeeklyReview = true } else { showingPaywall = true }
-                } label: {
-                    Image(systemName: "calendar.badge.clock")
+            // With no habits the review has nothing to show, and for a free user the button
+            // opened the paywall to sell a feature that would then be empty.
+            if !habits.isEmpty {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        if store.isPro { showingWeeklyReview = true } else { showingPaywall = true }
+                    } label: {
+                        Image(systemName: "calendar.badge.clock")
+                    }
+                    .accessibilityLabel("Weekly Review")
                 }
-                .accessibilityLabel("Weekly Review")
             }
         }
         .sheet(isPresented: $showingWeeklyReview) {
@@ -100,6 +147,19 @@ struct StatsView: View {
         .sheet(isPresented: $showingPaywall) {
             ProPaywallView()
         }
+    }
+}
+
+private extension View {
+    /// A scroll target for `-statsScrollTo` (see StatsView.scrollToLaunchAnchor). Release builds
+    /// return the view untouched, so the anchor cannot change identity or layout there.
+    @ViewBuilder
+    func statsLaunchAnchor(_ name: String) -> some View {
+        #if DEBUG
+        id(name)
+        #else
+        self
+        #endif
     }
 }
 
@@ -206,6 +266,20 @@ struct HabitChip: View {
 struct HabitDetailStatsCard: View {
     let habit: Habit
     @State private var showShareSheet = false
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    /// The unit drawn beside a streak number, which is drawn separately and larger.
+    ///
+    /// This was `Text(habit.streakUnit == "week" ? "weeks" : "days")`: "weeks" existed in no
+    /// catalog, so every language showed English beside a times-per-week habit's streaks, and
+    /// "days" had no singular, so English read "1 days". The key now carries the count so the
+    /// plural rules pick the form, and the forms are the unit alone. One key per unit, chosen
+    /// outside the interpolation — a ternary inside one is never looked up.
+    private func streakUnit(_ count: Int) -> Text {
+        habit.streakUnit == "week"
+            ? Text("weeks (unit after \(count))")
+            : Text("days (unit after \(count))")
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -226,29 +300,36 @@ struct HabitDetailStatsCard: View {
                 .accessibilityLabel("Share streak")
             }
 
-            HStack(spacing: 20) {
+            // Four tiles side by side leave each about 70 pt: at accessibility sizes "100%" in
+            // .title2 no longer fits one and the captions break mid-word. Stacked there instead.
+            let tiles = typeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+                : AnyLayout(HStackLayout(spacing: 20))
+            tiles {
+                let current = habit.currentStreak()
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Current Streak")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     HStack(spacing: 4) {
-                        Text("\(habit.currentStreak())")
+                        Text("\(current)")
                             .font(.title2.bold())
-                        Text(habit.streakUnit == "week" ? "weeks" : "days")
+                        streakUnit(current)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
                 .accessibilityElement(children: .combine)
 
+                let best = habit.bestStreak()
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Best Streak")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     HStack(spacing: 4) {
-                        Text("\(habit.bestStreak())")
+                        Text("\(best)")
                             .font(.title2.bold())
-                        Text(habit.streakUnit == "week" ? "weeks" : "days")
+                        streakUnit(best)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -273,7 +354,9 @@ struct HabitDetailStatsCard: View {
                 }
                 .accessibilityElement(children: .combine)
 
-                Spacer()
+                if !typeSize.isAccessibilitySize {
+                    Spacer()
+                }
             }
         }
         .padding()
@@ -327,6 +410,10 @@ struct TrendCard: View {
     let habit: Habit
     private let utc = HabitCalendar.utc
     private let weekCount = 8
+    @Environment(\.dynamicTypeSize) private var typeSize
+    /// Room for the value and date labels around the bars: 30 at the default size, where the
+    /// chart was a fixed 110 pt that the labels overflowed as soon as they could grow.
+    @ScaledMetric(relativeTo: .caption2) private var labelRoom: CGFloat = 30
 
     private struct WeekPoint: Identifiable {
         let id = UUID()
@@ -351,6 +438,8 @@ struct TrendCard: View {
         // Same instants as `fmt`, so the spoken date has to stay UTC-anchored too.
         var spokenFmt = Date.FormatStyle.dateTime.month().day()
         spokenFmt.timeZone = utc.timeZone
+        // Spoken inside a picked-language sentence, so the month name must follow the picker too.
+        spokenFmt.locale = appLocale
 
         return (0..<weekCount).reversed().compactMap { back in
             guard let start = utc.date(byAdding: .day, value: -7 * back, to: thisWeekStart),
@@ -369,19 +458,45 @@ struct TrendCard: View {
                 .font(.headline)
                 .accessibilityAddTraits(.isHeader)
 
-            HStack(alignment: .bottom, spacing: 6) {
+            // Eight columns get about 37 pt each: past the largest non-accessibility size "12/28"
+            // no longer fits one, so accessibility sizes draw one row per week instead.
+            let rows = typeSize.isAccessibilitySize
+            let layout = rows
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10))
+                : AnyLayout(HStackLayout(alignment: .bottom, spacing: 6))
+            layout {
                 ForEach(points) { point in
-                    VStack(spacing: 4) {
-                        Text("\(Int(point.rate * 100))")
-                            .font(.system(size: 9))
-                            .foregroundStyle(.secondary)
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(point.rate > 0 ? habit.color.opacity(0.4 + 0.6 * point.rate) : Color.gray.opacity(0.2))
-                            .frame(height: max(4, CGFloat(point.rate) * 80))
-                        Text(point.label)
-                            .font(.system(size: 8))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                    let fill = point.rate > 0 ? habit.color.opacity(0.4 + 0.6 * point.rate) : Color.gray.opacity(0.2)
+                    Group {
+                        if rows {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text(point.label)
+                                        .scaledSystemFont(size: 8)
+                                    Spacer()
+                                    Text("\(Int(point.rate * 100))")
+                                        .scaledSystemFont(size: 9)
+                                }
+                                .foregroundStyle(.secondary)
+                                HorizontalBar(fraction: point.rate, fill: fill)
+                            }
+                        } else {
+                            VStack(spacing: 4) {
+                                Text("\(Int(point.rate * 100))")
+                                    .scaledSystemFont(size: 9)
+                                    .foregroundStyle(.secondary)
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(fill)
+                                    .frame(height: max(4, CGFloat(point.rate) * 80))
+                                Text(point.label)
+                                    .scaledSystemFont(size: 8)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    // Between the default and the accessibility sizes (XL–XXXL)
+                                    // "12/28" can outgrow a narrow phone's column by a few points.
+                                    .minimumScaleFactor(0.7)
+                            }
+                        }
                     }
                     .frame(maxWidth: .infinity)
                     .accessibilityElement(children: .ignore)
@@ -390,7 +505,8 @@ struct TrendCard: View {
                     .accessibilityValue(Text(verbatim: "\(Int(point.rate * 100))%"))
                 }
             }
-            .frame(height: 110)
+            // The tallest bar is 80 pt; the rest is the two labels, so only that part scales.
+            .frame(height: rows ? nil : 80 + labelRoom)
         }
         .padding()
         .background(RoundedRectangle(cornerRadius: 16).fill(Color.appSecondaryBackground))
@@ -478,6 +594,9 @@ struct InsightsCard: View {
 // MARK: - Weekly Bar Chart
 struct WeeklyBarChart: View {
     let habit: Habit
+    @Environment(\.dynamicTypeSize) private var typeSize
+    /// See TrendCard: 30 at the default size keeps the chart at its 110 pt there.
+    @ScaledMetric(relativeTo: .caption2) private var labelRoom: CGFloat = 30
     private var weekdayData: [(symbol: String, fullSymbol: String, count: Int, maxCount: Int)] {
         let counts = habit.completionsPerWeekday()
         let maxCount = counts.values.max() ?? 1
@@ -503,24 +622,43 @@ struct WeeklyBarChart: View {
                 .font(.headline)
                 .accessibilityAddTraits(.isHeader)
 
-            HStack(alignment: .bottom, spacing: 8) {
+            // Same breakpoint as TrendCard: seven ~41 pt columns cannot hold "Mon" at accessibility
+            // sizes, so those draw one row per weekday — with room for the full name.
+            let rows = typeSize.isAccessibilitySize
+            let layout = rows
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10))
+                : AnyLayout(HStackLayout(alignment: .bottom, spacing: 8))
+            layout {
                 ForEach(weekdayData, id: \.symbol) { data in
-                    VStack(spacing: 4) {
-                        Text("\(data.count)")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
+                    let fill = data.count > 0 ? habit.color : Color.gray.opacity(0.2)
+                    let fraction = data.maxCount > 0 ? Double(data.count) / Double(data.maxCount) : 0
+                    Group {
+                        if rows {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text(data.fullSymbol)
+                                    Spacer()
+                                    Text("\(data.count)")
+                                }
+                                .scaledSystemFont(size: 10)
+                                .foregroundStyle(.secondary)
+                                HorizontalBar(fraction: fraction, fill: fill)
+                            }
+                        } else {
+                            VStack(spacing: 4) {
+                                Text("\(data.count)")
+                                    .scaledSystemFont(size: 10)
+                                    .foregroundStyle(.secondary)
 
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(data.count > 0 ? habit.color : Color.gray.opacity(0.2))
-                            .frame(
-                                height: data.maxCount > 0
-                                    ? max(4, CGFloat(data.count) / CGFloat(data.maxCount) * 80)
-                                    : 4
-                            )
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(fill)
+                                    .frame(height: max(4, CGFloat(fraction) * 80))
 
-                        Text(data.symbol)
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
+                                Text(data.symbol)
+                                    .scaledSystemFont(size: 10)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                     }
                     .frame(maxWidth: .infinity)
                     .accessibilityElement(children: .ignore)
@@ -528,7 +666,7 @@ struct WeeklyBarChart: View {
                     .accessibilityValue("\(data.count) check-ins")
                 }
             }
-            .frame(height: 110)
+            .frame(height: rows ? nil : 80 + labelRoom)
         }
         .padding()
         .background(
@@ -543,6 +681,8 @@ struct HeatmapView: View {
     let habit: Habit
     private let weeks = 12
     private var calendar: Calendar { appCalendar }
+    /// The legend's swatches grow with the "Less"/"More" beside them; 12 at the default size.
+    @ScaledMetric(relativeTo: .caption2) private var swatch: CGFloat = 12
 
     private var days: [Date] {
         Date.lastNDays(weeks * 7)
@@ -572,60 +712,25 @@ struct HeatmapView: View {
                 .font(.headline)
                 .accessibilityAddTraits(.isHeader)
 
-            HStack(alignment: .top, spacing: 3) {
-                // Row labels that only mean anything through visual alignment with the grid;
-                // each cell names its own weekday instead.
-                VStack(alignment: .trailing, spacing: 3) {
-                    ForEach(0..<7, id: \.self) { i in
-                        let symbols = calendar.veryShortWeekdaySymbols
-                        let index = (calendar.firstWeekday - 1 + i) % 7
-                        Text(symbols[index])
-                            .font(.system(size: 9))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 14, height: 14)
-                    }
-                }
-                .accessibilityHidden(true)
-
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 3) {
-                        ForEach(weekColumns.indices, id: \.self) { weekIndex in
-                            VStack(spacing: 3) {
-                                ForEach(weekColumns[weekIndex], id: \.self) { day in
-                                    let completed = habit.isCompletedOn(day)
-                                    // `monthYear` is a hard-coded "MMMM yyyy", so cells announced
-                                    // "September 2026 16" — English field order, the year on all 84
-                                    // cells, and never the weekday the columns are organised by.
-                                    let dateLabel = day.formatted(.dateTime.weekday(.wide).month().day())
-                                    RoundedRectangle(cornerRadius: 2)
-                                        .fill(completed ? habit.color : Color.gray.opacity(0.15))
-                                        .frame(width: 14, height: 14)
-                                        .accessibilityLabel(completed ? "\(dateLabel), completed" : "\(dateLabel), not completed")
-                                }
-                                if weekColumns[weekIndex].count < 7 {
-                                    ForEach(0..<(7 - weekColumns[weekIndex].count), id: \.self) { _ in
-                                        Color.clear.frame(width: 14, height: 14)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            HeatmapGrid(habit: habit, columns: weekColumns, calendar: calendar)
+                // The cells scale with the weekday letters. Past .accessibility2 that only makes
+                // the grid taller than the screen while showing fewer weeks, and VoiceOver reads
+                // each cell anyway (the letters are hidden from it).
+                .dynamicTypeSize(...DynamicTypeSize.accessibility2)
 
             HStack(spacing: 4) {
                 Spacer()
                 Text("Less")
-                    .font(.system(size: 9))
+                    .scaledSystemFont(size: 9)
                     .foregroundStyle(.secondary)
                 RoundedRectangle(cornerRadius: 2)
                     .fill(Color.gray.opacity(0.15))
-                    .frame(width: 12, height: 12)
+                    .frame(width: swatch, height: swatch)
                 RoundedRectangle(cornerRadius: 2)
                     .fill(habit.color)
-                    .frame(width: 12, height: 12)
+                    .frame(width: swatch, height: swatch)
                 Text("More")
-                    .font(.system(size: 9))
+                    .scaledSystemFont(size: 9)
                     .foregroundStyle(.secondary)
             }
             // A colour ramp legend; every cell states completed / not completed outright.
@@ -636,5 +741,117 @@ struct HeatmapView: View {
             RoundedRectangle(cornerRadius: 16)
                 .fill(Color.appSecondaryBackground)
         )
+    }
+}
+
+/// The weekday letters and the 12-week grid. Its own view so that the `@ScaledMetric` cell size
+/// reads the Dynamic Type size HeatmapView caps, not the uncapped one.
+///
+/// At the default size the 12 columns (201 pt) fit beside the letters with room to spare. The
+/// cells scale with the letters, and from the first accessibility size the grid is wider than a
+/// phone: it becomes a horizontally scrolling strip that opens on the CURRENT week (the trailing
+/// end) with its indicator shown, instead of overflowing the card or opening on the oldest week.
+private struct HeatmapGrid: View {
+    let habit: Habit
+    let columns: [[Date]]
+    let calendar: Calendar
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @ScaledMetric(relativeTo: .caption2) private var cell: CGFloat = 14
+
+    var body: some View {
+        let strip = typeSize.isAccessibilitySize
+        HStack(alignment: .top, spacing: 3) {
+            // Row labels that only mean anything through visual alignment with the grid;
+            // each cell names its own weekday instead.
+            VStack(alignment: .trailing, spacing: 3) {
+                ForEach(0..<7, id: \.self) { i in
+                    let symbols = calendar.veryShortWeekdaySymbols
+                    let index = (calendar.firstWeekday - 1 + i) % 7
+                    Text(symbols[index])
+                        .scaledSystemFont(size: 9)
+                        .foregroundStyle(.secondary)
+                        .frame(width: cell, height: cell)
+                }
+            }
+            .accessibilityHidden(true)
+
+            ScrollView(.horizontal, showsIndicators: strip) {
+                HStack(spacing: 3) {
+                    ForEach(columns.indices, id: \.self) { weekIndex in
+                        VStack(spacing: 3) {
+                            ForEach(columns[weekIndex], id: \.self) { day in
+                                let completed = habit.isCompletedOn(day)
+                                // `monthYear` is a hard-coded "MMMM yyyy", so cells announced
+                                // "September 2026 16" — English field order, the year on all 84
+                                // cells, and never the weekday the columns are organised by.
+                                let dateLabel = day.formatted(.dateTime.weekday(.wide).month().day().locale(appLocale))
+                                RoundedRectangle(cornerRadius: 2)
+                                    .fill(completed ? habit.color : Color.gray.opacity(0.15))
+                                    .frame(width: cell, height: cell)
+                                    .accessibilityLabel(completed ? "\(dateLabel), completed" : "\(dateLabel), not completed")
+                            }
+                            if columns[weekIndex].count < 7 {
+                                ForEach(0..<(7 - columns[weekIndex].count), id: \.self) { _ in
+                                    Color.clear.frame(width: cell, height: cell)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // nil (the system default) below the breakpoint, where the grid is narrower than the
+            // scroll view: an anchor can also position content like that, and at the default
+            // size nothing may move (store screenshots are diffed).
+            .defaultScrollAnchor(strip ? .trailing : nil)
+        }
+    }
+}
+
+// MARK: - Dynamic Type helpers
+
+/// `.font(.system(size:))` that grows with Dynamic Type. SwiftUI has
+/// `Font.custom(_:size:relativeTo:)` but no system-font equivalent, and moving the 8–10 pt chart
+/// labels to `.caption2` (11 pt) would shift every chart at the default size, where the store
+/// screenshots are diffed against the previous release. `@ScaledMetric` returns the base size
+/// exactly at the default (`.large`) size, so only the other sizes change.
+struct ScaledSystemFont: ViewModifier {
+    @ScaledMetric private var size: CGFloat
+    private let weight: Font.Weight?
+
+    init(size: CGFloat, weight: Font.Weight?, relativeTo style: Font.TextStyle) {
+        _size = ScaledMetric(wrappedValue: size, relativeTo: style)
+        self.weight = weight
+    }
+
+    func body(content: Content) -> some View {
+        content.font(.system(size: size, weight: weight))
+    }
+}
+
+extension View {
+    /// A fixed-size system font that scales like `style`. To cap it (decorative symbols), put
+    /// `.dynamicTypeSize(...)` AFTER this modifier: the cap has to be in the environment the
+    /// scaled metric reads.
+    func scaledSystemFont(size: CGFloat, weight: Font.Weight? = nil,
+                          relativeTo style: Font.TextStyle = .caption2) -> some View {
+        modifier(ScaledSystemFont(size: size, weight: weight, relativeTo: style))
+    }
+}
+
+/// A left-to-right bar for the accessibility-size rows of the bar charts; `fraction` in 0...1.
+/// Never shorter than the 4 pt stub the columns draw for zero, and drawn over a faint full-width
+/// track, so an empty week still reads as a value on a scale and not as missing data.
+private struct HorizontalBar: View {
+    let fraction: Double
+    let fill: Color
+
+    var body: some View {
+        GeometryReader { geo in
+            RoundedRectangle(cornerRadius: 4)
+                .fill(fill)
+                .frame(width: max(4, geo.size.width * min(max(fraction, 0), 1)))
+        }
+        .frame(height: 12)
+        .background(RoundedRectangle(cornerRadius: 4).fill(Color.gray.opacity(0.1)))
     }
 }

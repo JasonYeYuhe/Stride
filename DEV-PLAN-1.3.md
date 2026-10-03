@@ -229,6 +229,10 @@ release that does not touch the schema.
   image) stays fixed by design. `scripts/a11y_sweep.sh`: boot the shared iPhone 17 Pro, set
   `content_size accessibility-extra-extra-extra-large`, launch with `-demo` on each tab plus
   the paywall, capture PNGs to `build/a11y/`, restore. A review artefact per release.
+  *(Amended after M1: on iPhone 17 Pro Max, the screenshot device — the Pro is held by hosted
+  test runs; and Stats is captured five times through a DEBUG-only `-statsScrollTo`, because
+  the charts this item makes scale start two screens down and a top-of-screen capture proved
+  nothing about them.)*
 - **Reminders on a fresh install.** `AddHabitView.createHabit` / `updateHabit` call
   `NotificationService.shared.requestPermission()` before `scheduleHabitReminder` — the only
   caller today is the Settings "Daily Reminder" toggle, so a per-habit reminder enabled from
@@ -236,7 +240,11 @@ release that does not touch the schema.
   delivered. On denial, show the footer Settings already uses.
 - **Large widget.** `.systemLarge` (and `.systemExtraLarge`, iPad/Mac) in
   `supportedFamilies`; up to 8–10 rows with the same `Button(intent: ToggleHabitIntent)`; the
-  medium widget's `+N more` stays only on medium. `.invalidatableContent()` on the check icon
+  medium widget's `+N more` stays only on medium. *(Amended after M1: large keeps `+N more`
+  too, as the last of its rows — a list that silently stops at eight looks complete, so a ninth
+  habit reads as lost; the line replaces the last row rather than adding one, because a line
+  past the fixed height is clipped, and at large text sizes that would be the `+N more` itself.
+  See `WidgetTimelinePlan.visibleRows`.)* `.invalidatableContent()` on the check icon
   and `Toggle(isOn:intent:)` for binary rows. **Rollover:** `Shared/WidgetTimelinePlan.swift`
   (pure; takes a `now: Date` so tests are deterministic) yields `[entry(now),
   entry(localMidnight)]` where the midnight entry's rows use `isCompletedOn(tomorrow)` /
@@ -251,7 +259,15 @@ release that does not touch the schema.
   closures. **Restore:** Settings → "Restore from backup…" (`.fileImporter`) accepts a v2 JSON
   **into an empty store only** (fresh install / after "Erase local data"), with a preview
   ("6 habits, 133 check-ins") and confirmation; it inserts through `mainContext` with
-  `touch()` so the next push carries it. Merge-import into a populated store is M6+ (it must
+  `touch()` so the next push carries it. *(Amended after M1: restore keeps the backup's ids,
+  `createdAt` and `updatedAt` and never calls `touch()`. New ids would duplicate every habit
+  the moment the device signs back into the account that still holds the originals; a fresh
+  `updatedAt` would make a months-old backup win every last-write-wins conflict against edits
+  other devices made since. Nothing needs the stamp to be uploaded: 1.3.0 pushes the whole
+  store on every sync, and M2 treats never-acknowledged rows as dirty. Records also carry `id`
+  and `updatedAt`. Restore withdraws queued deletions of the ids it brings back; ids the
+  server has already tombstoned come back only until the first full pull — M2, below.)*
+  Merge-import into a populated store is M6+ (it must
   obey the sync rules M2 introduces). Round-trip test: export → restore into an empty store
   → identical habits, records, values, notes, groups, and the same record→habit linkage
   counts (not just decodable JSON).
@@ -284,7 +300,11 @@ release that does not touch the schema.
 
 **Acceptance.** (1) Simulator in English with one habit and one check-in: Settings "1
 check-in", Today "1 day streak", medium widget "1 remaining"; Spanish "Racha de 1 día"; no
-screen renders "1 days" / "1 hábitos". (2) Japanese, a times-per-week habit: the Stats card
+screen renders "1 days" / "1 hábitos". *(Amended after M1: "1 remaining" is on the **small and
+large** widgets — `HabitEntry.statusText` is drawn only there; the medium widget has no status
+line — and it needs a habit not yet done today, since with the one habit done the line reads
+"All done! 🎉". `simctl` cannot place a widget, so this part is a device or widget-preview
+check.)* (2) Japanese, a times-per-week habit: the Stats card
 shows the translated unit beside both streak tiles. (3) Adding `Text("Zzz test")` to any view
 fails `LocalizationSourceScanTests`; removing it passes. (4) `a11y_sweep.sh` PNGs at
 accessibility-XXXL show scaled chart labels, a scrolling heatmap strip, and no truncated Today
@@ -340,7 +360,14 @@ the plan; both reviewers called the first estimate a fantasy, and it is schedule
   alone: `tombstoned` / `tombstoned_habit` → acknowledge and drop (if the habit is also absent
   locally, delete the entry); `missing_field` / `row_error` → quarantine like a poison row;
   `unknown_habit` / `skipped_habit` → keep dirty and retry once the habit lands, then
-  acknowledge and report; `not_owned` / `not_owned_habit` are the previous account's rows after
+  acknowledge and report; `invalid_value` *(amended after M1: added to the server in M1's
+  completion round — a number no app can produce, outside the bounds in server/DEPLOY.md)* →
+  quarantine: keep it locally, stop re-sending it until the user edits it (a new
+  `updatedAt`), show it in the sync diagnostics — but do **not** record it as delivered, since
+  the server does not hold it and the full-pull deletion pass below removes acknowledged rows
+  the server lacks; hold the `skipped_habit` entries of a new habit quarantined this way with
+  their habit instead of retrying them; `not_owned` / `not_owned_habit` are the previous
+  account's rows after
   "keep the habits on this device" — give those habits (and their entries and groups) new
   UUIDs and push again, **never acknowledge them**, or the full-pull deletion pass removes the
   data the user chose to keep. Back off on `code` `sync_paused` (503) and `rate_limited` (429)

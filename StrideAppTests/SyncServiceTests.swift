@@ -174,4 +174,127 @@ final class SyncServiceTests: XCTestCase {
         XCTAssertEqual(local.defaults.string(forKey: cursorKey), "2026-09-20T00:00:00.000Z")
         XCTAssertEqual(queue.pending(), SyncDeletionQueue.Batch(), "the push itself was accepted")
     }
+
+    // MARK: - The Settings footer
+
+    /// `syncError` is the Settings footer. The server answers this build (it sends
+    /// X-Stride-Client) with the machine code in `error` — `{error:"rate_limited", code, message}`
+    /// — and the footer must read as a sentence, not "rate_limited".
+    func testRateLimitedSyncShowsASentenceNotTheCode() async {
+        server.on("POST", "/v1/sync/push", respond: .init(status: 429, body: #"""
+        {"error":"rate_limited","code":"rate_limited",
+         "message":"Too many sync requests, please try again later","retryAfterSeconds":30}
+        """#))
+
+        await sync.sync(context: context)
+
+        let shown = sync.syncError
+        XCTAssertEqual(shown, appLocalized("Too many sync requests. Please try again in a few minutes."))
+        XCTAssertNotEqual(shown, "rate_limited")
+        XCTAssertFalse(shown?.contains("rate_limited") ?? true)
+    }
+
+    /// A code this build has no sentence for shows the server's `message`.
+    func testUnknownCodeShowsTheServersMessage() async {
+        server.on("POST", "/v1/sync/push", respond: .init(status: 400, body: #"""
+        {"error":"invalid_payload","code":"invalid_payload","message":"Sync data was malformed (\"habits\" must be an array)."}
+        """#))
+
+        await sync.sync(context: context)
+
+        XCTAssertEqual(sync.syncError, #"Sync data was malformed ("habits" must be an array)."#)
+    }
+
+    // MARK: - Overlap with sign-out and with callers that need the result
+
+    private static func pullBody(withHabit id: UUID) -> String {
+        #"""
+        {"habits":[{"id":"\#(id.uuidString)","name":"From the account","emoji":"⭐",
+                    "colorHex":"#34C759","isArchived":false,"sortOrder":0,
+                    "createdAt":"2026-09-01T00:00:00Z","updatedAt":"2026-09-01T00:00:00Z"}],
+         "entries":[],"groups":[],"serverTime":"2026-09-26T10:00:00.000Z"}
+        """#
+    }
+
+    private func waitForRequest(_ path: String) async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !server.paths.contains(path) {
+            guard ContinuousClock.now < deadline else { return XCTFail("no request to \(path)") }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    /// `sync` says whether THIS call pushed and pulled. The second of two overlapping calls did
+    /// neither, and used to look like a success to Erase Local Data (syncError stayed nil).
+    func testSyncReportsWhetherThisCallRan() async throws {
+        server.on("POST", "/v1/sync/push", respond: .ok(#"{"ok":true}"#))
+        let body = Self.pullBody()
+        server.on("GET", "/v1/sync/pull") { _ in
+            Thread.sleep(forTimeInterval: 0.3)
+            return .ok(body)
+        }
+
+        let first = Task { await sync.sync(context: context) }
+        try await waitForRequest("/v1/sync/push")
+        let overlapping = await sync.sync(context: context)
+        let firstRan = await first.value
+
+        XCTAssertFalse(overlapping)
+        XCTAssertTrue(firstRan)
+        XCTAssertEqual(server.paths, ["/v1/sync/push", "/v1/sync/pull"])
+
+        server.on("POST", "/v1/sync/push", respond: .init(status: 500, body: #"{"error":"boom"}"#))
+        let failed = await sync.sync(context: context)
+        XCTAssertFalse(failed)
+    }
+
+    /// Erase's pre-erase sync: it waits out a sync already in flight (which may have started
+    /// before the edits it must push), then runs its own and reports that one.
+    func testSyncAfterInFlightWaitsThenRunsItsOwn() async throws {
+        server.on("POST", "/v1/sync/push", respond: .ok(#"{"ok":true}"#))
+        let body = Self.pullBody()
+        server.on("GET", "/v1/sync/pull") { _ in
+            Thread.sleep(forTimeInterval: 0.2)
+            return .ok(body)
+        }
+
+        let inFlight = Task { await sync.sync(context: context) }
+        try await waitForRequest("/v1/sync/push")
+        let own = await sync.syncAfterInFlight(context: context)
+        _ = await inFlight.value
+
+        XCTAssertTrue(own)
+        XCTAssertEqual(server.paths, ["/v1/sync/push", "/v1/sync/pull", "/v1/sync/push", "/v1/sync/pull"])
+    }
+
+    /// A launch or foreground sync still awaiting its pull when the user signs out (or erases):
+    /// its response used to be applied to the store and its cursor written AFTER sign-out had
+    /// cleared it — the account's rows reappeared on an erased device, or the next sign-in
+    /// pulled incrementally from that cursor and never re-downloaded the account.
+    func testASyncInFlightAtSignOutWritesNothingAfterIt() async throws {
+        server.on("POST", "/v1/sync/push", respond: .ok(#"{"ok":true}"#))
+        let body = Self.pullBody(withHabit: UUID())
+        server.on("GET", "/v1/sync/pull") { _ in
+            Thread.sleep(forTimeInterval: 0.3)
+            return .ok(body)
+        }
+
+        let inFlight = Task { await sync.sync(context: context) }
+        try await waitForRequest("/v1/sync/pull")
+        sync.resetSyncState()   // what AuthService.logout calls
+        let ran = await inFlight.value
+
+        XCTAssertFalse(ran)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<Habit>()), 0, "nothing applied after sign-out")
+        XCTAssertNil(local.defaults.string(forKey: cursorKey), "no cursor written after sign-out")
+        XCTAssertNil(sync.lastSyncTime)
+        XCTAssertNil(sync.syncError, "signing out is not an error to show")
+        XCTAssertFalse(sync.isSyncing)
+
+        // The next sync is an ordinary full pull again.
+        stubHappyServer()
+        let next = await sync.sync(context: context)
+        XCTAssertTrue(next)
+        XCTAssertNil(server.requests.last?.query["since"])
+    }
 }

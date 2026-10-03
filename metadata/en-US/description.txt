@@ -20,7 +20,7 @@ The Activity Heatmap is a color-coded grid of your last 12 weeks. You also get y
 
 WIDGETS ON IPHONE AND IPAD
 
-Five widget styles: small and medium on the Home Screen, plus circular, inline, and rectangular on the Lock Screen. See today’s progress without opening the app — and from the medium widget, tap a habit to check it off right there.
+Widgets in every size: small, medium, and large on the Home Screen (and extra large on iPad), plus circular, inline, and rectangular on the Lock Screen. See today’s progress without opening the app — and from the medium and large widgets, tap a habit to check it off right there.
 
 REMINDERS FOR EVERY HABIT
 

@@ -111,6 +111,33 @@ final class StoreService {
         }
     }
 
+    // MARK: - Yearly Saving
+
+    /// Whole percent the yearly plan saves over twelve months of the monthly one, from the
+    /// storefront's real prices: 1 − yearly / (12 × monthly), rounded DOWN so the badge never
+    /// promises more than the prices deliver (2.99/mo and 19.99/yr save 44.28% → "SAVE 44%";
+    /// 49.6% would read 49, not 50). Nil — no badge — when either product is missing or the
+    /// yearly plan saves nothing. The badge used to be a bare "SAVE" with no figure; a hard-coded figure would go
+    /// stale the first time a price tier or storefront changed.
+    var yearlySavingsPercent: Int? {
+        guard let monthly = products.first(where: { $0.id == StrideProduct.monthlyPro.rawValue }),
+              let yearly = products.first(where: { $0.id == StrideProduct.yearlyPro.rawValue }) else {
+            return nil
+        }
+        return Self.savingsPercent(monthlyPrice: monthly.price, yearlyPrice: yearly.price)
+    }
+
+    /// `Product.price` is a `Decimal` in the storefront's currency; both products share it.
+    nonisolated static func savingsPercent(monthlyPrice: Decimal, yearlyPrice: Decimal) -> Int? {
+        let twelveMonths = monthlyPrice * 12
+        guard twelveMonths > 0 else { return nil }
+        var fraction = (1 - yearlyPrice / twelveMonths) * 100
+        var percent = Decimal()
+        NSDecimalRound(&percent, &fraction, 0, .down)
+        let whole = NSDecimalNumber(decimal: percent).intValue
+        return whole > 0 ? whole : nil
+    }
+
     // MARK: - Purchase
 
     func purchase(_ product: Product) async throws -> Bool {
@@ -222,9 +249,12 @@ struct ProPaywallView: View {
                     // Header
                     VStack(spacing: 12) {
                         Image(systemName: "crown.fill")
-                            .font(.system(size: 56))
+                            .scaledSystemFont(size: 56, relativeTo: .largeTitle)
                             .foregroundStyle(.yellow.gradient)
                             .accessibilityHidden(true)
+                            // Decoration: uncapped it pushes the feature list off the first
+                            // screen at the largest sizes.
+                            .dynamicTypeSize(...DynamicTypeSize.accessibility2)
 
                         Text("Stride Pro")
                             .font(.largeTitle.bold())
@@ -284,7 +314,7 @@ struct ProPaywallView: View {
                                 PricingCard(
                                     title: isLifetime ? "Lifetime" : (isYearly ? "Yearly" : "Monthly"),
                                     price: product.displayPrice + (isLifetime ? "" : (isYearly ? appLocalized("/yr") : appLocalized("/mo"))),
-                                    badge: isLifetime ? "BEST VALUE" : (isYearly ? "SAVE" : nil),
+                                    badge: isLifetime ? "BEST VALUE" : (isYearly ? yearlyBadge : nil),
                                     subtitle: isLifetime ? "One-time purchase — yours forever" : (isYearly ? "Billed annually" : nil),
                                     highlighted: isLifetime
                                 ) {
@@ -360,6 +390,13 @@ struct ProPaywallView: View {
         }
     }
 
+    /// "SAVE 44%": the interpolation is typed as a LocalizedStringKey here, outside the ternary
+    /// that picks it, so the runtime key is "SAVE %lld%%" — never a pre-formatted String.
+    private var yearlyBadge: LocalizedStringKey? {
+        guard let percent = store.yearlySavingsPercent else { return nil }
+        return "SAVE \(percent)%"
+    }
+
     private func purchaseProduct(_ product: Product) {
         isPurchasing = true
         Task {
@@ -415,31 +452,39 @@ struct PricingCard: View {
     var highlighted: Bool = false
     let action: () -> Void
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     var body: some View {
         Button(action: action) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
+            Group {
+                // Title, badge and price side by side left each a third of the card at the
+                // accessibility sizes: "Life/tim/e", "BEST VALU/E", "$19.9/9". From AX1 up each
+                // gets its own line; below it the layout is the one the store screenshots show.
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 4) {
                         Text(title)
                             .font(.headline)
-                        if let badge {
-                            Text(badge)
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Capsule().fill(.green))
-                        }
+                        if let badge { badgeView(badge) }
+                        subtitleView
+                        Text(price)
+                            .font(.title3.bold())
                     }
-                    if let subtitle {
-                        Text(subtitle)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(title)
+                                    .font(.headline)
+                                if let badge { badgeView(badge) }
+                            }
+                            subtitleView
+                        }
+                        Spacer()
+                        Text(price)
+                            .font(.title3.bold())
                     }
                 }
-                Spacer()
-                Text(price)
-                    .font(.title3.bold())
             }
             .accessibilityElement(children: .combine)
             .padding()
@@ -453,5 +498,23 @@ struct PricingCard: View {
             )
         }
         .buttonStyle(.plain)
+    }
+
+    private func badgeView(_ badge: LocalizedStringKey) -> some View {
+        Text(badge)
+            .scaledSystemFont(size: 9, weight: .bold, relativeTo: .caption2)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(.green))
+    }
+
+    @ViewBuilder
+    private var subtitleView: some View {
+        if let subtitle {
+            Text(subtitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 }

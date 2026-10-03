@@ -5,16 +5,38 @@ import SwiftData
 import UIKit
 #endif
 
-/// The part of `UNUserNotificationCenter` that plans reminders: add, remove, list. A seam for
-/// StrideAppTests, which records what would be scheduled instead of filling the host app's real
-/// pending-notification store (and iOS's 64-request limit) with test reminders.
+/// The part of `UNUserNotificationCenter` that plans reminders: add, remove, list — and, since
+/// 1.3.0, the authorization status and the request, because whether a reminder is scheduled at
+/// all now depends on them. A seam for StrideAppTests, which records what would be scheduled
+/// instead of filling the host app's real pending-notification store (and iOS's 64-request
+/// limit) with test reminders, and which plays the user's answer to the system prompt instead
+/// of raising a real one.
 protocol NotificationScheduling: AnyObject, Sendable {
     func add(_ request: UNNotificationRequest, withCompletionHandler completionHandler: (@Sendable (Error?) -> Void)?)
     func removePendingNotificationRequests(withIdentifiers identifiers: [String])
     func getPendingNotificationRequests(completionHandler: @escaping @Sendable ([UNNotificationRequest]) -> Void)
+    /// `UNNotificationSettings` has no public initializer, so the seam asks for the one field
+    /// the app reads rather than the settings object a test could never build.
+    func authorizationStatus() async -> UNAuthorizationStatus
+    func requestAuthorization(options: UNAuthorizationOptions) async throws -> Bool
 }
 
-extension UNUserNotificationCenter: NotificationScheduling {}
+/// `requestAuthorization(options:)` is the center's own async method; only the status needs a
+/// wrapper. Both are exactly what `requestPermission` / `checkPermission` called before the seam.
+extension UNUserNotificationCenter: NotificationScheduling {
+    func authorizationStatus() async -> UNAuthorizationStatus {
+        await notificationSettings().authorizationStatus
+    }
+}
+
+/// What the habit sheet needs to know before it schedules a reminder: may it fire?
+enum ReminderPermission: Equatable {
+    /// Authorized, provisional or ephemeral — the system will deliver it.
+    case allowed
+    /// The user said no, now or earlier. Only Settings → Stride can change that; asking again
+    /// shows nothing.
+    case denied
+}
 
 /// Manages daily habit reminder notifications.
 @MainActor
@@ -106,18 +128,62 @@ final class NotificationService {
 
     func requestPermission() async -> Bool {
         do {
-            // Permission and settings go to the real center directly: they are not planning, and
-            // `NotificationScheduling` deliberately covers only add/remove/list.
-            let granted = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound])
-            return granted
+            return try await center.requestAuthorization(options: [.alert, .badge, .sound])
         } catch {
             return false
         }
     }
 
     func checkPermission() async -> UNAuthorizationStatus {
-        let settings = await UNUserNotificationCenter.current().notificationSettings()
-        return settings.authorizationStatus
+        await center.authorizationStatus()
+    }
+
+    /// Resolves whether reminders may fire, raising the system prompt only when iOS has never
+    /// asked. Callers await this before they schedule and before their sheet goes away, so the
+    /// prompt appears over the screen where the user switched the reminder on.
+    ///
+    /// Until 1.3.0 the only caller of `requestPermission()` was the Settings "Daily Reminder"
+    /// toggle. A reminder switched on in the New Habit sheet on a fresh install was queued while
+    /// the status was still `.notDetermined` and never delivered — and nothing said so.
+    ///
+    /// When the prompt is answered "Allow", every reminder-on habit already in `container` is
+    /// scheduled at that moment. The launch pass (`rescheduleAllHabitReminders`) ran while the
+    /// status was undecided and scheduled nothing that could fire, so without this the habits
+    /// that came by sync or restore, or were saved before the grant, stayed silent until the
+    /// next cold launch — on iOS, possibly days — and only the habit being saved worked.
+    func ensureReminderPermission(schedulingExistingIn container: ModelContainer? = nil) async -> ReminderPermission {
+        switch await checkPermission() {
+        case .notDetermined:
+            guard await requestPermission() else { return .denied }
+            if let container { scheduleAllHabitReminders(modelContainer: container) }
+            return .allowed
+        case .denied:
+            return .denied
+        default:
+            // .authorized, .provisional, .ephemeral (and any future case) deliver.
+            return .allowed
+        }
+    }
+
+    /// The Save path of the habit sheet: permission first (asking if iOS never has), then the
+    /// reminder — or, when notifications are off, no request at all. An add under `.denied` is
+    /// refused by the system anyway; not making it keeps the outcome visible to the caller, which
+    /// shows the "Notifications are disabled" footer instead of pretending the reminder is set.
+    /// The habit keeps `reminderEnabled`, so `rescheduleAllHabitReminders` schedules it at the
+    /// first launch after the user allows notifications in Settings → Stride.
+    @discardableResult
+    func enableHabitReminder(for habit: Habit) async -> ReminderPermission {
+        // The habit's own container: a saved habit is in it, so a grant here schedules this
+        // habit along with the rest (the habit sheet normally settled permission before saving).
+        let permission = await ensureReminderPermission(schedulingExistingIn: habit.modelContext?.container)
+        if permission == .allowed {
+            scheduleHabitReminder(for: habit)
+        } else {
+            // A request left over from an earlier time (an edit that moved it) must not linger
+            // to fire at the old time the moment notifications are switched back on.
+            removeHabitReminder(for: habit.id)
+        }
+        return permission
     }
 
     // MARK: - Schedule
@@ -208,20 +274,8 @@ final class NotificationService {
     /// this service; this prune is what cleans those up. Orphans also eat into iOS's 64-request
     /// limit, silently displacing reminders that should fire.
     func rescheduleAllHabitReminders(modelContainer: ModelContainer) {
-        let context = ModelContext(modelContainer)
-        let habits: [Habit]
-        do {
-            let descriptor = FetchDescriptor<Habit>(
-                predicate: #Predicate<Habit> { $0.reminderEnabled && !$0.isArchived }
-            )
-            habits = try context.fetch(descriptor)
-        } catch {
-            // Don't prune on a failed fetch: an empty "wanted" set would delete every reminder.
-            return
-        }
-        for habit in habits {
-            scheduleHabitReminder(for: habit)
-        }
+        // Don't prune on a failed fetch: an empty "wanted" set would delete every reminder.
+        guard let habits = scheduleAllHabitReminders(modelContainer: modelContainer) else { return }
 
         let prefix = habitReminderPrefix
         let wanted = Set(habits.map { prefix + $0.id.uuidString })
@@ -231,6 +285,24 @@ final class NotificationService {
             guard !orphans.isEmpty else { return }
             center.removePendingNotificationRequests(withIdentifiers: orphans)
         }
+    }
+
+    /// Adds (replaces) the reminder of every reminder-on, unarchived habit in the store and
+    /// returns those habits; nil when the fetch failed. No prune — the launch pass prunes. That
+    /// makes it safe while the habit sheet is still saving: a prune computed now would find the
+    /// sheet's own reminder, added a moment later, missing from its "wanted" set and remove it
+    /// (the real center answers `getPendingNotificationRequests` asynchronously).
+    @discardableResult
+    func scheduleAllHabitReminders(modelContainer: ModelContainer) -> [Habit]? {
+        let context = ModelContext(modelContainer)
+        let descriptor = FetchDescriptor<Habit>(
+            predicate: #Predicate<Habit> { $0.reminderEnabled && !$0.isArchived }
+        )
+        guard let habits = try? context.fetch(descriptor) else { return nil }
+        for habit in habits {
+            scheduleHabitReminder(for: habit)
+        }
+        return habits
     }
 
     // MARK: - Smart Badge Update

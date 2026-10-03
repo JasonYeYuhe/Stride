@@ -17,7 +17,6 @@
 "Halfway done! Nice!" = "반쯤 했어요! 좋아요!";
 "Good start! Keep it up!" = "좋은 시작! 계속 해봐요!";
 "Let's get started!" = "시작해볼까요!";
-"%lld day streak" = "%lld일 연속";
 "Start Your Journey" = "여정을 시작하세요";
 "Add your first habit and begin\nbuilding better routines." = "첫 번째 습관을 추가하고\n더 나은 루틴을 만들어보세요.";
 "Add First Habit" = "첫 습관 추가";
@@ -39,7 +38,6 @@
 "Best Streak" = "최고 연속";
 "30d Avg" = "30일 평균";
 "Current Streak" = "현재 연속";
-"days" = "일";
 "30-Day Rate" = "30일 달성률";
 "Total" = "합계";
 "By Weekday" = "요일별";
@@ -66,11 +64,8 @@
 "Reminders" = "알림";
 "Notifications are disabled. Go to Settings → Stride to enable." = "알림이 비활성화되어 있습니다. 설정 → Stride에서 활성화하세요.";
 "You'll receive a reminder to check your habits at the time above." = "위의 시간에 습관 확인 알림을 받게 됩니다.";
-"Active Habits (%lld)" = "활성 습관 (%lld)";
-"%lld check-ins" = "%lld회 체크인";
 "Delete" = "삭제";
 "Archive" = "보관";
-"Archived (%lld)" = "보관됨 (%lld)";
 "Restore" = "복원";
 "About" = "정보";
 "Version" = "버전";
@@ -115,7 +110,6 @@
 "Yearly" = "연간";
 "Monthly" = "월간";
 "BEST VALUE" = "최고 가치";
-"Save 44%" = "44% 절약";
 "Restore Purchases" = "구매 복원";
 "Payment will be charged to your Apple ID account. Subscription automatically renews unless cancelled at least 24 hours before the end of the current period." = "결제는 Apple ID 계정으로 청구됩니다. 현재 기간 종료 최소 24시간 전에 취소하지 않으면 구독이 자동 갱신됩니다.";
 "Terms" = "약관";
@@ -144,12 +138,9 @@
 /* Widget */
 "of %lld" = "/ %lld";
 "All done! 🎉" = "모두 완료! 🎉";
-"%lld remaining" = "%lld개 남음";
 "+%lld more" = "+%lld개 더";
 "Tap to add habits" = "탭하여 습관 추가";
 "Stride: No habits yet" = "Stride: 아직 습관 없음";
-"🔥 All %lld habits done!" = "🔥 %lld개 습관 모두 완료!";
-"🏃 %lld/%lld habits done" = "🏃 %lld/%lld개 습관 완료";
 "Stride Habits" = "Stride 습관";
 "Track your daily habit progress at a glance." = "매일의 습관 진행 상황을 한눈에.";
 
@@ -168,9 +159,7 @@
 "Add a note for today's check-in." = "오늘 체크인에 메모를 추가하세요.";
 "Rest day" = "휴식일";
 "%lld/%lld this week" = "이번 주 %lld/%lld";
-"%lld week streak" = "%lld주 연속";
 "Ungrouped" = "그룹 없음";
-"%@, %lld habits" = "%@, 습관 %lld개";
 "Add one to %@" = "%@에 1 추가";
 "Mark %@ complete" = "%@ 완료로 표시";
 "Mark %@ incomplete" = "%@ 미완료로 표시";
@@ -180,8 +169,6 @@
 "%@, completed" = "%@, 완료";
 "%@, not completed" = "%@, 미완료";
 "%@, selected" = "%@, 선택됨";
-"%lld of %lld habits completed" = "습관 %lld/%lld개 완료";
-"%lld of %lld habits completed, %lld percent" = "습관 %lld/%lld개 완료, %lld퍼센트";
 "Double tap to toggle completion" = "두 번 탭하여 완료 전환";
 "Browse Templates" = "템플릿 둘러보기";
 "Edit Habit" = "습관 편집";
@@ -274,15 +261,12 @@
 "Best: %@ %@" = "최고: %@ %@";
 "Needs work: %@ %@" = "개선 필요: %@ %@";
 "Done" = "완료";
-"day streak" = "일 연속";
-"week streak" = "주 연속";
 "best streak" = "최고 연속";
 "30-day rate" = "30일 달성률";
 "last 14 days" = "최근 14일";
 "Habit Groups" = "습관 그룹";
 "Organize habits into collapsible groups" = "습관을 접을 수 있는 그룹으로 정리";
 "Lifetime" = "평생";
-"SAVE" = "할인";
 "Billed annually" = "매년 결제";
 "One-time purchase — yours forever" = "한 번 구매로 평생 사용";
 "/mo" = "/월";
@@ -312,7 +296,6 @@
 "Stride Habits Export" = "Stride 습관 내보내기";
 "CSV export of all habits" = "모든 습관의 CSV 내보내기";
 "JSON export of all habits" = "모든 습관의 JSON 내보내기";
-"Share Anonymous Analytics" = "익명 분석 데이터 공유";
 "Legal" = "법적 고지";
 "%lldd" = "%lld일";
 "Complete a Habit" = "습관 완료하기";
@@ -331,8 +314,6 @@
 "%@ %@ is already completed today." = "%@ %@은(는) 오늘 이미 완료했습니다.";
 "Logged %@ %@: %@ of %@%@." = "%@ %@ 기록 완료: %@ / %@%@";
 "Completed %@ %@!" = "%@ %@ 완료!";
-"%@ %@: %lld day streak" = "%@ %@: %lld일 연속";
-"%@ %@: %lld week streak" = "%@ %@: %lld주 연속";
 
 /* VoiceOver and accessibility strings (1.2.3). */
 "Collapsed" = "접힘";
@@ -359,6 +340,46 @@
 "%@ %@, %lld percent" = "%@ %@, %lld퍼센트";
 "Up %lld percent vs last week" = "지난주보다 %lld퍼센트 상승";
 "Down %lld percent vs last week" = "지난주보다 %lld퍼센트 하락";
-"%@, %lld day streak, best streak %lld, 30-day rate %lld percent, %lld of the last 14 days completed" = "%@, %lld일 연속, 최고 연속 %lld, 30일 달성률 %lld퍼센트, 최근 14일 중 %lld일 완료";
-"%@, %lld week streak, best streak %lld, 30-day rate %lld percent, %lld of the last 14 days completed" = "%@, %lld주 연속, 최고 연속 %lld, 30일 달성률 %lld퍼센트, 최근 14일 중 %lld일 완료";
-"%lld more habits" = "습관 %lld개 더";
+
+/* ------------------------------------------------------------
+   Added in 1.3.0. Plural keys (streaks, check-ins, habit counts, the Stats
+   streak unit) moved to Localizable.stringsdict in this folder.
+   ------------------------------------------------------------ */
+
+/* Settings > Export Data: backup and restore */
+"Restore from Backup…" = "백업에서 복원…";
+"Restore from Backup?" = "백업에서 복원할까요?";
+"Choose a JSON backup exported from Stride 1.3 or later." = "Stride 1.3 이상에서 내보낸 JSON 백업을 선택하세요.";
+"Export as JSON saves a complete backup, which can be restored on a device with no habits." = "'JSON으로 내보내기'는 전체 백업을 저장하며, 습관이 없는 기기에서 복원할 수 있습니다.";
+"Stride couldn't read this file." = "Stride에서 이 파일을 읽을 수 없습니다.";
+"Backup restored." = "백업을 복원했습니다.";
+"This file is too large to restore." = "이 파일은 너무 커서 복원할 수 없습니다.";
+"This file isn't a Stride backup." = "이 파일은 Stride 백업이 아닙니다.";
+"This file was exported by an older version of Stride and doesn't contain everything needed to restore. Export a new backup from Stride 1.3 or later." = "이 파일은 이전 버전의 Stride에서 내보낸 것으로, 복원에 필요한 정보가 모두 들어 있지 않습니다. Stride 1.3 이상에서 새 백업을 내보내세요.";
+"This backup was made by a newer version of Stride. Update the app to restore it." = "이 백업은 최신 버전의 Stride에서 만들어졌습니다. 복원하려면 앱을 업데이트하세요.";
+"This backup is damaged and can't be restored." = "이 백업은 손상되어 복원할 수 없습니다.";
+"Restore works only when there are no habits on this device. Erase local data first, then restore." = "이 기기에 습관이 없을 때만 복원할 수 있습니다. 먼저 로컬 데이터를 지운 다음 복원하세요.";
+"Erase Local Data…" = "로컬 데이터 지우기…";
+"Erase Local Data?" = "로컬 데이터를 지울까요?";
+"Erase" = "지우기";
+"Removes every habit, check-in and group from this device only, and signs you out. Your account's data on the server is not affected: sign in again to download it." = "이 기기에서만 모든 습관, 체크인, 그룹을 삭제하고 로그아웃합니다. 서버에 있는 계정 데이터는 영향을 받지 않으며, 다시 로그인하면 다운로드됩니다.";
+"Removes every habit, check-in and group from this device. Export a backup first if you want to keep them." = "이 기기의 모든 습관, 체크인, 그룹을 삭제합니다. 보관하려면 먼저 백업을 내보내세요.";
+"Stride syncs one last time, signs you out, then deletes every habit, check-in and group on this device. Your account's data on the server is not touched: sign in again to download it." = "Stride가 마지막으로 한 번 동기화하고 로그아웃한 다음, 이 기기의 모든 습관, 체크인, 그룹을 삭제합니다. 서버에 있는 계정 데이터는 그대로이며, 다시 로그인하면 다운로드됩니다.";
+"Every habit, check-in and group on this device will be deleted. This cannot be undone." = "이 기기의 모든 습관, 체크인, 그룹이 삭제됩니다. 이 작업은 되돌릴 수 없습니다.";
+"Couldn't sync, so nothing was erased. Check your connection and try again, or log out first to erase without syncing." = "동기화하지 못해 아무것도 지우지 않았습니다. 연결을 확인한 후 다시 시도하거나, 먼저 로그아웃하면 동기화 없이 지울 수 있습니다.";
+
+/* Paywall */
+"SAVE %lld%%" = "%lld%% 할인";
+
+/* Sync and sign-in errors (APIClient.displayMessage) */
+"Sync is paused for maintenance. Your data is safe on this device and will sync when the pause ends." = "점검을 위해 동기화가 일시 중지되었습니다. 데이터는 이 기기에 안전하게 보관되어 있으며 일시 중지가 끝나면 동기화됩니다.";
+"Too many sync requests. Please try again in a few minutes." = "동기화 요청이 너무 많습니다. 몇 분 후에 다시 시도해 주세요.";
+"Request failed" = "요청에 실패했습니다";
+"Please log in again" = "다시 로그인해 주세요";
+"Invalid server response" = "서버 응답이 올바르지 않습니다";
+
+/* Siri & Shortcuts: AppShortcut short titles (the tiles in the Shortcuts app). They had no entry
+   in any catalog until the source scan learned `shortTitle:`. */
+"Complete Habit" = "습관 완료";
+"Check Streak" = "연속 기록 확인";
+"List Habits" = "습관 목록";

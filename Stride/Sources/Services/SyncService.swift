@@ -58,16 +58,28 @@ final class SyncService {
     func trackDeletedGroup(_ id: String) { deletionQueue.trackGroup(id) }
 
     /// Full sync: push local changes then pull remote changes.
-    func sync(context: ModelContext) async {
-        guard await api.isLoggedIn else { return }
-        guard !isSyncing else { return }
-
+    ///
+    /// Returns true only when THIS call pushed and pulled. False when it did nothing — signed
+    /// out, or another sync already running — as well as when it failed. Erase Local Data used
+    /// to read success off `syncError == nil`, which the "already syncing" return leaves as the
+    /// in-flight sync reset it: it took a sync it never ran for a successful one and erased
+    /// under it. Anything that must know goes through `syncAfterInFlight(context:)`.
+    @discardableResult
+    func sync(context: ModelContext) async -> Bool {
+        // Claimed before the first suspension, so a caller that saw `isSyncing == false` and
+        // calls in the same main-actor turn (syncAfterInFlight) is never the one turned away.
+        guard !isSyncing else { return false }
         isSyncing = true
+        defer { isSyncing = false }
+        guard await api.isLoggedIn else { return false }
+
         syncError = nil
+        let generation = stateGeneration
 
         do {
             try await pushLocal(context: context)
-            let serverTime = try await pullRemote(context: context)
+            let serverTime = try await pullRemote(context: context, generation: generation)
+            try ensureStillCurrent(generation)
 
             if let cursor = SyncCursor.next(afterServerTime: serverTime) {
                 defaults.set(cursor, forKey: cursorKey)
@@ -77,12 +89,46 @@ final class SyncService {
             let now = SyncTimestamp.string(from: Date())
             lastSyncTime = now
             defaults.set(now, forKey: lastSyncKey)
-            AnalyticsService.shared.send("syncPerformed")
+            return true
+        } catch is SignedOutDuringSync {
+            // Not an error to show: the session this sync served is gone, on purpose.
+            return false
         } catch {
-            syncError = error.localizedDescription
+            // The Settings footer. Not `localizedDescription` blindly: see APIError.displayMessage
+            // — a raw "rate_limited" must never reach the screen.
+            syncError = APIError.displayMessage(for: error)
+            return false
         }
+    }
 
-        isSyncing = false
+    /// Waits for a sync already in flight to finish, then runs one of its own and reports
+    /// whether that one succeeded. For callers that act on the result (Erase Local Data): the
+    /// in-flight sync may have started before the edits they need pushed.
+    func syncAfterInFlight(context: ModelContext) async -> Bool {
+        await waitUntilIdle()
+        return await sync(context: context)
+    }
+
+    /// Returns once no sync is running (or the task is cancelled). Restore waits here: a full
+    /// pull already awaiting its response would otherwise land after the restore and delete
+    /// every restored row the account does not hold (SyncReconciler's full-pull pass).
+    func waitUntilIdle() async {
+        while isSyncing && !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+    }
+
+    /// Bumped by `resetSyncState()` (sign-out, account deletion, erase). A sync that started
+    /// before it compares on the way out and drops what it pulled and the cursor it would write:
+    /// otherwise a launch or foreground sync still awaiting its pull when the user signs out
+    /// applied the old account's rows to the (possibly just erased) store and wrote a cursor
+    /// AFTER the sign-out cleared it — and the next sign-in pulled incrementally from it and
+    /// never re-downloaded the account.
+    @ObservationIgnored private var stateGeneration = 0
+    private struct SignedOutDuringSync: Error {}
+
+    private func ensureStillCurrent(_ generation: Int) throws {
+        guard generation == stateGeneration else { throw SignedOutDuringSync() }
     }
 
     private func pushLocal(context: ModelContext) async throws {
@@ -160,15 +206,17 @@ final class SyncService {
     /// Forget the cursor and last-sync time, so the next account signed in on this device starts
     /// with a full pull instead of an incremental one against the previous account's cursor.
     func resetSyncState() {
+        stateGeneration += 1
         defaults.removeObject(forKey: cursorKey)
         defaults.removeObject(forKey: lastSyncKey)
         lastSyncTime = nil
     }
 
     /// Returns the response's `serverTime`, from which the next cursor is taken.
-    private func pullRemote(context: ModelContext) async throws -> String {
+    private func pullRemote(context: ModelContext, generation: Int) async throws -> String {
         let cursor = defaults.string(forKey: cursorKey)
         let response = try await api.pullChanges(since: cursor)
+        try ensureStillCurrent(generation)
         // Reconciliation lives in Shared/SyncReconciler.swift so StrideTests exercises the
         // real code rather than a copy of it.
         try SyncReconciler.apply(response, to: context, isFullPull: cursor == nil)

@@ -14,7 +14,14 @@ final class StubServer: @unchecked Sendable {
         let path: String
         let query: [String: String]
         let authorization: String?
+        /// Every header as the app set it; look up with `header(_:)`.
+        let headers: [String: String]
         let body: Data?
+
+        /// Header names are case-insensitive on the wire; so is this lookup.
+        func header(_ name: String) -> String? {
+            headers.first { $0.key.caseInsensitiveCompare(name) == .orderedSame }?.value
+        }
 
         /// The body as a JSON object, for asserting on wire keys.
         var json: [String: Any]? {
@@ -72,6 +79,7 @@ final class StubServer: @unchecked Sendable {
             path: url.path,
             query: Dictionary(items.map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { first, _ in first }),
             authorization: urlRequest.value(forHTTPHeaderField: "Authorization"),
+            headers: urlRequest.allHTTPHeaderFields ?? [:],
             body: Self.body(of: urlRequest)
         )
         let handler: Handler? = lock.withLock {
