@@ -633,10 +633,10 @@ installed over 1.3.0, keeping the data container, and its first sync ran:
   `TEST_RUNNER_STRIDE_REAL_STORE_PATH=… xcodebuild test -scheme StrideTests -destination
   platform=macOS -only-testing:StrideTests/SyncDeliveryTests/testARealDeviceStoreOpensUnderTheNewSchema`.
   It is skipped until then. Fresh simulators prove nothing about live stores.
-- [ ] `sync_rehearsal.sh` and `check_demo_account.sh` green on the build that ships (acceptance
-  1, 3).
-- [ ] Acceptance (8): the **archived** 1.3.1 app's `PrivacyInfo.xcprivacy` declares Product
-  Interaction. `product_checks.sh` fails a built app whose manifest drops it, and
+- [x] `sync_rehearsal.sh` (80 PASS / 0 FAIL / 1 SKIPPED) and `check_demo_account.sh` (exit 0)
+  green on the tree that was archived (`a2cff60`, 2026-10-07; acceptance 1, 3).
+- [x] Acceptance (8): both archived 1.3.1 (20) apps' `PrivacyInfo.xcprivacy` declare Product
+  Interaction (`verify_archive.sh`, 2026-10-07). `product_checks.sh` fails a built app whose manifest drops it, and
   `verify_archive.sh` runs it on the archive and the export, so a green `verify_archive.sh` is
   the check.
 
@@ -677,8 +677,17 @@ all differ from the simulator setup.
 - [x] What's New in six locales (above), opening with the backup advice.
 - [ ] ASC App Privacy: unchanged from 1.3.0. Product Interaction stays declared, and Email
   Address, Other User Content, Crash Data and Other Diagnostic Data match the manifest.
-- [ ] Archive and export both platforms through every gate (`verify_archive.sh --exported`):
-  1.3.1 (20), Distribution-signed, no `get-task-allow`, associated domains present.
-- [ ] `release.py prepare 1.3.1`, upload, then **`release.py finish 1.3.1 20` on the owner's go**.
+- [x] Archived, exported and uploaded both platforms through every gate
+  (`build-appstore.sh all --upload`, 2026-10-07 01:19 JST, tree `a2cff60`).
+  - Each one: 1.3.1 (20), Distribution-signed, no `get-task-allow`, associated domains present,
+    Sentry DSN compiled in.
+  - dSYMs are kept in `build/dsyms/1.3.1-20/` and uploaded to Sentry.
+  - Apple's "Upload Symbols Failed" warning is about the prebuilt Sentry.framework's missing
+    dSYM. It is harmless, as in earlier builds.
+- [x] `release.py prepare 1.3.1`: both version records are PREPARE_FOR_SUBMISSION, with What's
+  New in six locales, MANUAL.
+- [ ] **`release.py finish 1.3.1 20` on the owner's go**, after the device checks (on the
+  TestFlight build 20) and the Codex review. If either leads to a code change, the fix ships as
+  build 21.
   The version is created `MANUAL`; publish with `release.py release 1.3.1` after the device
   checks.
