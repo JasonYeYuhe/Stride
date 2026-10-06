@@ -81,6 +81,7 @@ final class LocalizationSourceScanTests: XCTestCase {
             "entry.totalCount", "layout.more", "data.count", "preview.habits", "preview.checkIns",
             "preview.groups", "habit.weeklyCompletions(containing: date)",
             "currentPage + 1", "targetValue", "todayCount",
+            "failure.code",   // StoreOpenFailure.code: the store error screen's number
         ]
         let strings = [
             "error", "newError", "email", "habitName", "habit.emoji", "habit.name", "unit",
@@ -88,6 +89,7 @@ final class LocalizationSourceScanTests: XCTestCase {
             "point.spokenDate", "best.emoji", "best.name", "worst.emoji", "worst.name",
             "template.displayName",
             "Self.amount(result.loggedValue)", "Self.amount(habit.targetValue)", "status",
+            "failure.domain", // StoreOpenFailure.domain, e.g. NSCocoaErrorDomain
         ]
         var table: [String: String] = [:]
         for e in ints { table[e] = "%lld" }

@@ -1,5 +1,6 @@
 import XCTest
 import SwiftData
+import CoreData
 import SwiftUI
 import UIKit
 import os
@@ -113,6 +114,71 @@ final class StoreLaunchTests: XCTestCase {
         await launch.retry()
         XCTAssertNil(launch.container)
         XCTAssertFalse(launch.isRetrying)
+        XCTAssertEqual(probe.events, ["report 134110", "report 134110"])
+    }
+
+    // MARK: - The error screen's second line (review round)
+
+    /// The remedy line for `failure`, as the screen shows it in the picked language.
+    private func remedy(_ advice: StoreUnavailableAdvice, _ failure: StoreOpenFailure) -> String {
+        let domain = failure.domain, code = failure.code
+        switch advice {
+        case .tryAgain:
+            return ""
+        case .freeStorage:
+            return appLocalized("Your device may be out of storage. Free up some space, then tap Try Again. (Error \(domain) \(code))")
+        case .reinstallIfSynced:
+            return appLocalized("If it still fails and you sync with a Stride account, delete Stride, install it again and sign in: your synced habits come back. Without an account, contact support first — deleting Stride also deletes the habits on this device. (Error \(domain) \(code))")
+        }
+    }
+
+    /// A damaged file (Cocoa 259, what SwiftData throws for testAnUnreadableStoreIsReportedAndLeftAsItWas)
+    /// is not the race: waiting and restarting cannot mend it. The first screen already names the
+    /// code and the remedy, with Contact Support — and still opens nothing else.
+    func testAFailureThatIsNotTheRaceNamesItsCodeAndTheRemedy() async throws {
+        let probe = Probe()
+        let damaged = StoreOpenFailure(domain: NSCocoaErrorDomain, code: 259, attempts: 7)
+        let launch = makeLaunch(probe) { .failure(damaged) }
+        XCTAssertEqual(launch.advice, .reinstallIfSynced)
+
+        let window = try host(launch, probe)
+        _ = try await element(labeled: appLocalized("Stride couldn't open your data"), in: window)
+        _ = try await element(labeled: remedy(.reinstallIfSynced, damaged), in: window)
+        _ = try await element(labeled: appLocalized("Contact Support"), in: window)
+        _ = try await element(labeled: appLocalized("Try Again"), in: window)
+        XCTAssertNil(findElement(labeled: "The app", in: window))
+        XCTAssertEqual(probe.events, ["report 259"], "reported, and nothing run")
+    }
+
+    /// A full device: free some space — first time and every time.
+    func testAFullDeviceIsToldToFreeStorage() async throws {
+        let probe = Probe()
+        let full = StoreOpenFailure(domain: NSCocoaErrorDomain, code: 134110, underlyingDomain: NSSQLiteErrorDomain,
+                                    underlyingCode: 13, attempts: 7)
+        let launch = makeLaunch(probe) { .failure(full) }
+        XCTAssertEqual(launch.advice, .freeStorage)
+        let window = try host(launch, probe)
+        _ = try await element(labeled: remedy(.freeStorage, full), in: window)
+        _ = try await element(labeled: appLocalized("Contact Support"), in: window)
+    }
+
+    /// The race's signature gets the calm line alone, the first time. A Try Again that fails the
+    /// same way adds the code and the remedy: waiting has had its chance.
+    func testTheRaceGetsTheRemedyOnlyOnceTryAgainFailsTheSameWay() async throws {
+        let probe = Probe()
+        let failure = Self.failure
+        let launch = makeLaunch(probe) { .failure(failure) }
+        XCTAssertEqual(launch.advice, .tryAgain)
+
+        let window = try host(launch, probe)
+        let retry = try await element(labeled: appLocalized("Try Again"), in: window)
+        XCTAssertNil(findElement(labeled: remedy(.reinstallIfSynced, failure), in: window))
+        XCTAssertNil(findElement(labeled: appLocalized("Contact Support"), in: window))
+
+        XCTAssertTrue(retry.accessibilityActivate(), "the button's tap")
+        _ = try await element(labeled: remedy(.reinstallIfSynced, failure), in: window)
+        _ = try await element(labeled: appLocalized("Contact Support"), in: window)
+        XCTAssertEqual(launch.advice, .reinstallIfSynced)
         XCTAssertEqual(probe.events, ["report 134110", "report 134110"])
     }
 

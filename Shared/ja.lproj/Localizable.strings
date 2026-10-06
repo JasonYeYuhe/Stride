@@ -477,3 +477,11 @@
 "Open Stride to see your habits" = "Strideを開くと習慣が表示されます";
 "Stride couldn't open your data" = "Stride はデータを開けませんでした";
 "Nothing was changed or deleted. Try again in a moment. If it keeps happening, restart your device and open Stride again." = "変更や削除は行われていません。しばらくしてからもう一度お試しください。繰り返し起きる場合は、デバイスを再起動してから Stride を開き直してください。";
+
+/* The store's error screen, review round (1.3.1, upgrade race E2E U123): a failure that is not
+   the race, or the race's codes again after "Try Again", adds one of these two lines under the
+   calm one, and a "Contact Support" link to the support page. "%@ %lld" is the error's domain
+   (an untranslated identifier such as NSCocoaErrorDomain) and its number. */
+"Contact Support" = "サポートに問い合わせる";
+"Your device may be out of storage. Free up some space, then tap Try Again. (Error %@ %lld)" = "デバイスのストレージが不足している可能性があります。空き容量を増やしてから「再試行」をタップしてください。（エラー %@ %lld）";
+"If it still fails and you sync with a Stride account, delete Stride, install it again and sign in: your synced habits come back. Without an account, contact support first — deleting Stride also deletes the habits on this device. (Error %@ %lld)" = "それでも開けない場合、Stride アカウントで同期しているなら、Stride を削除して再インストールし、ログインしてください。同期済みの習慣が戻ります。アカウントがない場合は、先にサポートに問い合わせてください。Stride を削除すると、このデバイスの習慣も削除されます。（エラー %@ %lld）";

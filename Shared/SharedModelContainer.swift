@@ -1,4 +1,5 @@
 import SwiftData
+import CoreData
 import Foundation
 import os.log
 
@@ -21,14 +22,18 @@ import os.log
 /// - Every other process — the widget extension, its check-in intent — opens with
 ///   `openForExtension`, which opens only a store the app has already opened at exactly this
 ///   schema: never a missing one (the app has not created it), an older one (the app has not
-///   migrated it yet) or a newer one (a downgraded app has not migrated it back yet).
+///   migrated it yet) or a newer one (a downgraded app has not migrated it back yet) — by the
+///   marker, and then by the store's own model hashes (`storeMatchesModels`).
 /// - A failed open never falls back to another store. An empty store hides the data and spends
 ///   the one-time migrations on itself; the app shows `StoreUnavailableView` instead.
 enum SharedModelContainer {
     static let appGroupIdentifier = "group.yyh.stride.habittracker"
 
-    /// The models the store holds; every open of the real store uses this one list.
-    static var schema: Schema { Schema([Habit.self, HabitRecord.self, HabitGroup.self]) }
+    /// The models the store holds; every open of the real store uses this one list, and so do
+    /// the widget's model check (`storeMatchesModels`) and the tests that pin the hashes.
+    static let modelTypes: [any PersistentModel.Type] = [Habit.self, HabitRecord.self, HabitGroup.self]
+
+    static var schema: Schema { Schema(modelTypes) }
 
     /// The store's schema generation. The app writes it to the App Group once its own open of the
     /// real store succeeded, and every other process requires it — exactly — before it opens the
@@ -36,9 +41,13 @@ enum SharedModelContainer {
     ///
     /// BUMP IT WHENEVER THE MODELS CHANGE: a stored property of `Habit`, `HabitRecord` or
     /// `HabitGroup` added, removed, renamed or retyped — anything that makes SwiftData migrate.
-    /// A missed bump is the U123 race again: the new widget would read the old number as current
-    /// and migrate the old store alongside the app. `StoreSchemaVersionTests` pins the models'
-    /// version hashes under this number and fails until both are updated.
+    /// A missed bump would be the U123 race again, with the error screen instead of the empty
+    /// store: the new widget would read the old number as current and open the old store while
+    /// the app migrates it. Two things stop that now. The widget also compares the store's own
+    /// model hashes with its models before it opens (`storeMatchesModels`), and
+    /// `StoreOpenTests.testTheSchemaVersionMovesWithTheModels` fails until the new hashes are
+    /// pinned under a NEW number: entry 1 is checked against the frozen 1.3.1 models, and the
+    /// highest pinned number must be this one.
     ///
     /// 1 — 1.3.1 (the five delivery fields). Builds before 1.3.1 wrote no marker, and a missing
     /// marker reads as "not opened at this schema yet".
@@ -94,54 +103,68 @@ enum SharedModelContainer {
     /// the same store with independent caches, and a write through one was not guaranteed to be
     /// visible through another. It is no longer a `static let` because the open can now fail
     /// without crashing or falling back, and the app must be able to try again.
-    private static var openedContainer: ModelContainer?
-    private static let lock = NSLock()
+    static let slot = OpenedContainerSlot()
 
     /// The container this process has opened over the real store, or nil if it has not (yet).
     /// What every caller other than the two opens reads — the app's intents and its account
     /// deletion, which run only after the app's launch opened (or failed to open) the store, and
-    /// must never open a second one.
-    static var opened: ModelContainer? {
-        lock.lock(); defer { lock.unlock() }
-        return openedContainer
-    }
+    /// must never open a second one. Never waits for an open in progress (`OpenedContainerSlot`).
+    static var opened: ModelContainer? { slot.opened }
 
     /// The app's open, at launch and on the error screen's Try Again: the only one that may
     /// create or migrate the store. Retries a store that exists (`StoreOpenRetry`), never falls
     /// back to another store, and on success marks the store opened at this schema and calls
     /// `reloadWidgets`, so a widget that was waiting draws the habits. Once it succeeded every
-    /// later call returns the same container. Blocks for up to `StoreOpenRetry.budget`.
+    /// later call returns the same container. Blocks for up to `StoreOpenRetry.budget` plus the
+    /// last attempt's own time.
     static func openForApp(reloadWidgets: @escaping () -> Void) -> Result<ModelContainer, StoreOpenFailure> {
-        lock.lock(); defer { lock.unlock() }
-        if let openedContainer { return .success(openedContainer) }
-        let result = AppStoreOpen(location: location, defaults: appGroupDefaults, reloadWidgets: reloadWidgets).run()
-        if case .success(let container) = result { openedContainer = container }
-        return result
+        openForApp(in: slot, AppStoreOpen(location: location, defaults: appGroupDefaults, reloadWidgets: reloadWidgets))
+    }
+
+    /// `openForApp`, with the slot and the open injected: what the tests run.
+    static func openForApp(in slot: OpenedContainerSlot, _ open: AppStoreOpen) -> Result<ModelContainer, StoreOpenFailure> {
+        slot.open { open.run() }
     }
 
     /// The widget extension's open (its timeline and its check-in intent): the store only once
-    /// the app has opened it at exactly this schema (`StoreSchemaGate`). Never creates, never
+    /// the app has opened it at exactly this schema (`ExtensionStoreOpen`). Never creates, never
     /// migrates, never retries, never falls back; nil means "draw the waiting state, write
     /// nothing". Once opened, the same container for the life of the extension process — an app
     /// update ends that process, so a newer schema never meets it.
     static func openForExtension() -> ModelContainer? {
-        lock.lock(); defer { lock.unlock() }
-        if let openedContainer { return openedContainer }
-        guard case .appGroup(let url) = location, let defaults = appGroupDefaults else { return nil }
-        let gate = StoreSchemaGate.decide(marker: StoreSchemaGate.marker(in: defaults),
-                                          storeExists: FileManager.default.fileExists(atPath: url.path))
-        guard gate == .open else {
-            logger.notice("Store not opened in the extension: \(String(describing: gate), privacy: .public)")
-            return nil
-        }
-        do {
-            let container = try makeContainer(at: url)
-            openedContainer = container
+        openForExtension(in: slot, ExtensionStoreOpen(location: location, defaults: appGroupDefaults))
+    }
+
+    /// `openForExtension`, with the slot and the open injected: what the tests run. A refusal or
+    /// a failure is never cached, so the next reload asks again.
+    static func openForExtension(in slot: OpenedContainerSlot, _ open: ExtensionStoreOpen) -> ModelContainer? {
+        var opensNow = false
+        switch slot.open({ opensNow = true; return open.run() }) {
+        case .success(let container):
+            // upgrade.sh reads this line too: it must come after the app's "Store opened by the app".
+            if opensNow { logger.notice("Store opened in the extension at schema \(storeSchemaVersion, privacy: .public)") }
             return container
-        } catch {
-            logger.error("Extension could not open the store: \(StoreOpenFailure(error, attempts: 1).summary, privacy: .public)")
+        case .failure(.failed(let failure)):
+            logger.error("Extension could not open the store: \(failure.summary, privacy: .public)")
+            return nil
+        case .failure(let refusal):
+            // upgrade.sh reads this line: the widget asked before the app had opened the store.
+            logger.notice("Store not opened in the extension: \(refusal.logDescription, privacy: .public)")
             return nil
         }
+    }
+
+    /// Whether the store at `url` was last written with exactly these models: its metadata's
+    /// entity version hashes against `modelTypes`'. Read from the file's metadata, without
+    /// opening (and so without migrating) the store. The widget checks it after the marker
+    /// (review round, upgrade race E2E U123): the marker alone trusts a number someone had to
+    /// remember to bump, and cannot see a downgrade to a build that never wrote it. Any doubt —
+    /// no file, no metadata, no model — reads as "not these models".
+    static func storeMatchesModels(at url: URL) -> Bool {
+        guard let model = NSManagedObjectModel.makeManagedObjectModel(for: modelTypes),
+              let metadata = try? NSPersistentStoreCoordinator.metadataForPersistentStore(ofType: NSSQLiteStoreType, at: url)
+        else { return false }
+        return model.isConfiguration(withName: nil, compatibleWithStoreMetadata: metadata)
     }
 
     /// Whether `container` is this process's real store: on disk at `realStoreURL` (the App
@@ -156,7 +179,7 @@ enum SharedModelContainer {
         }
     }
 
-    private static let logger = Logger(subsystem: "yyh.stride.habittracker", category: "ModelContainer")
+    fileprivate static let logger = Logger(subsystem: "yyh.stride.habittracker", category: "ModelContainer")
 
     // MARK: - One-time migrations
 
@@ -199,6 +222,44 @@ enum SharedModelContainer {
     }
 }
 
+// MARK: - The process-wide container's slot
+
+/// Where a process keeps the one container it opened, and how its opens are serialized.
+///
+/// Two locks (review round, upgrade race E2E U123). One lock used to guard both the cached
+/// container and the whole open — every attempt, every migration and `StoreOpenRetry`'s pauses.
+/// So while the error screen's Try Again ran `openForApp` off the main thread, any main-actor
+/// reader of `opened` (the four App Intents, through `IntentStore`) blocked the main thread for
+/// the entire open: the spinner froze and Sentry filed an app hang. Now `openLock` serializes the
+/// opens, and the container sits behind `cacheLock`, which is held only to read it or to store
+/// a result — never across an open. `opened` answers at once, nil while an open is in progress.
+final class OpenedContainerSlot: @unchecked Sendable {
+    private let openLock = NSLock()
+    private let cacheLock = NSLock()
+    private var container: ModelContainer?
+
+    init() {}
+
+    /// The container, or nil until an open has succeeded. Never waits for an open in progress.
+    var opened: ModelContainer? {
+        cacheLock.lock(); defer { cacheLock.unlock() }
+        return container
+    }
+
+    /// Runs `body` unless a container is already here, one open at a time, and keeps only a
+    /// success: a refusal or a failure leaves the slot empty, so the next call opens again.
+    func open<Failure: Error>(_ body: () -> Result<ModelContainer, Failure>) -> Result<ModelContainer, Failure> {
+        openLock.lock(); defer { openLock.unlock() }
+        if let opened { return .success(opened) }
+        let result = body()
+        if case .success(let opened) = result {
+            cacheLock.lock(); defer { cacheLock.unlock() }
+            container = opened
+        }
+        return result
+    }
+}
+
 // MARK: - The app's open
 
 /// What `SharedModelContainer.openForApp` does, with the location, the defaults and the widget
@@ -230,6 +291,10 @@ struct AppStoreOpen {
         if case .appGroup = location, let defaults {
             StoreSchemaGate.markOpenedByApp(in: defaults)
             reloadWidgets()
+            // upgrade.sh reads this line: no widget open may come before it.
+            SharedModelContainer.logger.notice("Store opened by the app: marker \(StoreSchemaGate.marker(in: defaults) ?? -1, privacy: .public) written, widgets reloaded")
+        } else {
+            SharedModelContainer.logger.notice("Store opened by the app, outside the App Group")
         }
         return result
     }
@@ -292,6 +357,115 @@ struct StoreOpenFailure: Error, Equatable {
         let under = underlyingDomain.map { ", underlying \($0) \(underlyingCode ?? 0)" } ?? ""
         return "\(domain) \(code)\(under), \(attempts) attempt(s)"
     }
+
+    /// The upgrade race's signature (E2E U123): Core Data's migration error 134110 over the
+    /// "incompatible model" 134100 (or either alone) — what the app met while another process
+    /// migrated the store with it. The one failure a wait and a Try Again can cure.
+    var isMigrationRace: Bool {
+        guard domain == NSCocoaErrorDomain else { return false }
+        if code == 134100 { return true }
+        // A migration that failed over a damaged file (134110 over a SQLite error) is not it.
+        return code == 134110
+            && (underlyingDomain == nil || (underlyingDomain == NSCocoaErrorDomain && underlyingCode == 134100))
+    }
+
+    /// No room to write: Cocoa 640 (`NSFileWriteOutOfSpaceError`), SQLite 13 (`SQLITE_FULL`),
+    /// POSIX 28 (`ENOSPC`), as the error or under it. A migration on a full device fails so.
+    var isOutOfSpace: Bool {
+        codes.contains {
+            ($0.domain == NSCocoaErrorDomain && $0.code == NSFileWriteOutOfSpaceError)
+                || ($0.domain == NSSQLiteErrorDomain && $0.code == 13)
+                || ($0.domain == NSPOSIXErrorDomain && $0.code == 28)
+        }
+    }
+
+    /// The same error as `other` — domain and code, the underlying one's too; attempts aside.
+    func isSameError(as other: StoreOpenFailure) -> Bool {
+        domain == other.domain && code == other.code
+            && underlyingDomain == other.underlyingDomain && underlyingCode == other.underlyingCode
+    }
+
+    private var codes: [(domain: String, code: Int)] {
+        [(domain, code)] + (underlyingDomain.map { [($0, underlyingCode ?? 0)] } ?? [])
+    }
+}
+
+/// What the error screen tells the user beyond "Stride couldn't open your data" (review round,
+/// upgrade race E2E U123). The screen used to give every failure the race's advice — try again
+/// in a moment, restart the device — which cannot cure a damaged file (Cocoa 259, SQLite 11/26)
+/// or a full disk, and it offered no way out. Now only the race's signature, the first time, gets
+/// that advice alone; anything else names its code and the remedy that can work, with support.
+enum StoreUnavailableAdvice: Equatable {
+    /// The race's signature, not yet seen to repeat: another process may still be finishing with
+    /// the store, and Try Again is the cure.
+    case tryAgain
+    /// Out of space: free some, then Try Again.
+    case freeStorage
+    /// Anything else, or the race's codes again after a Try Again: the file will not open as it
+    /// is. Deleting and reinstalling Stride, then signing in, brings back what was synced; without
+    /// an account, support first — deleting the app deletes the habits on the device.
+    case reinstallIfSynced
+
+    /// `previous`: the failure this one follows on the same screen (a Try Again), if any.
+    init(_ failure: StoreOpenFailure, previous: StoreOpenFailure?) {
+        if failure.isOutOfSpace {
+            self = .freeStorage
+        } else if failure.isMigrationRace, !(previous.map(failure.isSameError(as:)) ?? false) {
+            self = .tryAgain
+        } else {
+            self = .reinstallIfSynced
+        }
+    }
+}
+
+// MARK: - The extension's open
+
+/// What `SharedModelContainer.openForExtension` does, with the location, the defaults, the file
+/// checks and the open injected, as `AppStoreOpen` is (review round: the wiring the U123 fix
+/// depends on had no test). In this order, and `makeContainer` only at the end:
+/// - an App Group store, with the App Group's defaults to read the marker from;
+/// - the marker equal to this schema and the file there (`StoreSchemaGate`);
+/// - the file's own model hashes equal to these models (`storeMatchesModels`);
+/// - then, and only then, the open — never retried: the next reload asks again.
+struct ExtensionStoreOpen {
+    var location: SharedModelContainer.Location
+    /// The App Group's defaults, where the app writes the marker. Nil: nothing to read it from.
+    var defaults: UserDefaults?
+    var storeExists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }
+    var storeMatchesModels: (URL) -> Bool = SharedModelContainer.storeMatchesModels(at:)
+    var makeContainer: (URL) throws -> ModelContainer = SharedModelContainer.makeContainer(at:)
+
+    /// Why the extension did not open the store. Only `.failed` means it tried.
+    enum Refusal: Error, Equatable {
+        /// No App Group container, or no App Group defaults: there is no shared store to open.
+        case noAppGroup
+        case waitForApp(StoreSchemaGate.Reason)
+        case failed(StoreOpenFailure)
+
+        /// For the log (and upgrade.sh): "waitForApp(noMarker)", "noAppGroup".
+        var logDescription: String {
+            switch self {
+            case .noAppGroup: return "noAppGroup"
+            case .waitForApp(let reason): return "waitForApp(\(reason))"
+            case .failed(let failure): return "failed(\(failure.summary))"
+            }
+        }
+    }
+
+    func run() -> Result<ModelContainer, Refusal> {
+        guard case .appGroup(let url) = location, let defaults else { return .failure(.noAppGroup) }
+        if case .waitForApp(let reason) = StoreSchemaGate.decide(marker: StoreSchemaGate.marker(in: defaults),
+                                                                  storeExists: storeExists(url)) {
+            return .failure(.waitForApp(reason))
+        }
+        // The marker says the app opened the store at this schema; the file must say the same.
+        guard storeMatchesModels(url) else { return .failure(.waitForApp(.otherModel)) }
+        do {
+            return .success(try makeContainer(url))
+        } catch {
+            return .failure(.failed(StoreOpenFailure(error, attempts: 1)))
+        }
+    }
 }
 
 // MARK: - The widget's gate
@@ -306,16 +480,20 @@ struct StoreOpenFailure: Error, Equatable {
 /// - newer: the app was downgraded and has not opened (and so migrated) the store back yet.
 /// In each the widget opening the store could create or migrate it alongside the app — the race.
 ///
-/// What the marker cannot see: a downgrade to a build that predates it (1.3.0 or earlier, which
-/// never writes it) followed by a re-upgrade to the same schema — the marker still says current
-/// while the store was taken back. App Store users cannot downgrade; only a developer or
-/// TestFlight install can do that, and the widget then races as 1.3.0's did.
+/// What the marker cannot see, and `ExtensionStoreOpen` checks after it (review round): a
+/// downgrade to a build that predates the marker (1.3.0 or earlier, which never writes it)
+/// followed by a re-upgrade to the same schema — the marker still says current while the store
+/// was taken back — and a model change whose bump was forgotten. In both the store's own model
+/// hashes differ from the widget's models (`otherModel`).
 enum StoreSchemaGate: Equatable {
     case open
     case waitForApp(Reason)
 
     enum Reason: Equatable {
         case noMarker, olderMarker, newerMarker, noStore
+        /// The marker matched, but the file was written with other models
+        /// (`SharedModelContainer.storeMatchesModels`; decided by `ExtensionStoreOpen`).
+        case otherModel
     }
 
     static let markerKey = "stride_store_schema_version"

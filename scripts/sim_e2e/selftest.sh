@@ -26,7 +26,8 @@ trap cleanup EXIT
 cat >"$T/bin/xcrun" <<'STUB'
 #!/bin/bash
 # selftest stub: a fake simulator in $FAKE (installed, running, data/, group/, device.log,
-# launches = one action per launch: silent | session:<line suffix> | crash | fallback).
+# launches = one action per launch: silent | session:<line suffix> | crash | fallback |
+# gate | gate-nomarker | gate-nomarks | gate-proved | widget-first | edits).
 set -u
 F="$FAKE"
 echo "xcrun $*" >>"$F/calls"
@@ -66,6 +67,35 @@ case "$cmd" in
 2026-10-07 02:09:14.464 E  Stride[39751:859c8e] [yyh.stride.habittracker:ModelContainer] Failed to create ModelContainer at /fake/Stride.store: The operation couldn’t be completed. (SwiftData.SwiftDataError error 1.). Falling back to default location — user data from App Group will not be visible.
 LOG
         ;;
+      gate|gate-nomarker|gate-nomarks|gate-proved|widget-first)
+        # A build with the store gate (the upgrade-race fix): the widget turned away, the app's
+        # open (marker, then reload), the widget's open; the delivery migration's prefs.
+        if [[ "$action" == widget-first ]]; then
+          echo "2026-10-07 04:00:01.900 Df StrideWidgetExtension[7:8] [yyh.stride.habittracker:ModelContainer] Store opened in the extension at schema 1" >>"$F/device.log"
+        else
+          echo "2026-10-07 04:00:01.100 Df StrideWidgetExtension[7:8] [yyh.stride.habittracker:ModelContainer] Store not opened in the extension: waitForApp(noMarker)" >>"$F/device.log"
+        fi
+        echo "2026-10-07 04:00:02.200 Df Stride[9:10] [yyh.stride.habittracker:ModelContainer] Store opened by the app: marker 1 written, widgets reloaded" >>"$F/device.log"
+        echo "2026-10-07 04:00:02.900 Df StrideWidgetExtension[7:8] [yyh.stride.habittracker:ModelContainer] Store opened in the extension at schema 1" >>"$F/device.log"
+        P="$F/data/Library/Preferences/yyh.stride.habittracker.plist"
+        plutil -replace stride_delivery_migration_v1_done -bool YES "$P"
+        case "$action" in
+          gate-nomarks|gate-proved) ;;
+          *) plutil -replace stride_delivery_marks_unproven -bool YES "$P" ;;
+        esac
+        if [[ "$action" == gate-proved ]]; then
+          echo "E2E 2026-10-07T00:00:01.000Z GET /v1/sync/pull?deletionsSince=2026-10-06T17:05:20.882Z 200 client=ios/1.3.1(21) user=1 pull: full out=habits:2,entries:3,groups:0,deletions:1 withheld=0 deletionsSince=1" >>"$FAKE_SERVER_LOG"
+        fi
+        if [[ "$action" != gate-nomarker ]]; then
+          mkdir -p "$F/group/Library/Preferences"
+          G="$F/group/Library/Preferences/group.yyh.stride.habittracker.plist"
+          [[ -f "$G" ]] || plutil -create xml1 "$G"
+          plutil -replace stride_store_schema_version -integer 1 "$G"
+        fi ;;
+      edits)
+        # Rows pushed back and answered tombstoned: the U123 relaunch's Recovered Edits.
+        mkdir -p "$F/data/Library/Application Support/SyncRecoveryLog"
+        printf '{"reason":"tombstoned"}\n{"reason":"tombstoned"}\n' >>"$F/data/Library/Application Support/SyncRecoveryLog/account-1.jsonl" ;;
     esac
     touch "$F/running"
     echo "yyh.stride.habittracker: 4242" ;;
@@ -123,6 +153,15 @@ make_store() {  # make_store <file> <checksum> <habits> <records> [syncedAt-colu
 }
 make_store "$T/fixtures/old.store" OLDMODEL= 2 3
 make_store "$T/fixtures/empty.store" NEWMODEL= 0 0 synced
+# A 1.3.0 store with its rows' stamps (Core Data seconds since 2001): 2 habits and 3 records long
+# before the old app's last sync (2026-10-06T17:06:20Z), and 1 record 1 minute before it — not
+# marked (SyncDeliveryMigration.margin). 5 rows qualify.
+"$SQLITE" "$T/fixtures/stamped.store" "CREATE TABLE ZHABIT (Z_PK INTEGER PRIMARY KEY, ZUPDATEDAT TIMESTAMP, ZCREATEDAT TIMESTAMP);
+  CREATE TABLE ZHABITRECORD (Z_PK INTEGER PRIMARY KEY, ZUPDATEDAT TIMESTAMP, ZDATE TIMESTAMP);
+  CREATE TABLE ZHABITGROUP (Z_PK INTEGER PRIMARY KEY, ZUPDATEDAT TIMESTAMP, ZCREATEDAT TIMESTAMP);
+  INSERT INTO ZHABIT VALUES (1, 800000000, 700000000), (2, NULL, 700000000);
+  INSERT INTO ZHABITRECORD VALUES (1, 800000000, 800000000), (2, NULL, 800000000), (3, 800000000, 800000000),
+    (4, $(( $(date -j -u -f '%Y-%m-%dT%H:%M:%S' 2026-10-06T17:05:20 +%s) - 978307200 )), 800000000);"
 
 plutil -create xml1 "$T/fixtures/prefs.plist"
 plutil -insert stride_last_sync_time -string 2026-10-06T17:06:20Z "$T/fixtures/prefs.plist"
@@ -150,7 +189,7 @@ device() {
   local app="$1"; shift
   rm_under_root "$FAKE"
   mkdir -p "$FAKE/group" "$FAKE/data/Library/Preferences"
-  cp "$T/fixtures/old.store" "$FAKE/group/Stride.store"
+  cp "${STORE_FIXTURE:-$T/fixtures/old.store}" "$FAKE/group/Stride.store"
   cp "$T/fixtures/prefs.plist" "$FAKE/data/Library/Preferences/$BUNDLE_ID.plist"
   echo "$app" >"$FAKE/installed"
   : >"$FAKE/calls"; : >"$FAKE/device.log"; : >"$FAKE/launches"
@@ -248,6 +287,58 @@ expect "app.sh store: warns about the app group's default.store" 0 "default\.sto
 device "$NEW"
 expect "upgrade: refused when the device does not run the old app" 1 "runs 1\.3\.1 \(20\), not the old app" \
   "$KIT/upgrade.sh" pro "$OLD130" "$NEW" --wait 0 --label wrong-start
+
+# The store gate (review round of the upgrade-race fix): the order in the device log, the marker,
+# the delivery marks and the recovered edits.
+G='[yyh.stride.habittracker:ModelContainer]'
+printf '%s\n' \
+  "2026-10-07 04:00:01.100 Df StrideWidgetExtension[7:8] $G Store not opened in the extension: waitForApp(noMarker)" \
+  "2026-10-07 04:00:01.300 Df StrideWidgetExtension[7:8] $G Store not opened in the extension: waitForApp(noMarker)" \
+  "2026-10-07 04:00:02.200 Df Stride[9:10] $G Store opened by the app: marker 1 written, widgets reloaded" \
+  "2026-10-07 04:00:02.900 Df StrideWidgetExtension[7:8] $G Store opened in the extension at schema 1" \
+  >"$T/fixtures/gate.log"
+expect "check-gate: turned away twice, then the app's open, then the widget's" 0 "turned away before the app's open: 2 waitForApp\(noMarker\)" \
+  "$KIT/upgrade.sh" check-gate "$T/fixtures/gate.log"
+printf '%s\n' \
+  "2026-10-07 04:00:01.900 Df StrideWidgetExtension[7:8] $G Store opened in the extension at schema 1" \
+  "2026-10-07 04:00:02.200 Df Stride[9:10] $G Store opened by the app: marker 1 written, widgets reloaded" \
+  >"$T/fixtures/gate-first.log"
+expect "check-gate: the widget's open before the app's fails" 3 "THE WIDGET OPENED THE STORE FIRST" \
+  "$KIT/upgrade.sh" check-gate "$T/fixtures/gate-first.log"
+echo "2026-10-07 04:00:01.100 Df StrideWidgetExtension[7:8] $G Store not opened in the extension: waitForApp(noMarker)" \
+  >"$T/fixtures/gate-noapp.log"
+expect "check-gate: the widget asked, the app never opened: fails" 3 "never logged its open" \
+  "$KIT/upgrade.sh" check-gate "$T/fixtures/gate-noapp.log"
+expect "check-gate: a build before the gate is not failed on" 0 "no gate line" \
+  "$KIT/upgrade.sh" check-gate "$T/fixtures/hex.log"
+echo "2026-10-07 04:00:02.200 Df Stride[9:10] $G Store opened by the app: marker 1 written, widgets reloaded" >"$T/fixtures/gate-nowidget.log"
+expect "check-gate: no widget request at all is a note, not a failure" 0 "gate was not exercised" \
+  "$KIT/upgrade.sh" check-gate "$T/fixtures/gate-nowidget.log"
+
+export STORE_FIXTURE="$T/fixtures/stamped.store"
+device "$OLD130" gate silent
+expect "upgrade with the gate, marker, marks and a quiet relaunch: PASS" 0 "^PASS: .*no recovered edits" \
+  "$KIT/upgrade.sh" pro "$OLD130" "$NEW" --wait 0 --server st --label gate-pass --relaunch
+expect "upgrade with the gate: the marker is read from the App Group prefs" 0 "stride_store_schema_version = 1" \
+  cat "$T/root/upgrades/gate-pass/report.txt"
+expect "upgrade with the gate: 5 rows qualify (the one inside the margin does not)" 0 "must mark .*: 5$" \
+  cat "$T/root/upgrades/gate-pass/report.txt"
+device "$OLD130" gate-nomarker
+expect "upgrade: the app opened the store but wrote no marker: FAIL" 3 "^FAIL: .*no store schema marker" \
+  "$KIT/upgrade.sh" pro "$OLD130" "$NEW" --wait 0 --label gate-nomarker
+device "$OLD130" widget-first
+expect "upgrade: the widget opened the store before the app: FAIL" 3 "^FAIL: .*before the app had" \
+  "$KIT/upgrade.sh" pro "$OLD130" "$NEW" --wait 0 --label widget-first
+device "$OLD130" gate-nomarks
+expect "upgrade: qualifying rows, no mark and no ?deletionsSince=: FAIL (U123's signature)" 3 "^FAIL: .*marked none of 5 qualifying rows" \
+  "$KIT/upgrade.sh" pro "$OLD130" "$NEW" --wait 0 --server st --label gate-nomarks
+device "$OLD130" gate-proved
+expect "upgrade: the marks' proof already ran (?deletionsSince= in the first pull): PASS" 0 "first full pull asked \?deletionsSince=" \
+  "$KIT/upgrade.sh" pro "$OLD130" "$NEW" --wait 0 --server st --label gate-proved
+device "$OLD130" gate edits
+expect "upgrade --relaunch: recovered edits on the relaunch: FAIL" 3 "^FAIL: .*2 recovered edit\(s\) after the relaunch" \
+  "$KIT/upgrade.sh" pro "$OLD130" "$NEW" --wait 0 --server st --label gate-edits --relaunch
+unset STORE_FIXTURE
 
 echo "selftest: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]

@@ -477,3 +477,11 @@
 "Open Stride to see your habits" = "Abre Stride para ver tus hábitos";
 "Stride couldn't open your data" = "Stride no pudo abrir tus datos";
 "Nothing was changed or deleted. Try again in a moment. If it keeps happening, restart your device and open Stride again." = "No se cambió ni se eliminó nada. Vuelve a intentarlo en un momento. Si sigue ocurriendo, reinicia el dispositivo y vuelve a abrir Stride.";
+
+/* The store's error screen, review round (1.3.1, upgrade race E2E U123): a failure that is not
+   the race, or the race's codes again after "Try Again", adds one of these two lines under the
+   calm one, and a "Contact Support" link to the support page. "%@ %lld" is the error's domain
+   (an untranslated identifier such as NSCocoaErrorDomain) and its number. */
+"Contact Support" = "Contactar con soporte";
+"Your device may be out of storage. Free up some space, then tap Try Again. (Error %@ %lld)" = "Es posible que tu dispositivo se haya quedado sin espacio. Libera espacio y toca Reintentar. (Error %@ %lld)";
+"If it still fails and you sync with a Stride account, delete Stride, install it again and sign in: your synced habits come back. Without an account, contact support first — deleting Stride also deletes the habits on this device. (Error %@ %lld)" = "Si sigue fallando y sincronizas con una cuenta de Stride, elimina Stride, vuelve a instalarlo e inicia sesión: tus hábitos sincronizados volverán. Sin cuenta, contacta primero con soporte: eliminar Stride también elimina los hábitos de este dispositivo. (Error %@ %lld)";

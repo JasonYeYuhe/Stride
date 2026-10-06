@@ -104,10 +104,29 @@ migration test (`testARealDeviceStoreOpensUnderTheNewSchema`) passes on the very
 **only a real in-place upgrade of the stock build on a simulator shows this**. Never strip the
 widget to make the gate pass.
 
+**The fix it checks (from `ac1fbec`).** Only the app opens, creates or migrates the store. After
+its own open it writes `stride_store_schema_version` to the App Group prefs, logs "Store opened by
+the app", and reloads the widgets. The widget opens the store only when that marker equals its own
+schema and the file was written with its own models; until then it logs "Store not opened in the
+extension: waitForApp(…)" and draws "Open Stride to see your habits". When it opens, it logs
+"Store opened in the extension". `upgrade.sh` reads all three lines.
+
+**Two widget situations, both worth a run.** U123 needs no widget on the home screen: chronod
+launches the extension with the app even then (the no-widget runs of 2026-10-07 log
+`StrideWidgetExtension` within a second of the app), and 1.3.1 (20)'s `StrideWidget.init()`
+opened the store then. That is the default state of the simulators. Since
+the fix the extension touches the store only to draw a placed widget (its timeline) or to run its
+check-in, so without a placed widget the run proves the extension's launch no longer migrates the
+store, but never meets the gate: `upgrade.sh` prints "the gate was not exercised". To exercise it,
+place a Stride widget on the home screen while the OLD app is installed (recipe below, after
+`reset`, which removes it with the app). The in-place install then reloads it before the app
+starts, so the log shows the widget turned away, the app's open, then the widget's open.
+
 **The gate.** Before submitting a build that changes any `@Model`, run `upgrade.sh` from every
-shipped version still in use (today 1.2.3 and 1.3.0) to the candidate, on a synced store. Every run
-must PASS (exit 0). It is a race: a fix that removes it by design (one opener, or a coordinated
-migration) should pass every time. Run each pair at least 3 times; one PASS proves little.
+shipped version still in use (today 1.2.3 and 1.3.0) to the candidate, on a synced store, with
+`--server` and `--relaunch`. Every run must PASS (exit 0). It is a race: a fix that removes it by
+design (one opener, or a coordinated migration) should pass every time. Run each pair at least 3
+times, with and without a placed widget; one PASS proves little.
 
 ```bash
 K=scripts/sim_e2e
@@ -117,13 +136,35 @@ $K/lock.sh acquire pro gate
 $K/app.sh clean pro gate "$NEW" --revoke                       # signed out, no stale token
 $K/app.sh reset pro "$OLD"; $K/app.sh launch pro
 # UI: sign in with $DEMO, Sync Now. For the delivery marks to be exercised, make the LAST old-app
-# sync at least 5 minutes after the rows last changed (SyncDeliveryMigration.margin).
-$K/upgrade.sh pro "$OLD" "$NEW" --server gate                  # exit 0 PASS, 3 FAIL
+# sync at least 5 minutes after the rows last changed (SyncDeliveryMigration.margin): the seeded
+# history is old enough once the seed is 5 minutes old. The Keychain keeps the session across
+# `reset`, so later runs come back signed in and sync at launch: no second sign-in.
+# Optional: place a Stride widget (recipe below) to exercise the gate.
+# Terminate the old app only once its sync is in the prefs FILE (gotcha below):
+until $K/app.sh prefs pro app | grep -q '"stride_last_sync_time"'; do sleep 2; done
+$K/app.sh terminate pro
+# Then, as "another device", delete one of the account's check-ins, so the first 1.3.1 pull has a
+# deletion to apply quietly (it would come back as a recovered edit after U123's fallback):
+T=$($K/session.sh gate demo@stride-review.com)                  # once; reuse it for every run
+E=$($K/sql.sh gate "SELECT id FROM habit_entries WHERE date < date('now', '-3 days') LIMIT 1" | tail -1)
+curl -s -H "Authorization: Bearer $T" -H 'X-Stride-Client: ios/1.3.1(20)' -H 'Content-Type: application/json' \
+     --data "{\"habits\":[],\"entries\":[],\"deletedEntryIds\":[\"$E\"]}" http://127.0.0.1:3002/v1/sync/push
+$K/upgrade.sh pro "$OLD" "$NEW" --server gate --relaunch      # exit 0 PASS, 3 FAIL
 ```
 
+**Placing a Stride widget** (iPhone 17 Pro, iOS 26.5, 2026-10-07; screenshot before every tap):
+HOME → long-press an empty spot (≈201,600, 1.5 s) → Edit (≈71,33) → Add Widget (≈147,92) →
+the search field (≈201,204) → `text` "Stride" (the first time, a "slide to type" tip covers the
+results: Continue, ≈201,829) → the Stride row (≈114,254) → Add Widget (≈201,790) → Done
+(≈329,33). It lands on page 1 and **survives `app.sh reset`**: SpringBoard keeps it across the
+uninstall and install of the same bundle, so every later run has it until you remove it
+(long-press it → Edit Home Screen → its "−" → Remove → Done). Remove it when you are done: the
+simulators are shared.
+
 ```
-upgrade.sh <udid> <old app> <new app> [--wait <s>] [--server <name>] [--label <name>]
+upgrade.sh <udid> <old app> <new app> [--wait <s>] [--server <name>] [--label <name>] [--relaunch]
 upgrade.sh check-log <device log>       the device-log check alone, on a saved log
+upgrade.sh check-gate <device log>      the store-gate order alone, on a saved log
 upgrade.sh check-dir <dir>              the default.store check alone, on a directory
 upgrade.sh counts <store dir | file>    row counts + model checksum of a saved store
 upgrade.sh prefs <plist | listing>      its stride_delivery_* entries
@@ -165,12 +206,34 @@ removes the containers. `upgrade.sh` refuses any other starting point (exit 1).
      sync.
    - **With `--server <name>`:** that server's E2E lines of the launch. After a good upgrade with
      stamped rows, the first full pull carries `?deletionsSince=` and no whole-store push follows.
+   - **The store gate** (`check-gate`), in the same device log. It fails when the widget's "Store
+     opened in the extension" comes before the app's "Store opened by the app", or when the widget
+     was turned away and the app never logged its open. It prints how often the widget was turned
+     away before the app's open (with the reasons, e.g. `2 waitForApp(noMarker)`), or a NOTE that
+     the gate was not exercised (no widget placed), and whether the widget opened afterwards. A
+     log with no gate line at all is a build before the gate, and passes this check.
+   - **The marker:** `stride_store_schema_version` in the App Group prefs
+     (`group-prefs-after.txt`). Missing in a build with the gate fails: the widget would wait
+     forever.
+   - **The delivery marks.** From `before/` and the old prefs it counts the rows the migration must
+     mark: stamped at least 5 minutes before `stride_last_sync_time`. When there are any, the run
+     fails unless the marks wait in the prefs (`stride_delivery_marks_unproven`) or the first full
+     pull asked `?deletionsSince=` (the marks' proof ran and cleared them). Neither is U123's
+     signature: the migration ran on another store.
+   - **Recovered edits:** the lines of the data container's
+     `Library/Application Support/SyncRecoveryLog/*.jsonl`. Any new line fails: the gate's
+     scenario edits nothing on the upgraded device, so a recovered edit is a row pushed back that
+     was deleted elsewhere (U123's relaunch had 17).
+5. **With `--relaunch`:** a second cold launch, `relaunch.png`, the relaunch's requests
+   (`requests-relaunch.txt`) and the recovered edits again. U123's store switch showed only here:
+   the whole store pushed, 17 rows answered `tombstoned`.
 
 **Exit codes:**
 
-- **0 PASS:** no fallback.
-- **3 FAIL:** a failed open in the log, any `default.store`, or the app not running after the
-  wait.
+- **0 PASS:** no fallback, no widget open before the app's, the marker written (in a build with
+  the gate), the qualifying rows marked, no recovered edit.
+- **3 FAIL:** a failed open in the log, any `default.store`, the app not running after the wait,
+  a widget open before the app's, no marker, qualifying rows left unmarked, or a recovered edit.
 - **1:** the run could not be made.
 
 Everything lands in `$ROOT/upgrades/<label>/` (default `<UTC time>-<pro|promax>`), with
@@ -457,10 +520,15 @@ It covers:
 - `upgrade.sh`'s checks on fixtures (the error-screen line and the widget's note included), a PASS
   run, a FAIL run (134110 in the log plus a `default.store` in the app group), and the refused
   starting point;
+- the store gate's checks: `check-gate` on five logs (the gate held, the widget first, the app
+  never opened, a build before the gate, no widget request), and runs that pass with the gate, the
+  marker, the marks and a quiet relaunch, or fail on a missing marker, a widget open first,
+  unmarked rows, or recovered edits on the relaunch;
 - `app.sh store`'s warning about an app-group `default.store`.
 
 Run it after any change to the kit. `SELFTEST_KIT=<dir>` runs the same cases against another copy
-of the kit. The kit at `aa8d8fd` fails 15 of them, the cases these fixes are for.
+of the kit. The kit at `aa8d8fd` fails 15 of them, the cases these fixes are for, and the kit at
+`ac1fbec` fails the 13 store-gate cases.
 
 ## The E2E request line
 
@@ -567,6 +635,15 @@ Then read `log.sh <name> since <mark>`.
 - **`plutil -extract` cannot read the entitlements' keys,** because it splits key paths on the
   dots in `com.apple.security.application-groups`. Use
   `PlistBuddy -c 'Print :com.apple.security.application-groups:0'`.
+
+- **Terminate the old app only once its sync is in the prefs file.** The simulator's cfprefsd
+  writes the plist lazily. Two gate runs on 2026-10-07 (R5, R6) terminated the old app 6 s after
+  its sync: the file still had no `stride_last_sync_time`, the in-place install lost what
+  cfprefsd had not written, and the 1.3.1 launch found a never-synced store. It pushed the row
+  deleted elsewhere, which came back `tombstoned`: one recovered edit, and a FAIL that says
+  nothing about the store open. `upgrade.sh` prints "the old app has never synced" for such a
+  starting point; poll `app.sh prefs <udid> app` for `stride_last_sync_time` before you
+  terminate. Reruns that waited passed.
 
 **Server and network**
 

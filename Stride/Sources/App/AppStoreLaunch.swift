@@ -23,6 +23,9 @@ final class AppStoreLaunch {
 
     private(set) var phase: Phase
     private(set) var isRetrying = false
+    /// What the error screen advises beyond Try Again, for the current failure: the race's
+    /// advice alone only the first time its signature shows (`StoreUnavailableAdvice`).
+    private(set) var advice: StoreUnavailableAdvice?
 
     typealias Open = @Sendable () -> Result<ModelContainer, StoreOpenFailure>
 
@@ -41,7 +44,9 @@ final class AppStoreLaunch {
         self.open = open
         self.prepare = prepare
         self.report = report
-        self.phase = Self.settle(open(), prepare: prepare, report: report)
+        let phase = Self.settle(open(), prepare: prepare, report: report)
+        self.phase = phase
+        self.advice = Self.advice(for: phase, previous: nil)
     }
 
     var container: ModelContainer? {
@@ -62,7 +67,14 @@ final class AppStoreLaunch {
         defer { isRetrying = false }
         let open = self.open
         let result = await Task.detached(priority: .userInitiated) { open() }.value
+        let previous = failure
         phase = Self.settle(result, prepare: prepare, report: report)
+        advice = Self.advice(for: phase, previous: previous)
+    }
+
+    private static func advice(for phase: Phase, previous: StoreOpenFailure?) -> StoreUnavailableAdvice? {
+        guard case .unavailable(let failure) = phase else { return nil }
+        return StoreUnavailableAdvice(failure, previous: previous)
     }
 
     private static func settle(_ result: Result<ModelContainer, StoreOpenFailure>,
@@ -110,7 +122,7 @@ struct StoreGateView<Content: View>: View {
         if let container = launch.container {
             content(container)
         } else {
-            StoreUnavailableView(isRetrying: launch.isRetrying) {
+            StoreUnavailableView(isRetrying: launch.isRetrying, failure: launch.failure, advice: launch.advice ?? .tryAgain) {
                 Task { await launch.retry() }
             }
         }
@@ -120,15 +132,32 @@ struct StoreGateView<Content: View>: View {
 /// "Stride couldn't open your data", full screen, with Try Again. Shown instead of the app when
 /// the store would not open even after the retries (`StoreOpenRetry`): never an empty app that
 /// looks like the habits are gone.
+///
+/// The race (`StoreUnavailableAdvice.tryAgain`) gets the calm line alone. Any other failure, or
+/// the race's codes again after a Try Again, adds a line with the error's code and the remedy
+/// that can work — free storage, or reinstall and sign in when the habits are synced — and
+/// Contact Support (review round): restarting cannot mend a damaged file or a full disk, and the
+/// screen used to offer nothing else. It never opens another store either way.
 struct StoreUnavailableView: View {
     let isRetrying: Bool
+    var failure: StoreOpenFailure?
+    var advice: StoreUnavailableAdvice = .tryAgain
     let retry: () -> Void
+
+    /// The support page (docs/support.html, the App Store listing's Support URL), which has the
+    /// contact address.
+    static let supportURL = URL(string: "https://jasonyeyuhe.github.io/stride-site/support")!
 
     var body: some View {
         ContentUnavailableView {
             Label("Stride couldn't open your data", systemImage: "exclamationmark.triangle")
         } description: {
-            Text("Nothing was changed or deleted. Try again in a moment. If it keeps happening, restart your device and open Stride again.")
+            VStack(spacing: 12) {
+                Text("Nothing was changed or deleted. Try again in a moment. If it keeps happening, restart your device and open Stride again.")
+                if let failure, advice != .tryAgain {
+                    remedy(failure)
+                }
+            }
         } actions: {
             if isRetrying {
                 ProgressView()
@@ -136,7 +165,23 @@ struct StoreUnavailableView: View {
                 Button("Try Again", action: retry)
                     .buttonStyle(.borderedProminent)
             }
+            if failure != nil, advice != .tryAgain {
+                Link("Contact Support", destination: Self.supportURL)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Each remedy is a whole key; the code goes in as numbers and an untranslated domain.
+    @ViewBuilder
+    private func remedy(_ failure: StoreOpenFailure) -> some View {
+        switch advice {
+        case .tryAgain:
+            EmptyView()
+        case .freeStorage:
+            Text("Your device may be out of storage. Free up some space, then tap Try Again. (Error \(failure.domain) \(failure.code))")
+        case .reinstallIfSynced:
+            Text("If it still fails and you sync with a Stride account, delete Stride, install it again and sign in: your synced habits come back. Without an account, contact support first — deleting Stride also deletes the habits on this device. (Error \(failure.domain) \(failure.code))")
+        }
     }
 }
