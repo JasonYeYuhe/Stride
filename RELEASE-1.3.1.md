@@ -628,8 +628,9 @@ installed over 1.3.0, keeping the data container, and its first sync ran:
 
 ### Migration and gates
 
-- [ ] **Real-container migration test** (acceptance 2). Download a populated container from a
-  device running 1.2.3 or 1.3.0 (Xcode → Devices → download container) and run
+- [ ] **Real-store migration test** (acceptance 2). No owner device container: the test runs on
+  stores written by the real 1.2.3 and 1.3.0 apps in the simulator, from realistic demo history
+  (round three). The command, with `STRIDE_REAL_STORE_PATH` pointing at such a store:
   `TEST_RUNNER_STRIDE_REAL_STORE_PATH=… xcodebuild test -scheme StrideTests -destination
   platform=macOS -only-testing:StrideTests/SyncDeliveryTests/testARealDeviceStoreOpensUnderTheNewSchema`.
   It is skipped until then. Fresh simulators prove nothing about live stores.
@@ -642,10 +643,11 @@ installed over 1.3.0, keeping the data container, and its first sync ran:
 
 ### Device checks (acceptance 4, 5, 6, 9)
 
-All of these passed in the simulators against a local server (the E2E runs above). What remains
-is the owner's pass on real devices against production, after the server deploy. Real devices
-matter because the Keychain, Mail/Gmail links, background timing and a real 1.2.3/1.3.0 store
-all differ from the simulator setup.
+All of these passed in the simulators against a local server (the E2E runs above). **The owner
+waived TestFlight and the real-device pass (2026-10-07: "不需要testflight 以后都可以省略这个步骤
+你直接测试就好")**, for this release and every later one. Agent-run testing replaces it: the
+simulator runs, in-place upgrades from the real 1.2.3 and 1.3.0 builds, the real-store migration
+test on stores those builds wrote, and a Release-build smoke run (round three, below).
 
 - [ ] (4) Mixed fleet on real builds: a 1.3.0 (or 1.2.3) device and a 1.3.1 device on one test
   account. Tap one habit on each and sync both; both show both taps. Also uncheck and re-check a
@@ -686,8 +688,8 @@ all differ from the simulator setup.
     dSYM. It is harmless, as in earlier builds.
 - [x] `release.py prepare 1.3.1`: both version records are PREPARE_FOR_SUBMISSION, with What's
   New in six locales, MANUAL.
-- [ ] **`release.py finish 1.3.1 20` on the owner's go**, after the device checks (on the
-  TestFlight build 20) and the Codex review. If either leads to a code change, the fix ships as
+- [ ] **`release.py finish 1.3.1 20` on the owner's go**, after the agent-run tests and the Codex
+  review. If either leads to a code change, the fix ships as
   build 21.
   The version is created `MANUAL`; publish with `release.py release 1.3.1` after the device
   checks.

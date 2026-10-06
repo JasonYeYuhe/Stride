@@ -19,7 +19,7 @@
 ## 接下来做什么（phase D 收尾，然后 M3）
 
 1. **Codex 审查**最终分支 `1b33b4a..HEAD`：它的周额度 2026-10-04 11:40 才恢复。用法见记忆：`codex exec -s read-only -C <只读 worktree> --skip-git-repo-check -o out.md -`，prompt 走 stdin。它说的每一条都要对照代码核实后再采纳；Codex 一向靠谱，Gemini 在细节上常出错。
-2. 等我做完真机检查（见下面「需要我做的事」），且我提供了真机容器之后，跑真实容器迁移测试（命令在 RELEASE-1.3.1.md）。
+2. **不需要 TestFlight，也不需要我做真机检查**（2026-10-07 起所有版本都省略）：由你自己测试。具体是模拟器端到端（`scripts/sim_e2e/`）、用真实旧版构建原地升级、在旧版 App 写出的 store 上跑真实容器迁移测试，以及 Release 构建冒烟。
 3. 打包前的固定动作：
    - `scripts/sync_rehearsal.sh` 和 `scripts/check_demo_account.sh` 在要发布的构建上跑绿；
    - `verify_archive.sh --exported`：验收 (8)，隐私清单要声明 Product Interaction；
@@ -49,8 +49,6 @@
 
 ## 需要我做的事（你做不了）
 
-- 1.3.1 真机检查：RELEASE-1.3.1.md「Device checks」。要用真实 1.3.0 设备和 1.3.1 设备，对着生产服务器跑，外加 Mac 上的几个 sheet。
-- 提供一个真机容器（Xcode → Devices → 下载容器，1.2.3 或 1.3.0 的都行），给迁移测试用。
 - Sentry：建 `stride-server` 项目，把 `SENTRY_DSN` 写进 `/root/stride-server/.env`，加 1 分钟的 uptime 监控（DEPLOY.md 有步骤）。
 - 把 iCloud Drive `Downloads/` 里的两份 ASC `.p8` 移到 `~/Library/Application Support/CLI-Pulse-Secrets/`，再 `chmod 600 ~/private_keys/AuthKey_*.p8`。
 - 可选：给 stride.colorarchive.me 加 DMARC 记录；`ssh-keygen -R 143.198.85.72`（旧 DO 主机已销毁，没有要清的）。
