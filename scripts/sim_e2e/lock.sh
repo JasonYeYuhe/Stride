@@ -41,7 +41,7 @@ lock_path() {
   esac
 }
 
-holder_label() { sed -n 's/^label=//p' "$1/holder" 2>/dev/null | head -1; }
+holder_label() { sed -n '/^label=/{s///p;q;}' "$1/holder" 2>/dev/null || true; }
 
 describe() {
   local dir="$1"

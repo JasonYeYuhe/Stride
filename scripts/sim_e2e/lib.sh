@@ -6,6 +6,11 @@
 #     never under ~/Documents (iCloud-synced), and nothing outside that root is ever removed;
 #   - the only server it talks to is http://127.0.0.1:3002, a COPY of server/ it started itself;
 #   - the only simulators it touches are the two shared ones, by UDID.
+#
+# Under pipefail, never `cmd | grep -q …` or `cmd | head -1`: the reader exits at its first line,
+# cmd's next write dies of SIGPIPE, and the pipeline is 141, i.e. false, whatever grep found
+# (E2E REL: `app.sh running` said "not running" 3 times of 3 with the app up). Capture the output
+# first and match on the variable, or let the reader read to the end (grep … >/dev/null).
 set -euo pipefail
 
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -144,4 +149,76 @@ lock_dir_for_udid() {
     "$UDID_PRO") echo "$LOCK_PRO" ;;
     "$UDID_PROMAX") echo "$LOCK_PROMAX" ;;
   esac
+}
+udid_alias() { [[ "$1" == "$UDID_PRO" ]] && echo pro || echo promax; }
+
+# ── App bundles ─────────────────────────────────────────────────────────────────────────────
+plist_value() { /usr/libexec/PlistBuddy -c "Print :$2" "$1" 2>/dev/null; }
+
+check_app() {
+  local app="$1" bid
+  [[ -d "$app" && -f "$app/Info.plist" ]] || die "no app bundle at '$app' (build.sh prints one)"
+  bid="$(plist_value "$app/Info.plist" CFBundleIdentifier || true)"
+  [[ "$bid" == "$BUNDLE_ID" ]] || die "$app is ${bid:-?}, not $BUNDLE_ID"
+}
+
+# "1.3.1 (20)": CFBundleShortVersionString (CFBundleVersion) of an .app.
+app_version() {
+  echo "$(plist_value "$1/Info.plist" CFBundleShortVersionString || echo '?') ($(plist_value "$1/Info.plist" CFBundleVersion || echo '?'))"
+}
+
+# Is dotted version $1 at least $2? Numeric parts; a missing part is 0 (1.3 = 1.3.0).
+version_ge() {
+  local IFS=.
+  local -a a=($1) b=($2)
+  local i x y
+  for i in 0 1 2 3; do
+    x="${a[$i]:-0}"; x="${x//[^0-9]/}"; x=$((10#${x:-0}))
+    y="${b[$i]:-0}"; y="${y//[^0-9]/}"; y=$((10#${y:-0}))
+    if (( x > y )); then return 0; fi
+    if (( x < y )); then return 1; fi
+  done
+  return 0
+}
+
+# ── The launch session check (app.sh clean) ──────────────────────────────────────────────────
+# Stride asks GET /v1/auth/session at launch ONLY when a session token is stored: AuthService's
+# init, `if tokenStore.read() != nil { Task { await checkSession() } }` (1.3.1
+# Stride/Sources/Services/AuthService.swift:104; the same guard in 1.3.0 at :47 and 1.2.3 at :22).
+# A signed-out device sends nothing at all, so silence after a launch IS the "no token" answer —
+# the first kit read it as "the app is not reaching the server" and failed every clean device
+# (E2E U123 and REL, 5 of 5).
+SESSION_WAIT="${STRIDE_E2E_SESSION_WAIT:-30}"
+[[ "$SESSION_WAIT" =~ ^[0-9]+$ ]] || die "STRIDE_E2E_SESSION_WAIT must be whole seconds (got $SESSION_WAIT)"
+
+# The first GET /v1/auth/session line in <log> after line <mark>, waited for up to <seconds>
+# (default $SESSION_WAIT). Prints none (the check carried no Bearer) | null | <user id> | silent.
+launch_session_check() {
+  local log="$1" mark="$2" secs="${3:-$SESSION_WAIT}" line="" ticks=0
+  while :; do
+    # awk on the file, not tail | grep | head: no pipe to break (see the header).
+    line="$(awk -v m="$mark" 'NR > m && /^E2E [^ ]+ GET \/v1\/auth\/session /{ print; exit }' "$log")"
+    [[ -n "$line" ]] && break
+    (( ticks >= secs * 2 )) && break
+    sleep 0.5
+    ticks=$((ticks + 1))
+  done
+  if [[ -z "$line" ]]; then echo silent; return 0; fi
+  note "  session check: $line"
+  case "$line" in
+    *" user=null"*) echo null ;;
+    *" user="[0-9]*) sed -n 's/.* user=\([0-9][0-9]*\).*/\1/p' <<<"$line" ;;
+    *) echo none ;;
+  esac
+}
+
+# ── Stores ──────────────────────────────────────────────────────────────────────────────────
+# SharedModelContainer's fallback: when opening Stride.store throws, it builds
+# ModelContainer(for: schema), SwiftData's DEFAULT location: <app group>/Library/Application
+# Support/default.store for an app with an app group (the 1.3.1 upgrade race, E2E U123 and MIG),
+# the data container's Library/Application Support/default.store for one built without it.
+# Every default.store* under <dir>, one path per line (nothing when there is none).
+fallback_stores() {
+  [[ -d "$1" ]] || return 0
+  find "$1" \( -name 'default.store' -o -name 'default.store-*' \) -print 2>/dev/null | sort || true
 }

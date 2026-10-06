@@ -116,9 +116,10 @@ curl -sf "$BASE/health" >/dev/null 2>&1 || { tail -n +"$MARK" "$LOG" >&2; die "t
 [[ "$(port_listeners)" == "$PID" ]] || die "something other than pid $PID answers on $PORT"
 is_kit_server_pid "$NAME" "$PID" || die "pid $PID is not the copy's index.js"
 [[ -f "$COPY/stride.db" ]] || die "the server did not create its database in the copy"
-tail -n +"$MARK" "$LOG" | grep -q "\[sim_e2e\] request log mounted" || die "the request log did not mount (see $LOG)"
+# grep without -q reads to the end, so tail never meets a closed pipe (lib.sh header).
+tail -n +"$MARK" "$LOG" | grep "\[sim_e2e\] request log mounted" >/dev/null || die "the request log did not mount (see $LOG)"
 if [[ $HOOKS -eq 1 ]]; then
-  tail -n +"$MARK" "$LOG" | grep -q "\[test-hooks\] mounted" || die "--test-hooks: the hooks did not mount (see $LOG)"
+  tail -n +"$MARK" "$LOG" | grep "\[test-hooks\] mounted" >/dev/null || die "--test-hooks: the hooks did not mount (see $LOG)"
 fi
 
 echo "NAME=$NAME"

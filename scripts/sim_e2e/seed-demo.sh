@@ -24,6 +24,8 @@ if ls "$COPY"/.env* >/dev/null 2>&1; then die "refusing: an .env file is in the 
 
 OUT="$(cd "$COPY" && env -i NODE_ENV=test "$NODE" "$COPY/seed-demo.js")"
 echo "$OUT" >&2
-TOKEN="$(echo "$OUT" | sed -n 's/^  Token: \([0-9a-f]\{16,\}\)$/\1/p' | head -1)"
+# A here-string, not echo | sed | head -1: no pipe to break under pipefail (lib.sh header).
+TOKEN="$(sed -n 's/^  Token: \([0-9a-f]\{16,\}\)$/\1/p' <<<"$OUT")"
+TOKEN="${TOKEN%%$'\n'*}"
 [[ -n "$TOKEN" ]] || die "seed-demo.js printed no token"
 echo "$TOKEN"

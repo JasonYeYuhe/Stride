@@ -95,8 +95,10 @@ APP="$DD/Build/Products/Debug-iphonesimulator/Stride.app"
 [[ -d "$APP" ]] || die "no app at $APP"
 XCENT="$DD/Build/Intermediates.noindex/Stride.build/Debug-iphonesimulator/Stride.build/Stride.app-Simulated.xcent"
 
-# The checks the old kit learned the hard way.
-otool -arch arm64 -l "$APP/Stride" | grep -q "sectname __entitlements" \
+# The checks the old kit learned the hard way. otool's output is captured before it is matched:
+# `otool | grep -q` can kill otool with SIGPIPE, a spurious 141 under pipefail (lib.sh header).
+LOADCMDS="$(otool -arch arm64 -l "$APP/Stride")" || die "otool could not read $APP/Stride"
+[[ "$LOADCMDS" == *"sectname __entitlements"* ]] \
   || die "$APP/Stride has no __entitlements section: the app would have no Keychain or app group"
 [[ -f "$XCENT" ]] || die "no $XCENT"
 grep -q "application-identifier" "$XCENT" || die "$XCENT has no application-identifier"
