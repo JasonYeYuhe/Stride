@@ -532,6 +532,76 @@ installed over 1.3.0, keeping the data container, and its first sync ran:
   backup only as new copies. The server cannot change what 1.3.0 deletes locally. It is recorded
   under RELEASE-1.3.0.md's known limitations.
 
+### Round three (2026-10-07): agent-run tests replace the device pass, and they found a blocker
+
+The owner waived TestFlight and the real-device pass for good. The agent tests directly, with the
+simulator kit now committed as `scripts/sim_e2e/` (README.md is its manual): ad-hoc-signed Debug
+builds of any tag, a throwaway server copy on :3002, paste-token sign-in, and `upgrade.sh` for
+in-place upgrades.
+
+**The blocker: the first 1.3.1 launch after an upgrade could hide every habit.** 1.3.1 is the
+first model change since 1.2.x, so its first launch migrates the store.
+- **What happened:** chronod starts the widget extension at the same moment as the app, and
+  `StrideWidget.init()` opened the same App Group store. Both processes migrated it at once. The
+  app's `ModelContainer` failed with CoreData 134110 / 134100 ("store version hashes didn't
+  migrate"), and `SharedModelContainer` silently fell back to a NEW EMPTY `default.store`.
+- **What the user saw:** "Start Your Journey". The delivery migration was spent on the empty
+  store, so the next launch pushed the whole real store and filled Recovered Edits with rows
+  deleted elsewhere.
+- **The evidence:** 4 of 4 real upgrades failed with the widget present (from 1.2.3 and from
+  1.3.0), and 0 of 2 without it. The acceptance-2 test passed on the same stores: it runs in one
+  process, so it cannot see the race. The 2026-09-29 1.3.0 upgrade run passed by luck: the widget
+  happened to finish migrating first.
+- **Build 20** (uploaded 2026-10-07) has the bug. It was never submitted and is superseded by
+  build 21.
+
+**The fix (`ac1fbec`, review round `7ee5f8f`).**
+- **Only the app opens or migrates the store** (`SharedModelContainer.openForApp`). After its
+  open succeeds, it writes `stride_store_schema_version` to the App Group defaults and reloads the
+  widgets.
+- **The widget waits.** Its timeline and its check-in intent open the store only when that marker
+  equals the widget's own schema (`openForExtension`, `StoreSchemaGate`). Until then it shows
+  "Open Stride to see your habits" and writes nothing.
+  - A test pins the models' version hashes to the marker value, so a model change without a bump
+    fails.
+- **A failed open never falls back to an empty store.** It retries for up to 3 s while the store
+  file exists, then shows "Stride couldn't open your data" with Try Again. It sends one Sentry
+  report with the error codes only, and touches nothing.
+  - The empty fallback remains only when there is no App Group container at all.
+- **One-time migrations refuse anything but the real store.**
+- **Review round (`7ee5f8f`):**
+  - reading the container never waits on an open in progress;
+  - the widget's open path is tested end to end;
+  - the error screen names what can work: free up storage, and reinstall + sign in only for
+    synced accounts.
+- **Translations:** six new strings in all five languages. Each message names the Try Again
+  button as its catalog does.
+- **Privacy page:** `docs/privacy.html` lists the new error report.
+
+**Re-verified on the fixed build.** Six real in-place upgrades all passed: three from 1.2.3 and
+three from 1.3.0, three of them with the widget placed. A fresh install with the widget passed
+too. In every run:
+- no 134110 and no fallback store;
+- the data on screen at the first launch;
+- the first full pull asked `deletionsSince=` the old app's cursor, and the 21 deletions made on
+  the other device went quietly (no push, no Recovered Edits);
+- the marker written, and every delivery flag cleared;
+- the next sync quiet.
+
+This is the first run of round two's intended upgrade path on a real old store. The widget
+showed the placeholder until the app's first launch, then the real numbers.
+
+**The upgrade run is now a release gate** (`scripts/sim_e2e/upgrade.sh`, from each live older
+version, with the widget). So is the Release-build smoke run, which passed: no crash, and no
+stride-api traffic signed out.
+
+Gates on `7ee5f8f`:
+- StrideTests 458, en and ja, 2 expected skips
+- hosted 159
+- server 488, typecheck clean
+- rehearsal 80/0/1
+- iOS and macOS product checks; no xcodegen drift
+
 ## Known limitations
 
 - **Count habits merge by last-write-wins per entry**, not additively. 3 glasses logged offline
@@ -582,9 +652,13 @@ installed over 1.3.0, keeping the data container, and its first sync ran:
 
 ### Review
 
-- [ ] **Codex review** of the final branch (`1b33b4a..HEAD`). Blocked by its weekly usage limit
-  until **2026-10-04 11:40**; run it on the branch that will be submitted. Fact-check every claim
-  against the code before adopting it, as for 1.3.0.
+- [ ] **Codex review** of the final branch (`1b33b4a..HEAD`). Its quota has been used up by
+  other work three times since 2026-10-04; queued for 2026-10-07 09:30 on the branch tip
+  (`scratchpad/consult/codex-retry2.sh`). Fact-check every claim against the code before
+  adopting it, as for 1.3.0.
+- [ ] **Publish the privacy page** before 1.3.1 ships. `docs/privacy.html` lists the new
+  "couldn't open your data" error report. The public copy on stride-site needs the owner's OK to
+  update.
 - [x] Final full review: the internal cross-phase review and its re-review (above).
 - [x] Phase C follow-up round (decisions 2–4) reviewed and fixed (`7181628`).
 - [ ] **Native read.** Gemini 3.1 Pro read the 1.3.1 strings and What's New; its ko and zh
@@ -628,9 +702,11 @@ installed over 1.3.0, keeping the data container, and its first sync ran:
 
 ### Migration and gates
 
-- [ ] **Real-store migration test** (acceptance 2). No owner device container: the test runs on
-  stores written by the real 1.2.3 and 1.3.0 apps in the simulator, from realistic demo history
-  (round three). The command, with `STRIDE_REAL_STORE_PATH` pointing at such a store:
+- [x] **Real-store migration test** (acceptance 2). It passed on stores written by the real 1.2.3
+  (7 habits / 135 records) and 1.3.0 (6 / 119) apps from realistic demo history, on macOS and
+  the iOS 26.5 simulator, with every row and link intact (round three). It is single-process; the
+  in-place upgrade runs cover the race. The command, with `STRIDE_REAL_STORE_PATH` pointing at
+  such a store:
   `TEST_RUNNER_STRIDE_REAL_STORE_PATH=… xcodebuild test -scheme StrideTests -destination
   platform=macOS -only-testing:StrideTests/SyncDeliveryTests/testARealDeviceStoreOpensUnderTheNewSchema`.
   It is skipped until then. Fresh simulators prove nothing about live stores.
@@ -688,8 +764,12 @@ test on stores those builds wrote, and a Release-build smoke run (round three, b
     dSYM. It is harmless, as in earlier builds.
 - [x] `release.py prepare 1.3.1`: both version records are PREPARE_FOR_SUBMISSION, with What's
   New in six locales, MANUAL.
-- [ ] **`release.py finish 1.3.1 20` on the owner's go**, after the agent-run tests and the Codex
-  review. If either leads to a code change, the fix ships as
+- [x] **Build 21** (the upgrade-race fix, tree `c4edb6a`): archived, verified and uploaded on both
+  platforms, 2026-10-07 05:50 JST. Before the archive: the signing probe passed, the rehearsal was
+  80/0/1 and the demo check exit 0. `verify_archive.sh` passed: 1.3.1 (21), Product Interaction,
+  Distribution-signed, associated domains. Build 20 is superseded and never submitted.
+- [ ] **`release.py finish 1.3.1 21` on the owner's go**, after the Codex review and the privacy
+  page's publication. If either leads to a code change, the fix ships as
   build 21.
   The version is created `MANUAL`; publish with `release.py release 1.3.1` after the device
   checks.

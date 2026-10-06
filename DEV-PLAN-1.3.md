@@ -553,6 +553,27 @@ from what it took, and record the new number in the progress log before building
   longer lose a same-day re-check made on another device, and stop caching API answers. PR
   JasonYeYuhe/Stride#4 (`release/1.3.0` → `main`, after merging `main`'s published privacy page)
   is ready to merge once its CI passes.
+- 2026-10-07 — **round three: agent-run tests found a blocker; build 21.**
+  - **The owner waived TestFlight and the device pass for good**, so the agent tests directly. The
+    simulator kit is now committed (`scripts/sim_e2e/`).
+  - **The blocker.** A real 1.2.3 store upgraded in place lost its first launch to a race. The
+    widget extension and the app migrated the store at once, CoreData raised 134110, and the
+    app's container fell back to an EMPTY store. The delivery migration was spent on it, and the
+    next launch re-pushed everything. 4/4 runs failed with the widget, 0/2 without; 1.3.0 stores
+    failed the same way.
+  - **The fix** (`ac1fbec`, `7ee5f8f`):
+    - only the app migrates, behind a schema marker the widget waits for;
+    - no empty fallback while the store exists: retry, then an error screen;
+    - one-time migrations refuse any store but the real one.
+  - **Re-verified:** 6/6 in-place upgrades from 1.2.3 and 1.3.0, with and without a placed
+    widget, plus a fresh install. Round two's `deletionsSince` path ran for the first time on a
+    real old store: 21 deletions made elsewhere went quietly.
+  - **New release gate:** the in-place upgrade run from every live older version, with the widget
+    (`scripts/sim_e2e/upgrade.sh`).
+  - **Builds:** build 20 (uploaded earlier that night) is superseded by build 21, uploaded
+    05:50 JST.
+  - **Still to do before submission:** the Codex review (its quota keeps running out; queued
+    09:30), and publishing the privacy page's new error-report line (owner's OK).
 - 2026-09-28 — owner decision on the migrated-marks question (review R1 of the slice): **the first
   full pull proves the account.** A 1.3.0 session that expires keeps `stride_last_sync_time`, so
   "the device signed out" cannot be inferred from the key. The migration marks a store's rows
