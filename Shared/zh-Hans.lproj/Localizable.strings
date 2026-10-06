@@ -470,3 +470,10 @@
    address, on a line of its own like the account screen's "Habits from" (no address inside a
    sentence). */
 "Changes from" = "更改所属账户";
+
+/* The store open (1.3.1, upgrade race E2E U123): the widget's line while the app has not yet
+   opened (and migrated) the store, and the full-screen state when the app could not open it at
+   all (its button is "Try Again" above; the Siri replies reuse the title). */
+"Open Stride to see your habits" = "打开 Stride 查看你的习惯";
+"Stride couldn't open your data" = "Stride 无法打开你的数据";
+"Nothing was changed or deleted. Try again in a moment. If it keeps happening, restart your device and open Stride again." = "没有任何内容被更改或删除。请稍后重试。如果问题持续出现，请重启设备后再打开 Stride。";

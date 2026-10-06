@@ -677,7 +677,8 @@ final class SyncService {
 
     // MARK: - Launch
 
-    /// Once per launch, before the first sync (StrideApp.init): the migrated-rows rule
+    /// Once per launch, before the first sync, on the store the launch opened (StrideApp's
+    /// `prepareStore`; never on any other — upgrade race, E2E U123): the migrated-rows rule
     /// (`SyncDeliveryMigration`, sub-decision (b); its marks wait for the proof,
     /// `SyncMarksProof`), and — once per install — whether this device
     /// reached 1.3.1 signed out with rows and no owner, which the account screen will need and

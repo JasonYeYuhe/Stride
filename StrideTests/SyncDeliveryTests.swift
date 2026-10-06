@@ -855,6 +855,11 @@ final class SyncDeliveryTests: XCTestCase {
     /// with today's models: SwiftData lightweight-migrates it. Every row and field must survive,
     /// and the delivery fields must read as their defaults. An in-memory container proves nothing
     /// here: it is created with the new schema and never migrates.
+    ///
+    /// Single-process: one opener, so it says nothing about two processes migrating the same file
+    /// at once — the upgrade race (E2E U123) this passed straight through. That race is covered by
+    /// the simulator kit's in-place upgrade run (scripts/sim_e2e); the rules that prevent it are
+    /// pinned in `StoreOpenTests`.
     func testA130StoreOnDiskOpensUnderTheNewSchemaWithEveryRowIntact() throws {
         let dir = try makeTempDir()
         let url = dir.appendingPathComponent("Stride.store")
@@ -902,6 +907,13 @@ final class SyncDeliveryTests: XCTestCase {
     ///       -only-testing:StrideTests/SyncDeliveryTests/testARealDeviceStoreOpensUnderTheNewSchema
     ///
     /// (xcodebuild passes `TEST_RUNNER_`-prefixed variables to the test process without the prefix.)
+    ///
+    /// Single-process, like the test above: it proves the migration, not the first launch. On the
+    /// same stores the first 1.3.1 launch still hid every habit while the widget extension was
+    /// installed, because the extension migrated the store alongside the app (upgrade race, E2E
+    /// U123). The name keeps the command above and RELEASE-1.3.1.md working; a pass here is the
+    /// migration half of acceptance 2, and the simulator kit's in-place upgrade run
+    /// (scripts/sim_e2e) is the multi-process half.
     func testARealDeviceStoreOpensUnderTheNewSchema() throws {
         guard let path = ProcessInfo.processInfo.environment["STRIDE_REAL_STORE_PATH"], !path.isEmpty else {
             throw XCTSkip("""

@@ -415,7 +415,14 @@ final class AuthService {
     /// never merged); the account itself is already gone, so this is not reported as a failed
     /// deletion.
     static func eraseAfterAccountDeletion(_ account: SyncAccount) {
-        let container = SharedModelContainer.modelContainer
+        // The container the launch opened. Delete Account is reached only from Settings, which
+        // exists only over an opened store; never open one here (upgrade race, E2E U123: a
+        // second open of a store the launch could not open is how an empty store got erased
+        // instead of the real one).
+        guard let container = SharedModelContainer.opened else {
+            logger.error("Local erase after account deletion skipped: the store is not open")
+            return
+        }
         do {
             try SyncService.shared.accountDeleted(account, in: container.mainContext)
         } catch {

@@ -441,6 +441,17 @@ enum SyncDeliveryMigration {
     @discardableResult
     static func runOnceIfNeeded(in context: ModelContext, defaults: UserDefaults) -> Outcome {
         guard !defaults.bool(forKey: doneKey) else { return .alreadyDone }
+        // In the app's defaults the flags are per INSTALL, so the rule runs only on the install's
+        // real store (upgrade race, E2E U123): a fallback store opened in its place got the done
+        // flag, stamped 0 rows and pinned nothing, and the real store later pushed every row. A
+        // test's throwaway suite is an install of its own. Refused like a failed save: no flag
+        // is set, and `SyncService.sync` does not sync. A refusal, not an assertion, so the tests
+        // (Debug builds) can prove it.
+        if defaults === UserDefaults.standard, !SharedModelContainer.isRealStore(context.container) {
+            Logger(subsystem: "yyh.stride.habittracker", category: "Migration")
+                .error("Delivery-state migration refused: not the real store")
+            return .failed
+        }
 
         let proof = SyncMarksProof(defaults: defaults)
         let lastSync: String?
