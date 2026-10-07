@@ -773,8 +773,16 @@ test on stores those builds wrote, and a Release-build smoke run (round three, b
   platforms, 2026-10-07 05:50 JST. Before the archive: the signing probe passed, the rehearsal was
   80/0/1 and the demo check exit 0. `verify_archive.sh` passed: 1.3.1 (21), Product Interaction,
   Distribution-signed, associated domains. Build 20 is superseded and never submitted.
-- [ ] **`release.py finish 1.3.1 21` on the owner's go**, after the Codex review and the privacy
-  page's publication. If either leads to a code change, the fix ships as
+- [x] **Submitted 2026-10-07 16:09 JST** (`release.py finish 1.3.1 21`, on the owner's go), build
+  21 on both platforms:
+  - iOS review submission `1216f4ac-29c3-481f-803b-1eca5c9ad9ad`
+  - macOS review submission `74e1bb03-77b5-46b7-8d18-964d41b08b16`
+
+  Both WAITING_FOR_REVIEW, MANUAL. The owner allowed skipping Codex when it does not answer ("codex
+  没反应跳过也行"). The narrow Codex run still goes at 19:55 as an advisory check: anything serious
+  goes into 1.3.2, or 1.3.1 is pulled from review if urgent.
+- [ ] After approval: `release.py release 1.3.1` (or the owner releases in ASC). Then merge the
+  `release/1.3.1` → `main` PR and tag `v1.3.1`. If either leads to a code change, the fix ships as
   build 21.
   The version is created `MANUAL`; publish with `release.py release 1.3.1` after the device
   checks.
