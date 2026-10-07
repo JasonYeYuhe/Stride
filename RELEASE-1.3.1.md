@@ -652,13 +652,18 @@ Gates on `7ee5f8f`:
 
 ### Review
 
-- [ ] **Codex review** of the final branch (`1b33b4a..HEAD`). Its quota has been used up by
-  other work three times since 2026-10-04; queued for 2026-10-07 09:30 on the branch tip
-  (`scratchpad/consult/codex-retry2.sh`). Fact-check every claim against the code before
-  adopting it, as for 1.3.0.
-- [ ] **Publish the privacy page** before 1.3.1 ships. `docs/privacy.html` lists the new
-  "couldn't open your data" error report. The public copy on stride-site needs the owner's OK to
-  update.
+- [ ] **Codex review.** Its quota ran out five times between 2026-10-04 and 10-07, the last
+  time midway through a whole-branch read. A narrow run is queued for 2026-10-07 19:55: the race
+  fix and the upgrade pass only (`scratchpad/consult/codex-retry3.sh`). Fact-check every claim
+  before adopting it.
+- [x] **Gemini 3.1 Pro review of the race fix** (2026-10-07, MCP bridge on a throwaway copy of the
+  files): "none" in every category. It raised two minor points, both known trade-offs:
+  - the first open can block launch for up to 3 s, only while an existing store keeps failing;
+  - the widget-gate unit tests inject the file and model checks. The six real upgrade runs
+    exercise the real gate in the widget process.
+- [x] **Privacy page published** (owner's OK, 2026-10-07): stride-site `c0d5d1c` adds 1.3.1's
+  "couldn't open your data" error report (error codes only), dated October 7, 2026. Verified live
+  at https://jasonyeyuhe.github.io/stride-site/privacy.
 - [x] Final full review: the internal cross-phase review and its re-review (above).
 - [x] Phase C follow-up round (decisions 2–4) reviewed and fixed (`7181628`).
 - [ ] **Native read.** Gemini 3.1 Pro read the 1.3.1 strings and What's New; its ko and zh
