@@ -485,3 +485,18 @@
 "Contact Support" = "Contactar con soporte";
 "Your device may be out of storage. Free up some space, then tap Try Again. (Error %@ %lld)" = "Es posible que tu dispositivo se haya quedado sin espacio. Libera espacio y toca Reintentar. (Error %@ %lld)";
 "If it still fails and you sync with a Stride account, delete Stride, install it again and sign in: your synced habits come back. Without an account, contact support first — deleting Stride also deletes the habits on this device. (Error %@ %lld)" = "Si sigue fallando y sincronizas con una cuenta de Stride, elimina Stride, vuelve a instalarlo e inicia sesión: tus hábitos sincronizados volverán. Sin cuenta, contacta primero con soporte: eliminar Stride también elimina los hábitos de este dispositivo. (Error %@ %lld)";
+
+/* 1.4.0 (M3). Reminder actions: the buttons on a habit's reminder banner, on the lock screen and
+   in Notification Center. "Mark Done" checks a yes/no habit off for the day the reminder was
+   for; "Add 1" (above) adds one unit to a count habit; "Snooze 1 Hour" shows the reminder again
+   an hour later. Short: banner buttons truncate. */
+"Mark Done" = "Marcar como hecho";
+"Snooze 1 Hour" = "Posponer 1 hora";
+
+/* 1.4.0 (M3). Mac menu bar, File menu: write a backup (JSON) or the CSV, then a save panel asks
+   where to put it — hence the ellipsis. */
+"Export Backup…" = "Exportar copia de seguridad…";
+"Export as CSV…" = "Exportar como CSV…";
+
+/* 1.4.0 (M3). Under an Export button when writing the export file failed (e.g. no disk space). */
+"Couldn't create the file. Try again." = "No se pudo crear el archivo. Inténtalo de nuevo.";
