@@ -4,8 +4,8 @@ import Foundation
 /// Pure, so the rules are pinned host-less; the `Commands` in Stride/Sources only read them.
 ///
 /// Each rule is the one the same action already follows on screen, so a menu item can never offer
-/// what the window would refuse: Sync Now is Settings' Sync Now row, Weekly Review is Stats'
-/// toolbar button.
+/// what the window would refuse, nor refuse what the window in front offers: Sync Now is
+/// Settings' Sync Now row, Weekly Review is Stats' toolbar button.
 enum MenuCommandRules {
     /// The menu items, by what they do.
     enum Command: CaseIterable, Sendable {
@@ -30,7 +30,8 @@ enum MenuCommandRules {
     /// What the rules read, as the menu sees it at the moment it is drawn.
     struct State: Equatable, Sendable {
         /// A main window is focused and published its commands (`@FocusedValue` non-nil). With
-        /// Settings or no window in front, nothing acts on a window that is not there.
+        /// Settings or no window in front, nothing acts on a window that is not there. Sync Now
+        /// does not read it: it acts on no window (see `isEnabled`).
         var hasFocusedMainWindow: Bool
         /// Settings' `SettingsAccountState.showsAccountActions`: an account is loaded, the reauth
         /// state included.
@@ -51,8 +52,14 @@ enum MenuCommandRules {
         case .newHabit, .exportBackup, .exportCSV, .today, .statistics:
             return state.hasFocusedMainWindow
         case .syncNow:
-            return state.hasFocusedMainWindow
-                && syncNowEnabled(showsAccountActions: state.showsAccountActions, isSyncing: state.isSyncing)
+            // Not window-scoped. It is exactly Settings' Sync Now row (D3), and that row lives in
+            // the Settings window: the first cut also required a focused main window, so with
+            // Settings key — the moment someone is looking at the row — File → Sync Now ⌘R was
+            // grey beside an enabled row in the window in front (W1 code review). A sync needs no
+            // window: `SyncService.shared` on `SharedModelContainer.opened`'s main context, as
+            // the launch and activation syncs run. An owner conflict it returns goes to
+            // `AccountChoiceRouter`, whose sheet hangs off the main window.
+            return syncNowEnabled(showsAccountActions: state.showsAccountActions, isSyncing: state.isSyncing)
         case .weeklyReview:
             return state.hasFocusedMainWindow && weeklyReviewEnabled(habitCount: state.habitCount)
         }

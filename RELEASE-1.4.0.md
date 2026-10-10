@@ -171,6 +171,11 @@ downgraded, 3 refuted. Everything below is the revised design. The adopted findi
   - Sync Now has the same rule as Settings' row: `showsAccountActions && !isSyncing`. It runs
     `SyncSectionActions.syncNow`, and a returned owner conflict goes through
     `AccountChoiceRouter`.
+    - It is **not** window-scoped (settled in W1's code review). With Settings key, the menu item
+      and the row in that window are enabled together. The sync runs on
+      `SharedModelContainer.opened`'s main context, as the launch and activation syncs do, and
+      needs no `@FocusedValue`. `AccountChoiceRouter`'s sheet hangs off the main window, so W6
+      brings that window forward (⌘0's path) when a conflict comes back.
   - The enable rules are pure in Shared, with tests.
 - **Menu Export.** Write first (D6), then **`.fileMover`** with the written URL: a save panel that
   moves the file, so no tmp copy is left. It needs `com.apple.security.files.user-selected.read-write`

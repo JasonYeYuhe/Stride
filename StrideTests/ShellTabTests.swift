@@ -93,16 +93,36 @@ final class ShellTabTests: XCTestCase {
         XCTAssertEqual(MenuCommandRules.weeklyReviewDestination(isPro: false), .paywall)
     }
 
-    /// With no main window focused (Settings in front, or no window), only Window → Stride is
-    /// enabled — it is the way back. With one, every command follows its own rule.
+    /// With no main window focused (Settings in front, or no window), only Window → Stride — the
+    /// way back — and Sync Now, which acts on no window, are enabled. With one, every command
+    /// follows its own rule.
     func testWindowScopedCommandsNeedAFocusedMainWindow() {
         for command in MenuCommandRules.Command.allCases {
-            XCTAssertEqual(MenuCommandRules.isEnabled(command, in: state(window: false)), command == .showMainWindow,
-                           "\(command)")
+            XCTAssertEqual(MenuCommandRules.isEnabled(command, in: state(window: false)),
+                           command == .showMainWindow || command == .syncNow, "\(command)")
             XCTAssertTrue(MenuCommandRules.isEnabled(command, in: state()), "\(command)")
         }
         let empty = state(account: false, syncing: true, habits: 0)
         XCTAssertEqual(MenuCommandRules.Command.allCases.filter { MenuCommandRules.isEnabled($0, in: empty) },
                        [.newHabit, .exportBackup, .exportCSV, .today, .statistics, .showMainWindow])
+    }
+
+    /// Settings key, the main window behind it or closed: the menu's Sync Now is the Settings
+    /// window's row, enabled and disabled with it. The first cut greyed ⌘R out here, beside an
+    /// enabled row in the window in front (W1 code review).
+    func testSyncNowFollowsSettingsRowWithSettingsKey() {
+        for account in [true, false] {
+            for syncing in [true, false] {
+                XCTAssertEqual(MenuCommandRules.isEnabled(.syncNow, in: state(window: false, account: account, syncing: syncing)),
+                               MenuCommandRules.syncNowEnabled(showsAccountActions: account, isSyncing: syncing),
+                               "account \(account), syncing \(syncing)")
+                XCTAssertEqual(MenuCommandRules.isEnabled(.syncNow, in: state(window: false, account: account, syncing: syncing)),
+                               MenuCommandRules.isEnabled(.syncNow, in: state(window: true, account: account, syncing: syncing)),
+                               "the main window's focus never changes it")
+            }
+        }
+        XCTAssertTrue(MenuCommandRules.isEnabled(.syncNow, in: state(window: false)))
+        XCTAssertFalse(MenuCommandRules.isEnabled(.syncNow, in: state(window: false, syncing: true)))
+        XCTAssertFalse(MenuCommandRules.isEnabled(.syncNow, in: state(window: false, account: false)))
     }
 }
