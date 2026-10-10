@@ -65,6 +65,26 @@ enum MenuCommandRules {
         }
     }
 
+    /// Whether a press acts while the key window shows a sheet — a SwiftUI sheet, an alert, a
+    /// save panel — or is one. Only Window → Stride does; every other command beeps and does
+    /// nothing (D3). A request issued then has no way to be presented over the sheet, ⌘1/⌘2 would
+    /// move the place under it, and Sync Now would start under an open restore, erase or Delete
+    /// Account flow, which Settings' own rows avoid on purpose (design review,
+    /// "commands-live-under-sheets"). Bringing the main window forward takes nothing from a sheet,
+    /// and it is the way back to a closed main window whatever is up in Settings.
+    ///
+    /// The items are not greyed out meanwhile: the sheet belongs to the main window's scene, which
+    /// still publishes its commands, and a sheet's coming and going reaches no enable rule here.
+    /// The press is what is refused, at the moment it happens.
+    static func actsUnderSheet(_ command: Command) -> Bool {
+        switch command {
+        case .showMainWindow:
+            return true
+        case .newHabit, .syncNow, .exportBackup, .exportCSV, .today, .statistics, .weeklyReview:
+            return false
+        }
+    }
+
     /// Settings' Sync Now row: shown with an account loaded, disabled while a sync runs.
     static func syncNowEnabled(showsAccountActions: Bool, isSyncing: Bool) -> Bool {
         showsAccountActions && !isSyncing

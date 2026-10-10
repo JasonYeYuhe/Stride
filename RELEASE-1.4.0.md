@@ -168,6 +168,10 @@ downgraded, 3 refuted. Everything below is the revised design. The adopted findi
     read it with `@FocusedValue` and are disabled when no main window is focused.
   - An action that arrives while that window has a sheet up (`NSApp.keyWindow?.attachedSheet !=
     nil`) beeps and does nothing. Requests are item-based (D2), so nothing gets stuck.
+    - As built (W6): the test is `attachedSheet != nil || sheetParent != nil` on the key window.
+      While a SwiftUI sheet, an alert or a save panel is up, the sheet itself is the key window
+      (it takes the typing), so `attachedSheet` alone is nil exactly then. Every command but
+      Window → Stride beeps (`MenuCommandRules.actsUnderSheet`, tested); ⌘0 never does.
   - Sync Now has the same rule as Settings' row: `showsAccountActions && !isSyncing`. It runs
     `SyncSectionActions.syncNow`, and a returned owner conflict goes through
     `AccountChoiceRouter`.
@@ -180,6 +184,15 @@ downgraded, 3 refuted. Everything below is the revised design. The adopted findi
 - **Menu Export.** Write first (D6), then **`.fileMover`** with the written URL: a save panel that
   moves the file, so no tmp copy is left. It needs `com.apple.security.files.user-selected.read-write`
   in StrideMac.entitlements, which is also the Restore fix.
+  - As built (W6): ContentView writes on `.task(id: shell.request)`. Another command replacing the
+    request during the write, or the window closing, cancels it and no panel appears (the file is
+    left to the tmp sweeps, as a dropped share is); a sheet that came up meanwhile drops it with a
+    beep. A failed write is an alert titled "Couldn't create the file. Try again.": a menu has no
+    row to put the line under.
+- **As built (W6): the main-window count** is raised on the main scene's window root, not on
+  ContentView, so a window showing the store's error screen counts too and ⌘0 brings it forward
+  instead of opening a second one. The windows are also held weakly (an `NSView` that reports its
+  window): SwiftUI has no call that brings an existing WindowGroup window forward.
 - **Titles** come from `appLocalized`, so they follow the in-app language. AppKit's own items
   (Close, Edit, Window…) follow the system language, as every Mac app's do; this is a known,
   accepted mix. LocalizationSourceScanTests learns `CommandMenu` / `CommandGroup`.

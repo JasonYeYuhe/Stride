@@ -107,6 +107,12 @@ final class ShellTabTests: XCTestCase {
                        [.newHabit, .exportBackup, .exportCSV, .today, .statistics, .showMainWindow])
     }
 
+    /// Under a sheet (or with one key) every press beeps, except Window → Stride: the way back to
+    /// the main window never depends on what is up.
+    func testOnlyShowMainWindowActsUnderASheet() {
+        XCTAssertEqual(MenuCommandRules.Command.allCases.filter(MenuCommandRules.actsUnderSheet), [.showMainWindow])
+    }
+
     /// Settings key, the main window behind it or closed: the menu's Sync Now is the Settings
     /// window's row, enabled and disabled with it. The first cut greyed ⌘R out here, beside an
     /// enabled row in the window in front (W1 code review).

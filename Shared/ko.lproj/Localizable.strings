@@ -498,5 +498,6 @@
 "Export Backup…" = "백업 내보내기…";
 "Export as CSV…" = "CSV로 내보내기…";
 
-/* 1.4.0 (M3). Under an Export button when writing the export file failed (e.g. no disk space). */
+/* 1.4.0 (M3). Under an Export button when writing the export file failed (e.g. no disk space); on
+   the Mac, also the title of an alert after File → Export Backup… / Export as CSV… failed. */
 "Couldn't create the file. Try again." = "파일을 만들 수 없습니다. 다시 시도하세요.";

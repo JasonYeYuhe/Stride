@@ -194,6 +194,7 @@
 		C607A3CF091B31EF45DF0954 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 9BB01452FD4AD5A55E0153E0 /* Assets.xcassets */; };
 		C6A2CDBD665C9C2D0C2AD813 /* Habit.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21336DA7BBDF96DEA4D3407 /* Habit.swift */; };
 		C8A9F0ACC43746A1D4D12AE0 /* SharedModelContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14E5DE1DF2EA723656AA788 /* SharedModelContainer.swift */; };
+		C95F5D3C573F19B8773730B5 /* MenuCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB5409E5B0519500C0E310D1 /* MenuCommands.swift */; };
 		CB17AAC833E1FAFD90CDF92A /* StrideWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F7762020997DD0185475C26 /* StrideWidget.swift */; };
 		CCB4F56B9DCBA6C2E2DD9074 /* RestoreHandoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 220A85358D1D1E1378966E20 /* RestoreHandoverView.swift */; };
 		CCB78F6B90D5EB4178299BBE /* HabitCheckIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADB968D6EC1637C4FCB0926B /* HabitCheckIn.swift */; };
@@ -241,6 +242,7 @@
 		F8E631103B145331AD1AC986 /* CountHabitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F8FF4E330322A974AB7AE18 /* CountHabitTests.swift */; };
 		FB11FAC471F1EA9528F6D5F8 /* DataBackup.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10372C0F190EDDE54426268 /* DataBackup.swift */; };
 		FC4CDDD4154DB2A11EBC9BA5 /* DataExportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0C3325816F805915823CCF /* DataExportService.swift */; };
+		FCEA3BF515C35CAD9032D2E8 /* MenuCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB5409E5B0519500C0E310D1 /* MenuCommands.swift */; };
 		FCF9109BFB458A0C236A7877 /* TodaySelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = B313C2E4B793E21CAB587186 /* TodaySelection.swift */; };
 		FE7F3CD42838D63DA8C087A0 /* StrideShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DE60126995C3E877AF2E464 /* StrideShortcuts.swift */; };
 		FED37A1F252DA0483FBD8697 /* StoreService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5915E3575E09B02B6B55488D /* StoreService.swift */; };
@@ -379,6 +381,7 @@
 		C6BDFAF6AA3186994308B76E /* BackgroundSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundSync.swift; sourceTree = "<group>"; };
 		C8B4D07F33CAB7E56F9F251A /* SyncAnswersTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncAnswersTests.swift; sourceTree = "<group>"; };
 		C8F829D10AC86E72860890BE /* StoreLaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreLaunchTests.swift; sourceTree = "<group>"; };
+		CB5409E5B0519500C0E310D1 /* MenuCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuCommands.swift; sourceTree = "<group>"; };
 		CCE4DC4420262220669936AA /* SafeNumberTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SafeNumberTests.swift; sourceTree = "<group>"; };
 		CE6BBADAD14A22204B4E31DB /* ShellTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellTests.swift; sourceTree = "<group>"; };
 		CE98D2D441CF6A791EF47340 /* HabitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HabitTests.swift; sourceTree = "<group>"; };
@@ -627,6 +630,7 @@
 			isa = PBXGroup;
 			children = (
 				AEA9E4ACAC192F7EA553298D /* AppStoreLaunch.swift */,
+				CB5409E5B0519500C0E310D1 /* MenuCommands.swift */,
 				2FC15AE17382421CAEBA98D6 /* StrideApp.swift */,
 			);
 			path = App;
@@ -894,6 +898,7 @@
 				67FAB06E9AA751ED11EC093D /* LoginLink.swift in Sources */,
 				B293372E0A9CEAE724495138 /* LoginView.swift in Sources */,
 				AB34C446DA7A527D102FF04B /* MenuCommandRules.swift in Sources */,
+				FCEA3BF515C35CAD9032D2E8 /* MenuCommands.swift in Sources */,
 				777B3FE2FB56EDB1BCF4D6A1 /* NotificationActionHandler.swift in Sources */,
 				3A885C548100CDCF47CC565C /* NotificationRouter.swift in Sources */,
 				47B9B48865AD8666665DDA25 /* NotificationService.swift in Sources */,
@@ -1065,6 +1070,7 @@
 				A08235BFF17939BA6E31565A /* LoginLink.swift in Sources */,
 				93D68D7CBE49AB5C5353CF38 /* LoginView.swift in Sources */,
 				2EC1A1FDB51808838BD0CA8D /* MenuCommandRules.swift in Sources */,
+				C95F5D3C573F19B8773730B5 /* MenuCommands.swift in Sources */,
 				550B7BC7AEFD13062945CA92 /* NotificationActionHandler.swift in Sources */,
 				5F8D05D07A7CCD0CC156A085 /* NotificationRouter.swift in Sources */,
 				3D038F4D40A1494A7D907F53 /* NotificationService.swift in Sources */,

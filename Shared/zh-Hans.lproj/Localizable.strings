@@ -498,5 +498,6 @@
 "Export Backup…" = "导出备份…";
 "Export as CSV…" = "导出为 CSV…";
 
-/* 1.4.0 (M3). Under an Export button when writing the export file failed (e.g. no disk space). */
+/* 1.4.0 (M3). Under an Export button when writing the export file failed (e.g. no disk space); on
+   the Mac, also the title of an alert after File → Export Backup… / Export as CSV… failed. */
 "Couldn't create the file. Try again." = "无法创建文件，请重试。";

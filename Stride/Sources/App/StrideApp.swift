@@ -46,6 +46,12 @@ struct StrideApp: App {
         #if DEBUG
         BackgroundSync.runIfRequestedByLaunchArgument()
         #endif
+        #else
+        // One main window (RELEASE-1.4.0.md D3). ⌘N is New Habit now, not New Window, and without
+        // this the window's tab bar (View → Show Tab Bar) still offered a + that opened a second
+        // main window — with its own launch sync, its own copy of every app-level sheet. Before
+        // any window exists: AppKit reads it when a window is created.
+        NSWindow.allowsAutomaticWindowTabbing = false
         #endif
         // Copies of the user's data that nothing else ever removed, off the main thread: the
         // export files earlier share sheets wrote to tmp — backups, recovered edits, a deleted
@@ -107,21 +113,32 @@ struct StrideApp: App {
                     .modelContainer(modelContainer)
             }
             .environment(\.locale, languageManager.locale ?? .current)
+            // A bare List has no size of its own, and since 1.4.0 this window is the Mac's only
+            // Settings (D2): room for the account rows and the export buttons' inline lines
+            // without a scroll at first sight (D3).
+            .frame(minWidth: 460, idealWidth: 520, minHeight: 520)
         }
         #endif
     }
 
     private var windowGroup: some Scene {
-        WindowGroup {
-            StoreGateView(launch: storeLaunch) { modelContainer in
-                app(over: modelContainer)
-            }
-            .environment(\.locale, languageManager.locale ?? .current)
-        }
         #if os(macOS)
+        // An id, so Window → Stride ⌘0 can open the main window again when none is left
+        // (`MainWindows`, D3). Still a WindowGroup, not a single `Window`, which could change
+        // whether closing the window quits the app and what a login link arriving with no window
+        // open does; both stay as in 1.3.x this way (design review,
+        // "mac-main-window-unrecoverable").
+        WindowGroup(id: MainWindows.id) {
+            mainWindowContent
+                .countsAsMainWindow()
+        }
         .windowStyle(.titleBar)
         .defaultSize(width: 900, height: 650)
+        .commands { StrideCommands() }
         #else
+        WindowGroup {
+            mainWindowContent
+        }
         // Leaving the app asks for a background refresh (D5), so what is still unsent — a check-in
         // whose push was cut off by the suspension, or one the widget makes later in its own
         // process, which is not known to be allowed to submit — reaches the server without the
@@ -132,6 +149,14 @@ struct StrideApp: App {
             BackgroundRefresh.scheduleIfSignedIn(reason: .sceneBackground)
         }
         #endif
+    }
+
+    /// A main window's content: the app over its store, or the store's error screen.
+    private var mainWindowContent: some View {
+        StoreGateView(launch: storeLaunch) { modelContainer in
+            app(over: modelContainer)
+        }
+        .environment(\.locale, languageManager.locale ?? .current)
     }
 
     /// The app itself, over the opened store.

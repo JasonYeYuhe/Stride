@@ -21,6 +21,11 @@ struct ContentView: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
     #else
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.modelContext) private var modelContext
+    /// The menu Export's written file while its save panel is up (`writeRequestedExport`).
+    @State private var exportPanelFile: URL?
+    /// The menu Export's write failed: an alert says so — a menu has no row to put the line under.
+    @State private var exportFailed = false
     #endif
 
     /// - Parameter shell: injected by the hosted shell tests; the app starts from the launch
@@ -78,6 +83,15 @@ struct ContentView: View {
             }
             #if os(macOS)
             .onAppear { openSettingsIfTheLaunchAskedForIt() }
+            // The menu bar acts on this window while it is in front (D3, `StrideCommands`).
+            .modifier(ShellCommandsPublisher(shell: shell))
+            // File → Export Backup… / Export as CSV…: written first, then the save panel.
+            .task(id: shell.request) { await writeRequestedExport() }
+            .fileMover(isPresented: exportPanelShown, file: exportPanelFile) { result in
+                // The file stays in tmp when the move fails; the next sweep takes it.
+                if case .failure = result { exportFailed = true }
+            } onCancellation: {}
+            .alert(appLocalized("Couldn't create the file. Try again."), isPresented: $exportFailed) {}
             #endif
     }
 
@@ -242,6 +256,56 @@ struct ContentView: View {
         guard shell.opensSettingsAtLaunch, !Self.launchOpenedSettings else { return }
         Self.launchOpenedSettings = true
         openSettings()
+    }
+
+    // MARK: - Mac menu Export
+
+    /// File → Export Backup… / Export as CSV… (D3): the request's file is written first, as every
+    /// Export button writes it (`DataExportService.write`, D6), then a save panel (`fileMover`)
+    /// moves it where the user picks — no copy stays in tmp. The same file Settings' Export as
+    /// JSON / Export as CSV write: the backup naming the store's owner, the CSV.
+    ///
+    /// Run by `.task(id: shell.request)`: another command replacing the request while the file is
+    /// written, or the window closing, cancels this pass, and a cancelled pass presents nothing.
+    /// Its file is left to the tmp sweeps, as a share `ExportShareButton` drops is. So a second
+    /// ⇧⌘E during the write is the same request and starts nothing, and the menu's latest ask is
+    /// the one answered.
+    @MainActor
+    private func writeRequestedExport() async {
+        // A file still here belongs to a panel that never came up: while one is up, nothing can
+        // change the request — the commands that set it beep under the panel, and are disabled
+        // with another window in front. Cleared, so this pass's panel is a fresh false → true and
+        // is not lost behind a binding that already reads true.
+        if exportPanelFile != nil { exportPanelFile = nil }
+        guard case .export(let export) = shell.request else { return }
+        let written = try? await DataExportService.write(export.file, container: modelContext.container)
+        guard !Task.isCancelled else { return }
+        // Something came up meanwhile — New Habit from Today's +, an alert — and a panel cannot go
+        // over it: the ask is dropped, with the menu's beep for "not now", rather than left as a
+        // request no panel will ever answer.
+        if MenuCommandPress.keyWindowShowsSheet {
+            shell.request = nil
+            NSSound.beep()
+            return
+        }
+        guard let written else {
+            shell.request = nil
+            exportFailed = true
+            return
+        }
+        exportPanelFile = written.url
+    }
+
+    /// The save panel is up while there is a written file to move; its close, saved or cancelled,
+    /// clears the file and the request, so the next ⇧⌘E asks again.
+    private var exportPanelShown: Binding<Bool> {
+        Binding(
+            get: { exportPanelFile != nil },
+            set: { shown in
+                guard !shown else { return }
+                exportPanelFile = nil
+                if case .export = shell.request { shell.request = nil }
+            })
     }
     #endif
 }

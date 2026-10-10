@@ -371,6 +371,11 @@ struct AccountChoiceRequest: Identifiable {
 /// A one-tap link with no LoginView open (Mail → the app on Today, or the Mac's main window)
 /// continues in a sheet StrideApp presents from `request`. LoginView counts itself in
 /// `loginFlowsOpen` so StrideApp knows which case it is.
+///
+/// Since 1.4.0 the Mac's File → Sync Now ⌘R also asks here, for the choice that blocked its sync —
+/// what Settings' own Sync Now row presents in its own sheet (RELEASE-1.4.0.md D3). The menu has
+/// no window of its own, so it brings the main window forward, or opens it, first
+/// (`MainWindows.bringForward`).
 @MainActor
 @Observable
 final class AccountChoiceRouter {
