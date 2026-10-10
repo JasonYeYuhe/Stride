@@ -4,10 +4,29 @@
 #
 #   scripts/ci/run_hosted_tests.sh [simulator name or UDID] [extra xcodebuild args...]
 #
-# Without a simulator (or with ""): "iPhone 17 Pro" if one exists, else the first available
+# Without a simulator (or with ""): "iPhone 17" if one exists, else the first available
 # iPhone — on the xcode-27 CI image that is whatever the iOS 27 runtime names its phones. An
 # existing simulator is always reused — this never creates or erases one (every simulator that
 # gets used collects gigabytes; see the global notes).
+#
+# Why "iPhone 17" and not "iPhone 17 Pro" (the default until 1.4.0): the Pro is the E2E kit's
+# device (scripts/sim_e2e, RELEASE-1.4.0.md D7), and a hosted run is not harmless to it. The
+# run installs an UNSIGNED Debug Stride.app over the kit's ad-hoc build, so it has no app group
+# and opens an empty Documents store; its launch reschedule then removes every
+# stride.habit.reminder.* request pending on the device, and it spends the data container's
+# once-per-install flags (SyncDeliveryMigration's done key, firstLaunchNoted) that the upgrade
+# gate from 1.3.0 depends on (design review: hosted-runs-clobber-e2e-device). After a hosted run
+# on the kit's device, `app.sh reset` it; a plain reinstall keeps the spent flags.
+#
+# The device lock: /tmp/lock-<device slug> (/tmp/lock-iphone-17), taken before the build and
+# released on exit, with scripts/ci/sim_lock.sh — the /tmp/lock-<device> convention that
+# a11y_sweep.sh, the E2E kit's lock.sh and the other projects on this Mac use, so a hosted run
+# no longer lands in the middle of someone's session on the same device.
+# Someone else's lock is waited on for at most STRIDE_SIM_LOCK_WAIT minutes (40); then this
+# prints BLOCKED and exits 2 having run nothing. If you already hold the device's lock, write
+# `label=<yours>` in its holder file and pass STRIDE_SIM_LOCK_LABEL=<yours>: the run then
+# happens inside your hold and leaves it held. Without that label it waits on you, then
+# BLOCKED. With CI=true (GitHub Actions) no lock is taken: a fresh runner has no other users.
 #
 # Why a simulator: a hosted bundle is injected into the running app, so it needs a destination
 # that can launch Stride.app. A generic device destination cannot, and neither can macOS (the
@@ -21,10 +40,14 @@
 #                                ~/Library/Developer/Xcode/DerivedData, so a rerun is incremental)
 #   STRIDE_HOSTED_ALL=1          run the Stride scheme's whole test action (StrideTests too,
 #                                on iOS) instead of only StrideAppTests
+#   STRIDE_SIM_LOCK_ROOT, STRIDE_SIM_LOCK_LABEL, STRIDE_SIM_LOCK_WAIT
+#                                the device lock, above (scripts/ci/sim_lock.sh)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# shellcheck source=sim_lock.sh
+source "$SCRIPT_DIR/sim_lock.sh"
 DERIVED="${STRIDE_HOSTED_DERIVED_DATA:-$HOME/Library/Developer/Xcode/DerivedData/Stride-hosted-tests}"
 WANT="${1:-}"
 [[ $# -gt 0 ]] && shift
@@ -52,7 +75,7 @@ if want:
     exact = [dv for dv in devices if dv[0]["udid"] == want] or [dv for dv in devices if dv[0]["name"] == want]
     print(best(exact))
 else:
-    print(best([dv for dv in devices if dv[0]["name"] == "iPhone 17 Pro"])
+    print(best([dv for dv in devices if dv[0]["name"] == "iPhone 17"])
           or best([dv for dv in devices if dv[0]["name"].startswith("iPhone")]))
 ')" || {
     # Without this, set -e would end the script here with no message at all — and the usual
@@ -63,11 +86,22 @@ else:
 }
 
 if [[ -z "$UDID" ]]; then
-    echo "✗ No available iOS simulator matches '${WANT:-iPhone 17 Pro / any iPhone}'."
+    echo "✗ No available iOS simulator matches '${WANT:-iPhone 17 / any iPhone}'."
     echo "  Available: xcrun simctl list devices available"
     exit 1
 fi
 NAME="$(xcrun simctl list devices available | grep -F "$UDID" | sed -E 's/^ *(.*) \([0-9A-F-]{36}\).*/\1/' | head -1)"
+
+# The device lock (header), before the build: `xcodebuild test` boots the device, installs and
+# launches the host the moment its build ends, so there is no later point to take it at.
+if [[ "${CI:-}" == "true" ]]; then
+    echo "==> CI=true: no simulator lock (a fresh runner has no other users)"
+else
+    LOCK_RC=0
+    sim_lock_take "${STRIDE_SIM_LOCK_ROOT:-/tmp}/lock-$(sim_lock_slug "$NAME")" run_hosted_tests || LOCK_RC=$?
+    [[ $LOCK_RC -eq 0 ]] || exit "$LOCK_RC"
+    trap sim_lock_release EXIT
+fi
 
 ONLY=(-only-testing:StrideAppTests)
 [[ "${STRIDE_HOSTED_ALL:-}" == "1" ]] && ONLY=()

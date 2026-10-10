@@ -13,8 +13,11 @@
 #   --out     where the PNGs go (default: build/a11y/<size>/, with `default` for `large`, plus
 #             `-<lang>` when --lang is given).
 #   --device  the simulator (default "iPhone 17 Pro Max", the screenshot device — see the
-#             global notes; the hosted tests hold "iPhone 17 Pro"). An existing simulator is
-#             always reused: this never creates, erases or clones one.
+#             global notes; the E2E kit holds "iPhone 17 Pro", and from 1.4.0 the hosted tests
+#             run on "iPhone 17" under /tmp/lock-iphone-17, scripts/ci/run_hosted_tests.sh). An
+#             existing simulator is always reused: this never creates, erases or clones one.
+#             The iPad captures (RELEASE-1.4.0.md D7) use "iPad Pro 13-inch (M5)". CLI Pulse's
+#             capture script drives that iPad and takes no lock, so check it is not in use first.
 #   --app     skip the build and install this .app instead — e.g. one built from another
 #             checkout, to capture a before/after pair from the same script. It must be a
 #             Debug build: `-demo` and `-paywall` are compiled out of Release.
@@ -92,12 +95,24 @@
 #   STRIDE_A11Y_DERIVED_DATA  derived data for the build (default build/a11y/DerivedData)
 #   STRIDE_A11Y_SETTLE        seconds to wait after each launch before capturing (default 4)
 #   STRIDE_SIM_LOCK_ROOT      directory for the per-device mutex `lock-<device-slug>` (default
-#                             $TMPDIR). Several agents or scripts share these simulators; the
-#                             lock is a directory because mkdir is atomic.
+#                             /tmp, the root every project and scripts/sim_e2e/lock.sh use; it
+#                             was $TMPDIR before 1.4.0, which excluded nobody). Several agents
+#                             or scripts share these simulators; the lock is a directory because
+#                             mkdir is atomic. The slug keeps a-z, 0-9 and '-' only:
+#                             /tmp/lock-ipad-pro-13-inch-m5, /tmp/lock-iphone-17-pro-max.
+#   STRIDE_SIM_LOCK_LABEL     your lock label. When the device's lock is already held under it
+#                             (its holder file says label=<it>, e.g. `scripts/sim_e2e/lock.sh
+#                             acquire promax <it>`), the sweep runs inside that hold and leaves it
+#                             held. Otherwise the sweep takes the lock itself, with a holder file.
+#   STRIDE_SIM_LOCK_WAIT      minutes to wait for someone else's lock (default 40); then the
+#                             sweep prints BLOCKED and exits 2, touching nothing.
+#   (scripts/ci/sim_lock.sh has the lock's details.)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=ci/sim_lock.sh
+source "$SCRIPT_DIR/ci/sim_lock.sh"
 
 SIZE="accessibility-extra-extra-extra-large"
 OUT=""
@@ -189,10 +204,12 @@ fi
 BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
 
 # ---- the simulator: lock, remember, change, and always put back ---------------------------
-SLUG="$(tr '[:upper:] ' '[:lower:]-' <<<"$NAME")"
-LOCK="${STRIDE_SIM_LOCK_ROOT:-${TMPDIR:-/tmp}}/lock-$SLUG"
-echo "==> Waiting for $LOCK"
-until mkdir "$LOCK" 2>/dev/null; do sleep 15; done
+LOCK="${STRIDE_SIM_LOCK_ROOT:-/tmp}/lock-$(sim_lock_slug "$NAME")"
+LOCK_RC=0
+sim_lock_take "$LOCK" a11y_sweep || LOCK_RC=$?
+[[ $LOCK_RC -eq 0 ]] || exit "$LOCK_RC"
+# Until restore() below takes over: a signal during the next lines must not strand the lock.
+trap sim_lock_release EXIT
 
 WAS_BOOTED=0
 PREV_SIZE=""
@@ -209,7 +226,8 @@ restore() {
     # A sync run that died half-way still takes its seeded recovery log with it.
     if [[ "$SET" != core ]] && declare -f clear_recovery_log >/dev/null; then clear_recovery_log || true; fi
     [[ $WAS_BOOTED -eq 0 ]] && xcrun simctl shutdown "$UDID" >/dev/null 2>&1 || true
-    rmdir "$LOCK" 2>/dev/null || true
+    # Only a lock this run took (never the caller's STRIDE_SIM_LOCK_LABEL hold).
+    sim_lock_release
     exit $status
 }
 trap restore EXIT
