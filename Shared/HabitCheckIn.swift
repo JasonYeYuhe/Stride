@@ -111,4 +111,34 @@ enum HabitCheckIn {
         guard !isComplete else { return nil }
         return tap(habit, on: date, in: context)
     }
+
+    /// A reminder's Mark Done or Add 1 (RELEASE-1.4.0.md D4). Chosen by the habit's kind NOW, never
+    /// by the button that was tapped: a delivered banner keeps the category — and so the button —
+    /// it was scheduled with, while the kind can have changed since, by an edit here or a pull
+    /// from another device.
+    /// - yes/no → `markDone`: checks the day, or changes nothing (nil) when it is already checked.
+    /// - count → `tap`: one more unit, past the target too — the button says "Add 1".
+    ///
+    /// **Never deletes.** `tap` on a yes/no habit that is already done removes the day's record,
+    /// and the caller would queue the tombstone that removes it on every device. A stale "Add 1"
+    /// on a count habit that became yes/no must leave that day alone (design review,
+    /// "stale-category-addone-untoggles-binary"), so a yes/no habit never reaches `tap` here except
+    /// through `markDone`, which only taps an unchecked day. There is no tombstone to queue after
+    /// this call, ever.
+    ///
+    /// An archived habit is not checked in (nil): its reminders were removed when it was archived,
+    /// so the response is a stale banner, and the habit is not on Today to show the result.
+    ///
+    /// `day` must be a day-key — `ReminderDay.resolve` — never `notification.date` itself
+    /// (`HabitCalendar.dayKey(forInstant:)` says why).
+    static func fromReminder(_ habit: Habit, on day: Date, in context: ModelContext) -> Result? {
+        guard !habit.isArchived else { return nil }
+        let result: Result?
+        switch habit.habitKind {
+        case .binary: result = markDone(habit, on: day, in: context)
+        case .count: result = tap(habit, on: day, in: context)
+        }
+        assert(result?.deletedRecordID == nil, "a reminder's check-in deleted a record")
+        return result
+    }
 }

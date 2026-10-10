@@ -3,7 +3,15 @@ import Security
 
 /// Minimal Keychain wrapper for storing session tokens securely.
 enum KeychainHelper {
+    #if STRIDE_MAC_VARIANT
+    // The Mac test variant (RELEASE-1.4.0.md D7) keeps its session under its own bundle id, never
+    // the real app's service: given the real item, a Debug session check against the local server
+    // answers user=null and the app deletes that token as dead — signing the owner's real Mac app
+    // out. `MacVariantLaunchCheck` traps a variant whose bundle id is the real one.
+    private static let service = Bundle.main.bundleIdentifier ?? "yyh.stride.habittracker.mactest"
+    #else
     private static let service = "yyh.stride.habittracker"
+    #endif
 
     static func save(key: String, value: String) {
         guard let data = value.data(using: .utf8) else { return }

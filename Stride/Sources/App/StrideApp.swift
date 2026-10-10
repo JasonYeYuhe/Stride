@@ -13,6 +13,12 @@ struct StrideApp: App {
     @State private var showOnboarding = !UserDefaults.standard.bool(forKey: "stride_onboarding_completed")
 
     init() {
+        #if STRIDE_MAC_VARIANT
+        // The Mac test variant (scripts/mac_variant/) traps here unless it is sandboxed, its store
+        // is inside its own container and its bundle id is not the real app's — before anything
+        // below opens a store or reads the Keychain (RELEASE-1.4.0.md D7).
+        MacVariantLaunchCheck.enforce()
+        #endif
         SentryBootstrap.start()   // crash/hang reporting; no-op until SentryDSN is set
         // The real store, or the error screen — never another store. The app is the only process
         // that may create or migrate it; once it has, the widget is told it may open it too

@@ -78,14 +78,36 @@ enum SharedModelContainer {
     }
 
     static var location: Location {
-        location(appGroupContainer: FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier),
-                 documents: FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!)
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        #if STRIDE_MAC_VARIANT
+        // The Mac test variant (RELEASE-1.4.0.md D7; scripts/mac_variant/) must never open the
+        // owner's real store. On macOS `containerURL(forSecurityApplicationGroupIdentifier:)` is
+        // never nil — "a URL of the expected form is always returned, even if the app group is
+        // invalid" (NSFileManager.h) — so a variant without the group entitlement still resolved
+        // ~/Library/Group Containers/group.yyh.stride.habittracker/Stride.store: denied in the
+        // sandbox (the error screen, nothing to verify), opened and migrated without it, and a
+        // `-demo` launch erases what it opens. A compile-time choice, never a runtime fallback:
+        // falling back when the group is unreadable is the second-store bug class (E2E U123).
+        return location(appGroupContainer: nil, documents: documents)
+        #else
+        return location(appGroupContainer: FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier),
+                        documents: documents)
+        #endif
     }
 
     static var storeURL: URL { location.url }
 
-    /// The App Group's defaults: the schema marker, and the day-key migration's flag.
-    static var appGroupDefaults: UserDefaults? { UserDefaults(suiteName: appGroupIdentifier) }
+    /// The App Group's defaults: the schema marker, the day-key migration's flag and, through
+    /// `SyncDeletionQueue.live`, the widget's deletion queue. nil in the Mac test variant: like the
+    /// store, it must not reach the real app's suite (the marker is skipped for a `.noAppGroup`
+    /// store and nil defaults anyway, and the migration flag falls back to `.standard`).
+    static var appGroupDefaults: UserDefaults? {
+        #if STRIDE_MAC_VARIANT
+        return nil
+        #else
+        return UserDefaults(suiteName: appGroupIdentifier)
+        #endif
+    }
 
     /// The configuration every open of the real store uses — the app's and the widget's alike.
     static func makeContainer(at url: URL) throws -> ModelContainer {
@@ -220,6 +242,52 @@ enum SharedModelContainer {
                 .error("Day-key migration failed: \(error.localizedDescription)")
         }
     }
+}
+
+// MARK: - The Mac test variant's launch check
+
+/// What must hold before the Mac test variant (`STRIDE_MAC_VARIANT`, RELEASE-1.4.0.md D7) opens a
+/// store: the process is sandboxed, its store is inside its own home (the sandbox's
+/// `~/Library/Containers/<id>/Data`), and it is not the real app. Any one missing means the build
+/// or its signing went wrong in a way that could reach the owner's real data — the store, the
+/// Keychain item (`KeychainHelper` keys the variant's by bundle id) — so the variant traps at
+/// launch instead (`enforce()`, called first thing in `StrideApp.init`). The conditions are pure
+/// and always compiled, so StrideTests pins them; only the call is behind the flag.
+enum MacVariantLaunchCheck {
+    static let realBundleIdentifier = "yyh.stride.habittracker"
+
+    /// Each condition that does not hold, in words for the trap message; empty when all hold.
+    /// - Parameters:
+    ///   - sandboxContainerID: `APP_SANDBOX_CONTAINER_ID`, which the sandbox sets in every
+    ///     sandboxed process's environment. Absent: not sandboxed, so nothing keeps the process
+    ///     out of the real App Group container or Keychain.
+    ///   - storeURL: `SharedModelContainer.storeURL`.
+    ///   - homeDirectory: `NSHomeDirectory()` — the container's `Data` directory when sandboxed.
+    static func violations(sandboxContainerID: String?, storeURL: URL, homeDirectory: String,
+                           bundleIdentifier: String?) -> [String] {
+        var failed: [String] = []
+        if (sandboxContainerID ?? "").isEmpty { failed.append("not sandboxed (no APP_SANDBOX_CONTAINER_ID)") }
+        // With a trailing slash, so a sibling directory whose name merely starts the same way
+        // ("…/Data2") does not pass.
+        let home = homeDirectory.hasSuffix("/") ? homeDirectory : homeDirectory + "/"
+        if !storeURL.path.hasPrefix(home) { failed.append("the store is outside this process's home directory") }
+        if bundleIdentifier == nil || bundleIdentifier == realBundleIdentifier {
+            failed.append("the bundle id is the real app's (or missing)")
+        }
+        return failed
+    }
+
+    #if STRIDE_MAC_VARIANT
+    /// Traps unless every condition holds. Before the store opens, Sentry starts or the Keychain is
+    /// read: a precondition, so it holds in every configuration the variant is built in.
+    static func enforce() {
+        let failed = violations(
+            sandboxContainerID: ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"],
+            storeURL: SharedModelContainer.storeURL, homeDirectory: NSHomeDirectory(),
+            bundleIdentifier: Bundle.main.bundleIdentifier)
+        precondition(failed.isEmpty, "STRIDE_MAC_VARIANT refused to launch: " + failed.joined(separator: "; "))
+    }
+    #endif
 }
 
 // MARK: - The process-wide container's slot

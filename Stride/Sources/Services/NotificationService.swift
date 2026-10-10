@@ -113,7 +113,8 @@ final class NotificationService {
     private convenience init() {
         self.init(
             center: UNUserNotificationCenter.current(),
-            defaults: UserDefaults(suiteName: "group.yyh.stride.habittracker") ?? .standard
+            // The one App Group accessor, which the Mac test variant turns off (STRIDE_MAC_VARIANT).
+            defaults: SharedModelContainer.appGroupDefaults ?? .standard
         )
     }
 
