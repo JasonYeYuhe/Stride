@@ -239,6 +239,22 @@ enum ReminderDay {
         return today
     }
 
+    /// Whether a reminder answered at `now` could still credit `dayKey`, as `resolve` decides:
+    /// today, or yesterday within `lateNightGrace` after midnight. Never an older day, nor a later
+    /// one.
+    ///
+    /// A check-in made in the app on such a day completes what the habit's pending snooze and
+    /// delivered banners are asking for, so it ends them (`CheckInEffects`). A check-in on any
+    /// other day does not. That other day is a backfill from Today's week strip, and it must
+    /// leave alone the snooze the user asked for TODAY, and today's banner, while today is still
+    /// not done; nothing would restore either (W2 fix review: Thursday 20:30, Wednesday ticked
+    /// off in the strip, Thursday's 21:00 snooze gone).
+    ///
+    /// `dayKey` must be a day-key (`HabitCalendar.dayKey(for:)` of the date the check-in used).
+    static func isCreditable(_ dayKey: Date, at now: Date, calendar: Calendar = .current) -> Bool {
+        resolve(carriedDay: dayKey, deliveredAt: now, respondedAt: now, calendar: calendar) == dayKey
+    }
+
     /// The `userInfo["day"]` value for a day-key: `yyyy-MM-dd`, what `NotificationRouter.day(from:)`
     /// reads back. A snooze stores the day `resolve` gave at the moment Snooze was tapped, so a
     /// snooze of a snooze carries it forward unchanged.

@@ -687,12 +687,16 @@ struct HabitRowView: View {
         refresh(checkedIn: result.deletedRecordID == nil)
     }
 
-    /// After a save: the widgets and the badge, always. A check-in also ends the habit's snooze
-    /// and withdraws its banners (`CheckInEffects`, RELEASE-1.4.0.md D4); taking one back — an
-    /// un-check, a unit removed — leaves them, since they still ask for something not done.
+    /// After a save: the widgets and the badge, always. A check-in goes through `CheckInEffects`
+    /// (RELEASE-1.4.0.md D4), which also ends the habit's snooze and withdraws its banners, but
+    /// only for a day those can be asking for (`CheckInEffects.endsReminders`): `date` is the week
+    /// strip's, and a backfill of Wednesday at 20:30 on Thursday must leave Thursday's snooze and
+    /// banner alone. Taking a check-in back (an un-check, a unit removed) leaves them too, since
+    /// they still ask for something not done.
     private func refresh(checkedIn: Bool) {
         if checkedIn {
-            CheckInEffects.afterCheckIn(habitID: habit.id, container: modelContext.container)
+            CheckInEffects.afterCheckIn(habitID: habit.id, container: modelContext.container,
+                                        endsReminders: CheckInEffects.endsReminders(checkingIn: date))
         } else {
             WidgetCenter.shared.reloadAllTimelines()
             NotificationService.shared.updateBadge(modelContainer: modelContext.container)

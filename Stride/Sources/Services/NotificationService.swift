@@ -494,15 +494,29 @@ final class NotificationService {
     /// "snooze-credits-next-day"); a snooze of a snooze carries the day forward the same way.
     ///
     /// Only for a habit whose reminder is on: the launch prune keeps a snooze for no other.
-    func scheduleSnooze(for habit: Habit, day: Date) {
+    ///
+    /// Returns once the center has called back for the add. The action handler awaits this before
+    /// `didReceive` returns, and the system may suspend the process from that moment. A Snooze tapped
+    /// on a lock screen relaunches a terminated Stride in the background for this one call, and the
+    /// banner is already gone: an add still on its way to the notification server when the
+    /// process stopped would leave no reminder at all (W2 fix review). The removal before it goes
+    /// to the same center first, in order.
+    func scheduleSnooze(for habit: Habit, day: Date) async {
         let identifier = ReminderPlan.snoozeIdentifier(for: habit.id)
         center.removePendingNotificationRequests(withIdentifiers: [identifier])
         guard ReminderPlan.Settings(habit) != nil else { return }
         let content = reminderContent(for: habit)
         content.userInfo[NotificationRouter.UserInfoKey.day] = ReminderDay.string(for: day)
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: ReminderPlan.snoozeInterval, repeats: false)
-        center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: trigger),
-                   withCompletionHandler: nil)
+        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
+        let center = self.center
+        let error: Error? = await withCheckedContinuation { continuation in
+            center.add(request) { continuation.resume(returning: $0) }
+        }
+        if error != nil {
+            // Code-only, as the budget notice: no habit id in a production log line (D4).
+            Self.logger.error("snooze: the center refused the request")
+        }
     }
 
     /// A check-in of the habit in this process — Today, Siri, the action itself — ends its pending
@@ -512,12 +526,32 @@ final class NotificationService {
     }
 
     /// Takes the habit's banners out of Notification Center: every reminder shape and the snooze.
-    /// After a check-in, because they ask for what is done; after a kind change, because their
-    /// button is the old kind's — a delivered banner keeps its category
-    /// (`UNNotificationContent.categoryIdentifier` is read-only), so "Add 1" stayed on a habit that
-    /// became yes/no.
+    /// After a check-in, because they ask for what is done; after a kind change
+    /// (`habitKindDidChange`), because their button is the old kind's — a delivered banner keeps
+    /// its category (`UNNotificationContent.categoryIdentifier` is read-only), so "Add 1" stayed on
+    /// a habit that became yes/no.
     func withdrawDeliveredReminders(for habitID: UUID) {
         center.removeDeliveredNotifications(withIdentifiers: ReminderPlan.allIdentifiers(for: habitID))
+    }
+
+    /// The habit sheet saved a new kind (D4: "so no wrong button stays visible"). The reschedule
+    /// that follows re-categorizes the pending reminders. Nothing re-categorizes two other things,
+    /// and both would show the old kind's button:
+    /// - delivered banners, which are withdrawn;
+    /// - the pending snooze, which is cancelled. `replaceReminder` leaves it alone on purpose, so
+    ///   left there it would fire an hour after Snooze with "Add 1" on a habit that is now yes/no
+    ///   (W2 fix review).
+    ///
+    /// Cancelled rather than added again under the new category, because a re-add could not keep
+    /// its time. A pending `UNTimeIntervalNotificationTrigger` keeps only `timeInterval` and
+    /// `repeats`: its archived form has no other key, and `nextTriggerDate()` is always now + the
+    /// interval (measured 2026-10-10 on the macOS 27 SDK). So the re-added snooze would fire up to
+    /// an hour later than the one the user asked for. The habit's own reminder still fires on its
+    /// schedule. A kind pulled from another device gets the same treatment in
+    /// `refreshAfterDataChange`.
+    func habitKindDidChange(_ habitID: UUID) {
+        withdrawDeliveredReminders(for: habitID)
+        cancelSnooze(for: habitID)
     }
 
     /// Launch, foreground and the day changing: habit banners delivered before today go.
@@ -550,6 +584,9 @@ final class NotificationService {
     ///   the widget's, in another process, and another device's, arriving by sync.
     /// - Banners whose button is not the habit's kind any more (a kind pulled from another device;
     ///   an edit here withdraws at once, AddHabitView), and banners of a habit gone or archived.
+    /// - The same for a pending snooze, which is cancelled (`habitKindDidChange` says why it is not
+    ///   re-added). A reschedule never touches the snooze, so after a pulled kind change it would
+    ///   still fire with the old kind's button.
     ///
     /// It writes no data and never removes a pending REMINDER: those are the schedule's and the
     /// launch prune's.
@@ -569,15 +606,34 @@ final class NotificationService {
         let center = self.center
         center.getDeliveredNotifications { delivered in
             let wrong = delivered.filter { banner in
-                guard banner.categoryIdentifier == NotificationRouter.binaryCategory
-                        || banner.categoryIdentifier == NotificationRouter.countCategory,
-                      let habitID = banner.habitID
-                else { return false }
-                return categories[habitID] != banner.categoryIdentifier
+                Self.showsAnotherKindsButton(category: banner.categoryIdentifier, habitID: banner.habitID,
+                                             current: categories)
             }.map(\.identifier)
             guard !wrong.isEmpty else { return }
             center.removeDeliveredNotifications(withIdentifiers: wrong)
         }
+        center.getPendingNotificationRequests { pending in
+            let wrong = pending.filter { request in
+                request.identifier.hasPrefix(ReminderPlan.snoozePrefix)
+                    && Self.showsAnotherKindsButton(category: request.content.categoryIdentifier,
+                                                    habitID: NotificationRouter.habitID(from: request.content.userInfo),
+                                                    current: categories)
+            }.map(\.identifier)
+            guard !wrong.isEmpty else { return }
+            center.removePendingNotificationRequests(withIdentifiers: wrong)
+        }
+    }
+
+    /// A habit banner, delivered or pending, whose button is not its habit's kind (`current`, by
+    /// id), or whose habit is not in `current` (gone or archived). Only our two categories with a
+    /// habit id: the evening and morning reminders, and 1.3.x requests, are not this pass's.
+    /// Nonisolated: it runs in the center's callbacks, off the main actor.
+    private nonisolated static func showsAnotherKindsButton(category: String, habitID: UUID?,
+                                                            current: [UUID: String]) -> Bool {
+        guard category == NotificationRouter.binaryCategory || category == NotificationRouter.countCategory,
+              let habitID
+        else { return false }
+        return current[habitID] != category
     }
 
     /// Update app badge with the number of incomplete habits for today — unarchived and not done,

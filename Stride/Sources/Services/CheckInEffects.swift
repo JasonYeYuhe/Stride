@@ -8,11 +8,11 @@ import WidgetKit
 /// half of it — before 1.4.0 the intent reloaded the widget but never set the badge.
 ///
 /// - The widget timelines reload.
-/// - The habit's pending snooze is cancelled and its delivered banners are withdrawn: both ask for
-///   what has just been done. A check-in made elsewhere (the widget's process, another device) is
-///   caught later by `NotificationService.refreshAfterDataChange`.
+/// - The habit's pending snooze is cancelled and its delivered banners are withdrawn, when the
+///   check-in's day is the one they ask for (`endsReminders`). A check-in made elsewhere (the
+///   widget's process, another device) is caught later by `NotificationService.refreshAfterDataChange`.
 /// - A background refresh is submitted, so a check-in made just before the app is suspended still
-///   reaches the server (D5).
+///   reaches the server (D5). A backfilled day too: it has to reach the server as much as today.
 /// - The badge, last, awaited: the action handler's process can be suspended as soon as it returns.
 ///
 /// Values, not calls on the singletons, so the hosted tests hand the handler recording closures
@@ -38,22 +38,39 @@ struct CheckInEffects {
 
     /// After `habitID`'s check-in was saved in `container`. Posting `.habitDataChanged` stays with
     /// the caller: Today's save already reaches StrideApp's observer as a `didSave`.
+    ///
+    /// `endsReminders`: whether the check-in's day is one the habit's snooze and banners can be
+    /// asking for (`ReminderDay.isCreditable`). Always true for a reminder's own action, whose day
+    /// is the banner's or today by construction, and for Siri, which credits today. Today's row
+    /// works out the day it was given: the week strip backfills the past six days, and a backfill
+    /// must not cancel the snooze the user asked for today, or withdraw today's banner, while
+    /// today is still not done. Nothing would put either back: `refreshAfterDataChange` restores
+    /// nothing, and it only cancels for habits done TODAY.
     @MainActor
-    func afterCheckIn(habitID: UUID, container: ModelContainer) async {
+    func afterCheckIn(habitID: UUID, container: ModelContainer, endsReminders: Bool) async {
         reloadWidgets()
-        cancelSnooze(habitID)
-        withdrawDelivered(habitID)
+        if endsReminders {
+            cancelSnooze(habitID)
+            withdrawDelivered(habitID)
+        }
         submitRefresh()
         await updateBadge(container)
+    }
+
+    /// `endsReminders` for a check-in on `date`, a local date such as Today's week strip hands its
+    /// rows. It is keyed as `HabitCheckIn` keys it (`dayKey(for:)`), then asked of the resolver: is it
+    /// today, or yesterday within the late-night grace?
+    static func endsReminders(checkingIn date: Date, now: Date = Date(), calendar: Calendar = .current) -> Bool {
+        ReminderDay.isCreditable(HabitCalendar.dayKey(for: date, localCalendar: calendar), at: now, calendar: calendar)
     }
 
     /// Fire and forget, for a caller that cannot wait — Today's buttons. A Task on the main actor,
     /// so the work runs on the next turn, in order with the check-ins before and after it.
     @MainActor
-    static func afterCheckIn(habitID: UUID, container: ModelContainer) {
+    static func afterCheckIn(habitID: UUID, container: ModelContainer, endsReminders: Bool) {
         let effects = live
         Task { @MainActor in
-            await effects.afterCheckIn(habitID: habitID, container: container)
+            await effects.afterCheckIn(habitID: habitID, container: container, endsReminders: endsReminders)
         }
     }
 }

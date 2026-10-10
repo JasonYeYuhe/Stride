@@ -36,10 +36,26 @@ final class RecordingCenter: NotificationScheduling, @unchecked Sendable {
     /// What the user taps if the prompt is shown.
     var userAllows = true
 
+    /// While true, an add is recorded at once but its completion handler waits for
+    /// `completeHeldAdds()`, as the real center answers later, from its own queue.
+    var holdsAddCompletions = false
+    private var heldAddCompletions: [@Sendable (Error?) -> Void] = []
+    var hasHeldAdds: Bool { !heldAddCompletions.isEmpty }
+
     func add(_ request: UNNotificationRequest, withCompletionHandler completionHandler: (@Sendable (Error?) -> Void)?) {
         events.append(.add(request.identifier))
         pending[request.identifier] = request
-        completionHandler?(nil)
+        if holdsAddCompletions, let completionHandler {
+            heldAddCompletions.append(completionHandler)
+        } else {
+            completionHandler?(nil)
+        }
+    }
+
+    func completeHeldAdds() {
+        let held = heldAddCompletions
+        heldAddCompletions = []
+        for completion in held { completion(nil) }
     }
 
     func authorizationStatus() async -> UNAuthorizationStatus { status }
@@ -83,6 +99,18 @@ final class RecordingCenter: NotificationScheduling, @unchecked Sendable {
     func seed(_ identifier: String) {
         let trigger = UNCalendarNotificationTrigger(dateMatching: DateComponents(hour: 9, minute: 0), repeats: true)
         pending[identifier] = UNNotificationRequest(identifier: identifier, content: UNNotificationContent(), trigger: trigger)
+    }
+
+    /// A habit's request from an earlier launch with the content the 1.4.0 service gives one: the
+    /// category and the habit id. A snooze id gets the snooze's one-shot trigger.
+    func seed(_ identifier: String, habitID: UUID, category: String) {
+        let content = UNMutableNotificationContent()
+        content.categoryIdentifier = category
+        content.userInfo = ["habitId": habitID.uuidString]
+        let trigger: UNNotificationTrigger = identifier.hasPrefix("stride.habit.snooze.")
+            ? UNTimeIntervalNotificationTrigger(timeInterval: 3_600, repeats: false)
+            : UNCalendarNotificationTrigger(dateMatching: DateComponents(hour: 9, minute: 0), repeats: true)
+        pending[identifier] = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
     }
 
     /// A banner in Notification Center.
@@ -395,11 +423,11 @@ final class NotificationServiceTests: XCTestCase {
 
     /// Snooze 1 Hour: one shot, an hour out, under the habit's snooze id, with the category, the
     /// habit and the day the reminder was for — what a Mark Done on it credits, even past midnight.
-    func testSnoozeIsOneShotInAnHourCarryingTheCategoryHabitAndDay() throws {
+    func testSnoozeIsOneShotInAnHourCarryingTheCategoryHabitAndDay() async throws {
         let water = habit("Water", kind: .count)
         let day = HabitCalendar.utc.date(from: DateComponents(year: 2026, month: 10, day: 12))!
 
-        service.scheduleSnooze(for: water, day: day)
+        await service.scheduleSnooze(for: water, day: day)
 
         let request = try XCTUnwrap(center.pending[snoozeID(water)])
         let trigger = try XCTUnwrap(request.trigger as? UNTimeIntervalNotificationTrigger)
@@ -421,9 +449,80 @@ final class NotificationServiceTests: XCTestCase {
     }
 
     /// Only for a habit whose reminder is on: the launch prune would remove any other.
-    func testNoSnoozeForAHabitWhoseReminderIsOff() {
-        service.scheduleSnooze(for: habit("Quiet", reminder: false), day: HabitCalendar.dayKey(forInstant: Date()))
+    func testNoSnoozeForAHabitWhoseReminderIsOff() async {
+        await service.scheduleSnooze(for: habit("Quiet", reminder: false), day: HabitCalendar.dayKey(forInstant: Date()))
         XCTAssertTrue(center.pending.isEmpty)
+    }
+
+    /// Snooze returns only once the center has called back for the add. The action handler awaits
+    /// it before `didReceive` returns. After that, a background launch made for a lock-screen
+    /// Snooze can be suspended, and the banner is already gone: an add still on its way would leave
+    /// no reminder at all (W2 fix review).
+    func testSnoozeReturnsOnlyOnceTheCenterHasTheRequest() async throws {
+        final class Flag { var value = false }
+        center.holdsAddCompletions = true
+        let read = habit("Read")
+        let service = self.service!
+        let returned = Flag()
+
+        let snooze = Task { @MainActor in
+            await service.scheduleSnooze(for: read, day: HabitCalendar.dayKey(forInstant: Date()))
+            returned.value = true
+        }
+        let deadline = ContinuousClock.now + .seconds(2)
+        while !center.hasHeldAdds, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertNotNil(center.pending[snoozeID(read)], "the add was made")
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(returned.value, "returned before the center answered")
+
+        center.completeHeldAdds()
+        await snooze.value
+        XCTAssertTrue(returned.value)
+    }
+
+    // MARK: - A kind change
+
+    /// The habit sheet saved a new kind. A delivered banner and a pending snooze keep the button of
+    /// the kind they were scheduled for, and the reschedule that follows changes neither: the
+    /// banners are withdrawn and the snooze is cancelled. Not re-added: a pending interval trigger
+    /// cannot say when it fires (`habitKindDidChange`). The reminders, and another habit's snooze,
+    /// stay.
+    func testAKindChangeWithdrawsTheBannersAndCancelsTheSnooze() {
+        let water = habit("Water", kind: .count)
+        let other = habit("Other")
+        center.seed(reminderID(water), habitID: water.id, category: "stride.habit.count")
+        center.seed(snoozeID(water), habitID: water.id, category: "stride.habit.count")
+        center.seed(snoozeID(other), habitID: other.id, category: "stride.habit.binary")
+        center.deliver(reminderID(water), category: "stride.habit.count", habitID: water.id)
+        center.deliver(snoozeID(water), category: "stride.habit.count", habitID: water.id)
+
+        water.habitKind = .binary
+        service.habitKindDidChange(water.id)
+
+        XCTAssertEqual(Set(center.pending.keys), [reminderID(water), snoozeID(other)])
+        XCTAssertTrue(center.delivered.isEmpty)
+    }
+
+    /// A kind pulled from another device: the pass after the sync's save cancels a pending snooze
+    /// whose button is the other kind's, as it withdraws such a banner, and the snooze of a habit
+    /// that is gone. A snooze matching its habit stays. Pending reminders stay whatever their
+    /// category: they are the schedule's, which replaces them after the sync.
+    func testRefreshCancelsASnoozeWhoseButtonIsAnotherKinds() throws {
+        let water = habit("Water")                              // yes/no now; count when snoozed
+        let read = habit("Read")
+        let gone = UUID()
+        try insert(water, read)
+        center.seed(snoozeID(water), habitID: water.id, category: "stride.habit.count")
+        center.seed(reminderID(water), habitID: water.id, category: "stride.habit.count")
+        center.seed(snoozeID(read), habitID: read.id, category: "stride.habit.binary")
+        center.seed("stride.habit.snooze." + gone.uuidString, habitID: gone, category: "stride.habit.binary")
+        center.seed("stride.daily.evening")
+
+        service.refreshAfterDataChange(modelContainer: container)
+
+        XCTAssertEqual(Set(center.pending.keys), [reminderID(water), snoozeID(read), "stride.daily.evening"])
     }
 
     // MARK: - Delivered banners and the pass after a data change

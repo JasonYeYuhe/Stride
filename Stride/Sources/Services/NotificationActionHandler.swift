@@ -39,8 +39,9 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
         var effects: CheckInEffects
         /// Pushes the check-in, inside the background task taken before `didReceive` returns.
         var sync: @MainActor (ModelContainer) async -> Void
-        /// Snooze 1 Hour, for the day `ReminderDay.resolve` gave.
-        var scheduleSnooze: @MainActor (Habit, Date) -> Void
+        /// Snooze 1 Hour, for the day `ReminderDay.resolve` gave. Awaited before `didReceive`
+        /// returns: it returns once the system has the request (`NotificationService.scheduleSnooze`).
+        var scheduleSnooze: @MainActor (Habit, Date) async -> Void
         var now: @MainActor () -> Date
         var calendar: @MainActor () -> Calendar
 
@@ -59,7 +60,7 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
                     guard !Task.isCancelled else { return }
                     await SyncService.shared.sync(context: container.mainContext, trigger: .background)
                 },
-                scheduleSnooze: { habit, day in NotificationService.shared.scheduleSnooze(for: habit, day: day) },
+                scheduleSnooze: { habit, day in await NotificationService.shared.scheduleSnooze(for: habit, day: day) },
                 now: { Date() },
                 calendar: { .current })
         }
@@ -152,7 +153,10 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
         guard let habit = (try? context.fetch(descriptor))?.first, !habit.isArchived else { return .noHabit }
 
         if case .snooze = route {
-            environment.scheduleSnooze(habit, day)
+            // Awaited, not handed off: the snooze is all this response produces, and the process
+            // may be suspended as soon as `didReceive` returns. Until then the system keeps it
+            // running, so a single add needs no background task of its own.
+            await environment.scheduleSnooze(habit, day)
             return .snoozed(day: day)
         }
 
@@ -180,7 +184,9 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
         // Today, the Stats card and anything else observing it redraw — in a scene-less background
         // launch there are none, and the effects below do not depend on them.
         NotificationCenter.default.post(name: .habitDataChanged, object: nil)
-        await environment.effects.afterCheckIn(habitID: habitID, container: container)
+        // `day` is the banner's or today (`resolve`), so it is what this habit's snooze and other
+        // banners ask for.
+        await environment.effects.afterCheckIn(habitID: habitID, container: container, endsReminders: true)
         syncInBackground(container)
         return .checkedIn(day: day)
     }

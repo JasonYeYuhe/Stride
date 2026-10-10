@@ -504,10 +504,11 @@ struct AddHabitView: View {
         do {
             try modelContext.save()
             if kindChanged {
-                // A banner already delivered keeps the button of the kind it was scheduled for —
-                // "Add 1" on a habit that is now yes/no — and rescheduling cannot change it
-                // (RELEASE-1.4.0.md D4). Harmless, since the write follows the kind now, but wrong.
-                NotificationService.shared.withdrawDeliveredReminders(for: habit.id)
+                // A banner already delivered, and a pending snooze, keep the button of the kind they
+                // were scheduled for ("Add 1" on a habit that is now yes/no), and the reschedule
+                // below changes neither (RELEASE-1.4.0.md D4). Harmless, since the write follows
+                // the kind now, but wrong. The banners are withdrawn and the snooze is cancelled.
+                NotificationService.shared.habitKindDidChange(habit.id)
             }
             if reminderEnabled {
                 await NotificationService.shared.enableHabitReminder(for: habit)

@@ -243,6 +243,31 @@ final class ReminderDayTests: XCTestCase {
         }
     }
 
+    // MARK: - isCreditable
+
+    /// The days a reminder answered now could still credit: today, and yesterday only within
+    /// three hours of midnight. A check-in in the app on such a day ends the habit's snooze and
+    /// banners. Any other day is a backfill from Today's week strip (Wednesday ticked off at
+    /// Thursday 20:30), or a day ahead of the clock, and must leave today's snooze and banner
+    /// alone. Eastern daylight time, where 20:00 is a UTC midnight.
+    func testOnlyTodayAndALateNightYesterdayAreCreditable() {
+        let cal = calendar(newYork)
+        let thursdayEvening = at(newYork, 2026, 7, 16, 20, 30)
+        XCTAssertTrue(ReminderDay.isCreditable(key(2026, 7, 16), at: thursdayEvening, calendar: cal))
+        XCTAssertTrue(ReminderDay.isCreditable(key(2026, 7, 16), at: at(newYork, 2026, 7, 16, 20), calendar: cal),
+                      "20:00 EDT is 00:00Z of the 17th: still the 16th")
+        XCTAssertFalse(ReminderDay.isCreditable(key(2026, 7, 15), at: thursdayEvening, calendar: cal), "a backfill")
+        XCTAssertFalse(ReminderDay.isCreditable(key(2026, 7, 10), at: thursdayEvening, calendar: cal))
+        XCTAssertFalse(ReminderDay.isCreditable(key(2026, 7, 17), at: thursdayEvening, calendar: cal), "ahead of the clock")
+
+        let fridayLateNight = at(newYork, 2026, 7, 17, 0, 40)
+        XCTAssertTrue(ReminderDay.isCreditable(key(2026, 7, 16), at: fridayLateNight, calendar: cal))
+        XCTAssertTrue(ReminderDay.isCreditable(key(2026, 7, 17), at: fridayLateNight, calendar: cal))
+        XCTAssertFalse(ReminderDay.isCreditable(key(2026, 7, 15), at: fridayLateNight, calendar: cal))
+        XCTAssertFalse(ReminderDay.isCreditable(key(2026, 7, 16), at: at(newYork, 2026, 7, 17, 3, 1), calendar: cal),
+                       "past the grace")
+    }
+
     /// Whatever the path, the answer is a day-key: what `HabitCheckIn` keys idempotently.
     func testTheResultIsAlwaysADayKey() {
         let delivered = at(losAngeles, 2026, 1, 15, 16)

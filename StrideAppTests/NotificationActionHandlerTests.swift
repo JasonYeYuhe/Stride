@@ -69,15 +69,9 @@ final class NotificationActionHandlerTests: XCTestCase {
                              sync: (@MainActor (ModelContainer) async -> Void)? = nil) -> NotificationActionHandler {
         let recorder = self.recorder!
         let calendar = self.calendar(zone)
-        let effects = CheckInEffects(
-            reloadWidgets: { recorder.events.append("reload") },
-            updateBadge: { _ in recorder.events.append("badge") },
-            cancelSnooze: { recorder.events.append("cancelSnooze \($0.uuidString)") },
-            withdrawDelivered: { recorder.events.append("withdraw \($0.uuidString)") },
-            submitRefresh: { recorder.events.append("submitRefresh") })
         return NotificationActionHandler(environment: .init(
             container: { container },
-            effects: effects,
+            effects: makeEffects(),
             sync: sync ?? { _ in
                 recorder.syncs += 1
                 recorder.synced?.fulfill()
@@ -85,6 +79,17 @@ final class NotificationActionHandlerTests: XCTestCase {
             scheduleSnooze: { habit, day in recorder.snoozes.append((habit.id, day)) },
             now: { Date() },
             calendar: { calendar }))
+    }
+
+    /// Every effect after a check-in, recorded in order.
+    private func makeEffects() -> CheckInEffects {
+        let recorder = self.recorder!
+        return CheckInEffects(
+            reloadWidgets: { recorder.events.append("reload") },
+            updateBadge: { _ in recorder.events.append("badge") },
+            cancelSnooze: { recorder.events.append("cancelSnooze \($0.uuidString)") },
+            withdrawDelivered: { recorder.events.append("withdraw \($0.uuidString)") },
+            submitRefresh: { recorder.events.append("submitRefresh") })
     }
 
     private func habit(_ name: String, kind: HabitKind = .binary, archived: Bool = false) throws -> Habit {
@@ -280,6 +285,39 @@ final class NotificationActionHandlerTests: XCTestCase {
         XCTAssertTrue(try records(of: read).isEmpty)
         XCTAssertEqual(recorder.events, [])
         XCTAssertEqual(recorder.syncs, 0)
+    }
+
+    // MARK: - Today's check-ins (CheckInEffects)
+
+    /// Today's week strip backfills the past six days. A backfill still gets the widgets, the
+    /// refresh submit (the record has to reach the server) and the badge. It leaves the habit's
+    /// snooze and banners alone: they ask for today, which is still not done, and nothing would put
+    /// them back (W2 fix review: Thursday 20:30, Wednesday ticked off, Thursday's 21:00 snooze
+    /// gone). A reminder's own action always ends them (`effectsAfterCheckIn`).
+    func testABackfillLeavesTheSnoozeAndBannersAndDoesTheRest() async throws {
+        let read = try habit("Read")
+
+        await makeEffects().afterCheckIn(habitID: read.id, container: container, endsReminders: false)
+
+        XCTAssertEqual(recorder.events, ["reload", "submitRefresh", "badge"])
+    }
+
+    /// Which of Today's days end them: the strip's days are local midnights, and Today first opens
+    /// on `Date()`; both are keyed as the tap keys them. Thursday 20:30 in New York ends them for
+    /// Thursday, not for Wednesday or any older day. At 00:40 on Friday, Thursday still does,
+    /// because a reminder answered then would credit Thursday.
+    func testTodaysRowEndsRemindersOnlyForTheDayTheyAskFor() {
+        let cal = calendar(newYork)
+        let evening = at(newYork, 2026, 7, 16, 20, 30)
+        let thursday = cal.startOfDay(for: evening)
+        let wednesday = cal.date(byAdding: .day, value: -1, to: thursday)!
+        let lastSaturday = cal.date(byAdding: .day, value: -5, to: thursday)!
+
+        XCTAssertTrue(CheckInEffects.endsReminders(checkingIn: thursday, now: evening, calendar: cal))
+        XCTAssertTrue(CheckInEffects.endsReminders(checkingIn: evening, now: evening, calendar: cal))
+        XCTAssertFalse(CheckInEffects.endsReminders(checkingIn: wednesday, now: evening, calendar: cal))
+        XCTAssertFalse(CheckInEffects.endsReminders(checkingIn: lastSaturday, now: evening, calendar: cal))
+        XCTAssertTrue(CheckInEffects.endsReminders(checkingIn: thursday, now: at(newYork, 2026, 7, 17, 0, 40), calendar: cal))
     }
 
     // MARK: - Another process
