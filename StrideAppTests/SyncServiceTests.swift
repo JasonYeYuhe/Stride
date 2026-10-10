@@ -591,6 +591,86 @@ final class SyncServiceTests: XCTestCase {
         XCTAssertTrue(again)
     }
 
+    // MARK: - The background trigger (1.4.0, RELEASE-1.4.0.md D5)
+
+    /// Counts the session resolves: `sync` awaits one only after it has claimed `isSyncing`, so
+    /// zero resolves means the call returned on the fast path, before the flag ever flipped.
+    private final class CountingSessions: SyncSessionSource {
+        var session: SyncSession?
+        private(set) var resolves = 0
+        init(_ session: SyncSession?) { self.session = session }
+        func currentSyncSession() -> SyncSession? { session }
+        func resolveSyncSession() async -> SyncSession? {
+            resolves += 1
+            return session
+        }
+    }
+
+    /// A `.background` sync inside the owner's window takes the same fast path as an automatic
+    /// one: no spinner, no session resolve, no request — not Sync Now's "go at once", which is
+    /// what `trigger == .automatic` made of any third trigger.
+    func testABackgroundSyncInsideTheWindowTakesTheFastPath() async {
+        seedOwnerAndCursor()
+        backoffStore.recordFailure(.serverAsked(seconds: 600, paused: true), for: owner)
+        stubHappyServer()
+        let counting = CountingSessions(.accountA)
+        let sync = makeSync(sessions: counting)
+
+        let ran = await sync.sync(context: context, trigger: .background)
+
+        XCTAssertFalse(ran)
+        XCTAssertEqual(counting.resolves, 0, "returned before claiming isSyncing")
+        XCTAssertFalse(sync.isSyncing)
+        XCTAssertTrue(server.requests.isEmpty, "a background sync inside the window sends nothing")
+        XCTAssertTrue(sync.isPaused, "the window is read back for the status line")
+
+        let manual = await sync.sync(context: context)
+        XCTAssertTrue(manual, "Sync Now still goes at once")
+        XCTAssertEqual(counting.resolves, 1)
+    }
+
+    /// A background run that got no answer — iOS cancelling the refresh as its time ran out
+    /// arrives as a cancelled request, which APIClient reports as no answer — shows no error and
+    /// leaves no window: the footer would have said "cancelled" to someone who never asked for a
+    /// sync, and the window would have turned away the foreground sync that follows. That one
+    /// goes at once here, and — not being a background run — shows and records its own failure.
+    func testABackgroundSyncWithNoAnswerShowsNoErrorAndLeavesNoWindow() async {
+        seedOwnerAndCursor()
+        queue.trackHabit("gone")
+        server.on("POST", "/v1/sync/push") { _ in throw URLError(.cancelled) }
+        server.on("GET", "/v1/sync/pull") { _ in throw URLError(.cancelled) }
+
+        let ran = await sync.sync(context: context, trigger: .background)
+
+        XCTAssertFalse(ran)
+        XCTAssertEqual(syncRequests.count, 1, "the request went and got no answer")
+        XCTAssertNil(sync.syncError, "no footer for a background run cut short")
+        XCTAssertNil(sync.backoff)
+        XCTAssertNil(backoffStore.state(for: owner), "no window: the next foreground sync goes")
+
+        server.on("POST", "/v1/sync/push") { _ in throw URLError(.notConnectedToInternet) }
+        let foreground = await sync.sync(context: context, trigger: .automatic)
+        XCTAssertFalse(foreground)
+        XCTAssertEqual(syncRequests.count, 2, "the automatic sync was not turned away")
+        XCTAssertNotNil(sync.syncError, "a foreground no-answer keeps 1.3.0's footer")
+        XCTAssertEqual(backoffStore.state(for: owner)?.reason, .offline)
+    }
+
+    /// What the server actually answers still counts on a background run: a 5xx sets the footer
+    /// and the window as for any run (D5: "a 429, a 5xx and the pause switch are still recorded").
+    func testABackgroundSyncStillRecordsAServerError() async {
+        seedOwnerAndCursor()
+        queue.trackHabit("gone")
+        server.on("POST", "/v1/sync/push", respond: .init(status: 502, body: "<html>Bad Gateway</html>"))
+
+        let ran = await sync.sync(context: context, trigger: .background)
+
+        XCTAssertFalse(ran)
+        XCTAssertNotNil(sync.syncError)
+        XCTAssertEqual(sync.backoff?.reason, .serverError)
+        XCTAssertEqual(backoffStore.state(for: owner)?.reason, .serverError)
+    }
+
     /// Account A's window never holds back B: B signing into a device A owned, with nothing to
     /// lose, adopts it silently and its automatic sync goes; A's window goes with A's queue.
     func testASilentSwitchLeavesThePreviousOwnersWindowBehind() async {

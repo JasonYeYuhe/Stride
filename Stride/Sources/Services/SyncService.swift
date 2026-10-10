@@ -82,11 +82,24 @@ final class SyncService {
     enum Trigger {
         /// Sync Now, a sign-in, Erase's pre-erase sync: goes at once, backoff or not.
         case userInitiated
-        /// Launch and foreground (and M3's background refresh, and any post-edit sync): skipped
-        /// while the owner's backoff window is open.
+        /// Launch and foreground: skipped while the owner's backoff window is open.
         case automatic
+        /// 1.4.0's background runs — the BGAppRefreshTask and the sync after a notification
+        /// action (RELEASE-1.4.0.md D5): skipped inside the window like `.automatic`, and a run
+        /// that got no answer at all leaves no backoff and no `syncError` behind
+        /// (`SyncBackoffTrigger.recordsNoAnswer`).
+        case background
 
-        var backoff: SyncBackoffTrigger { self == .automatic ? .automatic : .manual }
+        /// An exhaustive switch, never `self == .automatic ? … : .manual`: that ternary mapped
+        /// any new case to Sync Now's rules without a warning (design review,
+        /// "background-trigger-silent-default").
+        var backoff: SyncBackoffTrigger {
+            switch self {
+            case .userInitiated: return .manual
+            case .automatic: return .automatic
+            case .background: return .background
+            }
+        }
     }
 
     private let lastSyncKey = SyncDeliveryMigration.lastSyncTimeKey
@@ -180,14 +193,15 @@ final class SyncService {
         // Claimed before the first suspension, so a caller that saw `isSyncing == false` and
         // calls in the same main-actor turn (syncAfterInFlight) is never the one turned away.
         guard !isSyncing else { return false }
-        // The fast path of the engine's own check (`SyncEngine.run(trigger:)`): an automatic sync
-        // inside the owner's window does not even flip `isSyncing`, so Settings shows no spinner
-        // for a sync that is not going to happen. Only while the owner is the one signed in: B
-        // signing into a device A owned may be about to adopt it (`settleOwner`), and A's window
-        // is not B's. The engine asks the same store again with the run's binding — the rule.
-        if trigger == .automatic, let owner = owners.owner,
+        // The fast path of the engine's own check (`SyncEngine.run(trigger:)`): an automatic or
+        // background sync inside the owner's window does not even flip `isSyncing`, so Settings
+        // shows no spinner for a sync that is not going to happen. Only while the owner is the one
+        // signed in: B signing into a device A owned may be about to adopt it (`settleOwner`), and
+        // A's window is not B's. The engine asks the same store again with the run's binding — the
+        // rule. `waitsOutWindow`, not `== .automatic`, so `.background` takes it too.
+        if trigger.backoff.waitsOutWindow, let owner = owners.owner,
            sessions.currentSyncSession()?.account.id == owner.id,
-           !backoffStore.mayRun(.automatic, ownerID: owner.id) {
+           !backoffStore.mayRun(trigger.backoff, ownerID: owner.id) {
             refreshBackoff()
             return false
         }
@@ -216,7 +230,7 @@ final class SyncService {
             strikes: strikes, marks: marks, recoveryLog: recoveryLog, backoff: backoffStore,
             report: report, bounds: bounds)
         let outcome = await engine.run(in: context, options: options, trigger: trigger.backoff)
-        return finish(outcome, transport: transport)
+        return finish(outcome, transport: transport, trigger: trigger)
     }
 
     /// Waits for a sync already in flight to finish, then runs one of its own and reports
@@ -239,7 +253,7 @@ final class SyncService {
     /// The run's outcome as UI state. The Settings footer keeps 1.3.0's wording: the server's
     /// sentence, or this build's own for the codes it knows (`APIError.displayMessage`) — never
     /// a raw code.
-    private func finish(_ outcome: SyncRunOutcome, transport: APISyncTransport) -> Bool {
+    private func finish(_ outcome: SyncRunOutcome, transport: APISyncTransport, trigger: Trigger) -> Bool {
         // The engine wrote the outcome to the store under the run's owner; mirror it. Not after
         // a run a sign-out ended: the engine wrote nothing for it, and `signedOut()` has just
         // cleared the mirror for a device that is now signed out.
@@ -277,8 +291,13 @@ final class SyncService {
                 // and the Settings sync section, both from `backoff` — and never as `syncError`
                 // (M2 answer table: 429 / 503 `sync_paused`; acceptance (9): "sync paused" and no
                 // error). The same test the two rows use, so the three places cannot disagree.
-                // Offline, other 5xx and a client bug keep 1.3.0's footer sentence.
-                if !SyncBackoffReason(kind, answer: answer).showsSyncPaused {
+                // Offline, other 5xx and a client bug keep 1.3.0's footer sentence — except a
+                // background run that got no answer: the engine recorded no window for it
+                // (`recordsNoAnswer`), and the footer would show iOS cutting the run short, as
+                // "cancelled", to a user who never asked for a sync (RELEASE-1.4.0.md D5).
+                let reason = SyncBackoffReason(kind, answer: answer)
+                let silentNoAnswer = reason == .offline && !trigger.backoff.recordsNoAnswer
+                if !reason.showsSyncPaused && !silentNoAnswer {
                     syncError = transport.displayMessage
                 }
             case .recoveryLogFailed, .localFailure:
