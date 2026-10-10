@@ -229,19 +229,27 @@ final class AccountSwitchTests: XCTestCase {
         await signIn("magic-B")
         let conflict = try conflict(after: sync.settleSignIn(in: context))
 
-        // Export a backup: the OWNER's account in the file, and A's rows in it.
-        let backup = sync.backupFile(for: conflict, container: container)
-        XCTAssertEqual(backup.account, BackupAccount(id: accountA.id, email: accountA.email))
-        let document = try DataBackup.decode(try DataExportService.backupJSONData(from: context, account: backup.account))
+        // Export a backup — written as the screen's button writes it: the OWNER's account in the
+        // file, and A's rows in it.
+        let exportRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("StrideAppTests-exports-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: exportRoot) }
+        let backup = sync.backupFile(for: conflict)
+        XCTAssertEqual(backup, .backup(account: BackupAccount(id: accountA.id, email: accountA.email)))
+        let backupFile = try await DataExportService.write(backup, container: container, sync: sync, in: exportRoot)
+        let document = try DataBackup.decode(try Data(contentsOf: backupFile.url))
         XCTAssertEqual(document.accountId, accountA.id)
         XCTAssertEqual(document.habits.map(\.name), ["A's habit"])
         // …and the recovery log, which has a line.
         XCTAssertEqual(sync.holdings(for: conflict, in: context),
                        SyncOwnerHoldings(habits: 1, checkIns: 1, groups: 0, queuedDeletions: 1, recoveredEdits: 1))
         let edits = sync.recoveredEditsFile(for: conflict)
-        XCTAssertEqual(edits.accountID, accountA.id)
-        let export = try SyncRecoveryLog.decodeExport(try recovery.log.exportData(accountID: edits.accountID))
+        XCTAssertEqual(edits, .recoveredEdits(accountID: accountA.id))
+        let editsFile = try await DataExportService.write(edits, container: container, sync: sync, in: exportRoot)
+        let export = try SyncRecoveryLog.decodeExport(try Data(contentsOf: editsFile.url))
+        XCTAssertEqual(export.accountId, accountA.id)
         XCTAssertEqual(export.items.count, 1)
+        XCTAssertEqual(editsFile.recoveredEditsTotal, 1)
         XCTAssertTrue(syncRequests.isEmpty, "exporting makes no request")
 
         let ran = await sync.startFromSignedInAccountsData(conflict, in: context)
@@ -956,6 +964,37 @@ final class AccountSwitchTests: XCTestCase {
         let again = try XCTUnwrap(DeleteAccountStep.current(auth: auth, sync: sync, hasLocalData: true))
         XCTAssertFalse(again.offersRecoveredEdits)
         XCTAssertTrue(again.offersBackup)
+    }
+
+    /// Delete My Account is bound to what was exported, as Clear and Erase are (1.4.0,
+    /// RELEASE-1.4.0.md D6). Export Recovered Edits in the step, then a sync archives a line: the
+    /// recheck refuses and rebuilds the step with the new count — and tapped again "as shown" it
+    /// used to go through, deleting the line the export never held. It refuses until the export
+    /// holds it.
+    func testDeleteAccountWaitsUntilTheExportHoldsEveryRecoveredEdit() async throws {
+        try seedAsStore()
+        await signIn("magic-A")
+        let exportRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("StrideAppTests-exports-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: exportRoot) }
+        let step = try XCTUnwrap(DeleteAccountStep.current(auth: auth, sync: sync, hasLocalData: true))
+        let exported = try await DataExportService.write(sync.recoveredEditsFile, container: container,
+                                                         sync: sync, in: exportRoot)
+        XCTAssertEqual(exported.recoveredEditsTotal, 1)
+        let row = DataBackup.snapshot(habits: [Habit(name: "Archived after the export")], groups: []).habits[0]
+        try recovery.log.append([SyncRecoveryItem(archivedAt: Date(), reason: .deletedElsewhere, row: .habit(row))],
+                                accountID: accountA.id)
+
+        let first = await step.recheck(sync: sync, context: context)
+        let rebuilt = try XCTUnwrap(first, "the total moved")
+        XCTAssertTrue(rebuilt.recoveredEditsChanged)
+        XCTAssertEqual(rebuilt.recoveredEditLines, 2)
+        let refusedAgain = await rebuilt.recheck(sync: sync, context: context)
+        XCTAssertNotNil(refusedAgain, "confirmed as shown, but the export holds 1 of the 2")
+
+        _ = try await DataExportService.write(sync.recoveredEditsFile, container: container, sync: sync, in: exportRoot)
+        let goAhead = await rebuilt.recheck(sync: sync, context: context)
+        XCTAssertNil(goAhead, "the export holds both")
     }
 
     /// B signed in over A's store (the account screen left without a choice): B's deletion

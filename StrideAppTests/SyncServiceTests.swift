@@ -718,7 +718,7 @@ final class SyncServiceTests: XCTestCase {
         XCTAssertEqual(export.accountId, owner)
         XCTAssertEqual(export.items.map(\.habit?.name), ["Edited offline"])
         XCTAssertEqual(export.items.first?.reason, .deletedElsewhere)
-        XCTAssertEqual(sync.recoveredEditsFile.accountID, owner)
+        XCTAssertEqual(sync.recoveredEditsFile, .recoveredEdits(accountID: owner))
         XCTAssertThrowsError(try DataBackup.decode(try sync.exportRecoveredEdits()), "not a backup")
 
         try sync.clearRecoveredEdits()
@@ -902,7 +902,8 @@ final class SyncServiceTests: XCTestCase {
     }
 
     /// A backup records the store's owner — signed in or not — so a restore can tell whose ids
-    /// the file carries. Settings' `BackupJSONFile(container:)` picks it up by default.
+    /// the file carries. Settings' Export as JSON (`ExportFile.ownerBackup`) names the same owner,
+    /// read at the tap (ExportTests).
     func testBackupsRecordTheStoresOwner() throws {
         owners.set(SyncOwner(SyncSession.accountA.account))
         let account = DataExportService.storeOwnerAccount(defaults: local.defaults)

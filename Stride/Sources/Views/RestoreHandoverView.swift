@@ -38,7 +38,7 @@ struct RestoreHandoverView: View {
 
                     if offersExport {
                         Section {
-                            RecoveredEditsShareLink(sync: sync)
+                            RecoveredEditsExportButton(sync: sync)
                                 .sweepAnchor("handoverExport")
                         }
                     }

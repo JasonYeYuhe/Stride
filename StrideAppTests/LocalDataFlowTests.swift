@@ -1,7 +1,5 @@
 import XCTest
 import SwiftData
-import CoreTransferable
-import UniformTypeIdentifiers
 @testable import Stride
 
 /// Erase Local Data and Restore from Backup as Settings runs them (DataExportService), against a
@@ -236,7 +234,7 @@ final class LocalDataFlowTests: XCTestCase {
     }
 
     /// Every export ever shared stayed in tmp, a deleted account's backup and recovered edits
-    /// included. The cleanup takes every export directory, and nothing else there.
+    /// included. The launch's cleanup takes every export directory, and nothing else there.
     func testRemovingExportFilesTakesEveryExportDirectoryAndNothingElse() throws {
         _ = try DataExportService.writeExportFile(Data("{}".utf8), named: "Stride-Backup-2026-09-29.json", in: exportRoot)
         _ = try DataExportService.writeExportFile(Data("[]".utf8), named: "Stride-RecoveredEdits-2026-09-29.json", in: exportRoot)
@@ -251,82 +249,24 @@ final class LocalDataFlowTests: XCTestCase {
         XCTAssertEqual(DataExportService.removeExportFiles(in: exportRoot), 0, "nothing left to do")
     }
 
-    /// Erase Local Data removes them with the data they copy.
-    func testAnEraseRemovesTheExportFiles() async throws {
+    /// Erase Local Data removes them with the data they copy — all but the exports of the last
+    /// ten minutes (1.4.0, RELEASE-1.4.0.md D6): a share of the backup just made of this data can
+    /// still be loading, and that file is the one copy of it. The deferred sweep takes those
+    /// later (ExportTests).
+    func testAnEraseRemovesTheExportFilesButTheLastTenMinutes() async throws {
         try seedStore()
         let auth = makeAuth()
-        _ = try DataExportService.writeExportFile(Data("{}".utf8), named: "Stride-Backup.json", in: exportRoot)
+        let old = try DataExportService.writeExportFile(Data("{}".utf8), named: "Stride-Backup.json", in: exportRoot)
+        let made = Date().addingTimeInterval(-(DataExportService.exportGracePeriod + 60))
+        try FileManager.default.setAttributes([.creationDate: made, .modificationDate: made],
+                                              ofItemAtPath: old.deletingLastPathComponent().path)
+        let fresh = try DataExportService.writeExportFile(Data("{}".utf8), named: "Stride-Backup.json", in: exportRoot)
 
         let outcome = await DataExportService.eraseLocalData(in: context, auth: auth, sync: sync, exportRoot: exportRoot)
 
         XCTAssertEqual(outcome, .erased)
-        XCTAssertEqual(exportDirectories(in: exportRoot), [])
-    }
-
-    /// The share sheet asks an item for its file several times, and each ask wrote a copy: three
-    /// directories for one tap. One item, one file — for the asks that arrive while it is being
-    /// written and just after — and a fresh one when the same item is shared again later.
-    func testOneShareWritesOneExportFile() async throws {
-        let memo = ExportFileMemo()
-        let writes = WriteCounter()
-        let root: URL = exportRoot
-        let write: @Sendable () async throws -> URL = {
-            await writes.bump()
-            try await Task.sleep(for: .milliseconds(50))   // the other asks arrive meanwhile
-            return try DataExportService.writeExportFile(Data("{}".utf8), named: "Stride-Backup.json", in: root)
-        }
-
-        async let first = memo.file(write: write)
-        async let second = memo.file(write: write)
-        async let third = memo.file(write: write)
-        let urls = try await [first, second, third]
-        let justAfter = try await memo.file(write: write)
-
-        XCTAssertEqual(Set(urls + [justAfter]).count, 1)
-        let count = await writes.count
-        XCTAssertEqual(count, 1)
-        XCTAssertEqual(exportDirectories(in: exportRoot).count, 1)
-
-        let later = try await memo.file(now: Date().addingTimeInterval(ExportFileMemo.reuseWindow + 1), write: write)
-        XCTAssertNotEqual(later, urls[0], "a share after the window gets today's data")
-        let afterWindow = await writes.count
-        XCTAssertEqual(afterWindow, 2)
-    }
-
-    /// A write that failed is not handed to the next ask: that one writes again.
-    func testAFailedExportWriteIsNotKept() async throws {
-        let memo = ExportFileMemo()
-        let root: URL = exportRoot
-        do {
-            _ = try await memo.file { throw CocoaError(.fileWriteOutOfSpace) }
-            XCTFail("the write's error is the ask's")
-        } catch {}
-        let url = try await memo.file {
-            try DataExportService.writeExportFile(Data("{}".utf8), named: "Stride-Backup.json", in: root)
-        }
-        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
-    }
-
-    /// The same through the real item and the real transfer path: three asks for one Export as
-    /// JSON, as the share sheet makes them, leave one directory in tmp, holding a backup of the
-    /// store.
-    func testThreeAsksForOneBackupItemWriteOneFile() async throws {
-        guard #available(iOS 18.2, *) else { throw XCTSkip("Transferable.exported(as:) is iOS 18.2+") }
-        try seedStore()
-        let tmp = FileManager.default.temporaryDirectory
-        let before = exportDirectories(in: tmp)
-        let item = BackupJSONFile(container: container, account: nil)
-
-        async let a = item.exported(as: .json)
-        async let b = item.exported(as: .json)
-        async let c = item.exported(as: .json)
-        let exports = try await [a, b, c]
-
-        let made = exportDirectories(in: tmp).subtracting(before)
-        defer { made.forEach { try? FileManager.default.removeItem(at: tmp.appendingPathComponent($0)) } }
-        XCTAssertEqual(made.count, 1)
-        XCTAssertEqual(Set(exports).count, 1, "one file, read three times")
-        XCTAssertEqual(try DataBackup.decode(exports[0]).habits.map(\.name), ["Read"])
+        XCTAssertEqual(exportDirectories(in: exportRoot), [fresh.deletingLastPathComponent().lastPathComponent])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fresh.path), "a share of it may still be loading")
     }
 
     // MARK: - Restore
@@ -382,10 +322,4 @@ final class LocalDataFlowTests: XCTestCase {
         try source.mainContext.save()
         return try DataBackup.snapshot(of: source.mainContext)
     }
-}
-
-/// How many times an export was written.
-private actor WriteCounter {
-    private(set) var count = 0
-    func bump() { count += 1 }
 }

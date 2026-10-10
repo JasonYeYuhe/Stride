@@ -497,26 +497,16 @@ struct SettingsView: View {
 
                 // Export Data
                 Section {
-                    // Transferable files holding only the container: nothing is serialised until
-                    // the user picks a destination. Two `let`s used to stand here, running the
-                    // CSV and the JSON export of the whole history on every render of this
-                    // screen — every sync tick, entitlement refresh and edit — on the main thread.
-                    // No `message:` on a file's ShareLink: the share sheet sends it as an item of
-                    // its own, and Save to Files wrote it beside the file as text.txt ("JSON export
-                    // of all habits", E2E S6). The subject is only a mail subject.
-                    ShareLink(
-                        item: HabitsCSVFile(container: modelContext.container),
-                        subject: Text("Stride Habits Export"),
-                        preview: SharePreview(DataExportService.fileName("Stride-Export", extension: "csv"))
-                    ) {
+                    // Written on the tap, then shared (ExportShareButton): nothing is serialised
+                    // until then. Two `let`s used to stand here, running the CSV and the JSON
+                    // export of the whole history on every render of this screen — every sync
+                    // tick, entitlement refresh and edit — on the main thread. The JSON names the
+                    // store's owner as the tap finds it (`ExportFile.ownerBackup`).
+                    ExportShareButton(.csv, sync: sync) {
                         Label("Export as CSV", systemImage: "tablecells")
                     }
 
-                    ShareLink(
-                        item: BackupJSONFile(container: modelContext.container),
-                        subject: Text("Stride Habits Export"),
-                        preview: SharePreview(DataExportService.fileName("Stride-Backup", extension: "json"))
-                    ) {
+                    ExportShareButton(.ownerBackup, sync: sync) {
                         Label("Export as JSON", systemImage: "curlybraces")
                     }
 
@@ -564,7 +554,7 @@ struct SettingsView: View {
                         // Offered first (phase C): the erase clears the recovered edits too, and
                         // they are the only copy of the edits a deletion took.
                         if recoveredEditLines > 0 {
-                            RecoveredEditsShareLink(sync: sync)
+                            RecoveredEditsExportButton(sync: sync)
                         }
                         Button(role: .destructive) {
                             eraseError = nil
@@ -1341,13 +1331,20 @@ struct DeleteAccountStep: Identifiable, Equatable {
     /// The rebuilt step reads the store again (`context`), not Continue's answer: the sync that
     /// archived the line can have emptied it — the habit it removed was the last one — and the
     /// updated sheet offered Export as JSON for an empty store (E2E S-DEL).
+    ///
+    /// Also bound to what was exported, as Clear and Erase are (1.4.0, RELEASE-1.4.0.md D6;
+    /// `SyncService.hasRecoveredEditsNotExported`): after one refusal the rebuilt step's total is
+    /// the new one, and the final button tapped again "as shown" deleted the line the export
+    /// before it never held. Once Export Recovered Edits has written this owner's file, the
+    /// deletion waits until the file holds everything the log does.
     @MainActor
     func recheck(sync: SyncService, context: ModelContext) async -> DeleteAccountStep? {
         guard erasesDevice else { return nil }
         await sync.waitUntilIdle()
         sync.refreshRecoveredEdits()
         let now = sync.recoveredEdits
-        guard now?.archivedTotal != recoveredEditTotal, now?.lines != 0 else { return nil }
+        let moved = now?.archivedTotal != recoveredEditTotal || sync.hasRecoveredEditsNotExported()
+        guard moved, now?.lines != 0 else { return nil }
         var step = DeleteAccountStep(email: email, erasesDevice: true,
                                      hasLocalData: Self.hasLocalData(in: context), recoveredEdits: now)
         step.recoveredEditsChanged = true
@@ -1387,8 +1384,6 @@ struct DeleteAccountView: View {
     let onDelete: () -> Void
     let onCancel: () -> Void
 
-    @Environment(\.modelContext) private var modelContext
-
     var body: some View {
         NavigationStack {
             ScrollViewReader { proxy in
@@ -1405,19 +1400,14 @@ struct DeleteAccountView: View {
                     if step.offersBackup || step.offersRecoveredEdits {
                         Section {
                             if step.offersBackup {
-                                // No `message:`: it went beside the file as text.txt (E2E S6; Settings'
-                                // Export Data rows).
-                                ShareLink(
-                                    item: BackupJSONFile(container: modelContext.container),
-                                    subject: Text("Stride Habits Export"),
-                                    preview: SharePreview(DataExportService.fileName("Stride-Backup", extension: "json"))
-                                ) {
+                                // Settings' Export as JSON: the owner's backup, written on the tap.
+                                ExportShareButton(.ownerBackup, sync: sync) {
                                     Label("Export as JSON", systemImage: "curlybraces")
                                 }
                                 .sweepAnchor("deleteExport")
                             }
                             if step.offersRecoveredEdits {
-                                RecoveredEditsShareLink(sync: sync)
+                                RecoveredEditsExportButton(sync: sync)
                                     .sweepAnchor("deleteRecoveredEdits")
                             }
                         } header: {

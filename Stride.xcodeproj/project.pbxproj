@@ -73,6 +73,7 @@
 		47F7CF4C1C8C31303323B131 /* HabitCheckIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADB968D6EC1637C4FCB0926B /* HabitCheckIn.swift */; };
 		491EFD24B5FCF55415EEE687 /* SyncEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2AA21D20C2CFD1CA9E087E51 /* SyncEngine.swift */; };
 		49320565D1FB566EFE9766E8 /* TodayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE8B83FBCDEE947B0A5A87D6 /* TodayView.swift */; };
+		4A39339F6542452BC12FCAB4 /* ExportShareButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58BB1FBCFBE4EA263B876F87 /* ExportShareButton.swift */; };
 		4B4ADE07E11E4960DE24489A /* SharedModelContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14E5DE1DF2EA723656AA788 /* SharedModelContainer.swift */; };
 		4BF29878BAB3689496013E81 /* StubServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB8F005CB15B0E4B6D7A17EC /* StubServer.swift */; };
 		4D79CE874EC7381C52D0E28C /* SyncTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC115BC5A06991EB0E415310 /* SyncTestSupport.swift */; };
@@ -91,6 +92,7 @@
 		57FB8DBC6B64D0A984C541CE /* SafeNumber.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73B1B4B0DC346BD90373C4E9 /* SafeNumber.swift */; };
 		58D29026143D8A6191A1C645 /* SyncStatusLineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E90FF42A77477CDD146DF98 /* SyncStatusLineTests.swift */; };
 		5975999B57F7C355B09B09C1 /* Localizable.stringsdict in Resources */ = {isa = PBXBuildFile; fileRef = 998C891A4897F219A5F71B6F /* Localizable.stringsdict */; };
+		5B1235B281CCB333EA962D65 /* ExportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AD3F654A9919B048116A13A /* ExportTests.swift */; };
 		5E5B009C1F090EB65FAD41A7 /* SyncReconciler.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB59FC2420F0C656244B3006 /* SyncReconciler.swift */; };
 		5F8D05D07A7CCD0CC156A085 /* NotificationRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B58F8D005EDDA647327B621 /* NotificationRouter.swift */; };
 		5F91276ED5FCCCDAFB65152D /* StrideWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E29D464DF830B44A56221444 /* StrideWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -137,6 +139,7 @@
 		8BCAFA64DEFDBDE435A02539 /* HabitCheckIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADB968D6EC1637C4FCB0926B /* HabitCheckIn.swift */; };
 		8C2BC8E0234FD97251CB131D /* TodayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE8B83FBCDEE947B0A5A87D6 /* TodayView.swift */; };
 		8CE9D355B0142547201A2DAA /* LocalDataFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 959D8F9B20752F9970811A22 /* LocalDataFlowTests.swift */; };
+		8DF378A2C3945B9AEBFE3C35 /* ExportShareButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58BB1FBCFBE4EA263B876F87 /* ExportShareButton.swift */; };
 		8E5CCF2F3A8F4FDA86E69D6D /* ReminderDayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A8E200F35F79D42B56503CD /* ReminderDayTests.swift */; };
 		8FE99328F2A7D34250AF0C50 /* ShellTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDB7EA5A81A91D86F79290E0 /* ShellTab.swift */; };
 		90BF0156D4594CBBEB6564EE /* ReminderPlan.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F157FDCAEB26F8B19CFC923 /* ReminderPlan.swift */; };
@@ -278,6 +281,7 @@
 		04887DC67719E64FB9EBC39E /* ko */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ko; path = ko.lproj/Localizable.strings; sourceTree = "<group>"; };
 		087B83A743EB0D6A9DD29F50 /* StrideMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = StrideMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		094FF22CE3EB3D7DB55020FA /* SyncPushPlannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncPushPlannerTests.swift; sourceTree = "<group>"; };
+		0AD3F654A9919B048116A13A /* ExportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportTests.swift; sourceTree = "<group>"; };
 		0B0FADDB35158E7A8EFD42A6 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		0B38E0EF5EB45D0A23BFEED9 /* ShellTabTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellTabTests.swift; sourceTree = "<group>"; };
 		0DA2E26F53AB0CCF80DEBF10 /* ColorExtensionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColorExtensionTests.swift; sourceTree = "<group>"; };
@@ -319,6 +323,7 @@
 		4F6FB4858E9419D020CD5CB9 /* ReminderPlanTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReminderPlanTests.swift; sourceTree = "<group>"; };
 		5771B2205EFDB2CB243D6658 /* Stride.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Stride.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		57E8AF7596BAD4790E235C6A /* SentryBootstrap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SentryBootstrap.swift; sourceTree = "<group>"; };
+		58BB1FBCFBE4EA263B876F87 /* ExportShareButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportShareButton.swift; sourceTree = "<group>"; };
 		5915E3575E09B02B6B55488D /* StoreService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreService.swift; sourceTree = "<group>"; };
 		5B682B16F25BD18C8AABF82E /* SyncAnswers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncAnswers.swift; sourceTree = "<group>"; };
 		5F157FDCAEB26F8B19CFC923 /* ReminderPlan.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReminderPlan.swift; sourceTree = "<group>"; };
@@ -510,6 +515,7 @@
 				F9EC22B142B1C3374C6ACA00 /* AccountSwitchView.swift */,
 				14E65DB3F54110A255BF1E2C /* AddHabitView.swift */,
 				4BF44B6E74C40A2F7E664752 /* ContentView.swift */,
+				58BB1FBCFBE4EA263B876F87 /* ExportShareButton.swift */,
 				48E2B457B97506287B51D6F1 /* HabitTemplatesView.swift */,
 				846D324A474DC86FFFE7DCA4 /* LoginView.swift */,
 				0B0FADDB35158E7A8EFD42A6 /* OnboardingView.swift */,
@@ -637,6 +643,7 @@
 				76B8B502CABD16031877AF12 /* AppLocalizedTests.swift */,
 				87EBFD93F5E7421D2855B6A1 /* AuthServiceTests.swift */,
 				BE47992EED0D097FEF067860 /* BackgroundSyncTests.swift */,
+				0AD3F654A9919B048116A13A /* ExportTests.swift */,
 				959D8F9B20752F9970811A22 /* LocalDataFlowTests.swift */,
 				B4201CA17BA28A6E53121CB3 /* NotificationActionHandlerTests.swift */,
 				3F54DD53A85952D6DB6D05AC /* NotificationServiceTests.swift */,
@@ -870,6 +877,7 @@
 				FC4CDDD4154DB2A11EBC9BA5 /* DataExportService.swift in Sources */,
 				9995D7D5CEC5A4557861E51F /* DateHelpers.swift in Sources */,
 				920226718B3C4CA29FCA2468 /* DemoData.swift in Sources */,
+				4A39339F6542452BC12FCAB4 /* ExportShareButton.swift in Sources */,
 				02B02C365D766A86738F7090 /* Habit.swift in Sources */,
 				CCB78F6B90D5EB4178299BBE /* HabitCheckIn.swift in Sources */,
 				67E694E85ABCB88CF15DC769 /* HabitTemplatesView.swift in Sources */,
@@ -1039,6 +1047,7 @@
 				DD058608BADEAEFA4F277F04 /* DataExportService.swift in Sources */,
 				89F8FBB3F8C3D34C195C5457 /* DateHelpers.swift in Sources */,
 				D976D47EBECE4A502DCC8610 /* DemoData.swift in Sources */,
+				8DF378A2C3945B9AEBFE3C35 /* ExportShareButton.swift in Sources */,
 				C6A2CDBD665C9C2D0C2AD813 /* Habit.swift in Sources */,
 				8BCAFA64DEFDBDE435A02539 /* HabitCheckIn.swift in Sources */,
 				63AE8BA4D976A6C9F7919E7A /* HabitTemplatesView.swift in Sources */,
@@ -1095,6 +1104,7 @@
 				97ACD1D47F57A2DF63BCBDE0 /* AppLocalizedTests.swift in Sources */,
 				78CE5838D6D4BF11DB7E8A03 /* AuthServiceTests.swift in Sources */,
 				F476204C7651428F1C782DBA /* BackgroundSyncTests.swift in Sources */,
+				5B1235B281CCB333EA962D65 /* ExportTests.swift in Sources */,
 				8CE9D355B0142547201A2DAA /* LocalDataFlowTests.swift in Sources */,
 				B2448DA585773A634E8356EF /* NotificationActionHandlerTests.swift in Sources */,
 				13B2134CFB1BA48CBBA87A8D /* NotificationServiceTests.swift in Sources */,

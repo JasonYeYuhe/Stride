@@ -370,6 +370,10 @@ downgraded, 3 refuted. Everything below is the revised design. The adopted findi
     with copy semantics (`fileOptions: []`). Every receiver gets its own copy, as 1.3.x's
     `SentTransferredFile` gave, so a later cleanup can never cut off an AirDrop in flight. No text
     item, so no text.txt.
+    - As built (W4): the provider goes in through `UIActivityItemsConfiguration(itemProviders:)`
+      (`UIActivityViewController(activityItemsConfiguration:)`, iOS 14), the documented way to hand
+      the sheet item providers. The ShareLinks' `subject: "Stride Habits Export"` (a Mail subject
+      only) is not carried over: no metadata is set, so nothing beside the file can turn into text.
     - It is presented from the anchor's own view controller, after checking **at presentation
       time** that the anchor is still in a window and that the controller presents nothing.
       Otherwise the share is dropped quietly.
@@ -382,6 +386,10 @@ downgraded, 3 refuted. Everything below is the revised design. The adopted findi
 - **Cleanup.**
   - The erase paths (Erase, Start from this account's data, account deletion) sweep only export
     folders older than 10 minutes, then schedule one deferred full sweep.
+    - As built (W4): the deferred sweep runs 10 min + 5 s after the erase and itself spares the
+      last 10 minutes. Everything that existed at the erase is past the window by then, so it is
+      all taken, as a full sweep would; an export made after the erase (the new account's backup
+      after Start, say) keeps its own window instead of being swept seconds after it was written.
   - The launch sweep still removes everything.
   - The two premise comments are updated.
 - **Recovered edits: Clear and Erase are bound to what was exported.**
@@ -389,6 +397,12 @@ downgraded, 3 refuted. Everything below is the revised design. The adopted findi
   - If Clear or Erase is confirmed while the current total is above it, the existing "New
     recovered edits arrived. Export them, then try again." path runs instead of clearing. One
     line archived between the export and the confirmation can no longer be deleted unexported.
+  - As built (W4): remembered in memory on `SyncService`, when the file is written (no share sheet
+    reliably reports delivery), and forgotten whenever that owner's log is cleared. With no export
+    remembered, Clear and Erase keep 1.3.1's rule (bound to the confirmation's total): clearing
+    without exporting stays the user's choice, which both confirmations put to them. Delete
+    Account's `recheck` is bound the same way: after one refusal its rebuilt step carried the new
+    total, and the final button tapped again deleted the line the export never held.
 - **Removed:** `ExportFileMemo` and the three lazy Transferables, together with their tests in the
   same commit. They are replaced by writer tests: one call → one file that decodes, the conflict
   owner recorded, the recovered-edits account id, and a failed write leaves nothing.

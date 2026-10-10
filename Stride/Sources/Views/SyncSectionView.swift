@@ -388,7 +388,7 @@ struct SyncSectionView: View {
         .accessibilityElement(children: .combine)
         .sweepAnchor("syncRecovered")
 
-        RecoveredEditsShareLink(sync: sync)
+        RecoveredEditsExportButton(sync: sync)
 
         Button(role: .destructive) {
             actionError = nil
@@ -526,23 +526,6 @@ struct SyncSectionView: View {
         let message = appLocalized("Unable to save changes. Please try again.")
         actionError = message
         AccessibilityNotification.Announcement(message).post()
-    }
-}
-
-/// "Export Recovered Edits": the owner's recovery log as a `.json` file
-/// (`RecoveredEditsJSONFile`, written only when a destination is picked). Shared by the sync
-/// section, Erase Local Data (offered before the erase, which hides the lines until that account
-/// owns the store again) and the restore hand-over.
-struct RecoveredEditsShareLink: View {
-    let sync: SyncService
-
-    var body: some View {
-        ShareLink(
-            item: sync.recoveredEditsFile,
-            preview: SharePreview(DataExportService.fileName("Stride-RecoveredEdits", extension: "json"))
-        ) {
-            Label("Export Recovered Edits", systemImage: "square.and.arrow.up")
-        }
     }
 }
 
