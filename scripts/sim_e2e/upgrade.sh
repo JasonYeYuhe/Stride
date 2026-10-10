@@ -3,7 +3,9 @@
 #            [--reminders <daily habit id>,<Mon/Wed/Fri habit id>]
 #                                RELEASE GATE: one in-place upgrade on a simulator, checked.
 # upgrade.sh check-log <device log>     the device-log check alone, on a saved log
-# upgrade.sh check-gate <device log>    the store-gate order alone (no widget open before the app's)
+# upgrade.sh check-gate <device log> [<marker before>]
+#                                       the store-gate order alone (no widget open before the app's,
+#                                       unless at the schema the old build had already marked)
 # upgrade.sh check-dir <dir>            the default.store check alone, on a directory
 # upgrade.sh counts <store dir | file>  row counts of a saved store (read from a scratch copy)
 # upgrade.sh prefs <plist | plutil -p listing>
@@ -42,10 +44,17 @@
 #        - the store gate (the upgrade-race fix, review round): in the device log, no widget
 #          "Store opened in the extension" before the app's "Store opened by the app", and how
 #          often the widget was turned away before it ("Store not opened in the extension: …");
-#          then the marker the app wrote, stride_store_schema_version in the App Group prefs;
+#          then the marker the app wrote, stride_store_schema_version in the App Group prefs.
+#          From an old build that has the gate itself (1.3.1+), the App Group prefs saved before
+#          the install (group-prefs-before.txt) already hold the marker: a widget open BEFORE the
+#          app's, at that same schema, is what the gate allows (the store is at the widget's
+#          schema; nothing is pending to race), so it is a NOTE — unless the app then migrated
+#          the store after all (the model checksum changed), which still fails;
 #        - the delivery marks: when the old store had rows 5+ min older than the old app's last
 #          sync (SyncDeliveryMigration.margin), the migration must have marked them — marks still
-#          waiting in the prefs, or a first full pull with ?deletionsSince= in the server log;
+#          waiting in the prefs, or a first full pull with ?deletionsSince= in the server log.
+#          From an old build that already ran it (stride_delivery_migration_v1_done in
+#          prefs-before.txt: 1.3.1+), this launch runs nothing and marks nothing: a NOTE;
 #        - recovered edits: lines in the data container's SyncRecoveryLog. The gate's scenario
 #          makes no edit on the upgraded device, so any line is a row pushed back that was deleted
 #          elsewhere — the U123 relaunch's 17.
@@ -129,11 +138,20 @@ check_log() {
 # open (which writes the marker first). Prints what the gate did; returns 3 when the widget opened
 # first, or the widget asked but the app never logged its open. Sets GATE_BUILD=1 when the log
 # has any gate line (a build with the gate, which must also have written the marker).
+#
+# <marker before>: stride_store_schema_version as the OLD build left it in the App Group prefs
+# (1.3.1+ writes it). A widget open before the app's, at exactly that schema, is the gate letting
+# the widget in on a store already at its schema — no migration pending for it to race — so it
+# is noted, not failed (GATE_EXCUSED=1; the run still fails it if the app then migrated the store).
+# Until the fix pass every such open failed, and every upgrade from v1.3.1 with a widget was a
+# false FAIL (E2E 2026-10-11, upgrades/e1-131to140-widget).
 GATE_BUILD=0
+GATE_EXCUSED=0
 check_gate() {
-  local log="$1" lines app ext waits before after
+  local log="$1" prev="${2:-}" lines app ext ext_schema waits before after
   [[ -f "$log" ]] || die "no device log at $log"
   GATE_BUILD=0
+  GATE_EXCUSED=0
   lines="$(grep -nE "$APP_OPEN_RE|$EXT_OPEN_RE|$EXT_WAIT_RE" "$log" || true)"
   if [[ -z "$lines" ]]; then
     echo "store gate: no gate line in the device log (a build before the schema gate)"
@@ -150,17 +168,28 @@ check_gate() {
   echo "store gate: the app opened the store and wrote the marker at log line $app:"
   sed -n "${app}p" "$log" | cut -c1-320 | sed 's/^/  /'
   if [[ -n "$ext" && "$ext" -lt "$app" ]]; then
-    echo "store gate: THE WIDGET OPENED THE STORE FIRST, at line $ext — the U123 race window:"
-    sed -n "${ext}p" "$log" | cut -c1-320 | sed 's/^/  /'
-    return 3
+    ext_schema="$(sed -n "${ext}s/.*Store opened in the extension at schema \([0-9][0-9]*\).*/\1/p" "$log")"
+    if [[ -n "$prev" && "$ext_schema" == "$prev" ]]; then
+      echo "NOTE: the widget opened the store before the app, at line $ext, at schema $ext_schema — the marker the old build had already written (stride_store_schema_version = $prev before the install). The gate lets the widget in at the store's own schema: no migration was pending for it to race (the model checksum is checked below):"
+      sed -n "${ext}p" "$log" | cut -c1-320 | sed 's/^/  /'
+      GATE_EXCUSED=1
+    else
+      echo "store gate: THE WIDGET OPENED THE STORE FIRST, at line $ext — the U123 race window${prev:+ (marker before the install: $prev; the widget opened at schema ${ext_schema:-?})}:"
+      sed -n "${ext}p" "$log" | cut -c1-320 | sed 's/^/  /'
+      return 3
+    fi
   fi
   waits="$(awk -v app="$app" -v re="$EXT_WAIT_RE" 'NR < app && $0 ~ re { sub(/.*Store not opened in the extension: /, ""); print }' "$log" | sort | uniq -c | sed 's/^ *//' || true)"
   if [[ -n "$waits" ]]; then
     echo "store gate: the widget was turned away before the app's open: $(tr '\n' ',' <<<"$waits" | sed 's/,$//; s/,/, /g')"
+  elif [[ $GATE_EXCUSED -eq 1 ]]; then
+    echo "store gate: the widget was let in at once: the marker was already there"
   else
     echo "NOTE: the widget asked for nothing before the app's open, so the gate was not exercised — only the extension's launch was. Place a Stride widget on the home screen for that (README)."
   fi
-  if [[ -n "$ext" ]]; then
+  if [[ $GATE_EXCUSED -eq 1 ]]; then
+    :
+  elif [[ -n "$ext" ]]; then
     echo "store gate: the widget opened the store after the app's open, at line $ext"
   else
     echo "NOTE: no widget open after the app's open (no Stride widget on the home screen, or none reloaded within the wait)"
@@ -412,8 +441,9 @@ case "${1:-}" in
     check_log "$2" || RC=$?
     exit $RC ;;
   check-gate)
-    [[ -n "${2:-}" ]] || die "usage: upgrade.sh check-gate <device log>"
-    check_gate "$2" || RC=$?
+    [[ -n "${2:-}" ]] || die "usage: upgrade.sh check-gate <device log> [<schema marker before the install>]"
+    [[ -z "${3:-}" || "${3:-}" =~ ^[0-9]+$ ]] || die "check-gate: the marker before the install is a number (got '$3')"
+    check_gate "$2" "${3:-}" || RC=$?
     exit $RC ;;
   check-dir)
     [[ -n "${2:-}" ]] || die "usage: upgrade.sh check-dir <dir>"
@@ -437,7 +467,7 @@ case "${1:-}" in
     rm -f "$L"
     exit $RC ;;
   ""|-h|--help)
-    die "usage: upgrade.sh <udid> <old app> <new app> [--wait <s>] [--server <name>] [--label <name>] [--relaunch] [--reminders <daily id>,<M/W/F id>] | check-log <log> | check-gate <log> | check-dir <dir> | counts <store> | prefs <plist> | check-reminders <listing|dir> <daily id>,<M/W/F id>" ;;
+    die "usage: upgrade.sh <udid> <old app> <new app> [--wait <s>] [--server <name>] [--label <name>] [--relaunch] [--reminders <daily id>,<M/W/F id>] | check-log <log> | check-gate <log> [<marker before>] | check-dir <dir> | counts <store> | prefs <plist> | check-reminders <listing|dir> <daily id>,<M/W/F id>" ;;
 esac
 
 # ── The run ─────────────────────────────────────────────────────────────────────────────────
@@ -497,7 +527,7 @@ copy_store() {
 
 run() {
   local installed grp grp2 data t0 mark="" log="" pid fail="" ck_before ck_after last_sync="" qualify edits_before edits marker mark2
-  local try rem_ok
+  local try rem_ok marker_before="" migrated_before=0 gate_text marks_text
   echo "upgrade.sh: $OLD_V → $NEW_V on $DEV ($UDID), evidence in $OUT"
 
   section "starting point"
@@ -521,13 +551,31 @@ run() {
   else
     echo "NOTE: no prefs plist before the upgrade ($(tail -1 "$OUT/prefs-before.txt"))"
   fi
+  # What the old build already did: a 1.3.1+ build ran the delivery migration on its own first
+  # launch and writes the store gate's marker on every open. Saved before the install, so the
+  # checks below can tell the new build's work from the old one's.
+  if grep -Eq '"stride_delivery_migration_v1_done" => (1|true)' "$OUT/prefs-before.txt" 2>/dev/null; then
+    migrated_before=1
+  fi
+  if "$APP_SH" prefs "$UDID" group >"$OUT/group-prefs-before.txt" 2>&1; then
+    marker_before="$(sed -n 's/^ *"stride_store_schema_version" => \([0-9][0-9]*\)$/\1/p' "$OUT/group-prefs-before.txt")"
+  fi
+  if [[ -n "$marker_before" ]]; then
+    echo "App Group marker before the install: stride_store_schema_version = $marker_before (the old build has the store gate)"
+  else
+    echo "App Group marker before the install: none (a build before the store gate)"
+  fi
   store_sha1 "$grp" >"$OUT/sha1-before.txt"
   copy_store "$grp" "$OUT/before"
   echo "Stride.store (copied to before/):"
   sed 's/^/  sha1 /' "$OUT/sha1-before.txt"
   echo "  $(store_counts "$OUT/before/Stride.store")"
   qualify="$(qualifying_rows "$OUT/before/Stride.store" "$last_sync")"
-  echo "  rows the delivery migration must mark (5+ min before the last sync${last_sync:+, $last_sync}): $qualify"
+  if [[ $migrated_before -eq 1 ]]; then
+    echo "  rows 5+ min before the last sync${last_sync:+ ($last_sync)}: $qualify — the old build already ran the delivery migration (stride_delivery_migration_v1_done), so none is this launch's to mark"
+  else
+    echo "  rows the delivery migration must mark (5+ min before the last sync${last_sync:+, $last_sync}): $qualify"
+  fi
   edits_before="$(recovered_edits "$data")"
   if [[ -n "$REM_DAILY" ]]; then
     # Read while the old build's requests are all there is. The stores live outside the app's
@@ -576,7 +624,7 @@ run() {
   check_log "$OUT/devicelog.txt" || fail="$fail; a failed store open in the device log (CoreData 134110/134100, the fallback, or the error screen)"
 
   section "store gate (devicelog.txt, group-prefs-after.txt)"
-  check_gate "$OUT/devicelog.txt" || fail="$fail; the widget opened the store before the app had (the U123 race window)"
+  check_gate "$OUT/devicelog.txt" "$marker_before" || fail="$fail; the widget opened the store before the app had (the U123 race window)"
   "$APP_SH" prefs "$UDID" group >"$OUT/group-prefs-after.txt" 2>&1 || true
   marker="$(sed -n 's/^ *"stride_store_schema_version" => \([0-9][0-9]*\)$/\1/p' "$OUT/group-prefs-after.txt")"
   if [[ -n "$marker" ]]; then
@@ -606,6 +654,10 @@ run() {
     echo "model checksum unchanged: the new app did not migrate Stride.store (right only when the release changes no model)"
   else
     echo "model checksum changed: Stride.store was migrated"
+    if [[ $GATE_EXCUSED -eq 1 ]]; then
+      echo "  — and the widget had opened it before the app, at the old schema: THE U123 RACE WINDOW after all"
+      fail="$fail; the widget opened the store before the app had, which then migrated it (the U123 race window)"
+    fi
   fi
 
   section "prefs after the first launch (prefs-after.txt)"
@@ -623,7 +675,9 @@ run() {
   fi
 
   section "delivery marks"
-  if [[ "$qualify" == "?" ]]; then
+  if [[ $migrated_before -eq 1 ]]; then
+    echo "NOTE: the old build had already run the delivery migration (stride_delivery_migration_v1_done in prefs-before.txt): this launch runs none and marks nothing; the $qualify row(s) older than its last sync were the old build's to mark, and a synced 1.3.1 store has proved them"
+  elif [[ "$qualify" == "?" ]]; then
     echo "NOTE: could not count the rows the migration must mark (no last sync in the old prefs, or a store without stamps)"
   elif [[ "$qualify" -eq 0 ]]; then
     echo "no row was 5+ min older than the old app's last sync: the migration has nothing to mark"
@@ -703,9 +757,15 @@ run() {
   section "verdict"
   if [[ -n "$fail" ]]; then
     echo "FAIL: $OLD_V → $NEW_V on $DEV: ${fail#; }."
+    # Only an actual failed open is called one: the report used to say "did not open Stride.store"
+    # for a widget-first or unmarked-rows fail too, with "Store opened by the app" in the log.
     case "$fail" in
-      *default.store*|*"failed store open"*|*"before the app had"*|*"marked none"*|*"recovered edit"*)
+      *default.store*|*"failed store open"*)
         echo "The first launch after the upgrade did not open Stride.store: an App Store update would show the user an empty app (the fallback, then a whole-store push on the next launch, E2E U123) or the store error screen, not their habits." ;;
+    esac
+    case "$fail" in
+      *"before the app had"*|*"marked none"*|*"recovered edit"*)
+        echo "A sign of the upgrade race (E2E U123), whether or not the store opened: a widget open that could race the app's migration, rows the delivery migration left unmarked (the next full pull can archive rows deleted elsewhere), or rows pushed back that were deleted elsewhere." ;;
     esac
     case "$fail" in
       *"reminders were not converted"*)
@@ -714,7 +774,11 @@ run() {
     echo "Evidence: $OUT"
     return 3
   fi
-  echo "PASS: $OLD_V → $NEW_V on $DEV: the first launch opened Stride.store; no failed open in the device log, no default.store, no widget open before the app's, no unmarked rows, no recovered edits${REM_DAILY:+; the reminders converted (.2 .4 .6 for the M/W/F habit, the daily bare id kept, both categories registered)}. Evidence: $OUT"
+  gate_text="no widget open before the app's"
+  [[ $GATE_EXCUSED -eq 1 ]] && gate_text="the widget opened only at the schema the old build had marked (no migration to race)"
+  marks_text="no unmarked rows"
+  [[ $migrated_before -eq 1 ]] && marks_text="the delivery migration already the old build's"
+  echo "PASS: $OLD_V → $NEW_V on $DEV: the first launch opened Stride.store; no failed open in the device log, no default.store, $gate_text, $marks_text, no recovered edits${REM_DAILY:+; the reminders converted (.2 .4 .6 for the M/W/F habit, the daily bare id kept, both categories registered)}. Evidence: $OUT"
 }
 
 run 2>&1 | tee "$OUT/report.txt"

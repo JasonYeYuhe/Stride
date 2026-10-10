@@ -30,6 +30,9 @@ cat >"$T/bin/xcrun" <<'STUB'
 # line per launch: the app's arguments), pushes/<n>.json (every simctl push payload),
 # launches = one action per launch: silent | session:<line suffix> | crash | fallback |
 # gate | gate-nomarker | gate-nomarks | gate-proved | widget-first | edits |
+# gate131 | gate131-migrated (a 1.3.1 → 1.4.0 upgrade: the old build already wrote the marker and
+# ran the delivery migration, so the widget opens first at the store's own schema and nothing is
+# marked; -migrated also swaps the store for one with another model checksum) |
 # un:<fixture> (the notification stores become $FAKE_UN_FIXTURES/<fixture>)).
 # push checks its payload like a reminder: aps.alert always; aps.category present, and equal to
 # stride.habit.$FAKE_PUSH_KIND when that is binary or count; absent when it is none (exit 97).
@@ -120,6 +123,16 @@ LOG
           [[ -f "$G" ]] || plutil -create xml1 "$G"
           plutil -replace stride_store_schema_version -integer 1 "$G"
         fi ;;
+      gate131|gate131-migrated)
+        # The real 1.3.1 → 1.4.0 log (E2E 2026-10-11, upgrades/e1-131to140-widget): the marker was
+        # already 1, so the widget is let in before the app's open; no new marks.
+        echo "2026-10-11 02:25:44.141 Df StrideWidgetExtension[7:8] [yyh.stride.habittracker:ModelContainer] Store opened in the extension at schema 1" >>"$F/device.log"
+        echo "2026-10-11 02:25:44.779 Df Stride[9:10] [yyh.stride.habittracker:ModelContainer] Store opened by the app: marker 1 written, widgets reloaded" >>"$F/device.log"
+        mkdir -p "$F/group/Library/Preferences"
+        G="$F/group/Library/Preferences/group.yyh.stride.habittracker.plist"
+        [[ -f "$G" ]] || plutil -create xml1 "$G"
+        plutil -replace stride_store_schema_version -integer 1 "$G"
+        if [[ "$action" == gate131-migrated ]]; then cp "$FAKE_EMPTY_STORE" "$F/group/Stride.store"; fi ;;
       edits)
         # Rows pushed back and answered tombstoned: the U123 relaunch's Recovered Edits.
         mkdir -p "$F/data/Library/Application Support/SyncRecoveryLog"
@@ -172,6 +185,7 @@ make_app() {  # make_app <dir> <version> <build>
 make_app "$T/apps/123/Stride.app" 1.2.3 17
 make_app "$T/apps/130/Stride.app" 1.3.0 19
 make_app "$T/apps/131/Stride.app" 1.3.1 20
+make_app "$T/apps/140/Stride.app" 1.4.0 22
 
 make_store() {  # make_store <file> <checksum> <habits> <records> [syncedAt-column]
   local f="$1" i
@@ -322,13 +336,19 @@ export STRIDE_E2E_REMINDER_TRIES=2 STRIDE_E2E_REMINDER_PAUSE=0
 export PATH="$T/bin:$PATH"
 
 # A fresh fake device: <installed app> [launch actions…]; the group holds the old store. No
-# notification store until un_install puts one there.
+# notification store until un_install puts one there. PREFS_FIXTURE: the app's prefs (default
+# fixtures/prefs.plist); GROUP_MARKER: a stride_store_schema_version the old build already wrote.
 device() {
   local app="$1"; shift
   rm_under_root "$FAKE"
   mkdir -p "$FAKE/group" "$FAKE/data/Library/Preferences" "$FAKE/devdata/Library"
   cp "${STORE_FIXTURE:-$T/fixtures/old.store}" "$FAKE/group/Stride.store"
-  cp "$T/fixtures/prefs.plist" "$FAKE/data/Library/Preferences/$BUNDLE_ID.plist"
+  cp "${PREFS_FIXTURE:-$T/fixtures/prefs.plist}" "$FAKE/data/Library/Preferences/$BUNDLE_ID.plist"
+  if [[ -n "${GROUP_MARKER:-}" ]]; then
+    mkdir -p "$FAKE/group/Library/Preferences"
+    plutil -create xml1 "$FAKE/group/Library/Preferences/group.yyh.stride.habittracker.plist"
+    plutil -insert stride_store_schema_version -integer "$GROUP_MARKER" "$FAKE/group/Library/Preferences/group.yyh.stride.habittracker.plist"
+  fi
   echo "$app" >"$FAKE/installed"
   : >"$FAKE/calls"; : >"$FAKE/device.log"; : >"$FAKE/launches"; : >"$FAKE/launch-args"
   echo "2026-10-07 02:09:13.395 Df Stride[39751:859c8e] [com.apple.xpc:connection] activating connection" >"$FAKE/device.log"
@@ -365,6 +385,8 @@ expect() {
 NEW="$T/apps/131/Stride.app"
 OLD130="$T/apps/130/Stride.app"
 OLD123="$T/apps/123/Stride.app"
+OLD131="$NEW"
+NEW140="$T/apps/140/Stride.app"
 
 for f in "$KIT"/*.sh; do expect "bash -n $(basename "$f")" 0 "" /bin/bash -n "$f"; done
 if [[ -n "$NODE" ]]; then
@@ -456,6 +478,12 @@ printf '%s\n' \
   >"$T/fixtures/gate-first.log"
 expect "check-gate: the widget's open before the app's fails" 3 "THE WIDGET OPENED THE STORE FIRST" \
   "$KIT/upgrade.sh" check-gate "$T/fixtures/gate-first.log"
+# From a build with the gate (1.3.1+), the marker was already there: the widget is let in at the
+# store's own schema, which is a note (fix pass: every 1.3.1 → 1.4.0 run was a false FAIL).
+expect "check-gate: the widget first, at the marker the old build wrote: a note" 0 "NOTE: the widget opened the store before the app, .*at schema 1 — the marker the old build had already written" \
+  "$KIT/upgrade.sh" check-gate "$T/fixtures/gate-first.log" 1
+expect "check-gate: the widget first, at a schema the old marker does not name: fails" 3 "THE WIDGET OPENED THE STORE FIRST.*marker before the install: 2" \
+  "$KIT/upgrade.sh" check-gate "$T/fixtures/gate-first.log" 2
 echo "2026-10-07 04:00:01.100 Df StrideWidgetExtension[7:8] $G Store not opened in the extension: waitForApp(noMarker)" \
   >"$T/fixtures/gate-noapp.log"
 expect "check-gate: the widget asked, the app never opened: fails" 3 "never logged its open" \
@@ -489,6 +517,28 @@ expect "upgrade: the marks' proof already ran (?deletionsSince= in the first pul
 device "$OLD130" gate edits
 expect "upgrade --relaunch: recovered edits on the relaunch: FAIL" 3 "^FAIL: .*2 recovered edit\(s\) after the relaunch" \
   "$KIT/upgrade.sh" pro "$OLD130" "$NEW" --wait 0 --server st --label gate-edits --relaunch
+# Only an actual failed open is called one (fix pass): the widget-first FAIL above opened the store.
+expect "upgrade: a widget-first FAIL does not say the store failed to open" 1 "" \
+  grep -q "did not open Stride.store" "$T/root/upgrades/widget-first/report.txt"
+expect "upgrade: a fallback FAIL does" 0 "" grep -q "did not open Stride.store" "$T/root/upgrades/fail/report.txt"
+
+# From 1.3.1 (fix pass; E2E 2026-10-11, upgrades/e1-131to140-widget): the old build wrote the
+# marker and ran the delivery migration, the model is unchanged. The widget opening first at that
+# schema and no marks are notes, not the U123 signatures they were reported as.
+export PREFS_FIXTURE="$T/fixtures/prefs-done.plist" GROUP_MARKER=1
+device "$OLD131" gate131
+expect "upgrade from 1.3.1: widget first at the old marker, migration already done: PASS" 0 "^PASS: .*the widget opened only at the schema the old build had marked.*delivery migration already the old build's" \
+  "$KIT/upgrade.sh" pro "$OLD131" "$NEW140" --wait 0 --server st --label from131
+expect "upgrade from 1.3.1: the marker before the install is read" 0 "App Group marker before the install: stride_store_schema_version = 1" \
+  cat "$T/root/upgrades/from131/report.txt"
+expect "upgrade from 1.3.1: the delivery marks are a note" 0 "NOTE: the old build had already run the delivery migration" \
+  cat "$T/root/upgrades/from131/report.txt"
+expect "upgrade from 1.3.1: the group prefs were saved before the install" 0 "stride_store_schema_version" \
+  cat "$T/root/upgrades/from131/group-prefs-before.txt"
+device "$OLD131" gate131-migrated
+expect "upgrade from 1.3.1: widget first, then the app migrated the store after all: FAIL" 3 "^FAIL: .*which then migrated it" \
+  "$KIT/upgrade.sh" pro "$OLD131" "$NEW140" --wait 0 --label from131-migrated
+unset PREFS_FIXTURE GROUP_MARKER
 unset STORE_FIXTURE
 
 # 1.4.0 (RELEASE-1.4.0.md D7, design review kit-push-and-launch-args): launch arguments, pushes

@@ -174,7 +174,8 @@ simulators are shared.
 upgrade.sh <udid> <old app> <new app> [--wait <s>] [--server <name>] [--label <name>] [--relaunch]
            [--reminders <daily habit id>,<Mon/Wed/Fri habit id>]
 upgrade.sh check-log <device log>       the device-log check alone, on a saved log
-upgrade.sh check-gate <device log>      the store-gate order alone, on a saved log
+upgrade.sh check-gate <device log> [<marker before>]
+                                        the store-gate order alone, on a saved log
 upgrade.sh check-dir <dir>              the default.store check alone, on a directory
 upgrade.sh counts <store dir | file>    row counts + model checksum of a saved store
 upgrade.sh prefs <plist | listing>      its stride_delivery_* entries
@@ -238,7 +239,10 @@ removes the containers. `upgrade.sh` refuses any other starting point (exit 1).
 **What it does:**
 
 1. Terminates the app. Copies `Stride.store` (with `-wal` and `-shm`) to `before/` and prints its
-   sha1, row counts and model checksum. Saves the prefs.
+   sha1, row counts and model checksum. Saves the app's prefs (`prefs-before.txt`) and the App
+   Group's (`group-prefs-before.txt`): what the OLD build already did — the store gate's marker
+   and the delivery migration's done flag, both written by 1.3.1+ — so the checks below can tell
+   it from the new build's work.
 2. Runs `xcrun simctl install <new app>` **in place**: no uninstall, so the containers stay. It
    checks the store files are byte-identical after the install. A change there means something
    opened the store before the app did.
@@ -273,6 +277,13 @@ removes the containers. `upgrade.sh` refuses any other starting point (exit 1).
      away before the app's open (with the reasons, e.g. `2 waitForApp(noMarker)`), or a NOTE that
      the gate was not exercised (no widget placed), and whether the widget opened afterwards. A
      log with no gate line at all is a build before the gate, and passes this check.
+     - **From a build with the gate (1.3.1+)** the marker is already there before the install
+       (`group-prefs-before.txt`), and the gate lets the widget in at once when the store is at
+       its schema: "Store opened in the extension at schema N" before the app's open, with N the
+       old marker, is a NOTE, not a fail — no migration was pending for it to race. It still
+       fails if the model checksum then changed (the app migrated a store the widget had open).
+       Until the 2026-10-11 fix pass every upgrade from v1.3.1 with a widget was a false FAIL
+       (`upgrades/e1-131to140-widget`).
    - **The marker:** `stride_store_schema_version` in the App Group prefs
      (`group-prefs-after.txt`). Missing in a build with the gate fails: the widget would wait
      forever.
@@ -280,7 +291,9 @@ removes the containers. `upgrade.sh` refuses any other starting point (exit 1).
      mark: stamped at least 5 minutes before `stride_last_sync_time`. When there are any, the run
      fails unless the marks wait in the prefs (`stride_delivery_marks_unproven`) or the first full
      pull asked `?deletionsSince=` (the marks' proof ran and cleared them). Neither is U123's
-     signature: the migration ran on another store.
+     signature: the migration ran on another store. When `prefs-before.txt` already has
+     `stride_delivery_migration_v1_done` (1.3.1+ ran it on its own first launch), this launch runs
+     no migration and marks nothing: a NOTE, not a fail.
    - **Recovered edits:** the lines of the data container's
      `Library/Application Support/SyncRecoveryLog/*.jsonl`. Any new line fails: the gate's
      scenario edits nothing on the upgraded device, so a recovered edit is a row pushed back that
@@ -291,10 +304,13 @@ removes the containers. `upgrade.sh` refuses any other starting point (exit 1).
 
 **Exit codes:**
 
-- **0 PASS:** no fallback, no widget open before the app's, the marker written (in a build with
-  the gate), the qualifying rows marked, no recovered edit.
+- **0 PASS:** no fallback, no widget open before the app's (or only at the old build's own
+  marker, the model unchanged), the marker written (in a build with the gate), the qualifying rows
+  marked (or the migration already the old build's), no recovered edit.
 - **3 FAIL:** a failed open in the log, any `default.store`, the app not running after the wait,
   a widget open before the app's, no marker, qualifying rows left unmarked, or a recovered edit.
+  The verdict says "did not open Stride.store" only for an actual failed open (a fallback or the
+  error screen); the other fails are named as signs of the upgrade race.
 - **1:** the run could not be made.
 
 Everything lands in `$ROOT/upgrades/<label>/` (default `<UTC time>-<pro|promax>`), with
@@ -596,7 +612,13 @@ router matrix). It writes a payload under `$ROOT/push/` and runs
 - Neither the id nor the day is validated: malformed and lower-case ids are router cases too.
 - The banner appears only once notifications are allowed (the starting point under "Reminder
   habits") and only while Stride is not frontmost, since the app has no `willPresent`: press HOME
-  first. Expand the banner (long-press it with the iOS Simulator MCP) to reach its actions.
+  first. To reach its actions (observed 2026-10-11, iOS 26.5, the iOS Simulator MCP):
+  - **On the lock screen:** swipe the banner LEFT, then tap **View**: Mark Done / Add 1 and
+    Snooze 1 Hour appear. A long-press does not work: the MCP's `tap` with a duration and
+    `touch_path` holds of 1.2–2 s both showed no action menu.
+  - **On the home screen:** pull the banner DOWN; it expands with its actions. A `simctl push`
+    banner uses the default Temporary style and can vanish before a screenshot: pull it down right
+    after the push and it stays.
 - A push proves the router and the action handler, not the scheduling. D7 keeps one real fire: two
   reminders two minutes ahead, the app terminated and the device locked.
 
@@ -629,7 +651,7 @@ selftest.sh [--keep]
 It runs `app.sh` and `upgrade.sh` for real against a fake device: plain directories under
 `$ROOT/selftest.<pid>/`, with `xcrun`, `lsof` and `ps` stubbed on `PATH`. The `xcrun` stub refuses
 any call it does not know, so no simulator, server, port or lock is touched. It takes under a
-minute (93 cases; 30 s on a heavily loaded Mac on 2026-10-10).
+minute (102 cases since the 2026-10-11 fix pass).
 
 It covers:
 
@@ -644,6 +666,10 @@ It covers:
   never opened, a build before the gate, no widget request), and runs that pass with the gate, the
   marker, the marks and a quiet relaunch, or fail on a missing marker, a widget open first,
   unmarked rows, or recovered edits on the relaunch;
+- an upgrade from 1.3.1 (fix pass): `check-gate` with the old marker (a note at the same schema, a
+  fail at another), a run that passes with the widget first at the old marker and the migration
+  already done, one that fails when the store was migrated after all, and the verdict's "did not
+  open Stride.store" only for a real failed open;
 - `app.sh store`'s warning about an app-group `default.store`;
 - 1.4.0: `app.sh launch -- <args>` (the stub records the app's arguments; arguments without `--`
   are refused); `app.sh notify` for each kind, with and without a day, a lower-case id, an unknown
