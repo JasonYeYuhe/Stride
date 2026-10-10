@@ -76,8 +76,35 @@ final class BackgroundSyncTests: XCTestCase {
     }
 
     /// The run's environment over the test's SyncService, with the after-sync work recorded.
-    private func environment(_ sync: SyncService, _ recorder: Recorder) -> BackgroundSync.Environment {
-        BackgroundSync.Environment(syncService: { sync }, afterSync: { _ in recorder.afterSyncs += 1 })
+    /// `submitter` and `sessionStored` are only for `handle`'s resubmit; `run` reaches neither.
+    private func environment(_ sync: SyncService, _ recorder: Recorder,
+                             sessionStored: Bool = true,
+                             submitter: BackgroundRefresh.Submitter = .init { _ in }) -> BackgroundSync.Environment {
+        BackgroundSync.Environment(syncService: { sync }, afterSync: { _ in recorder.afterSyncs += 1 },
+                                   sessionStored: { sessionStored }, submitter: submitter)
+    }
+
+    /// The submits a test's submitter received, from any thread, and how many have answered.
+    private final class Submits: @unchecked Sendable {
+        private let lock = NSLock()
+        private var received: [BackgroundRefresh.Reason] = []
+        private var answers = 0
+        func receive(_ reason: BackgroundRefresh.Reason) { lock.withLock { received.append(reason) } }
+        func answer() { lock.withLock { answers += 1 } }
+        var reasons: [BackgroundRefresh.Reason] { lock.withLock { received } }
+        var answered: Int { lock.withLock { answers } }
+    }
+
+    /// A gate a sync's `afterSyncRequest` hook waits at, holding the run mid-way without blocking
+    /// the stub server's one loading thread. A cancelled run is let through.
+    @MainActor
+    private final class Gate {
+        var isOpen = false
+        func pass() async {
+            while !isOpen && !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+        }
     }
 
     /// A store owned by account A with a live cursor: the next sync pushes first, then pulls.
@@ -207,15 +234,26 @@ final class BackgroundSyncTests: XCTestCase {
         var completions: [Bool] { lock.withLock { recorded } }
         func setTaskCompleted(success: Bool) { lock.withLock { recorded.append(success) } }
 
-        /// As the system does when the time is up: on a queue of its own.
-        func expire() async {
+        /// As the system does when the time is up: on a queue of its own — while the main thread
+        /// is busy, held right here until the handler returns (at most 2 s). Returns the
+        /// completions as they stood then, before the main thread could run anything; nil if the
+        /// handler never returned (it waited for the main thread).
+        ///
+        /// So a handler that leans on the main thread fails here: one that hops to it to complete
+        /// (`DispatchQueue.main.async`, a `@MainActor` task) shows no completion yet, and one that
+        /// waits for it never returns. With the main thread idle instead — the test suspended in
+        /// an `await` — such a hop ran at once, and the check passed (W3 review; measured). A real
+        /// expiry can arrive while the main actor is inside a sync's synchronous apply, and
+        /// completing late "may result in the system killing your app" (BGTask.h).
+        func expire() -> [Bool]? {
             let handler = expirationHandler
-            await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
-                DispatchQueue.global().async {
-                    handler?()
-                    done.resume()
-                }
+            let returned = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async {
+                handler?()
+                returned.signal()
             }
+            guard returned.wait(timeout: .now() + 2) == .success else { return nil }
+            return completions
         }
     }
 
@@ -227,7 +265,7 @@ final class BackgroundSyncTests: XCTestCase {
         BackgroundSync.start(task) { true }
         XCTAssertNotNil(task.expirationHandler, "set before the work could begin")
         try await waitUntil("the work's completion") { !task.completions.isEmpty }
-        await task.expire()
+        _ = task.expire()
 
         XCTAssertEqual(task.completions, [true])
     }
@@ -250,12 +288,110 @@ final class BackgroundSyncTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertTrue(task.completions.isEmpty, "precondition: the work is still running")
 
-        await task.expire()
-        XCTAssertEqual(task.completions, [false], "completed by the expiration handler itself")
+        let whenTheHandlerReturned = task.expire()
+        XCTAssertEqual(whenTheHandlerReturned, [false], "completed inside the expiration handler, not via the main actor")
 
         try await waitUntil("the cancelled work to end") { work.ended }
         XCTAssertTrue(work.sawCancel)
         XCTAssertEqual(task.completions, [false], "the work's own completion lost the claim")
+    }
+
+    // MARK: - The resubmit
+
+    /// The resubmit goes in first, while the run is still waiting on the server. It used to go in
+    /// after the run, and an expired run never got there in time: the expiration handler completes
+    /// the task, the process may be suspended the moment it is, and the cancelled run still had to
+    /// unwind through the engine first — the chain ended on exactly the slow network a refresh is
+    /// most needed on (W3 review). Expired, the run stops, and nothing is submitted twice.
+    func testTheResubmitGoesInBeforeTheRunAndAnExpiredRunSubmitsNothingMore() async throws {
+        seedOwnerAndCursor()
+        try insertHabit("Read")
+        stubHappyServer()
+        let gate = Gate()
+        let sync = makeSync(afterSyncRequest: { endpoint, _ in
+            if endpoint == .pull { await gate.pass() }
+        })
+        let submits = Submits()
+        let env = environment(sync, Recorder(), submitter: .init { reason in
+            submits.receive(reason)
+            submits.answer()
+        })
+        let container = container!
+        final class End { var ran: Bool? }
+        let end = End()
+        let task = FakeTask()
+
+        BackgroundSync.start(task) {
+            let ran = await BackgroundSync.handle(container: container, environment: env)
+            end.ran = ran
+            return ran
+        }
+        try await waitUntil("the run's pull") { server.paths.contains("/v1/sync/pull") }
+        try await waitUntil("the resubmit") { !submits.reasons.isEmpty }
+        XCTAssertEqual(submits.reasons, [.resubmit], "in while the run is still in flight")
+        XCTAssertTrue(task.completions.isEmpty, "precondition: the run is still in flight")
+
+        let whenTheHandlerReturned = task.expire()
+        XCTAssertEqual(whenTheHandlerReturned, [false])
+        try await waitUntil("the cancelled run to end") { end.ran != nil }
+
+        XCTAssertEqual(end.ran, false)
+        XCTAssertEqual(submits.reasons, [.resubmit], "submitted once, before the run")
+        XCTAssertEqual(task.completions, [false])
+    }
+
+    /// After a run, the resubmit's answer is waited for before the task is completed: a run that
+    /// ends at once — here inside the backoff window — would otherwise complete it with the submit
+    /// still on its way. But only for so long: iOS 27's async submit may answer "after an arbitrary
+    /// amount of delay" (BGTaskScheduler.h), and that must not hold a finished run open until
+    /// expiry, which would report it as failed (W3 review).
+    func testAFinishedRunWaitsForTheResubmitsAnswerUpToItsBound() async throws {
+        seedOwnerAndCursor()
+        backoffStore.recordFailure(.serverAsked(seconds: 600, paused: true), for: owner.id)
+        let sync = makeSync()
+
+        let prompt = Submits()
+        let answersSoon = environment(sync, Recorder(), submitter: .init { reason in
+            prompt.receive(reason)
+            try await Task.sleep(for: .milliseconds(200))
+            prompt.answer()
+        })
+        let ran = await BackgroundSync.handle(container: container, environment: answersSoon, answerWait: .seconds(5))
+        XCTAssertFalse(ran, "precondition: inside the window the run itself ends at once")
+        XCTAssertTrue(server.requests.isEmpty)
+        XCTAssertEqual(prompt.answered, 1, "the answer was in before the work returned")
+
+        let slow = Submits()
+        let answersLate = environment(sync, Recorder(), submitter: .init { reason in
+            slow.receive(reason)
+            try await Task.sleep(for: .seconds(30))
+            slow.answer()
+        })
+        let start = ContinuousClock.now
+        _ = await BackgroundSync.handle(container: container, environment: answersLate, answerWait: .milliseconds(300))
+        XCTAssertLessThan(ContinuousClock.now - start, .seconds(3), "not held open past the bound")
+        XCTAssertEqual(slow.reasons, [.resubmit])
+        XCTAssertEqual(slow.answered, 0)
+    }
+
+    /// No session stored: no resubmit — a refresh would launch the app to sync nothing. No store
+    /// (the launch could not open it): nothing runs, but the chain is kept, since a later launch
+    /// may open it.
+    func testTheResubmitNeedsAStoredSessionButNotAnOpenStore() async {
+        let sync = makeSync()
+
+        let signedOut = Submits()
+        _ = await BackgroundSync.handle(container: nil, environment: environment(
+            sync, Recorder(), sessionStored: false, submitter: .init { signedOut.receive($0) }))
+        XCTAssertEqual(signedOut.reasons, [])
+
+        let noStore = Submits()
+        let recorder = Recorder()
+        let ran = await BackgroundSync.handle(container: nil, environment: environment(
+            sync, recorder, submitter: .init { noStore.receive($0) }))
+        XCTAssertFalse(ran)
+        XCTAssertEqual(noStore.reasons, [.resubmit])
+        XCTAssertEqual(recorder.afterSyncs, 0, "no run")
     }
 
     // MARK: - The run
@@ -457,5 +593,98 @@ final class BackgroundSyncTests: XCTestCase {
         await StrideApp.syncIfLoggedIn(container, auth: auth, sync: sync) { _ in XCTFail("no sync ran") }
 
         XCTAssertTrue(server.requests.isEmpty)
+    }
+
+    // MARK: - The foreground pass
+
+    /// Account A's AuthService over the stub server, its launch check answered: signed in.
+    private func makeSignedInAuth() async -> AuthService {
+        server.on("GET", "/v1/auth/session",
+                  respond: .ok(#"{"user":{"id":7,"email":"a@example.com","created_at":"2026-09-01 10:00:00"}}"#))
+        let auth = AuthService(api: server.makeClient(tokenStore: tokens), tokenStore: tokens, defaults: local.defaults,
+                               onSignOut: {}, onSignIn: {}, onAccountDeleted: { _ in }, reauthRequested: { false })
+        await auth.waitForSessionRestore()
+        XCTAssertTrue(auth.isLoggedIn, "precondition: signed in")
+        return auth
+    }
+
+    /// The foreground pass waits out a sync in flight — a background run still pulling when the
+    /// user opens the app — and then runs its own, which pushes what was checked in meanwhile (D5:
+    /// "so a stale background run cannot turn the foreground sync away"). Without the wait,
+    /// SyncService turns the second caller away, and the check-in waits for the next trigger.
+    func testTheForegroundWaitsOutABackgroundRunInFlightAndPushesWhatCameAfter() async throws {
+        seedOwnerAndCursor()
+        let auth = await makeSignedInAuth()
+        stubHappyServer()
+        let gate = Gate()
+        let sync = makeSync(sessions: auth, afterSyncRequest: { endpoint, _ in
+            if endpoint == .pull { await gate.pass() }
+        })
+        try insertHabit("Read")
+        let recorder = Recorder()
+
+        let background = Task { await sync.sync(context: context, trigger: .background) }
+        try await waitUntil("the background run's pull") { server.paths.contains("/v1/sync/pull") }
+        // Saved through a context of its own, as a check-in from Siri, a reminder or the widget is.
+        let late = Habit(name: "Walk")
+        let elsewhere = ModelContext(container)
+        elsewhere.insert(late)
+        try elsewhere.save()
+        let container = container!
+        let foreground = Task {
+            await StrideApp.syncIfLoggedIn(container, auth: auth, sync: sync) { _ in recorder.afterSyncs += 1 }
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(pushes.count, 1, "the foreground pass is waiting, not turned away")
+        gate.isOpen = true
+        let backgroundRan = await background.value
+        await foreground.value
+
+        XCTAssertTrue(backgroundRan)
+        XCTAssertEqual(pushes.count, 2, "the background run's push, then the foreground's own")
+        XCTAssertEqual(pushedHabitIDs(pushes.last), [late.id.uuidString])
+        XCTAssertEqual(recorder.afterSyncs, 1, "a sync that ran to the end reschedules the reminders")
+    }
+
+    /// One foreground pass at a time per SyncService: a second, arriving while the first waits out
+    /// a sync in flight, returns at once, and the first's sync covers both — as SyncService's
+    /// "already syncing" answer covered overlapping foreground syncs before the wait existed. A Mac
+    /// launch starts two (the window's `.task` and didBecomeActive), and each ⌘-Tab back during a
+    /// slow sync another; each used to queue a full sync of its own (W3 review).
+    func testOverlappingForegroundPassesRunOneSync() async throws {
+        seedOwnerAndCursor()
+        let auth = await makeSignedInAuth()
+        stubHappyServer()
+        let gate = Gate()
+        let sync = makeSync(sessions: auth, afterSyncRequest: { endpoint, _ in
+            if endpoint == .pull { await gate.pass() }
+        })
+        try insertHabit("Read")
+        let recorder = Recorder()
+
+        let background = Task { await sync.sync(context: context, trigger: .background) }
+        try await waitUntil("the background run's pull") { server.paths.contains("/v1/sync/pull") }
+        let container = container!
+        final class Returned { var passes = 0 }
+        let returned = Returned()
+        let passes = (0..<2).map { _ in
+            Task {
+                await StrideApp.syncIfLoggedIn(container, auth: auth, sync: sync) { _ in recorder.afterSyncs += 1 }
+                returned.passes += 1
+            }
+        }
+        try await waitUntil("one pass to return at once") { returned.passes == 1 }
+        XCTAssertEqual(server.paths.filter { $0 == "/v1/sync/pull" }.count, 1, "precondition: the run is still in flight")
+        gate.isOpen = true
+        _ = await background.value
+        for pass in passes { await pass.value }
+
+        XCTAssertEqual(recorder.afterSyncs, 1)
+        XCTAssertEqual(server.paths.filter { $0 == "/v1/sync/pull" }.count, 2, "the run in flight, then one foreground sync")
+        XCTAssertEqual(server.paths.filter { $0 == "/v1/auth/session" }.count, 1, "the launch check only: signed in, no recheck")
+
+        // Once a pass is over, the next one runs as usual.
+        await StrideApp.syncIfLoggedIn(container, auth: auth, sync: sync) { _ in recorder.afterSyncs += 1 }
+        XCTAssertEqual(recorder.afterSyncs, 2)
     }
 }

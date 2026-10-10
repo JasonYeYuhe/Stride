@@ -62,7 +62,7 @@ enum BackgroundSync {
 
     /// The launch handler. Starts the work and returns at once; the task is completed exactly
     /// once, by whichever comes first:
-    /// - the work, with its result, after the resubmit (`handle()`);
+    /// - the work, with its result (`handle()`, whose resubmit went in before its run);
     /// - the expiration handler, with false. It does only thread-safe work — cancel, then
     ///   complete — and never waits for the main actor: its queue is undocumented, and completing
     ///   late "may result in the system killing your app" (BGTask.h). A sync that is cancelled
@@ -98,42 +98,87 @@ enum BackgroundSync {
     }
 
     /// The work of one refresh, the same from the system's task and from `-runBackgroundSync`:
-    /// the run over the store this launch opened, then the resubmit that keeps the chain going —
-    /// at most one refresh is pending, and it is used up by running.
-    ///
-    /// The resubmit happens before the task is completed (the system may suspend the process the
-    /// moment it is), and only while a session is stored: "signed in" here means a token in the
-    /// Keychain (`hasStoredSession`), never `isLoggedIn`. A background launch's session check can
-    /// fail offline and leave `currentUser` nil while every sync still runs from the remembered
-    /// account (design review, "bg-launch-leaves-currentUser-nil"); keyed on `isLoggedIn`, the
-    /// first offline refresh would end the chain. Read after the run: a run whose session was
-    /// found gone has deleted the token, and nothing is left to sync.
+    /// the resubmit that keeps the chain going — at most one refresh is pending, and it is used up
+    /// by running — then the run over the store this launch opened.
     @MainActor
     static func handle() async -> Bool {
+        await handle(container: SharedModelContainer.opened, environment: .live)
+    }
+
+    /// `handle()` over what it is given, for the hosted tests.
+    ///
+    /// - **The resubmit goes in first, before the run**, as Apple's own refresh handlers schedule
+    ///   the next refresh first. Until the W3 review it went in after the run, and a run that
+    ///   expired never got there in time: the expiration handler completes the task, the system
+    ///   may suspend the process the moment it is, and the cancelled run still had to unwind
+    ///   through the engine before reaching the resubmit — so the chain could end on exactly the
+    ///   slow network a refresh is most needed on, leaving every later widget check-in unsent until
+    ///   the app was next opened. A submit replaces the pending request, so going first costs at
+    ///   most one refresh that finds nothing new.
+    /// - **Only while a session is stored:** "signed in" here means a token in the Keychain
+    ///   (`hasStoredSession`), never `isLoggedIn`. A background launch's session check can fail
+    ///   offline and leave `currentUser` nil while every sync still runs from the remembered
+    ///   account (design review, "bg-launch-leaves-currentUser-nil"); keyed on `isLoggedIn`, the
+    ///   first offline refresh would end the chain. Read before the run, so a run that finds the
+    ///   session gone (and deletes the token) has already asked for one more refresh; that one
+    ///   syncs nothing and asks for no other.
+    /// - **Its answer is waited for after the run, for at most `answerWait`**, before the task is
+    ///   completed. A run that ends at once — inside the backoff window, or with the store not
+    ///   open — would otherwise complete the task while the detached submit may not yet have
+    ///   reached the scheduler. Bounded, because iOS 27's async submit may answer "after an
+    ///   arbitrary amount of delay" (BGTaskScheduler.h): unbounded, a slow answer would hold a
+    ///   finished run open until expiry, which reports it as failed. Not waited for at all once
+    ///   the task has expired: the expiration handler has already completed it.
+    @MainActor
+    static func handle(container: ModelContainer?, environment: Environment,
+                       answerWait: Duration = .seconds(2)) async -> Bool {
+        let resubmit = environment.sessionStored()
+            ? BackgroundRefresh.schedule(reason: .resubmit, submitter: environment.submitter)
+            : nil
         var synced = false
-        if let container = SharedModelContainer.opened {
-            synced = await run(container: container)
+        if let container {
+            synced = await run(container: container, environment: environment)
         } else {
             // The launch could not open the store (it reported that itself). Nothing to sync from;
             // a later launch may open it, so the chain is still kept.
             logger.error("background sync: the store is not open")
         }
-        if AuthService.shared.hasStoredSession {
-            _ = await BackgroundRefresh.schedule(reason: .resubmit).value
+        if let resubmit, !Task.isCancelled {
+            await waitForAnswer(resubmit, upTo: answerWait)
         }
         let result = synced ? "synced" : "not synced"
         logger.notice("background sync: \(result, privacy: .public)")
         return synced
     }
 
+    /// Returns once `submit` has answered or `limit` has passed, whichever comes first. A submit
+    /// that never answers leaves its waiter behind, ending when the submit does.
+    private static func waitForAnswer(_ submit: Task<String, Never>, upTo limit: Duration) async {
+        let first = CompletionClaim()
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            Task.detached {
+                _ = await submit.value
+                if first.claim() { done.resume() }
+            }
+            Task.detached {
+                try? await Task.sleep(for: limit)
+                if first.claim() { done.resume() }
+            }
+        }
+    }
+
     // MARK: - The run
 
-    /// What a run reaches outside itself, so a hosted test reaches none of the host app's.
+    /// What a refresh reaches outside itself, so a hosted test reaches none of the host app's.
     struct Environment {
         var syncService: @MainActor () -> SyncService
         /// After the sync: what a scene-less background launch never attaches — StrideApp's
         /// launch `.task`, its didSave observer and its foreground hooks all hang off a window.
         var afterSync: @MainActor (ModelContainer) async -> Void
+        /// Whether a session is stored, for the resubmit (`handle`).
+        var sessionStored: @MainActor () -> Bool
+        /// The scheduler, for the resubmit.
+        var submitter: BackgroundRefresh.Submitter
 
         static var live: Environment {
             Environment(
@@ -152,7 +197,9 @@ enum BackgroundSync {
                     // The badge, awaited: the refresh pass sets it fire-and-forget.
                     await notifications.updateBadgeAndWait(modelContainer: container)
                     WidgetCenter.shared.reloadAllTimelines()
-                })
+                },
+                sessionStored: { AuthService.shared.hasStoredSession },
+                submitter: .live)
         }
     }
 
@@ -204,7 +251,8 @@ protocol BackgroundTaskHandle: AnyObject {
 extension BGTask: BackgroundTaskHandle {}
 
 /// The task is completed once: the work and the expiration handler race for it, from different
-/// threads, and the first to claim it completes it.
+/// threads, and the first to claim it completes it. Also the once-only resume of
+/// `waitForAnswer`, whose answer and deadline race the same way.
 final class CompletionClaim: @unchecked Sendable {
     private let lock = NSLock()
     private var claimed = false
@@ -230,7 +278,7 @@ final class CompletionClaim: @unchecked Sendable {
 ///   (StrideApp). A widget check-in made after that is covered by this pending request: whether a
 ///   WidgetKit extension may submit is unverified, and only the app is launched for the task.
 /// - `check-in`: one made in this process — Today, Siri, a reminder's action (`CheckInEffects`).
-/// - `resubmit`: the refresh handler, before it completes (`BackgroundSync.handle`).
+/// - `resubmit`: the refresh handler, first thing, before its run (`BackgroundSync.handle`).
 ///
 /// Errors are logged, never shown: Background App Refresh switched off, Low Power Mode and the
 /// Simulator all refuse, and the foreground sync still delivers.
@@ -261,8 +309,8 @@ enum BackgroundRefresh {
     }
 
     /// Submits off the main actor, in a detached task, and returns it; its value is the line that
-    /// was logged. Callers on the main actor need not wait — the refresh handler does, so its
-    /// resubmit is in before it completes the task.
+    /// was logged. Callers on the main actor need not wait — the refresh handler does, for a
+    /// bounded time after its run, so its resubmit is in before it completes the task.
     @discardableResult
     static func schedule(reason: Reason, submitter: Submitter = .live) -> Task<String, Never> {
         Task.detached(priority: .utility) {

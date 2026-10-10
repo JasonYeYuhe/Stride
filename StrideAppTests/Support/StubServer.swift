@@ -48,6 +48,7 @@ final class StubServer: @unchecked Sendable {
 
     private let lock = NSLock()
     private var routes: [String: Handler] = [:]
+    private var holds: [String: HeldRequest] = [:]
     private var recorded: [Request] = []
 
     init() { StubURLProtocol.register(self) }
@@ -67,6 +68,17 @@ final class StubServer: @unchecked Sendable {
         on(method, path) { _ in response }
     }
 
+    /// The next request for `method path` is recorded and then held, unanswered, until the test
+    /// answers or fails it through the returned handle; later ones go to the route as usual. For
+    /// a request that must still be in flight while later ones — to any route — are answered: a
+    /// handler that waits cannot do that, since every stub request is served on URLSession's one
+    /// custom-protocol thread, so it holds up all the others.
+    func holdNext(_ method: String, _ path: String) -> HeldRequest {
+        let held = HeldRequest()
+        lock.withLock { holds["\(method) \(path)"] = held }
+        return held
+    }
+
     /// An APIClient that talks only to this server and keeps its token in `tokenStore`.
     func makeClient(tokenStore: SessionTokenStore) -> APIClient {
         let config = URLSessionConfiguration.ephemeral
@@ -74,7 +86,12 @@ final class StubServer: @unchecked Sendable {
         return APIClient(baseURL: baseURL, session: URLSession(configuration: config), tokenStore: tokenStore)
     }
 
-    fileprivate func handle(_ urlRequest: URLRequest) throws -> Response {
+    fileprivate enum Answer {
+        case now(Response)
+        case later(HeldRequest)
+    }
+
+    fileprivate func handle(_ urlRequest: URLRequest) throws -> Answer {
         let url = urlRequest.url!
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         let request = Request(
@@ -85,14 +102,17 @@ final class StubServer: @unchecked Sendable {
             headers: urlRequest.allHTTPHeaderFields ?? [:],
             body: Self.body(of: urlRequest)
         )
-        let handler: Handler? = lock.withLock {
+        let (handler, held): (Handler?, HeldRequest?) = lock.withLock {
             recorded.append(request)
-            return routes["\(request.method) \(request.path)"]
+            let route = "\(request.method) \(request.path)"
+            if let held = holds.removeValue(forKey: route) { return (nil, held) }
+            return (routes[route], nil)
         }
+        if let held { return .later(held) }
         guard let handler else {
-            return Response(status: 404, body: #"{"error":"no stub for \#(request.method) \#(request.path)"}"#)
+            return .now(Response(status: 404, body: #"{"error":"no stub for \#(request.method) \#(request.path)"}"#))
         }
-        return try handler(request)
+        return .now(try handler(request))
     }
 
     /// URLSession moves `httpBody` into `httpBodyStream` before a URLProtocol sees the request.
@@ -136,20 +156,87 @@ final class StubURLProtocol: URLProtocol {
             return
         }
         do {
-            let response = try server.handle(request)
-            let http = HTTPURLResponse(
-                url: request.url!, statusCode: response.status, httpVersion: "HTTP/1.1",
-                headerFields: ["Content-Type": "application/json"].merging(response.headers) { _, set in set }
-            )!
-            client?.urlProtocol(self, didReceive: http, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: Data(response.body.utf8))
-            client?.urlProtocolDidFinishLoading(self)
+            switch try server.handle(request) {
+            case .now(let response):
+                deliver(response)
+            case .later(let held):
+                // Settled later from the test's thread. URLProtocol's client is called back on
+                // this thread, the one `startLoading` runs on, through its run loop.
+                let runLoop = CFRunLoopGetCurrent()
+                held.arrived { [self] outcome in
+                    CFRunLoopPerformBlock(runLoop, CFRunLoopMode.commonModes.rawValue) {
+                        switch outcome {
+                        case .success(let response): self.deliver(response)
+                        case .failure(let error): self.client?.urlProtocol(self, didFailWithError: error)
+                        }
+                    }
+                    CFRunLoopWakeUp(runLoop)
+                }
+            }
         } catch {
             client?.urlProtocol(self, didFailWithError: error)
         }
     }
 
+    private func deliver(_ response: StubServer.Response) {
+        let http = HTTPURLResponse(
+            url: request.url!, statusCode: response.status, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"].merging(response.headers) { _, set in set }
+        )!
+        client?.urlProtocol(self, didReceive: http, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(response.body.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
     override func stopLoading() {}
+}
+
+/// A request `StubServer.holdNext` keeps in flight until the test answers or fails it — from any
+/// thread, before or after it arrives; only the first of those counts. Settle every one a test
+/// holds (a `defer` will do): the task awaiting it otherwise waits for the life of the test
+/// process.
+final class HeldRequest: @unchecked Sendable {
+    typealias Outcome = Result<StubServer.Response, Error>
+
+    private let lock = NSLock()
+    private var settle: ((Outcome) -> Void)?
+    private var early: Outcome?
+    private var settled = false
+    private var didArrive = false
+
+    /// The request has reached the server and is being held.
+    var hasArrived: Bool { lock.withLock { didArrive } }
+
+    func respond(_ response: StubServer.Response) { finish(.success(response)) }
+    /// Fails the request at the transport (offline, a timeout).
+    func fail(_ error: URLError) { finish(.failure(error)) }
+
+    fileprivate func arrived(_ settle: @escaping (Outcome) -> Void) {
+        let early: Outcome? = lock.withLock {
+            didArrive = true
+            guard let early = self.early else {
+                self.settle = settle
+                return nil
+            }
+            self.early = nil
+            return early
+        }
+        if let early { settle(early) }
+    }
+
+    private func finish(_ outcome: Outcome) {
+        let settle: ((Outcome) -> Void)? = lock.withLock {
+            guard !settled else { return nil }
+            settled = true
+            guard let settle = self.settle else {
+                early = outcome
+                return nil
+            }
+            self.settle = nil
+            return settle
+        }
+        settle?(outcome)
+    }
 }
 
 /// The token store tests hand to both APIClient and AuthService — never the real Keychain item,

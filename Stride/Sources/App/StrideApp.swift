@@ -270,9 +270,21 @@ struct StrideApp: App {
     ///    its account, loaded user or not), not only when a user is loaded — the sync resolves the
     ///    session itself, as background runs and Erase's pre-erase sync always have. A recheck
     ///    that got no answer therefore still attempts the push.
+    ///
+    /// One pass at a time per SyncService: a call that finds one already rechecking, waiting or
+    /// syncing returns at once, and that pass's sync covers it. Shipped builds got this from
+    /// SyncService turning the second of two overlapping syncs away; step 2's wait queues callers
+    /// instead, and passes overlap routinely: the window's `.task` and didBecomeActive at a Mac
+    /// launch, each ⌘-Tab back during a slow sync, a willEnterForeground during the iOS launch
+    /// sync. Each would have queued a full sync of its own after the one in flight, and sent its
+    /// own recheck while no user was loaded (W3 review). Keyed by the instance, so a hosted test's
+    /// services never meet the host app's own launch pass.
     @MainActor
     static func syncIfLoggedIn(_ modelContainer: ModelContainer, auth: AuthService, sync: SyncService,
                                afterSync: (ModelContainer) -> Void) async {
+        let pass = ObjectIdentifier(sync)
+        guard foregroundPasses.insert(pass).inserted else { return }
+        defer { foregroundPasses.remove(pass) }
         await auth.recheckStoredSessionIfNeeded()
         await sync.waitUntilIdle()
         guard auth.currentSyncSession() != nil else { return }
@@ -282,6 +294,9 @@ struct StrideApp: App {
             afterSync(modelContainer)
         }
     }
+
+    /// The SyncServices a foreground pass is under way for (`syncIfLoggedIn`).
+    @MainActor private static var foregroundPasses: Set<ObjectIdentifier> = []
 
     /// Signs in from a login link when signed out, then syncs — the same sync SettingsView runs
     /// when `isLoggedIn` turns true, needed here because Settings may not be on screen (or, on

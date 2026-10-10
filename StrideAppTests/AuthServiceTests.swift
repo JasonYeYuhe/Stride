@@ -210,6 +210,62 @@ final class AuthServiceTests: XCTestCase {
         XCTAssertTrue(auth.sessionExpired)
     }
 
+    /// The launch check and the foreground's recheck can both be in flight: a check sent by a
+    /// background launch, its connection gone with the suspension, can take URLSession's 60 s to
+    /// fail, and the recheck goes out beside it after its 10 s wait. Once the recheck has signed
+    /// the device in, the older check's failure says nothing newer, and the user stays. Its catch
+    /// used to clear `currentUser`, flipping Today and Settings back to signed out until the next
+    /// foreground (W3 review).
+    func testALaunchCheckThatFailsAfterTheRecheckSignedInKeepsTheUser() async throws {
+        tokens.save("sess-abc")
+        let launchCheck = server.holdNext("GET", "/v1/auth/session")
+        defer { launchCheck.fail(URLError(.cancelled)) }   // never leave it held, whatever fails
+        server.on("GET", "/v1/auth/session", respond: .ok(Self.userSeven))
+        let auth = makeAuth()
+        try await waitUntil("the launch check") { launchCheck.hasArrived }
+
+        await auth.recheckStoredSessionIfNeeded(launchCheckWait: .milliseconds(200))
+        XCTAssertTrue(auth.isLoggedIn, "the recheck signed in")
+        XCTAssertFalse(auth.isSessionRestored, "precondition: the launch check is still in flight")
+        XCTAssertEqual(server.paths.filter { $0 == "/v1/auth/session" }.count, 2)
+
+        launchCheck.fail(URLError(.timedOut))
+        try await waitUntil("the launch check's failure") { auth.isSessionRestored }
+
+        XCTAssertTrue(auth.isLoggedIn, "an older check's failure does not undo a newer sign-in")
+        XCTAssertEqual(auth.userEmail, "a@example.com")
+        XCTAssertEqual(tokens.read(), "sess-abc")
+    }
+
+    /// The rule above keeps what SyncStatusRow's tap relies on: a check that fails with nobody
+    /// signing in meanwhile still forgets the user it started with, so offline the login sheet
+    /// opens. The token stays — an error says nothing about the session.
+    func testACheckThatFailsForgetsTheUserItStartedWith() async {
+        tokens.save("sess-abc")
+        let calls = Counter()
+        server.on("GET", "/v1/auth/session") { _ in
+            if calls.next() == 1 { return .ok(Self.userSeven) }
+            throw URLError(.notConnectedToInternet)
+        }
+        let auth = makeAuth()
+        await auth.waitForSessionRestore()
+        XCTAssertTrue(auth.isLoggedIn, "precondition: the launch check signed in")
+
+        await auth.checkSession()
+
+        XCTAssertFalse(auth.isLoggedIn)
+        XCTAssertEqual(tokens.read(), "sess-abc")
+    }
+
+    /// Polls `condition` on the main actor for up to 5 s.
+    private func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !condition() {
+            guard ContinuousClock.now < deadline else { return XCTFail("timed out waiting for \(what)") }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
     // MARK: - One-tap sign-in (the universal link)
 
     private static let linkToken = "3f2b8c1e9a7d4c05b6e1f0a2d3c4b5a69788f1e2d3c4b5a6978801a2b3c4d5e6"

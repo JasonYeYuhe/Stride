@@ -145,8 +145,13 @@ final class AuthService {
     /// `error`, which an open login sheet shows as its spinner and its message. A user loaded
     /// signs in; `{user: null}` deletes the dead token and raises "Sign in again"; an error
     /// changes nothing.
-    func recheckStoredSessionIfNeeded() async {
-        await waitForSessionRestore()
+    ///
+    /// `launchCheckWait` is how long it first waits for the launch check (10 s); the tests shorten
+    /// it. A check still in flight after that wait is not waited for again: the recheck goes out
+    /// beside it, and if the check then fails, its failure no longer undoes the recheck's sign-in
+    /// (`checkSession`).
+    func recheckStoredSessionIfNeeded(launchCheckWait: Duration = .seconds(10)) async {
+        await waitForSessionRestore(timeout: launchCheckWait)
         guard currentUser == nil, hasStoredSession else { return }
         do {
             try await restoreStoredSession()
@@ -160,14 +165,29 @@ final class AuthService {
     func checkSession() async {
         isLoading = true
         error = nil
+        let loadsBefore = usersLoaded
         do {
             try await restoreStoredSession()
         } catch {
-            currentUser = nil
+            // A failed check forgets the user it started with — SyncStatusRow's tap relies on
+            // that to open the login sheet offline — but not one loaded while it was in flight:
+            // that answer is newer than this failure. Since 1.4.0 the foreground's recheck can
+            // sign the device in beside a launch check that is still pending (a request from a
+            // background launch whose connection went with the suspension can take URLSession's
+            // 60 s to fail); clearing the user then flipped Today and Settings back to signed out
+            // until the next foreground (W3 review). A one-tap sign-in (`verifyToken`) during the
+            // check is kept the same way.
+            if usersLoaded == loadsBefore {
+                currentUser = nil
+            }
         }
         isLoading = false
         isSessionRestored = true
     }
+
+    /// How many times a user has been loaded (`setUser` with one), so a session check that fails
+    /// can tell whether someone else signed the device in while it waited (`checkSession`).
+    @ObservationIgnored private var usersLoaded = 0
 
     /// Asks the server who the stored token belongs to. A thrown error (offline, a timeout, a
     /// 5xx) says nothing about the session, so the token stays.
@@ -219,6 +239,7 @@ final class AuthService {
     private func setUser(_ user: APIUser?) {
         currentUser = user
         if let user {
+            usersLoaded += 1
             rememberSessionAccount(SyncAccount(user))
             setSessionExpired(false)
         }
