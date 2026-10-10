@@ -114,6 +114,102 @@ final class AuthServiceTests: XCTestCase {
         XCTAssertEqual(online, SyncSession(token: "sess-130", account: SyncAccount(id: "9", email: "c@example.com")))
     }
 
+    // MARK: - The launch check and its recheck (1.4.0, RELEASE-1.4.0.md D5)
+
+    private nonisolated static let userSeven = #"{"user":{"id":7,"email":"a@example.com","created_at":"2026-09-01 10:00:00"}}"#
+
+    /// A waiter that gives up — on its deadline, or because its task was cancelled (an expired
+    /// background task) — leaves `isSessionRestored` as it was: only the check writes it. Before
+    /// 1.4.0 a timed-out waiter set it with the check still in flight, so every later waiter
+    /// returned at once and a check that then failed was never waited for; and a cancelled one
+    /// spun on the main actor until its deadline (a cancelled `Task.sleep` throws at once). The
+    /// check, when it answers, still settles it.
+    func testAWaiterThatGivesUpLeavesTheCheckPending() async {
+        tokens.save("sess-abc")
+        let answer = DispatchSemaphore(value: 0)
+        server.on("GET", "/v1/auth/session") { _ in
+            answer.wait()   // the launch check stays in flight until the test lets it answer
+            return .ok(Self.userSeven)
+        }
+        let auth = makeAuth()
+        defer { answer.signal() }   // never leave the loading thread blocked, whatever fails
+
+        await auth.waitForSessionRestore(timeout: .milliseconds(200))
+        XCTAssertFalse(auth.isSessionRestored, "a deadline is not an answer")
+
+        let start = ContinuousClock.now
+        let waiter = Task { await auth.waitForSessionRestore() }
+        waiter.cancel()
+        await waiter.value
+        XCTAssertLessThan(ContinuousClock.now - start, .seconds(2), "a cancelled waiter returns at once, not at its deadline")
+        XCTAssertFalse(auth.isSessionRestored)
+
+        answer.signal()
+        await auth.waitForSessionRestore()
+        XCTAssertTrue(auth.isSessionRestored, "the check settles it")
+        XCTAssertTrue(auth.isLoggedIn)
+    }
+
+    /// The foreground's recheck signs a device back in whose launch check failed offline — the
+    /// state a background launch can leave a process in for the user's next open. It goes around
+    /// `checkSession`, which would show an open login sheet's spinner (`isLoading`) and clear its
+    /// message (`error`): neither changes, even while the request is in flight. Signed in, it asks
+    /// nothing more.
+    func testTheRecheckSignsBackInWithoutTouchingTheLoginSheetsState() async throws {
+        tokens.save("sess-abc")
+        let calls = Counter()
+        let answer = DispatchSemaphore(value: 0)
+        server.on("GET", "/v1/auth/session") { _ in
+            if calls.next() == 1 { throw URLError(.notConnectedToInternet) }
+            answer.wait()
+            return .ok(Self.userSeven)
+        }
+        server.on("POST", "/v1/auth/request-link", respond: .init(status: 500, body: #"{"error":"Mail is down"}"#))
+        let auth = makeAuth()
+        defer { answer.signal() }
+        await auth.waitForSessionRestore()
+        XCTAssertFalse(auth.isLoggedIn, "precondition: the launch check failed offline")
+        _ = await auth.requestMagicLink(email: "a@example.com")
+        let shown = try XCTUnwrap(auth.error, "precondition: the login sheet shows a message")
+
+        let recheck = Task { await auth.recheckStoredSessionIfNeeded() }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while server.paths.filter({ $0 == "/v1/auth/session" }).count < 2 {
+            guard ContinuousClock.now < deadline else { return XCTFail("no recheck was sent") }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(auth.isLoading, "no spinner on the login sheet while the recheck is in flight")
+        XCTAssertEqual(auth.error, shown)
+        answer.signal()
+        await recheck.value
+
+        XCTAssertTrue(auth.isLoggedIn)
+        XCTAssertEqual(auth.error, shown, "the sheet's message stays")
+        XCTAssertFalse(auth.isLoading)
+
+        await auth.recheckStoredSessionIfNeeded()
+        XCTAssertEqual(server.paths.filter { $0 == "/v1/auth/session" }.count, 2, "signed in: nothing to recheck")
+    }
+
+    /// `{user: null}` on the recheck is the session found gone, as at launch: the dead token goes,
+    /// and Today's "Sign in again" row goes up.
+    func testARecheckThatFindsTheSessionGoneSignsOutForGood() async {
+        tokens.save("sess-abc")
+        let calls = Counter()
+        server.on("GET", "/v1/auth/session") { _ in
+            if calls.next() == 1 { throw URLError(.notConnectedToInternet) }
+            return .ok(#"{"user":null}"#)
+        }
+        let auth = makeAuth()
+        await auth.waitForSessionRestore()
+
+        await auth.recheckStoredSessionIfNeeded()
+
+        XCTAssertFalse(auth.isLoggedIn)
+        XCTAssertNil(tokens.read())
+        XCTAssertTrue(auth.sessionExpired)
+    }
+
     // MARK: - One-tap sign-in (the universal link)
 
     private static let linkToken = "3f2b8c1e9a7d4c05b6e1f0a2d3c4b5a69788f1e2d3c4b5a6978801a2b3c4d5e6"

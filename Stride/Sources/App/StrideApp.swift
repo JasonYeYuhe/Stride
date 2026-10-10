@@ -11,6 +11,10 @@ struct StrideApp: App {
     /// The account screen for a one-tap sign-in with no login sheet open (AccountChoiceRouter).
     private var accountRouter = AccountChoiceRouter.shared
     @State private var showOnboarding = !UserDefaults.standard.bool(forKey: "stride_onboarding_completed")
+    #if os(iOS)
+    /// The app's phase — in an `App`, every scene's together: `.background` once the last one is.
+    @Environment(\.scenePhase) private var scenePhase
+    #endif
 
     init() {
         #if STRIDE_MAC_VARIANT
@@ -33,6 +37,16 @@ struct StrideApp: App {
         // terminated app in the background with no scene at all, and its response goes to whoever
         // is the delegate when launch finishes. After the store open, which the handler writes to.
         NotificationActionHandler.install()
+        #if os(iOS)
+        // The background refresh's launch handler (RELEASE-1.4.0.md D5), here for the same reason:
+        // registration must be complete before launch finishes, and a refresh launches the app in
+        // the background with no scene. Once per process; the hosted tests run inside this app,
+        // and a second registration would get it killed (BackgroundSync.register).
+        BackgroundSync.register()
+        #if DEBUG
+        BackgroundSync.runIfRequestedByLaunchArgument()
+        #endif
+        #endif
         // Copies of the user's data that nothing else ever removed, off the main thread: the
         // export files earlier share sheets wrote to tmp — backups, recovered edits, a deleted
         // account's among them (E2E S-DEL) — and the answers and cookies earlier builds left in
@@ -104,6 +118,16 @@ struct StrideApp: App {
         #if os(macOS)
         .windowStyle(.titleBar)
         .defaultSize(width: 900, height: 650)
+        #else
+        // Leaving the app asks for a background refresh (D5), so what is still unsent — a check-in
+        // whose push was cut off by the suspension, or one the widget makes later in its own
+        // process, which is not known to be allowed to submit — reaches the server without the
+        // app being opened. Once per trip to the background, not per window: the App's phase is
+        // every scene's together. Only while a session is stored (`scheduleIfSignedIn`).
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .background else { return }
+            BackgroundRefresh.scheduleIfSignedIn(reason: .sceneBackground)
+        }
         #endif
     }
 
@@ -218,12 +242,7 @@ struct StrideApp: App {
 
     @MainActor
     private func syncIfLoggedIn(_ modelContainer: ModelContainer) async {
-        await AuthService.shared.waitForSessionRestore()
-        guard AuthService.shared.isLoggedIn else { return }
-        let context = modelContainer.mainContext
-        // Automatic: skipped while the server has asked this device to wait, or failures are
-        // backing off. Sync Now in Settings still goes at once.
-        if await SyncService.shared.sync(context: context, trigger: .automatic) {
+        await Self.syncIfLoggedIn(modelContainer, auth: .shared, sync: .shared) { modelContainer in
             // A pull can change a habit's kind, days or reminder time, and pending requests keep
             // what they were scheduled with: a Mon/Wed/Fri habit made daily on the phone kept its
             // three weekday triggers here, and a kind change kept the other button, until the next
@@ -231,6 +250,36 @@ struct StrideApp: App {
             // "stale-category-addone-untoggles-binary"). Every habit's requests are replaced
             // whole. No prune: that stays with the launch pass, see `scheduleAllHabitReminders`.
             NotificationService.shared.scheduleAllHabitReminders(modelContainer: modelContainer)
+        }
+    }
+
+    /// The launch and foreground sync (iOS willEnterForeground, macOS didBecomeActive), with the
+    /// services injected for the hosted tests. `afterSync` runs only after a sync that ran to the
+    /// end.
+    ///
+    /// Since 1.4.0 a background launch can leave this process with a stored session and no user —
+    /// its one session check failed offline — and the user's next open resumes that process
+    /// (RELEASE-1.4.0.md D5; design review, "bg-launch-leaves-currentUser-nil"). 1.3.x's
+    /// `guard isLoggedIn` then turned every foreground sync away for the life of the process, while
+    /// background runs kept syncing from the remembered account. So, in this order:
+    /// 1. ask the server about the stored session again when no user is known
+    ///    (`recheckStoredSessionIfNeeded`) — signs the device back in, or finds the session gone;
+    /// 2. wait out a sync in flight, so a stale background run cannot turn this one away (it
+    ///    returns false to a second caller rather than queueing it);
+    /// 3. sync when there is a session to sync with (`currentSyncSession`: the stored token and
+    ///    its account, loaded user or not), not only when a user is loaded — the sync resolves the
+    ///    session itself, as background runs and Erase's pre-erase sync always have. A recheck
+    ///    that got no answer therefore still attempts the push.
+    @MainActor
+    static func syncIfLoggedIn(_ modelContainer: ModelContainer, auth: AuthService, sync: SyncService,
+                               afterSync: (ModelContainer) -> Void) async {
+        await auth.recheckStoredSessionIfNeeded()
+        await sync.waitUntilIdle()
+        guard auth.currentSyncSession() != nil else { return }
+        // Automatic: skipped while the server has asked this device to wait, or failures are
+        // backing off. Sync Now in Settings still goes at once.
+        if await sync.sync(context: modelContainer.mainContext, trigger: .automatic) {
+            afterSync(modelContainer)
         }
     }
 

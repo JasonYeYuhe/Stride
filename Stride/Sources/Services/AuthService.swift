@@ -44,8 +44,9 @@ final class AuthService {
 
     /// A session token is in the Keychain, whether or not its user is loaded. The two differ
     /// after a launch whose session check failed (offline, a timeout): `currentUser` is nil,
-    /// the token and the sync cursor are still there, and the next launch with a network is
-    /// signed in again. Anything that must not treat that device as signed out — the login
+    /// the token and the sync cursor are still there, and the next launch with a network — since
+    /// 1.4.0 the next foreground (`recheckStoredSessionIfNeeded`) — is signed in again. Anything
+    /// that must not treat that device as signed out — the login
     /// link, Erase Local Data — asks this as well as `isLoggedIn`. A Keychain read; not for
     /// hot paths.
     var hasStoredSession: Bool { tokenStore.read() != nil }
@@ -108,16 +109,51 @@ final class AuthService {
         }
     }
 
-    /// Wait until the initial session restoration has completed (up to 10 seconds).
+    /// Wait until the initial session restoration has completed (up to `timeout`, 10 seconds).
     /// Call this before checking `isLoggedIn` on cold start to avoid races.
-    func waitForSessionRestore() async {
-        let deadline = ContinuousClock.now + .seconds(10)
+    ///
+    /// It never writes `isSessionRestored`; only the check does (RELEASE-1.4.0.md D5). Until 1.4.0
+    /// a waiter that timed out marked the session restored itself, with the check still in flight
+    /// — so every later waiter returned at once, and a check that then failed was never waited
+    /// for or retried. Harmless while the check always ran with the user opening the app; since
+    /// background launches create `shared` (a refresh, a reminder's action), the check can be in
+    /// flight when the process is suspended and fail on resume (design review,
+    /// "bg-launch-leaves-currentUser-nil"). On the deadline, or when the waiting task is
+    /// cancelled (a background task that expired), it just returns: a cancelled `Task.sleep`
+    /// throws at once, and the old `try?` loop spun on the main actor until the deadline.
+    func waitForSessionRestore(timeout: Duration = .seconds(10)) async {
+        let deadline = ContinuousClock.now + timeout
         while !isSessionRestored && ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(50))
+            do {
+                try await Task.sleep(for: .milliseconds(50))
+            } catch {
+                return
+            }
         }
-        // If we timed out, mark as restored so the app can proceed
-        if !isSessionRestored {
-            isSessionRestored = true
+    }
+
+    /// The foreground's way back to a signed-in device after a session check that failed or never
+    /// answered: asks the server about the stored token again when no user is known
+    /// (`StrideApp.syncIfLoggedIn`, at launch and on every foreground).
+    ///
+    /// Needed since 1.4.0: a background launch's check can fail offline, and the user's next open
+    /// is then a resume of that same process, not a launch — 1.3.x's "the next launch with a
+    /// network is signed in again" (`hasStoredSession`) no longer came, and Today, Settings and
+    /// every `isLoggedIn` gate treated the device as signed out until iOS evicted it.
+    ///
+    /// Through `restoreStoredSession`, never `checkSession`: that one sets `isLoading` and clears
+    /// `error`, which an open login sheet shows as its spinner and its message. A user loaded
+    /// signs in; `{user: null}` deletes the dead token and raises "Sign in again"; an error
+    /// changes nothing.
+    func recheckStoredSessionIfNeeded() async {
+        await waitForSessionRestore()
+        guard currentUser == nil, hasStoredSession else { return }
+        do {
+            try await restoreStoredSession()
+            let answer = isLoggedIn ? "signed in" : "not signed in"
+            Self.logger.notice("Stored session rechecked: \(answer, privacy: .public)")
+        } catch {
+            Self.logger.notice("Stored session recheck got no answer")
         }
     }
 

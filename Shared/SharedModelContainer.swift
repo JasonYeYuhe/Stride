@@ -109,6 +109,27 @@ enum SharedModelContainer {
         #endif
     }
 
+    /// Complete-until-first-user-authentication (class C) on the store and its SQLite sidecars,
+    /// iOS only, after the app's open (`AppStoreOpen.run`; RELEASE-1.4.0.md D5).
+    ///
+    /// Defensive: class C is ALREADY what these files get, as the default class of an app with no
+    /// data-protection entitlement (Stride has none, and the widget extension none either) — the
+    /// same note as `SyncRecoveryLog.protect`. It matters if an entitlement is ever added: a store
+    /// at class A (`complete`) cannot be read or written while the device is locked, which is
+    /// exactly when 1.4.0's background refresh and lock-screen reminder actions run. SwiftData's
+    /// `ModelConfiguration` has no protection option, hence file attributes. `-wal` and `-shm` hold
+    /// the newest writes until a checkpoint, so they need it as much as the store. Best effort, as
+    /// there: a failure leaves the default class, and does not fail the open. It does not help
+    /// before the first unlock after a reboot — nothing can, class C is unreadable then too.
+    static func protectStoreFiles(at url: URL) {
+        #if os(iOS)
+        for path in [url.path, url.path + "-wal", url.path + "-shm"] {
+            try? FileManager.default.setAttributes(
+                [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: path)
+        }
+        #endif
+    }
+
     /// The configuration every open of the real store uses — the app's and the widget's alike.
     static func makeContainer(at url: URL) throws -> ModelContainer {
         let schema = self.schema
@@ -355,6 +376,8 @@ struct AppStoreOpen {
             }
             return result
         }
+        // The store and its sidecars exist now (the open created them if it had to).
+        SharedModelContainer.protectStoreFiles(at: url)
         // A store outside the App Group has no widget to wait for it.
         if case .appGroup = location, let defaults {
             StoreSchemaGate.markOpenedByApp(in: defaults)

@@ -31,9 +31,16 @@ struct CheckInEffects {
             updateBadge: { await NotificationService.shared.updateBadgeAndWait(modelContainer: $0) },
             cancelSnooze: { NotificationService.shared.cancelSnooze(for: $0) },
             withdrawDelivered: { NotificationService.shared.withdrawDeliveredReminders(for: $0) },
-            // A no-op until the background-sync workstream (W3) lands
-            // `BackgroundRefresh.schedule(reason:)` with its check-in reason (D5).
-            submitRefresh: {})
+            submitRefresh: {
+                #if os(iOS)
+                // While a session is stored (D5). Through the one entry point, which submits off
+                // the main thread and logs `refresh submit check-in: …`. Also the reminder
+                // action's submit (D4 step 4): the handler's environment uses these effects.
+                BackgroundRefresh.scheduleIfSignedIn(reason: .checkIn)
+                #endif
+                // The Mac has no background refresh: a reminder's action syncs under its own
+                // ProcessInfo activity, and the app syncs on activation.
+            })
     }
 
     /// After `habitID`'s check-in was saved in `container`. Posting `.habitDataChanged` stays with

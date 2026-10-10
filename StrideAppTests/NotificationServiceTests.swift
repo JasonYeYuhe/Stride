@@ -73,8 +73,15 @@ final class RecordingCenter: NotificationScheduling, @unchecked Sendable {
         for id in identifiers { pending.removeValue(forKey: id) }
     }
 
+    /// While true, the pending list is answered later, from another queue, as the real center
+    /// answers — so a caller that returns before the answer, and before what it does with it, is
+    /// caught (`rescheduleAllHabitRemindersAndWait`).
+    var answersPendingLater = false
+
     func getPendingNotificationRequests(completionHandler: @escaping @Sendable ([UNNotificationRequest]) -> Void) {
-        completionHandler(Array(pending.values))
+        let requests = Array(pending.values)
+        guard answersPendingLater else { return completionHandler(requests) }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { completionHandler(requests) }
     }
 
     func setNotificationCategories(_ categories: Set<UNNotificationCategory>) {
@@ -325,6 +332,23 @@ final class NotificationServiceTests: XCTestCase {
 
         XCTAssertEqual(Set(center.pending.keys), [reminderID(active), "stride.daily.evening"])
         XCTAssertEqual(center.trigger(reminderID(active))?.dateComponents, DateComponents(hour: 6, minute: 45))
+    }
+
+    /// The background refresh's reschedule (BackgroundSync) returns only once the prune has run:
+    /// its process may be suspended as soon as the task is completed, and the real center answers
+    /// the pending list later, from its own queue. Returning before that left the prune — and an
+    /// orphan's daily reminder — waiting for the next launch.
+    func testRescheduleAndWaitReturnsOnlyOnceThePruneHasRun() async throws {
+        let read = habit("Read")
+        try insert(read)
+        let deletedElsewhere = "stride.habit.reminder." + UUID().uuidString
+        center.seed(deletedElsewhere)
+        center.answersPendingLater = true
+
+        await service.rescheduleAllHabitRemindersAndWait(modelContainer: container)
+
+        XCTAssertEqual(Set(center.pending.keys), [reminderID(read)], "the orphan is already gone")
+        XCTAssertTrue(center.removed.contains(deletedElsewhere))
     }
 
     /// The first 1.4.0 launch over a 1.3.x store: a Mon/Wed/Fri habit's old daily request becomes

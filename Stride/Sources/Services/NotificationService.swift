@@ -441,13 +441,30 @@ final class NotificationService {
     func rescheduleAllHabitReminders(modelContainer: ModelContainer) {
         // Don't prune on a failed fetch: an empty "keep" set would delete every reminder.
         guard let plan = scheduleAllHabitReminders(modelContainer: modelContainer) else { return }
+        pruneOrphans(keeping: plan.keep) {}
+    }
 
+    /// `rescheduleAllHabitReminders`, returning once the prune has run: for the background refresh
+    /// (BackgroundSync), whose process can be suspended as soon as its task is completed, taking a
+    /// prune still waiting on the center's answer with it.
+    func rescheduleAllHabitRemindersAndWait(modelContainer: ModelContainer) async {
+        guard let plan = scheduleAllHabitReminders(modelContainer: modelContainer) else { return }
         let keep = plan.keep
+        await withCheckedContinuation { (finished: CheckedContinuation<Void, Never>) in
+            pruneOrphans(keeping: keep) { finished.resume() }
+        }
+    }
+
+    /// Removes every pending habit request the planner did not keep, then calls `done` — from the
+    /// center's callback, off the main actor.
+    private func pruneOrphans(keeping keep: Set<String>, then done: @escaping @Sendable () -> Void) {
         let center = self.center
         center.getPendingNotificationRequests { requests in
             let orphans = ReminderPlan.prune(requests.map(\.identifier), keep: keep)
-            guard !orphans.isEmpty else { return }
-            center.removePendingNotificationRequests(withIdentifiers: orphans)
+            if !orphans.isEmpty {
+                center.removePendingNotificationRequests(withIdentifiers: orphans)
+            }
+            done()
         }
     }
 
