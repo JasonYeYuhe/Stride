@@ -26,7 +26,8 @@ struct ContentView: View {
     @State private var exportPanelFile: URL?
     /// The same file, kept until the panel answers: the panel's close clears `exportPanelFile`
     /// through its binding, and SwiftUI does not say whether that comes before or after
-    /// `onCancellation`, which needs the file to delete it.
+    /// `onCancellation`, which needs the file to delete it. Held from the erases' sweeps while it
+    /// is here (`offerToExportPanel`).
     @State private var exportPanelOffered: URL?
     /// The menu Export's write failed: an alert says so — a menu has no row to put the line under.
     @State private var exportFailed = false
@@ -95,13 +96,13 @@ struct ContentView: View {
                 // Moved: nothing is left in tmp. A failed move leaves the file to the sweeps: a move
                 // to another volume copies, then deletes, and its error does not say which step
                 // failed, so the file in tmp may be the only whole copy.
-                exportPanelOffered = nil
+                offerToExportPanel(nil)
                 if case .failure = result { exportFailed = true }
             } onCancellation: {
                 // Cancelled: the file was handed to no one, so it goes now rather than at the next
                 // launch, which on a Mac can be weeks away (D3: "no tmp copy is left"; W6 review).
                 if let offered = exportPanelOffered { DataExportService.removeUnsharedExport(at: offered) }
-                exportPanelOffered = nil
+                offerToExportPanel(nil)
             }
             .alert(appLocalized("Couldn't create the file. Try again."), isPresented: $exportFailed) {}
             #endif
@@ -315,8 +316,19 @@ struct ContentView: View {
             exportFailed = true
             return
         }
-        exportPanelOffered = written.url
+        offerToExportPanel(written.url)
         exportPanelFile = written.url
+    }
+
+    /// Sets the file the panel is offered, held from every sweep until the panel answers
+    /// (`DataExportService.exportsInUse`): the panel is a sheet on this window, and Settings'
+    /// Erase or Delete Account can run in its own window meanwhile, whose deferred sweep would
+    /// otherwise take a file left under the panel past ten minutes (verification, minor). The
+    /// file it replaces — one whose panel never came up — is let go, to the sweeps.
+    private func offerToExportPanel(_ url: URL?) {
+        if let offered = exportPanelOffered { DataExportService.exportsInUse.release(offered) }
+        exportPanelOffered = url
+        if let url { DataExportService.exportsInUse.hold(url) }
     }
 
     /// The save panel is up while there is a written file to move; its close, saved or cancelled,

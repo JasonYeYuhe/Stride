@@ -37,7 +37,9 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
         var container: @MainActor () -> ModelContainer?
         /// Widgets, snooze, banners, refresh submit and badge after the write (`CheckInEffects`).
         var effects: CheckInEffects
-        /// Pushes the check-in, inside the background task taken before `didReceive` returns.
+        /// Pushes the check-in, inside the background task taken before `didReceive` returns —
+        /// and on iOS, after the pull, refreshes the widgets, reminders and badge
+        /// (`sync(through:)`).
         var sync: @MainActor (ModelContainer) async -> Void
         /// Snooze 1 Hour, for the day `ReminderDay.resolve` gave. Awaited before `didReceive`
         /// returns: it returns once the system has the request (`NotificationService.scheduleSnooze`).
@@ -46,24 +48,52 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
         var calendar: @MainActor () -> Calendar
 
         static var live: Environment {
-            Environment(
+            #if os(iOS)
+            let actionSync = Self.sync(through: { .live })
+            #else
+            let actionSync: @MainActor (ModelContainer) async -> Void = { container in
+                // The record must be pushed even when a sync was already running when it was
+                // written: that run planned its push before the write and returns false to a
+                // second caller rather than queueing it (SyncService.sync). So wait it out,
+                // then run our own (design review, "action-write-dispatch-and-seams").
+                // `.background`: inside the owner's backoff window it does nothing (D5). Nothing
+                // after it: the Mac's process-wide triggers (StrideApp.installProcessTriggers)
+                // already see the pull's save and refresh the badge, snoozes and widgets.
+                await SyncService.shared.waitUntilIdle()
+                guard !Task.isCancelled else { return }
+                await SyncService.shared.sync(context: container.mainContext, trigger: .background)
+            }
+            #endif
+            return Environment(
                 container: { SharedModelContainer.opened },
                 effects: .live,
-                sync: { container in
-                    // The record must be pushed even when a sync was already running when it was
-                    // written: that run planned its push before the write and returns false to a
-                    // second caller rather than queueing it (SyncService.sync). So wait it out,
-                    // then run our own (design review, "action-write-dispatch-and-seams").
-                    // `.background`: inside the owner's backoff window it does nothing, and a run
-                    // the system cuts short leaves no backoff or error behind (D5).
-                    await SyncService.shared.waitUntilIdle()
-                    guard !Task.isCancelled else { return }
-                    await SyncService.shared.sync(context: container.mainContext, trigger: .background)
-                },
+                sync: actionSync,
                 scheduleSnooze: { habit, day in await NotificationService.shared.scheduleSnooze(for: habit, day: day) },
                 now: { Date() },
                 calendar: { .current })
         }
+
+        #if os(iOS)
+        /// iOS: the action's sync is the background refresh's own run (`BackgroundSync.run`). It
+        /// waits out a sync in flight — the record must be pushed even when a sync was already
+        /// running when it was written: that run planned its push before the write and turns a
+        /// second caller away rather than queueing it (design review,
+        /// "action-write-dispatch-and-seams") — then syncs `.background` (D5), then does what a
+        /// scene-less launch never attaches: widgets, the refresh pass, reminders, the badge.
+        ///
+        /// That last part is the fix pass's (verification, major). A lock-screen Mark Done launches
+        /// a terminated Stride with no scene, so no window's didSave observer exists; W2's sync
+        /// pulled other devices' check-ins and nothing followed it. The widget kept the timeline
+        /// it built before the pull, and its toggle acts on the store, so a tap on a habit the Mac
+        /// had checked off deleted that check-in on every device. 1.3.x never changed the store
+        /// without a window. `environment` is a closure so a hosted test hands its own.
+        static func sync(through environment: @escaping @MainActor () -> BackgroundSync.Environment)
+            -> @MainActor (ModelContainer) async -> Void {
+            { container in
+                _ = await BackgroundSync.run(container: container, environment: environment())
+            }
+        }
+        #endif
     }
 
     /// What a response came to. For the tests and the log; the system is told nothing.
@@ -104,10 +134,25 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
     /// The async form: the system is told the response is handled when this returns, so
     /// everything that must happen before the process may be suspended — the write, the badge,
     /// taking the background task for the sync — happens before it does.
+    ///
+    /// **`@MainActor`, because of who calls the completion.** The ObjC selector UIKit calls is the
+    /// completion-handler form; Swift's bridging thunk runs this method in a task and calls that
+    /// completion the moment it returns, on whatever executor it returned on. Nonisolated (a
+    /// plain NSObject in a Swift 5.9 module infers no isolation from an ObjC protocol), it
+    /// returned on the cooperative pool, and UIKit's completion for a response delivered to a
+    /// background scene — Stride suspended, the usual state, or a terminated Stride relaunched
+    /// for a banner — asserts the main thread: `-[UIApplication
+    /// _performBlockAfterCATransactionCommitSynchronizes:]` raised "Call must be made on main
+    /// thread", and 8 of the E2E's 9 responses (Mark Done, Add 1, Snooze, the default tap)
+    /// aborted the app right after their write (verification, blocker). Main-actor isolated, the
+    /// thunk's task hops to the main actor before calling this and calls the completion still on
+    /// it (checked in SILGen: `hop_to_executor MainActor.shared`, then the block). Pinned by a
+    /// hosted test that sends the ObjC selector and asserts the thread of the completion.
+    @MainActor
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse) async {
-        // Read here, off the main actor: the response is not Sendable, and the route and two dates
-        // are all that cross.
+        // Read on the main actor, before the first await: the response is not Sendable, and the
+        // route and the delivered date are all the rest of the work needs.
         let content = response.notification.request.content
         let route = NotificationRouter.route(actionIdentifier: response.actionIdentifier,
                                              categoryIdentifier: content.categoryIdentifier,

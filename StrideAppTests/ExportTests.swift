@@ -1,6 +1,8 @@
 import XCTest
 import SwiftData
+import SwiftUI
 import UIKit
+import LinkPresentation
 import UniformTypeIdentifiers
 @testable import Stride
 
@@ -271,6 +273,94 @@ final class ExportTests: XCTestCase {
         try await waitUntil { screen.presentedViewController == nil }
     }
 
+    /// The verification's minor: at regular width a kept-alive Settings tab stays in the window at
+    /// opacity 0 when the user moves to Today (D2), so "in a window, nothing presented" let an
+    /// export that finished meanwhile put its popover over Today, its arrow at an invisible row.
+    /// The anchor carries whether its tab is shown; hidden, the share is dropped like any other
+    /// whose button cannot be seen, and nothing is presented.
+    func testAShareFromAHiddenTabIsDropped() async throws {
+        let url = try DataExportService.writeExportFile(Data("{}".utf8), named: "Stride-Backup-2026-10-10.json", in: root)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        let screen = UIViewController()
+        window.rootViewController = screen
+        window.makeKeyAndVisible()
+        window.layoutIfNeeded()
+        hostedWindow = window
+        let view = UIView(frame: CGRect(x: 40, y: 300, width: 160, height: 44))
+        screen.view.addSubview(view)
+        let anchor = ExportShareAnchor()
+        anchor.view = view
+
+        anchor.isShown = false
+        XCTAssertFalse(ExportSharePresenter.present(url, from: anchor), "its tab is hidden")
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(screen.presentedViewController, "nothing comes up over the tab that shows")
+
+        anchor.isShown = true
+        XCTAssertTrue(ExportSharePresenter.present(url, from: anchor), "the same button, its tab shown")
+        try await waitUntil { screen.presentedViewController is UIActivityViewController }
+        let sheet = try XCTUnwrap(screen.presentedViewController)
+        try await waitUntil { !sheet.isBeingPresented }
+        screen.dismiss(animated: false)
+        try await waitUntil { screen.presentedViewController == nil }
+    }
+
+    /// Where the anchor learns it: `\.shellTabIsActive`, read by the button and handed to its
+    /// anchor view, follows the shell's selection (`shellTab(isActive:)`); the anchor follows it,
+    /// both ways, through SwiftUI's own updates.
+    func testTheAnchorFollowsWhetherItsTabIsShown() async throws {
+        struct Probe: View {
+            let anchor: ExportShareAnchor
+            @Environment(\.shellTabIsActive) private var isShown
+            var body: some View {
+                Color.clear.frame(width: 100, height: 44)
+                    .background(ExportShareAnchorView(anchor: anchor, isShown: isShown))
+            }
+        }
+        struct Shell: View {
+            let tab: ExportProbeTab
+            let anchor: ExportShareAnchor
+            var body: some View { Probe(anchor: anchor).environment(\.shellTabIsActive, tab.isActive) }
+        }
+        let tab = ExportProbeTab()
+        let anchor = ExportShareAnchor()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = UIHostingController(rootView: Shell(tab: tab, anchor: anchor))
+        window.makeKeyAndVisible()
+        hostedWindow = window
+
+        try await waitUntil { anchor.view?.window != nil && anchor.isShown }
+        tab.isActive = false
+        try await waitUntil { !anchor.isShown }
+        XCTAssertNotNil(anchor.view?.window, "hidden, the anchor is still in the window — why the flag is needed")
+        tab.isActive = true
+        try await waitUntil { anchor.isShown }
+    }
+
+    /// The share sheet's header (verification, iPad E2E: a blank placeholder with no name, on the
+    /// iPhone too). The configuration names the file in LinkPresentation metadata — the header's
+    /// preview and nothing else — and still hands activities exactly one item, the file: no
+    /// title, no message body, so no subject and nothing that could be saved as text.txt (D6).
+    func testTheShareHeaderNamesTheFileAndAddsNoItem() throws {
+        let url = try DataExportService.writeExportFile(Data("{}".utf8), named: "Stride-Backup-2026-10-10.json", in: root)
+
+        let configuration = ExportSharePresenter.itemsConfiguration(sharing: url)
+
+        // As the share sheet reads it: through the protocol, whose metadata methods are optional.
+        let reading: UIActivityItemsConfigurationReading = configuration
+        let providers = reading.itemProvidersForActivityItemsConfiguration
+        XCTAssertEqual(providers.count, 1, "the file alone")
+        XCTAssertEqual(providers.first?.registeredTypeIdentifiers, [UTType.json.identifier])
+        let header = try XCTUnwrap(reading.activityItemsConfigurationMetadata?(key: .linkPresentationMetadata) as? LPLinkMetadata)
+        XCTAssertEqual(header.title, "Stride-Backup-2026-10-10.json")
+        XCTAssertNil(header.url, "a file, not a link")
+        XCTAssertNil(header.originalURL)
+        XCTAssertNil(reading.activityItemsConfigurationMetadata?(key: .title) as Any?, "no subject")
+        XCTAssertNil(reading.activityItemsConfigurationMetadata?(key: .messageBody) as Any?, "no text")
+    }
+
     private func waitUntil(_ condition: () -> Bool) async throws {
         let deadline = ContinuousClock.now + .seconds(5)
         while !condition(), ContinuousClock.now < deadline {
@@ -340,6 +430,41 @@ final class ExportTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: kept.path))
     }
 
+    // MARK: - A file under an open save panel (verification, minor)
+
+    /// A Mac save panel holds its file from the offer to its answer (ContentView's menu Export,
+    /// `ExportShareButton`), and Settings' Erase or Delete Account can run in another window
+    /// meanwhile: no sweep — the erase's own, its deferred one ten minutes on, the launch's —
+    /// takes a held file, whatever its age. Released, it is the sweeps' again. Held twice (never
+    /// expected), it needs both releases.
+    func testASweepSparesAFileASavePanelHolds() async throws {
+        let held = try DataExportService.writeExportFile(Data("{}".utf8), named: "Stride-Backup.json", in: root)
+        let other = try DataExportService.writeExportFile(Data("a,b\n".utf8), named: "Stride-Export.csv", in: root)
+        try backdate(held, by: DataExportService.exportGracePeriod + 60)
+        try backdate(other, by: DataExportService.exportGracePeriod + 60)
+        let inUse = DataExportService.exportsInUse
+        inUse.hold(held)
+        addTeardownBlock { inUse.release(held); inUse.release(held) }
+
+        XCTAssertEqual(DataExportService.removeExportFiles(in: root, olderThan: DataExportService.exportGracePeriod), 1,
+                       "the erase's sweep takes the other old export only")
+        XCTAssertEqual(exportDirectories(), [held.deletingLastPathComponent().lastPathComponent])
+        let delay = DataExportService.deferredExportSweepDelay
+        DataExportService.deferredExportSweepDelay = .milliseconds(100)
+        addTeardownBlock { DataExportService.deferredExportSweepDelay = delay }
+        let deferred = await DataExportService.scheduleDeferredExportSweep(in: root).value
+        XCTAssertEqual(deferred, 0, "the deferred sweep, ten minutes on, spares it")
+        XCTAssertEqual(DataExportService.removeExportFiles(in: root), 0, "so does a full sweep")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: held.path), "the panel's Save still has its file")
+
+        inUse.hold(held)
+        inUse.release(held)
+        XCTAssertEqual(DataExportService.removeExportFiles(in: root), 0, "still held once")
+        inUse.release(held)
+        XCTAssertEqual(DataExportService.removeExportFiles(in: root), 1, "the panel answered: the sweeps' again")
+        XCTAssertEqual(exportDirectories(), [])
+    }
+
     // MARK: - A write in flight (W4 review)
 
     /// From the tap to the written file, an export is counted (`SyncService.isWritingExport`),
@@ -373,6 +498,13 @@ final class ExportTests: XCTestCase {
             tries += 1
         }
     }
+}
+
+/// The shell's selection as `testTheAnchorFollowsWhetherItsTabIsShown` flips it (`@Observable`
+/// cannot be on a type local to a function).
+@Observable
+private final class ExportProbeTab {
+    var isActive = true
 }
 
 /// What a load handler saw, handed back to the test's thread.

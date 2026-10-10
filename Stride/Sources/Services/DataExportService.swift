@@ -147,8 +147,10 @@ enum DataExportService {
     }
 
     /// Deletes the export at `url` — its whole `StrideExport-<UUID>` directory — at once, for an
-    /// export that was written and then handed to no one: the Mac menu Export's save panel
-    /// cancelled, or its pass dropped before the panel came up (ContentView). Nothing can be
+    /// export that was written and then handed to no one: a Mac save panel cancelled — the menu
+    /// Export's (ContentView) or an Export button's (`ExportShareButton`, since the fix pass) — or
+    /// a pass dropped before its panel came up (the menu's pass cancelled or blocked by a sheet,
+    /// a button whose view went during the write). Nothing can be
     /// reading such a file, so it does not wait for a sweep: on a Mac, launches can be weeks
     /// apart, and every ⇧⌘E → Cancel used to leave one more full backup of every habit in tmp
     /// until the next launch (W6 review). Never for a file a share sheet or a save panel still
@@ -165,6 +167,18 @@ enum DataExportService {
 
     /// How long a fresh export survives an erase (RELEASE-1.4.0.md D6, "Cleanup").
     static let exportGracePeriod: TimeInterval = 10 * 60
+
+    /// The exports a Mac save panel holds — the menu Export's (ContentView) and every Export
+    /// button's (`ExportShareButton`) — from the moment the panel is offered the file until it
+    /// answers. No sweep takes them (`removeExportFiles`).
+    ///
+    /// Why (verification, minor): a save panel is a sheet on one window, and Settings' Erase Local
+    /// Data, Delete Account and the account screen's Start stay usable in another while it is up;
+    /// and an erase's deferred sweep runs 10 min 5 s after it, whatever is on screen then. It
+    /// spares the last `exportGracePeriod` only, so a panel left open past that had its file
+    /// deleted underneath it, and Save then failed with the backup of the data just erased gone.
+    /// iOS's share sheet is modal over the flows that erase, so only the Mac holds files here.
+    static let exportsInUse = ExportsInUse()
 
     /// Deletes the export directories under `root` — every one, or with `olderThan`, only those
     /// made at least that long before `now` — and returns how many went (E2E S-DEL).
@@ -183,14 +197,15 @@ enum DataExportService {
     ///
     /// A directory whose age cannot be read counts as fresh: an erase leaves it to the deferred
     /// sweep or the next launch rather than risk the backup of what it erased. One that cannot be
-    /// removed now is left for the next call.
+    /// removed now is left for the next call. One a save panel holds (`exportsInUse`) is never
+    /// taken, whatever its age: the panel's answer releases it, and its Cancel deletes it.
     @discardableResult
     static func removeExportFiles(in root: URL = FileManager.default.temporaryDirectory,
                                   olderThan age: TimeInterval = 0, now: Date = Date()) -> Int {
         let fileManager = FileManager.default
         guard let names = try? fileManager.contentsOfDirectory(atPath: root.path) else { return 0 }
         var removed = 0
-        for name in names where name.hasPrefix(exportDirectoryPrefix) {
+        for name in names where name.hasPrefix(exportDirectoryPrefix) && !exportsInUse.holds(directoryNamed: name) {
             let directory = root.appendingPathComponent(name, isDirectory: true)
             if age > 0 {
                 let values = try? directory.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
@@ -480,6 +495,36 @@ enum DataExportService {
         f.timeZone = TimeZone.current
         return f
     }()
+}
+
+/// The export directories a save panel holds (`DataExportService.exportsInUse`), by
+/// `StrideExport-<UUID>` name, counted. Lock-guarded: the deferred sweep reads it off the main
+/// actor, from a detached task.
+final class ExportsInUse: @unchecked Sendable {
+    private let lock = NSLock()
+    private var counts: [String: Int] = [:]
+
+    /// `url` is the written file; its directory is what is held.
+    func hold(_ url: URL) {
+        let name = Self.directoryName(of: url)
+        lock.withLock { counts[name, default: 0] += 1 }
+    }
+
+    func release(_ url: URL) {
+        let name = Self.directoryName(of: url)
+        lock.withLock {
+            guard let count = counts[name] else { return }
+            counts[name] = count > 1 ? count - 1 : nil
+        }
+    }
+
+    func holds(directoryNamed name: String) -> Bool {
+        lock.withLock { counts[name] != nil }
+    }
+
+    private static func directoryName(of url: URL) -> String {
+        url.deletingLastPathComponent().lastPathComponent
+    }
 }
 
 // MARK: - The restore screen

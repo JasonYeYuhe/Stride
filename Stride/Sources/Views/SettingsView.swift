@@ -759,9 +759,9 @@ struct SettingsView: View {
                 eraseConfirmMessage
             }
             .onChange(of: auth.isLoggedIn) { _, loggedIn in
-                if loggedIn {
-                    Task { await sync.sync(context: modelContext) }
-                }
+                guard loggedIn else { return }
+                let trigger = Self.syncTrigger(afterUserLoadedBy: auth.userLoadedBy)
+                Task { await sync.sync(context: modelContext, trigger: trigger) }
             }
             // Each time Settings is shown. A `.task` alone runs when the view appears, and at
             // regular width the shell keeps Settings alive once visited, hidden while another place
@@ -780,6 +780,25 @@ struct SettingsView: View {
                 await refreshReminderSettings()
                 await store.refreshPurchasedProducts()
             }
+    }
+
+    /// The sync Settings runs when `isLoggedIn` turns true. A sign-in the user just made goes at
+    /// once, as Sync Now does (`.userInitiated`: a user who asked is never told "later"). A
+    /// session restored with no one asking — the launch check, W3's foreground recheck, a login
+    /// link's or a sync's recheck — turns it true too, and syncs `.automatic`: inside the owner's
+    /// backoff window or the server's pause it sends nothing (D5).
+    ///
+    /// Until the fix pass every flip was `.userInitiated`. 1.3.x flipped only at the launch check
+    /// or a sign-in, but the recheck flips it on an ordinary foreground, and Settings stays alive
+    /// to see it (iPad's kept tab, the iPhone's TabView, the Mac's Settings window): a paused
+    /// server was synced anyway, and `syncIfLoggedIn` then waited that sync out and ran its own
+    /// (verification, minor). Not skipped for a restore: a login link's recheck that finds the
+    /// session alive ignores the link, and nothing else syncs then.
+    static func syncTrigger(afterUserLoadedBy load: AuthService.UserLoad?) -> SyncService.Trigger {
+        switch load {
+        case .signIn: return .userInitiated
+        case .restore, nil: return .automatic
+        }
     }
 
     // MARK: - Backup, Restore, Erase

@@ -305,6 +305,17 @@ downgraded, 3 refuted. Everything below is the revised design. The adopted findi
   - Its environment is injected for tests: container provider, reload, badge, sync, refresh
     submitter, snooze scheduler, now, calendar. `UNNotificationResponse` cannot be constructed, so
     the delegate is a thin shim over `perform(route:delivered:responded:)`.
+  - As built (fix pass; verification, blocker): the async `didReceive` is `@MainActor`. UIKit
+    sends the completion-handler selector, and Swift's bridging thunk calls that completion
+    wherever the async method returned. Nonisolated (a plain NSObject in this Swift 5.9 module),
+    it returned on the cooperative pool. UIKit's completion for a response to a background scene
+    asserts the main thread (`_performBlockAfterCATransactionCommitSynchronizes:`, "Call must be
+    made on main thread"). So 8 of the E2E's 9 responses aborted the app right after the write:
+    Mark Done, Add 1, Snooze and the default tap, from a terminated or suspended Stride. The
+    writes survived, the action's sync did not. With the annotation the thunk hops to the main
+    actor and calls the completion there (checked in SILGen). Pinned by a hosted test that sends
+    the ObjC selector itself, with stand-ins for the response, and asserts the completion's
+    thread; without `@MainActor` it fails. The response's two reads stay before the first await.
 - **After the write.**
   1. Post `.habitDataChanged`, reload widgets, cancel the snooze and withdraw this habit's
      delivered banners, then await the badge.
@@ -314,6 +325,20 @@ downgraded, 3 refuted. Everything below is the revised design. The adopted findi
      when a sync was already running.
   4. iOS: submit a refresh (D5).
   5. The Mac does the same sync, since its only other trigger is activation.
+
+  As built (fix pass; verification, major): on iOS, steps 2–3 run the refresh's own
+  `BackgroundSync.run`, through `NotificationActionHandler.Environment.sync(through:)`. A
+  lock-screen action launches a terminated Stride with no scene, so no window's didSave
+  observer exists, and W2's sync pulled other devices' changes with nothing after it. The widget
+  kept the timeline it built before the pull. Its toggle acts on the store, so a tap on a habit
+  the Mac had checked off deleted that check-in on every device (and a pulled un-check was
+  re-checked). 1.3.x never changed the store without a window. `run` already waits out a sync in
+  flight and syncs `.background`, and after it come the widgets, `refreshAfterDataChange`, the
+  reminders and the badge (D5 below). The orphan prune is skipped while the app is active: an
+  older banner answered from Notification Center over a frontmost Stride can meet a habit sheet
+  that is saving. The Mac keeps the plain sync: its process-wide triggers see the pull's save.
+  Hosted test: a Mark Done whose sync pulls another device's habit records the widgets' reload
+  after the pull was saved, then the reminders and badge.
 - **Delivered-banner hygiene.** At launch, foreground and `NSCalendarDayChanged`, banners delivered
   before today are withdrawn. A check-in in the app, the intent or the handler withdraws that
   habit's banners.
@@ -357,6 +382,14 @@ downgraded, 3 refuted. Everything below is the revised design. The adopted findi
   - **Completion is claimed once**, with a lock-guarded flag. The **expiration handler** does only
     thread-safe work: `work.cancel()`, then complete with false. It never waits for the main
     actor.
+  - As built (fix pass): the after-sync work is two parts. `refreshAfterSync` (widgets, then
+    `refreshAfterDataChange`) is synchronous and runs whenever the sync returned, before the
+    second cancellation guard. `afterSync` (reminders, then the badge, both awaited) runs only
+    while the task is alive. Before, a task that expired just after a sync that pulled skipped the
+    widget reload with the rest. The prune also runs only while the app is not active, for both
+    callers (the refresh, and on iOS a reminder action's sync, D4). Hosted tests: a run cancelled
+    right after its pull still reloads, over a store with the pulled habit in it, and awaits
+    nothing.
 - **Submitting.** One entry point, `BackgroundRefresh.schedule(reason:)`, with an injected
   submitter.
   - It runs in a detached task: the iOS 27 async `submit` must not run on the main thread, and
@@ -379,6 +412,17 @@ downgraded, 3 refuted. Everything below is the revised design. The adopted findi
     background run cannot turn the foreground sync away.
   - A hosted test fails the check, runs a background sync, then foregrounds with the stub
     answering.
+  - As built (fix pass; verification, minor): the recheck turns `isLoggedIn` true with no one
+    asking, and Settings stays alive to see it (iPad's kept tab, the iPhone's TabView, the Mac's
+    Settings window). Its `onChange(isLoggedIn)` sync was `.userInitiated`, which goes through
+    the owner's backoff window and the server's pause. `syncIfLoggedIn` then waited it out and
+    ran its own. `AuthService.userLoadedBy` now records how the user was loaded: `.signIn`
+    (`verifyToken`: a code or a login link) or `.restore` (the launch check, the recheck, a login
+    link's or a sync's recheck). Settings syncs `.userInitiated` only after a sign-in, and
+    `.automatic` otherwise (`SettingsView.syncTrigger(afterUserLoadedBy:)`). It is not skipped
+    for a restore: a login link's recheck that finds the session alive ignores the link, and
+    nothing else syncs then. Hosted test, Settings in a window and inside a paused window: a
+    restore sends nothing, and a sign-in afterwards syncs at once.
 - **The widget's deletion queue** (pre-existing race, now likelier): append and remove on the
   App Group key are guarded by an `flock` on a lock file in the App Group container, in both
   processes, held only inside the synchronous call. A StrideTests case uses two queue instances.
@@ -405,6 +449,14 @@ downgraded, 3 refuted. Everything below is the revised design. The adopted findi
       (`UIActivityViewController(activityItemsConfiguration:)`, iOS 14), the documented way to hand
       the sheet item providers. The ShareLinks' `subject: "Stride Habits Export"` (a Mail subject
       only) is not carried over: no metadata is set, so nothing beside the file can turn into text.
+    - As built (fix pass; iPad E2E, cosmetic): the header was a blank placeholder icon with no
+      name, on the iPhone too. The configuration's `metadataProvider` now answers only
+      `.linkPresentationMetadata`, an `LPLinkMetadata` whose title is the file's name, with no URL.
+      It is the header's preview and adds no activity item. `.title` filled the header just as
+      well on the Simulator, but whether an activity such as Mail takes it as a subject is not
+      documented, so it is not used; `.messageBody` would be a text. Checked by screenshot on the
+      iOS 26.5 Simulator: the name shows and the targets are unchanged (Save to Files, More).
+      Hosted test: one item provider, the header's title, no title and no message body.
     - It is presented from the anchor's own view controller, after checking **at presentation
       time** that the anchor is still in a window and that the controller presents nothing.
       Otherwise the share is dropped quietly.
@@ -413,6 +465,21 @@ downgraded, 3 refuted. Everything below is the revised design. The adopted findi
   - **macOS:** `.fileMover` save panel with the written URL, the same as the menu Export. Unlike
     1.3.x's share picker, it saves the backup to a folder the user picks, which is what 1.3.1's
     What's New told users to do.
+    - As built (fix pass; verification, minor): the button now follows the menu Export's rule
+      (D3, "As built (W6 review)"). A cancelled panel deletes its file at once
+      (`removeUnsharedExport`). So does a write that finishes after the button's view is gone (a
+      sheet dismissed, the Settings window closed): an `ExportButtonPresence` reference, set by
+      `onAppear`/`onDisappear`, is read when the file is ready. Its panel used to be set on dead
+      state, and every Settings → Export → Cancel kept a full backup in tmp until a launch weeks
+      away. A failed move is still the sweeps'. No test host reaches the Mac's views: this is on
+      D7's Mac pass.
+    - As built (fix pass): a kept-alive hidden tab presents no share. At regular width a hidden
+      Settings tab stays in the window at opacity 0 (D2), so "in a window" let an export that
+      finished after the user moved to Today put its popover there, anchored to an invisible row.
+      The button reads `\.shellTabIsActive` and hands it to its anchor (`ExportShareAnchor.isShown`).
+      `ExportSharePresenter.present` drops the share, logged like the other drops, when the tab
+      is hidden. Hosted tests: the presenter's drop, and the anchor following the environment
+      both ways.
 - **STRIDE-APPLE-7 and the iOS 6–7 s delay** go away: nothing is lazy.
 - **Cleanup.**
   - The erase paths (Erase, Start from this account's data, account deletion) sweep only export
@@ -423,6 +490,15 @@ downgraded, 3 refuted. Everything below is the revised design. The adopted findi
       after Start, say) keeps its own window instead of being swept seconds after it was written.
   - The launch sweep still removes everything.
   - The two premise comments are updated.
+  - As built (fix pass; verification, minor): a file a Mac save panel holds is spared by every
+    sweep. The panel is a sheet on its own window, and Erase, Delete Account or Start can run in
+    Settings meanwhile. The erase's deferred sweep, 10 min 5 s later, took a file whose panel had
+    been open that long, and Save then failed with the backup of the erased data gone.
+    `DataExportService.exportsInUse` (lock-guarded: the deferred sweep runs off the main actor)
+    is held from the panel's offer to its answer, by the menu Export (ContentView) and by
+    `ExportShareButton`, and `removeExportFiles` skips what it holds. The panel's answer releases
+    it, and its Cancel deletes the file. Hosted test: the erase's sweep, the deferred one and the
+    launch's spare a held file; released, it is swept.
 - **Recovered edits: Clear and Erase are bound to what was exported.**
   - The last exported total per owner is remembered.
   - If Clear or Erase is confirmed while the current total is above it, the existing "New
@@ -521,6 +597,17 @@ and habitId) and launch arguments, with matching selftest stub cases.
 - `upgrade.sh` from v1.3.1 and v1.3.0, with the widget, adds reminder assertions read the same way:
   a legacy daily id becomes `.2/.4/.6` for a Mon/Wed/Fri habit, a daily habit keeps its bare id,
   and both categories are registered.
+  - As built (fix pass; E2E 2026-10-11): the run from v1.3.1 was a false FAIL. Its gate-order and
+    delivery-marks checks assumed an old build without the gate and the migration. 1.3.1 already
+    wrote marker 1 and `stride_delivery_migration_v1_done`, and the model did not change, so the
+    widget was let in before the app's open and nothing was marked (`upgrades/e1-131to140-widget`).
+    The run now saves the App Group prefs before the install. A widget open before the app's, at
+    the schema the old build had marked, is a NOTE unless the model checksum then changed.
+    Migration already done before the install is a NOTE too. The verdict says "did not open
+    Stride.store" only for an actual failed open. New selftest cases cover these (102 in all);
+    against the old `upgrade.sh`, 8 of them fail.
+  - The banner recipe (README): on the lock screen, swipe the banner left and tap View; on the
+    home screen, pull it down. A long-press through the iOS Simulator MCP reveals nothing.
 - **iPad Pro 13-inch (M5)**, unsigned Debug, under its lock:
   - the shell walk (sidebar highlight, Today → Stats → Today, the 680 cap, the heatmap fill, the
     inline bar tracking the visible tab);
@@ -751,7 +838,7 @@ design are below. Each was checked by that workstream's reviewer.
   - The Mac Settings scene sets its own title, because SettingsView no longer does.
   - Kept-alive Settings re-reads its reminder rows each time it is shown, and those reads write
     nothing back. Settings' `onChange(isLoggedIn)` sync is not gated on active, as in 1.3.x's
-    compact TabView.
+    compact TabView. Since the fix pass it is `.automatic` unless the user just signed in (D5).
   - Known, not fixed: with up to three scroll views on screen at regular width, tapping the status
     bar probably no longer scrolls to the top on iPad. SwiftUI has no public API for this.
 
@@ -781,3 +868,11 @@ design are below. Each was checked by that workstream's reviewer.
   - CI's first full run failed one timing-sensitive test, `testAFinishedRunWaitsForTheResubmitsAnswerUpToItsBound`:
     the detached submit had not reached its stub within 300 ms on a loaded runner. The test now
     waits for the submit; the bound assertion is unchanged (`8e2ed8a`).
+  - Whole-branch verification (adversarial review, iPhone and iPad E2E). One blocker: the app
+    aborted on 8 of 9 notification responses (D4). One major: an action's sync pulled with no
+    widget reload after it, in a scene-less launch (D4, D5). Minors: Settings' sign-in sync after
+    a restore (D5), the Mac Export button's Cancel and dropped panel, hidden-tab shares and files
+    swept from under an open panel (D6), the share header (D6), and a false FAIL in `upgrade.sh`
+    from v1.3.1 (D7). All fixed in one pass, each with an "As built (fix pass)" note above. The
+    new hosted tests were checked by mutation: the delegate without `@MainActor`, and the reload
+    behind the cancellation guard, each fail them. The kit's new cases fail on the old script.

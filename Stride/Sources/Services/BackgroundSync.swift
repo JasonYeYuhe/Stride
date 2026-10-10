@@ -3,6 +3,7 @@ import SwiftData
 import os.log
 #if os(iOS)
 import BackgroundTasks
+import UIKit
 import WidgetKit
 #endif
 
@@ -169,34 +170,57 @@ enum BackgroundSync {
 
     // MARK: - The run
 
-    /// What a refresh reaches outside itself, so a hosted test reaches none of the host app's.
+    /// What a run reaches outside itself, so a hosted test reaches none of the host app's.
+    ///
+    /// After the sync comes what a scene-less background launch never attaches — StrideApp's
+    /// launch `.task`, its didSave observer and its foreground hooks all hang off a window — in
+    /// two parts, because a run can be cancelled (its task expired) after a sync that pulled:
+    /// - `refreshAfterSync`, synchronous and cheap, runs whenever the sync returned. A pull the
+    ///   widget never hears of leaves it drawing the old day, and the widget's toggle acts on the
+    ///   store, not on what it shows: a tap on a habit another device checked off then DELETES
+    ///   that check-in and queues its tombstone for every device (verification, major). Until the
+    ///   fix pass the reload sat behind the cancellation guard with the rest, so a task that
+    ///   expired just after a pull skipped it.
+    /// - `afterSync`, awaited, only while not cancelled: the task is completed already otherwise.
     struct Environment {
         var syncService: @MainActor () -> SyncService
-        /// After the sync: what a scene-less background launch never attaches — StrideApp's
-        /// launch `.task`, its didSave observer and its foreground hooks all hang off a window.
+        /// The widgets' timelines, then `refreshAfterDataChange` — the badge's quick set, the
+        /// snoozes and banners of what was checked in elsewhere (D3, D4).
+        var refreshAfterSync: @MainActor (ModelContainer) -> Void
+        /// The reminders, replaced whole (a pull can change a habit's kind, days or time), then
+        /// the badge, awaited.
         var afterSync: @MainActor (ModelContainer) async -> Void
         /// Whether a session is stored, for the resubmit (`handle`).
         var sessionStored: @MainActor () -> Bool
         /// The scheduler, for the resubmit.
         var submitter: BackgroundRefresh.Submitter
 
+        /// The app's own: the refresh's, and since the fix pass a reminder action's sync too
+        /// (`NotificationActionHandler.Environment.live`).
         static var live: Environment {
             Environment(
                 syncService: { SyncService.shared },
+                refreshAfterSync: { container in
+                    WidgetCenter.shared.reloadAllTimelines()
+                    NotificationService.shared.refreshAfterDataChange(modelContainer: container)
+                },
                 afterSync: { container in
                     let notifications = NotificationService.shared
-                    // A pull can change a habit's kind, days or time (D4): every reminder is
-                    // replaced whole, and the prune — awaited, the process may be suspended right
-                    // after — removes what no habit wants any more. Safe here, unlike after a
-                    // foreground sync: no habit sheet can be saving while the app is in the
-                    // background (`scheduleAllHabitReminders`).
-                    await notifications.rescheduleAllHabitRemindersAndWait(modelContainer: container)
-                    // The snoozes and banners of what another device or the widget checked in
-                    // meanwhile, as on every foreground (D3, D4).
-                    notifications.refreshAfterDataChange(modelContainer: container)
+                    // Every reminder is replaced whole (D4), and the prune — awaited, the process
+                    // may be suspended right after — removes what no habit wants any more. Only
+                    // while the app is not active: a habit sheet can be saving then, and a prune
+                    // computed meanwhile finds the sheet's own reminder, added a moment later,
+                    // missing from its keep set and removes it (`scheduleAllHabitReminders`). A
+                    // refresh runs in the background, but a reminder's action can be answered with
+                    // Stride frontmost (an older banner from Notification Center) — and the user
+                    // can bring Stride forward during either run. The launch pass prunes later.
+                    if UIApplication.shared.applicationState == .active {
+                        notifications.scheduleAllHabitReminders(modelContainer: container)
+                    } else {
+                        await notifications.rescheduleAllHabitRemindersAndWait(modelContainer: container)
+                    }
                     // The badge, awaited: the refresh pass sets it fire-and-forget.
                     await notifications.updateBadgeAndWait(modelContainer: container)
-                    WidgetCenter.shared.reloadAllTimelines()
                 },
                 sessionStored: { AuthService.shared.hasStoredSession },
                 submitter: .live)
@@ -204,22 +228,26 @@ enum BackgroundSync {
     }
 
     /// One background run over `container`: a `.background` sync on its `mainContext`, then
-    /// `afterSync`. True when the sync ran to the end.
+    /// `refreshAfterSync` and `afterSync`. True when the sync ran to the end. The refresh's work,
+    /// and on iOS a reminder action's sync (`NotificationActionHandler`), whose launch is just as
+    /// scene-less.
     ///
     /// It first waits out a sync already in flight — one this process started before it was
-    /// suspended, say — and then runs its own, as the reminder action does: a run in flight
-    /// planned its push before what this refresh is for was written, and SyncService turns a
-    /// second caller away rather than queueing it. `.background`: skipped inside the owner's
-    /// backoff window, and a run iOS cuts short leaves no window and no error behind (D5).
+    /// suspended, say — and then runs its own: a run in flight planned its push before what this
+    /// run is for was written, and SyncService turns a second caller away rather than queueing
+    /// it. `.background`: skipped inside the owner's backoff window, and a run iOS cuts short
+    /// leaves no window and no error behind (D5).
     ///
-    /// Cancelled (the task expired), it stops after the sync's current step and does nothing
-    /// more: the task has already been completed.
+    /// Cancelled (the task expired), it stops after the sync's current step. If the sync returned,
+    /// the widgets and the refresh pass still go — synchronous, so done before the process can be
+    /// suspended — and nothing awaited does: the task has already been completed.
     @MainActor
     static func run(container: ModelContainer, environment: Environment = .live) async -> Bool {
         let service = environment.syncService()
         await service.waitUntilIdle()
         guard !Task.isCancelled else { return false }
         let synced = await service.sync(context: container.mainContext, trigger: .background)
+        environment.refreshAfterSync(container)
         guard !Task.isCancelled else { return false }
         await environment.afterSync(container)
         return synced

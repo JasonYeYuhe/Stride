@@ -62,8 +62,10 @@ final class BackgroundSyncTests: XCTestCase {
 
     // MARK: - Helpers
 
-    /// What a run did after its sync.
+    /// What a run did after its sync: the synchronous refresh (widgets, the refresh pass) and the
+    /// awaited rest (reminders, badge).
     private final class Recorder {
+        var refreshes = 0
         var afterSyncs = 0
     }
 
@@ -80,7 +82,8 @@ final class BackgroundSyncTests: XCTestCase {
     private func environment(_ sync: SyncService, _ recorder: Recorder,
                              sessionStored: Bool = true,
                              submitter: BackgroundRefresh.Submitter = .init { _ in }) -> BackgroundSync.Environment {
-        BackgroundSync.Environment(syncService: { sync }, afterSync: { _ in recorder.afterSyncs += 1 },
+        BackgroundSync.Environment(syncService: { sync }, refreshAfterSync: { _ in recorder.refreshes += 1 },
+                                   afterSync: { _ in recorder.afterSyncs += 1 },
                                    sessionStored: { sessionStored }, submitter: submitter)
     }
 
@@ -398,6 +401,7 @@ final class BackgroundSyncTests: XCTestCase {
             sync, recorder, submitter: .init { noStore.receive($0) }))
         XCTAssertFalse(ran)
         XCTAssertEqual(noStore.reasons, [.resubmit])
+        XCTAssertEqual(recorder.refreshes, 0, "no run")
         XCTAssertEqual(recorder.afterSyncs, 0, "no run")
     }
 
@@ -417,6 +421,7 @@ final class BackgroundSyncTests: XCTestCase {
         XCTAssertTrue(ran)
         XCTAssertEqual(syncPaths, ["/v1/sync/push", "/v1/sync/pull"])
         XCTAssertEqual(pushedHabitIDs(pushes.first), [habit.id.uuidString])
+        XCTAssertEqual(recorder.refreshes, 1)
         XCTAssertEqual(recorder.afterSyncs, 1)
         XCTAssertNil(sync.syncError)
     }
@@ -436,6 +441,7 @@ final class BackgroundSyncTests: XCTestCase {
 
         XCTAssertFalse(ran)
         XCTAssertTrue(server.requests.isEmpty, "the window holds for a background run")
+        XCTAssertEqual(recorder.refreshes, 1)
         XCTAssertEqual(recorder.afterSyncs, 1)
     }
 
@@ -474,8 +480,9 @@ final class BackgroundSyncTests: XCTestCase {
     }
 
     /// iOS cuts the refresh short: the task's work is cancelled mid-run, so the next request gets
-    /// no answer. The run stops — no after-sync work, the task is already completed — and leaves
-    /// no backoff window and no `syncError`: a window would turn away the foreground sync of a user
+    /// no answer. The run stops — once the sync has returned, only the synchronous refresh
+    /// (widgets, the refresh pass) still goes; nothing awaited does, the task is already
+    /// completed — and leaves no backoff window and no `syncError`: a window would turn away the foreground sync of a user
     /// who unlocks and opens the app a minute later, and the footer would say "cancelled" to
     /// someone who never asked for a sync (design review, "background-trigger-silent-default").
     /// That foreground sync goes at once.
@@ -502,7 +509,8 @@ final class BackgroundSyncTests: XCTestCase {
         XCTAssertTrue(cut.done, "precondition: the run was cut mid-way")
         XCTAssertTrue(run.isCancelled)
         XCTAssertFalse(ran)
-        XCTAssertEqual(recorder.afterSyncs, 0, "a cut-short run stops")
+        XCTAssertEqual(recorder.refreshes, 1, "the sync returned: the widgets are told whatever it left")
+        XCTAssertEqual(recorder.afterSyncs, 0, "a cut-short run awaits nothing more")
         XCTAssertFalse(sync.isSyncing)
         XCTAssertNil(sync.syncError, "no footer for a run iOS cut short")
         XCTAssertNil(sync.backoff)
@@ -513,6 +521,46 @@ final class BackgroundSyncTests: XCTestCase {
         let foreground = await sync.sync(context: context, trigger: .automatic)
         XCTAssertTrue(foreground, "the next automatic sync goes")
         XCTAssertGreaterThan(server.requests.count, before)
+    }
+
+    /// The task expires right after a sync whose pull was saved — the window between the last
+    /// answer and the run's end. The widgets must still hear of the pull: their toggle acts on
+    /// the store, so a widget drawing the old day turns a tap into the deletion of what another
+    /// device checked in (verification, major). Until the fix pass the reload sat behind the
+    /// run's second cancellation guard; now the synchronous refresh goes whenever the sync
+    /// returned, and nothing awaited does.
+    func testARunCancelledAfterItsPullStillReloadsTheWidgetsOverIt() async throws {
+        seedOwnerAndCursor()
+        let fromTheMac = Habit(name: "Meditate")   // never in this store: it arrives by the pull
+        server.on("POST", "/v1/sync/push", respond: .ok(SyncStubBodies.pushOK))
+        server.on("GET", "/v1/sync/pull", respond: .ok(SyncStubBodies.pull(habits: [SyncStubBodies.habit(fromTheMac)])))
+        // The pull is answered, then the task running the run is cancelled, as the expiration
+        // handler's `work.cancel()` does: the engine still applies and saves what it was given.
+        let sync = makeSync(afterSyncRequest: { endpoint, _ in
+            if endpoint == .pull { withUnsafeCurrentTask { $0?.cancel() } }
+        })
+        final class Seen { var refreshes: [Bool] = []; var afterSyncs = 0 }
+        let seen = Seen()
+        let pulledID = fromTheMac.id
+        let environment = BackgroundSync.Environment(
+            syncService: { sync },
+            refreshAfterSync: { container in
+                let pulled = (try? ModelContext(container).fetch(
+                    FetchDescriptor<Habit>(predicate: #Predicate<Habit> { $0.id == pulledID }))) ?? []
+                seen.refreshes.append(!pulled.isEmpty)
+            },
+            afterSync: { _ in seen.afterSyncs += 1 },
+            sessionStored: { true },
+            submitter: .init { _ in })
+        let container = container!
+
+        let run = Task { await BackgroundSync.run(container: container, environment: environment) }
+        let ran = await run.value
+
+        XCTAssertTrue(run.isCancelled, "precondition: the task expired during the run")
+        XCTAssertFalse(ran)
+        XCTAssertEqual(seen.refreshes, [true], "one reload, over the store with the pulled habit in it")
+        XCTAssertEqual(seen.afterSyncs, 0, "nothing awaited once the task is completed")
     }
 
     // MARK: - The session after a background launch

@@ -42,6 +42,22 @@ final class AuthService {
 
     var isLoggedIn: Bool { currentUser != nil }
 
+    /// How a user was last loaded: what turned `isLoggedIn` true, for what follows it
+    /// (SettingsView's sync, `SettingsView.syncTrigger(afterUserLoadedBy:)`).
+    enum UserLoad: Equatable {
+        /// A sign-in the user just made: a code typed or a login link verified (`verifyToken`).
+        case signIn
+        /// The stored session, restored with no one asking: the launch check, the foreground's
+        /// recheck (`recheckStoredSessionIfNeeded`), a login link's or a sync's recheck.
+        case restore
+    }
+
+    /// nil until a user is first loaded; never cleared, since it is read only when `isLoggedIn`
+    /// turns true, by which time the load that turned it is recorded. Since 1.4.0's foreground
+    /// recheck a restore can flip `isLoggedIn` on an ordinary foreground, with Settings kept
+    /// alive, and that is not a sign-in (verification, minor).
+    @ObservationIgnored private(set) var userLoadedBy: UserLoad?
+
     /// A session token is in the Keychain, whether or not its user is loaded. The two differ
     /// after a launch whose session check failed (offline, a timeout): `currentUser` is nil,
     /// the token and the sync cursor are still there, and the next launch with a network — since
@@ -205,7 +221,7 @@ final class AuthService {
         // this request was in flight — says nothing about the new one: its user stays, and it
         // is not deleted.
         guard tokenStore.read() == sentToken else { return }
-        setUser(response.user)
+        setUser(response.user, loadedBy: .restore)
         guard sentToken != nil else { return }
         if let user = response.user {
             // The first 1.3.1 launch left "signed in or not?" open for a store with rows and no
@@ -235,8 +251,10 @@ final class AuthService {
     /// `currentUser`, and the account the stored session belongs to (`sessionAccountKey`), which
     /// outlives a launch whose session check fails. Clearing the user (a failed check) does not
     /// forget the account: the token is still that account's. A user loaded means signed in, so
-    /// the "Sign in again" row's reason is gone.
-    private func setUser(_ user: APIUser?) {
+    /// the "Sign in again" row's reason is gone. `load` is recorded before the user is set, so
+    /// whatever observes `isLoggedIn` turning true reads how (`userLoadedBy`).
+    private func setUser(_ user: APIUser?, loadedBy load: UserLoad) {
+        if user != nil { userLoadedBy = load }
         currentUser = user
         if let user {
             usersLoaded += 1
@@ -281,7 +299,7 @@ final class AuthService {
             // Either half of the row counts — the persisted `sessionExpired`, or a 401 this launch
             // (`reauthRequested`), which Log Out would end for good.
             setSignInAgainBeforeSignIn(sessionExpired || reauthRequested())
-            setUser(response.user)
+            setUser(response.user, loadedBy: .signIn)
             onSignIn()
             isLoading = false
             return true

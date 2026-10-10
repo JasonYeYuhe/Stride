@@ -717,6 +717,75 @@ final class AccountSwitchTests: XCTestCase {
         XCTAssertTrue(syncRequests.isEmpty, "no sync request before the choice")
     }
 
+    /// The verification's minor (F2). Settings syncs when `isLoggedIn` turns true, and W3's
+    /// foreground recheck turns it true with no one asking — a launch whose check got no answer,
+    /// then an ordinary foreground — while Settings is alive to see it (iPad's kept tab, the
+    /// iPhone's TabView, the Mac's Settings window). That sync was `.userInitiated`, which goes
+    /// through the owner's backoff window and the server's pause. Hosted Settings, inside a paused
+    /// window: the restore sends nothing; a sign-in the user makes afterwards goes at once, as Sync
+    /// Now does — which also shows the hook was live when the restore came.
+    func testSettingsSyncsAtOnceForASignInButWaitsOutThePauseForARestoredSession() async throws {
+        owners.set(SyncOwner(accountA))
+        cursors.setCursor(recentCursor, for: accountA.id)
+        backoff.recordFailure(.serverAsked(seconds: 600, paused: true), for: accountA.id)
+        stubSyncServer()
+        // A launch whose session check got no answer: A's token and account stored, no user.
+        tokens.save("tok-A")
+        local.defaults.set(["id": accountA.id, "email": accountA.email], forKey: AuthService.sessionAccountKey)
+        final class Online: @unchecked Sendable {
+            private let lock = NSLock()
+            private var reachable = false
+            var isReachable: Bool {
+                get { lock.withLock { reachable } }
+                set { lock.withLock { reachable = newValue } }
+            }
+        }
+        let online = Online()
+        server.on("GET", "/v1/auth/session") { _ in
+            guard online.isReachable else { throw URLError(.notConnectedToInternet) }
+            return .ok(Self.sessionResponse(id: 7, email: "a@example.com"))
+        }
+        relaunchAuth()
+        await auth.waitForSessionRestore()
+        XCTAssertFalse(auth.isLoggedIn, "precondition: the launch check got no answer")
+
+        AuthService.testOverride = auth
+        SyncService.testOverride = sync
+        let automation = try XCTUnwrap(AccessibilityAutomation.enable(), "the accessibility runtime's automation switch")
+        addTeardownBlock { @MainActor in AccessibilityAutomation.restore(automation) }
+        let window = try hostSettings()
+        addTeardownBlock { @MainActor [self] in await closeHostedToday() }
+        let header = appLocalized("Habit Tracker")
+        try await waitUntil("Settings is on screen") {
+            self.findElement(in: window) { $0.contains(header) } != nil
+        }
+
+        // The foreground: the network is back, and the recheck restores the session.
+        online.isReachable = true
+        await auth.recheckStoredSessionIfNeeded(launchCheckWait: .zero)
+        XCTAssertTrue(auth.isLoggedIn)
+        XCTAssertEqual(auth.userLoadedBy, .restore)
+        try await Task.sleep(for: .milliseconds(800))   // time for Settings' onChange and its sync
+        XCTAssertTrue(syncRequests.isEmpty, "a restore waits out the pause, as every unasked sync does")
+        XCTAssertFalse(sync.isSyncing)
+
+        // Log Out, then a sign-in the user makes: Settings' sync goes at once, pause or not.
+        await auth.logout()
+        try await Task.sleep(for: .milliseconds(200))
+        await signIn("magic-A")
+        XCTAssertEqual(auth.userLoadedBy, .signIn)
+        try await waitUntil("Settings' sync after the sign-in") { !self.syncRequests.isEmpty }
+        XCTAssertTrue(syncRequests.allSatisfy { $0.authorization == "Bearer tok-A" })
+        try await waitUntil("that sync ended") { !self.sync.isSyncing }
+    }
+
+    /// The trigger itself, for every way a user is loaded.
+    func testSettingsSyncTriggerFollowsHowTheUserWasLoaded() {
+        XCTAssertEqual(SettingsView.syncTrigger(afterUserLoadedBy: .signIn), .userInitiated)
+        XCTAssertEqual(SettingsView.syncTrigger(afterUserLoadedBy: .restore), .automatic)
+        XCTAssertEqual(SettingsView.syncTrigger(afterUserLoadedBy: nil), .automatic)
+    }
+
     // MARK: Hosting a real view
 
     private var hostedWindow: UIWindow?
@@ -734,6 +803,26 @@ final class AccountSwitchTests: XCTestCase {
         hostedWindow = window
         return window
     }
+
+    /// SettingsView as the Mac's Settings window and the iPhone's tab show it, inside a
+    /// NavigationStack over this test's store, in a window of its own (as `hostToday`). Its
+    /// reminder rows read `NotificationService.shared`: a recording center's while it is up.
+    private func hostSettings() throws -> UIWindow {
+        let notifications = ScratchDefaults("account.notifications")
+        hostedNotificationDefaults = notifications
+        NotificationService.testOverride = NotificationService(center: RecordingCenter(), defaults: notifications.defaults)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = UIHostingController(rootView: NavigationStack { SettingsView() }
+            .modelContainer(container)
+            .environment(\.locale, LanguageManager.shared.locale ?? .current))
+        window.makeKeyAndVisible()
+        hostedWindow = window
+        return window
+    }
+
+    /// The scratch defaults behind `NotificationService.testOverride` while Settings is hosted.
+    private var hostedNotificationDefaults: ScratchDefaults?
 
     /// Containers a hosted view used, kept for the life of the process: SwiftUI can run a view's
     /// task after its window is gone, and a ModelContext whose container was released traps.
@@ -771,11 +860,21 @@ final class AccountSwitchTests: XCTestCase {
         }
         AuthService.testOverride = nil
         SyncService.testOverride = nil
+        if let notifications = hostedNotificationDefaults {
+            NotificationService.testOverride = nil
+            notifications.remove()
+            hostedNotificationDefaults = nil
+        }
     }
 
     /// The accessibility element labelled `label` under `root`, as VoiceOver would reach it.
     private func findElement(labeled label: String, in root: NSObject) -> NSObject? {
-        if root.isAccessibilityElement, root.accessibilityLabel == label { return root }
+        findElement(in: root) { $0 == label }
+    }
+
+    /// The first accessibility element under `root` whose label passes `matches`.
+    private func findElement(in root: NSObject, where matches: (String) -> Bool) -> NSObject? {
+        if root.isAccessibilityElement, let label = root.accessibilityLabel, matches(label) { return root }
         var children: [NSObject] = (root.accessibilityElements as? [NSObject]) ?? []
         let count = root.accessibilityElementCount()
         if children.isEmpty, count != NSNotFound, count > 0 {
@@ -783,7 +882,7 @@ final class AccountSwitchTests: XCTestCase {
         }
         if let view = root as? UIView { children += view.subviews }
         for child in children {
-            if let found = findElement(labeled: label, in: child) { return found }
+            if let found = findElement(in: child, where: matches) { return found }
         }
         return nil
     }

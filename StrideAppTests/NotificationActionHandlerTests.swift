@@ -127,6 +127,75 @@ final class NotificationActionHandlerTests: XCTestCase {
         XCTAssertTrue(Set(categories.map(\.identifier)).isSuperset(of: ["stride.habit.binary", "stride.habit.count"]))
     }
 
+    /// What `didReceive` reads of a response, for sending it the selector UIKit sends. Neither
+    /// `UNNotificationResponse` nor `UNNotification` has a public initializer (and their coders'
+    /// keys are private); the method reads them only through ObjC messages — `notification`,
+    /// `actionIdentifier`, `request`, `date` — and the bridging thunk casts nothing, so these
+    /// stand in. The request inside is a real one.
+    private final class ResponseStandIn: NSObject {
+        @objc let notification: NotificationStandIn
+        @objc let actionIdentifier: String
+        init(action: String, category: String, userInfo: [AnyHashable: Any]) {
+            let content = UNMutableNotificationContent()
+            content.categoryIdentifier = category
+            content.userInfo = userInfo
+            notification = NotificationStandIn(
+                request: UNNotificationRequest(identifier: "stride.habit.reminder.test", content: content, trigger: nil),
+                date: Date())
+            actionIdentifier = action
+        }
+    }
+
+    private final class NotificationStandIn: NSObject {
+        @objc let request: UNNotificationRequest
+        @objc let date: Date
+        init(request: UNNotificationRequest, date: Date) {
+            self.request = request
+            self.date = date
+        }
+    }
+
+    /// The verification's blocker: UIKit's completion for a response delivered to a background
+    /// scene asserts the main thread, and the delegate's async method — nonisolated, as a plain
+    /// NSObject's is in this Swift 5.9 module — had its bridging thunk call that completion from
+    /// the cooperative pool. 8 of 9 E2E responses aborted the app with "Call must be made on main
+    /// thread", right after their write. The hosted suite drove `perform` only, which never goes
+    /// through the thunk. This sends the ObjC selector itself, as UIKit does — the default tap
+    /// (nothing to do) and a Mark Done (the write, the effects and the sync's start, then the
+    /// return) — and asserts where the completion runs.
+    func testTheSystemsSelectorCompletesOnTheMainThread() async throws {
+        let selector = NSSelectorFromString("userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:")
+        let handler = makeHandler(container)
+        XCTAssertTrue(handler.responds(to: selector), "the async method is what answers UIKit's selector")
+        typealias DidReceive = @convention(c) (NSObject, Selector, UNUserNotificationCenter, NSObject,
+                                               @escaping @convention(block) () -> Void) -> Void
+        let send = unsafeBitCast(handler.method(for: selector), to: DidReceive.self)
+        let read = try habit("Read")
+        recorder.synced = expectation(description: "the Mark Done's sync")
+        let responses = [
+            ("default tap", ResponseStandIn(action: UNNotificationDefaultActionIdentifier,
+                                            category: NotificationRouter.binaryCategory,
+                                            userInfo: ["habitId": read.id.uuidString])),
+            ("Mark Done", ResponseStandIn(action: NotificationRouter.markDoneAction,
+                                          category: NotificationRouter.binaryCategory,
+                                          userInfo: ["habitId": read.id.uuidString])),
+        ]
+
+        for (name, response) in responses {
+            final class Completion { var onMainThread: Bool? }
+            let completion = Completion()
+            let completed = expectation(description: "\(name): the completion")
+            send(handler, selector, UNUserNotificationCenter.current(), response) {
+                completion.onMainThread = Thread.isMainThread
+                completed.fulfill()
+            }
+            await fulfillment(of: [completed], timeout: 5)
+            XCTAssertEqual(completion.onMainThread, true, "\(name): UIKit's completion asserts the main thread")
+        }
+        XCTAssertEqual(try records(of: read).count, 1, "the Mark Done was written")
+        await fulfillment(of: [recorder.synced!], timeout: 5)
+    }
+
     // MARK: - The write never deletes
 
     /// The design review's "stale-category-addone-untoggles-binary": a count habit's "Add 1"
@@ -361,32 +430,47 @@ final class NotificationActionHandlerTests: XCTestCase {
 
     // MARK: - The sync
 
-    /// An action saved while a sync is already running is still pushed in seconds: that run planned
-    /// its push before the write and turns a second caller away rather than queueing it, so the
-    /// shipping environment's sync waits it out and runs one of its own (`.background`). Through
-    /// the real SyncService over a stub server, installed as `shared` for the test.
-    func testAnActionDuringASyncIsPushedByARunOfItsOwn() async throws {
+    /// A real SyncService over a stub server, signed in as account A, its store owned with a live
+    /// cursor (each run pushes first, then pulls), and installed as `shared` — with a
+    /// NotificationService over a recording center installed beside it, so the shipping
+    /// environment's after-sync work reaches neither the host app's sync state nor its
+    /// notification store. All of it undone at teardown.
+    private func installStubbedSync(_ role: String) -> (server: StubServer, sync: SyncService) {
         let server = StubServer()
-        let local = ScratchDefaults("action.sync.local")
-        let appGroup = ScratchDefaults("action.sync.appGroup")
+        let local = ScratchDefaults("\(role).local")
+        let appGroup = ScratchDefaults("\(role).appGroup")
+        let notifications = ScratchDefaults("\(role).notifications")
         let recovery = ScratchRecoveryLog()
         let sync = SyncService(api: server.makeClient(tokenStore: InMemoryTokenStore(SyncSession.accountA.token)),
                                defaults: local.defaults,
                                deletionQueue: SyncDeletionQueue(local: local.defaults, shared: appGroup.defaults),
                                sessions: FakeSyncSessions(.accountA), recoveryLog: recovery.log)
         SyncService.testOverride = sync
+        NotificationService.testOverride = NotificationService(center: RecordingCenter(), defaults: notifications.defaults)
         addTeardownBlock { @MainActor in
             SyncService.testOverride = nil
+            NotificationService.testOverride = nil
             server.stop()
             local.remove()
             appGroup.remove()
+            notifications.remove()
             recovery.remove()
         }
-        // An owned store with a live cursor: each run pushes first, then pulls.
         let owner = SyncSession.accountA.account
         SyncOwnerStore(defaults: local.defaults).set(SyncOwner(owner))
         SyncDefaultsCursorStore(defaults: local.defaults)
             .setCursor(SyncTimestamp.millisecondString(from: Date().addingTimeInterval(-86_400)), for: owner.id)
+        return (server, sync)
+    }
+
+    /// An action saved while a sync is already running is still pushed in seconds: that run planned
+    /// its push before the write and turns a second caller away rather than queueing it, so the
+    /// shipping environment's sync waits it out and runs one of its own (`.background`). Through
+    /// the real SyncService over a stub server, installed as `shared` for the test. On iOS the
+    /// shipping sync is the refresh's run (`BackgroundSync.run`, `.live`): its after-sync work goes
+    /// to the test's NotificationService, and its widget reload to the host's own timelines.
+    func testAnActionDuringASyncIsPushedByARunOfItsOwn() async throws {
+        let (server, sync) = installStubbedSync("action.sync")
         server.on("POST", "/v1/sync/push", respond: .ok(SyncStubBodies.pushOK))
         let pull = SyncStubBodies.pull()
         server.on("GET", "/v1/sync/pull") { _ in
@@ -421,5 +505,47 @@ final class NotificationActionHandlerTests: XCTestCase {
         XCTAssertEqual(pushes.count, 2, "the in-flight run's push, then the action's own")
         let entries = (pushes.last?.json?["entries"] as? [[String: Any]])?.compactMap { $0["id"] as? String }
         XCTAssertEqual(entries, [record.id.uuidString])
+    }
+
+    /// The verification's major. A lock-screen Mark Done launches a terminated Stride with no
+    /// scene, so no window's didSave observer exists, and the action's sync pulls what other
+    /// devices did. W2's sync did nothing after that: the widget kept the timeline it built
+    /// before the pull, and its toggle acts on the store — a tap on a habit the Mac had checked
+    /// off deleted that check-in on every device. The action's sync is now the refresh's run, so
+    /// the widgets reload (with the refresh pass) AFTER the pull has been saved, then the
+    /// reminders and badge — besides the reload of the action's own effects, which came before.
+    func testAnActionsSyncReloadsTheWidgetsAfterWhatItPulled() async throws {
+        let (server, sync) = installStubbedSync("action.pull")
+        let fromTheMac = Habit(name: "Meditate")   // never in this store: it arrives by the pull
+        server.on("POST", "/v1/sync/push", respond: .ok(SyncStubBodies.pushOK))
+        server.on("GET", "/v1/sync/pull", respond: .ok(SyncStubBodies.pull(habits: [SyncStubBodies.habit(fromTheMac)])))
+        let read = try habit("Read")
+        let pulledID = fromTheMac.id
+        let recorder = self.recorder!
+        let background = BackgroundSync.Environment(
+            syncService: { sync },
+            refreshAfterSync: { container in
+                let pulled = (try? ModelContext(container).fetch(
+                    FetchDescriptor<Habit>(predicate: #Predicate<Habit> { $0.id == pulledID }))) ?? []
+                recorder.events.append(pulled.isEmpty ? "widgets, nothing pulled yet" : "widgets, after the pull")
+            },
+            afterSync: { _ in recorder.events.append("reminders and badge") },
+            sessionStored: { true },
+            submitter: .init { _ in })
+        let actionSync = NotificationActionHandler.Environment.sync(through: { background })
+        let synced = expectation(description: "the action's sync")
+
+        let outcome = await makeHandler(container, sync: { container in
+            await actionSync(container)
+            synced.fulfill()
+        }).perform(route: .checkIn(habitID: read.id, day: nil), delivered: Date(), responded: Date())
+        await fulfillment(of: [synced], timeout: 10)
+
+        guard case .checkedIn = outcome else { return XCTFail("\(outcome)") }
+        XCTAssertEqual(recorder.events, effectsAfterCheckIn(of: read) + ["widgets, after the pull", "reminders and badge"])
+        XCTAssertEqual(server.paths.filter { $0.hasPrefix("/v1/sync/") }, ["/v1/sync/push", "/v1/sync/pull"])
+        let entries = (server.requests.first { $0.path == "/v1/sync/push" }?.json?["entries"] as? [[String: Any]])?
+            .compactMap { $0["id"] as? String }
+        XCTAssertEqual(entries, try records(of: read).map(\.id.uuidString), "the check-in was pushed")
     }
 }
