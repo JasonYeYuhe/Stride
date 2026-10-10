@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import WidgetKit
+import Combine
 
 @main
 struct StrideApp: App {
@@ -99,6 +100,11 @@ struct StrideApp: App {
             DemoData.populate(container: modelContainer, scenario: .fromLaunchArguments())
         }
         #endif
+        #if os(macOS)
+        // The badge's, the snoozes' and the activation's triggers, for the process rather than
+        // the window: a Mac app outlives its windows (`installProcessTriggers`).
+        installProcessTriggers(over: modelContainer)
+        #endif
     }
 
     var body: some Scene {
@@ -171,9 +177,13 @@ struct StrideApp: App {
                 // in Settings, the paywall instead of Weekly Review — for most of a minute.
                 await StoreService.shared.refreshPurchasedProducts()
                 await setupNotifications(modelContainer)
-                await syncIfLoggedIn(modelContainer)
+                await Self.syncIfLoggedIn(modelContainer)
                 await StoreService.shared.loadProducts()
             }
+            #if os(iOS)
+            // The Mac has these two, and its activation pass, once per process instead
+            // (`installProcessTriggers`): a Mac app outlives its windows, and its Dock badge with it.
+            //
             // Every SwiftData save in the app, not a list of call sites. Only check-ins used to
             // reload the widget, so adding, deleting, archiving, renaming or reordering a habit —
             // or a sync pulling in another device's check-ins — left it stale until its next
@@ -203,6 +213,7 @@ struct StrideApp: App {
                 NotificationService.shared.refreshAfterDataChange(modelContainer: modelContainer)
                 NotificationService.shared.pruneDeliveredBeforeToday()
             }
+            #endif
             // One-tap sign-in: the magic link in the email is a universal link
             // (`https://stride-api.colorarchive.me/login?token=…`, the associated-domains
             // entitlement + the server's AASA file). Which modifier receives it depends on the
@@ -239,38 +250,24 @@ struct StrideApp: App {
                     // A subscription can lapse, renew or be refunded while backgrounded;
                     // nothing else re-reads entitlements after launch.
                     await StoreService.shared.refreshPurchasedProducts()
-                    await syncIfLoggedIn(modelContainer)
+                    await Self.syncIfLoggedIn(modelContainer)
                 }
             }
             #else
             .sheet(isPresented: $showOnboarding) {
                 OnboardingView(isPresented: $showOnboarding)
             }
-            // A Mac app can stay open for days; re-read entitlements when it comes forward so
-            // a lapsed or renewed subscription is reflected without a relaunch — and sync, as
-            // iOS does on willEnterForeground. Without it nothing on the Mac met a revoked
-            // session's 401 or the pause switch's 503 until a relaunch or Sync Now, so Today's
-            // "Sign in again" row and "Sync paused" (acceptance (9)) never showed on a Mac left
-            // open (review critic-3). Automatic: it waits out the owner's backoff window.
-            .onReceive(NotificationCenter.default.publisher(
-                for: NSApplication.didBecomeActiveNotification
-            )) { _ in
-                Task { @MainActor in
-                    // The Dock badge, the snoozes and the banners, as iOS on willEnterForeground
-                    // (RELEASE-1.4.0.md D3, D4).
-                    NotificationService.shared.refreshAfterDataChange(modelContainer: modelContainer)
-                    NotificationService.shared.pruneDeliveredBeforeToday()
-                    await StoreService.shared.refreshPurchasedProducts()
-                    await syncIfLoggedIn(modelContainer)
-                }
-            }
+            // The Mac's didBecomeActive pass is the process's, not the window's: see
+            // `installProcessTriggers`.
             #endif
             .modelContainer(modelContainer)
     }
 
+    /// The launch and foreground sync over the app's own services. Static, so the Mac's
+    /// process-wide activation pass (`installProcessTriggers`) runs the same one with no window.
     @MainActor
-    private func syncIfLoggedIn(_ modelContainer: ModelContainer) async {
-        await Self.syncIfLoggedIn(modelContainer, auth: .shared, sync: .shared) { modelContainer in
+    private static func syncIfLoggedIn(_ modelContainer: ModelContainer) async {
+        await syncIfLoggedIn(modelContainer, auth: .shared, sync: .shared) { modelContainer in
             // A pull can change a habit's kind, days or reminder time, and pending requests keep
             // what they were scheduled with: a Mon/Wed/Fri habit made daily on the phone kept its
             // three weekday triggers here, and a kind change kept the other button, until the next
@@ -368,6 +365,79 @@ struct StrideApp: App {
         NotificationService.shared.rescheduleAllHabitReminders(modelContainer: modelContainer)
     }
 }
+
+#if os(macOS)
+extension StrideApp {
+    /// The Mac's process-wide triggers (`installProcessTriggers`), held for the life of the process.
+    @MainActor private static var processTriggers: [AnyCancellable] = []
+
+    /// The Mac's three refresh triggers — a save, the day changing, the app becoming active — once
+    /// per process (RELEASE-1.4.0.md D3, D4). iOS hangs them on the window (`app(over:)`), and so
+    /// did W6's first cut on the Mac (W6 review). But a Mac app outlives its windows: after ⌘W on
+    /// the main window Stride stays in the Dock, its badge with it (`setBadgeCount`, since 1.4.0),
+    /// for as long as the user leaves it, and every observer the window held went with the window.
+    /// So, with the main window closed overnight: midnight passed and nothing heard it, the
+    /// morning's ⌘-Tab back was heard by nothing either, and the Dock showed last night's count —
+    /// no badge, every habit done — over a day with all of them due. A Sync Now from Settings or
+    /// the menu pulled the phone's check-in, and that habit's snooze still fired (D4); yesterday's
+    /// banners stayed; Settings, alone on screen, kept its Pro rows and sync state from before.
+    /// Nothing caught up until a main window opened again.
+    ///
+    /// Called by `prepareStore`: only once the real store is open — at launch, or by the error
+    /// screen's Try Again — never over one that did not open (AppStoreLaunch), and after the
+    /// launch's own data work. A main window's launch pass (its `.task`) still runs when it opens.
+    @MainActor
+    private static func installProcessTriggers(over modelContainer: ModelContainer) {
+        guard processTriggers.isEmpty else { return }
+        let center = NotificationCenter.default
+        processTriggers = [
+            // Every SwiftData save in the process and every `habitDataChanged`, throttled, as iOS's
+            // window observer is (its comment says why each of these): the widget, then the
+            // badge, the snoozes and the banners of what this pass is the only one to see — the
+            // widget's check-ins and another device's, pulled by any sync, Settings' and the
+            // menu's Sync Now included.
+            center.publisher(for: .habitDataChanged)
+                .merge(with: center.publisher(for: ModelContext.didSave))
+                .throttle(for: .seconds(2), scheduler: DispatchQueue.main, latest: true)
+                .sink { _ in
+                    MainActor.assumeIsolated {
+                        WidgetCenter.shared.reloadAllTimelines()
+                        NotificationService.shared.refreshAfterDataChange(modelContainer: modelContainer)
+                    }
+                },
+            // The day changed under a running app (midnight, or the wake after it): yesterday's
+            // banners go, the badge counts the new day's habits as remaining again, and a snooze
+            // cancelled for "done today" is judged on the new today. Posted on no particular
+            // thread, hence the hop.
+            center.publisher(for: .NSCalendarDayChanged)
+                .receive(on: DispatchQueue.main)
+                .sink { _ in
+                    MainActor.assumeIsolated {
+                        NotificationService.shared.refreshAfterDataChange(modelContainer: modelContainer)
+                        NotificationService.shared.pruneDeliveredBeforeToday()
+                    }
+                },
+            // A Mac app can stay open for days; re-read entitlements when it comes forward so a
+            // lapsed or renewed subscription is reflected without a relaunch — and sync, as iOS
+            // does on willEnterForeground. Without it nothing on the Mac met a revoked session's
+            // 401 or the pause switch's 503 until a relaunch or Sync Now, so Today's "Sign in
+            // again" row and "Sync paused" (acceptance (9)) never showed on a Mac left open
+            // (review critic-3). Automatic: it waits out the owner's backoff window. First the Dock
+            // badge, the snoozes and the banners, as iOS on willEnterForeground (D3, D4).
+            center.publisher(for: NSApplication.didBecomeActiveNotification)
+                .receive(on: DispatchQueue.main)
+                .sink { _ in
+                    Task { @MainActor in
+                        NotificationService.shared.refreshAfterDataChange(modelContainer: modelContainer)
+                        NotificationService.shared.pruneDeliveredBeforeToday()
+                        await StoreService.shared.refreshPurchasedProducts()
+                        await syncIfLoggedIn(modelContainer)
+                    }
+                },
+        ]
+    }
+}
+#endif
 
 extension Notification.Name {
     static let habitDataChanged = Notification.Name("habitDataChanged")

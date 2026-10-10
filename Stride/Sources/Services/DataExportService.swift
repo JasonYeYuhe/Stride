@@ -146,6 +146,23 @@ enum DataExportService {
         return url
     }
 
+    /// Deletes the export at `url` — its whole `StrideExport-<UUID>` directory — at once, for an
+    /// export that was written and then handed to no one: the Mac menu Export's save panel
+    /// cancelled, or its pass dropped before the panel came up (ContentView). Nothing can be
+    /// reading such a file, so it does not wait for a sweep: on a Mac, launches can be weeks
+    /// apart, and every ⇧⌘E → Cancel used to leave one more full backup of every habit in tmp
+    /// until the next launch (W6 review). Never for a file a share sheet or a save panel still
+    /// has (D6: a share cannot tell when its receiver is done reading); those are the sweeps'.
+    ///
+    /// Only a directory named with `exportDirectoryPrefix`: a URL that is not one of ours removes
+    /// nothing. Returns whether the directory went.
+    @discardableResult
+    static func removeUnsharedExport(at url: URL) -> Bool {
+        let directory = url.deletingLastPathComponent()
+        guard directory.lastPathComponent.hasPrefix(exportDirectoryPrefix) else { return false }
+        return (try? FileManager.default.removeItem(at: directory)) != nil
+    }
+
     /// How long a fresh export survives an erase (RELEASE-1.4.0.md D6, "Cleanup").
     static let exportGracePeriod: TimeInterval = 10 * 60
 

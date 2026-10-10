@@ -227,16 +227,20 @@ private struct ShowMainWindowButton: View {
 ///
 /// SwiftUI has no call that brings an existing WindowGroup window forward: `openWindow(id:)`
 /// always opens another, which would be a second main window with its own launch work and its
-/// own copy of every app-level sheet. So the windows are counted — raised when one's content
-/// appears, lowered when it disappears, i.e. when the window closes — and held weakly to bring one
-/// forward; `openWindow(id:)` runs only when none is open.
+/// own copy of every app-level sheet. So each main window's NSWindow is held weakly to bring it
+/// forward, and `openWindow(id:)` runs only when none of them is on screen or in the Dock.
+///
+/// The windows themselves decide, not D3's onAppear/onDisappear count. W6's first cut kept that
+/// count beside the windows and opened a new window whenever it read 0, though a window it held
+/// could still be there: if SwiftUI ever delivers onDisappear for a window's content when the
+/// window is minimized — not verified on macOS 14–27 — ⌘0 under a minimized window would have
+/// opened a second one beside it rather than bringing it out of the Dock (W6 review). The count
+/// could only ever cause a second window, never prevent one, so it is gone.
 @MainActor
 enum MainWindows {
     /// The main scene's id: `WindowGroup(id:)` in StrideApp, and `openWindow(id:)` here.
     static let id = "main"
 
-    /// Main windows open now.
-    fileprivate(set) static var count = 0
     /// Their NSWindows, weakly: a closed window SwiftUI lets go of drops out by itself.
     private static let windows = NSHashTable<NSWindow>.weakObjects()
 
@@ -245,10 +249,10 @@ enum MainWindows {
     }
 
     /// Brings the main window forward, out of the Dock if it was minimized; opens one only when
-    /// none is open. A window SwiftUI still holds after its close is neither visible nor
-    /// minimized, so it is never "brought forward" invisibly.
+    /// none is on screen or minimized. A window SwiftUI still holds after its close is neither
+    /// visible nor minimized, so it is never "brought forward" invisibly.
     static func bringForward(openWindow: OpenWindowAction) {
-        if count > 0, let window = windows.allObjects.first(where: { $0.isVisible || $0.isMiniaturized }) {
+        if let window = windows.allObjects.first(where: { $0.isVisible || $0.isMiniaturized }) {
             if window.isMiniaturized { window.deminiaturize(nil) }
             window.makeKeyAndOrderFront(nil)
         } else {
@@ -258,14 +262,12 @@ enum MainWindows {
 }
 
 extension View {
-    /// Marks the main scene's window content (StrideApp): counted in `MainWindows` while its
-    /// window is open, and its NSWindow registered. On the window's root, not on ContentView,
-    /// so a window showing the store's error screen counts too: ⌘0 then brings that window
-    /// forward rather than opening a second one beside it.
+    /// Marks the main scene's window content (StrideApp): its NSWindow is registered with
+    /// `MainWindows`. On the window's root, not on ContentView, so a window showing the store's
+    /// error screen counts too: ⌘0 then brings that window forward rather than opening a second
+    /// one beside it.
     func countsAsMainWindow() -> some View {
         background(MainWindowReader())
-            .onAppear { MainWindows.count += 1 }
-            .onDisappear { MainWindows.count -= 1 }
     }
 }
 

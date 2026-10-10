@@ -185,14 +185,24 @@ downgraded, 3 refuted. Everything below is the revised design. The adopted findi
   moves the file, so no tmp copy is left. It needs `com.apple.security.files.user-selected.read-write`
   in StrideMac.entitlements, which is also the Restore fix.
   - As built (W6): ContentView writes on `.task(id: shell.request)`. Another command replacing the
-    request during the write, or the window closing, cancels it and no panel appears (the file is
-    left to the tmp sweeps, as a dropped share is); a sheet that came up meanwhile drops it with a
-    beep. A failed write is an alert titled "Couldn't create the file. Try again.": a menu has no
-    row to put the line under.
-- **As built (W6): the main-window count** is raised on the main scene's window root, not on
-  ContentView, so a window showing the store's error screen counts too and ⌘0 brings it forward
-  instead of opening a second one. The windows are also held weakly (an `NSView` that reports its
-  window): SwiftUI has no call that brings an existing WindowGroup window forward.
+    request during the write, or the window closing, cancels it and no panel appears; a sheet that
+    came up meanwhile drops it with a beep. A failed write is an alert titled "Couldn't create the
+    file. Try again.": a menu has no row to put the line under.
+  - As built (W6 review): a file handed to no one is deleted at once
+    (`DataExportService.removeUnsharedExport`, hosted-tested): the panel's Cancel, and both drops
+    above. W6's first cut left them to the tmp sweeps, and on a Mac the launch sweep can be weeks
+    away, so every ⇧⌘E → Cancel kept another full backup in tmp. A failed move is still the
+    sweeps': a move to another volume copies, then deletes, and the file in tmp may be the only
+    whole copy.
+- **As built (W6, revised in its review): no count.** The main windows are held weakly (an
+  `NSView` on the main scene's window root reports its window), because SwiftUI has no call that
+  brings an existing WindowGroup window forward. On the root, not ContentView, so a window showing
+  the store's error screen counts too and ⌘0 brings it forward instead of opening a second one.
+  The held windows alone decide: ⌘0 brings forward one that is visible or minimized, and opens
+  "main" only when there is none. W6's first cut also kept the onAppear/onDisappear count above
+  and opened a window whenever it read 0. That count could only ever cause a second window, never
+  prevent one: if SwiftUI delivers onDisappear when a window is minimized (unverified), ⌘0 would
+  have opened a second window beside the one in the Dock. So it was removed.
 - **Titles** come from `appLocalized`, so they follow the in-app language. AppKit's own items
   (Close, Edit, Window…) follow the system language, as every Mac app's do; this is a known,
   accepted mix. LocalizationSourceScanTests learns `CommandMenu` / `CommandGroup`.
@@ -209,6 +219,14 @@ downgraded, 3 refuted. Everything below is the revised design. The adopted findi
     - `NSCalendarDayChanged`.
 
     The same pass cancels pending snoozes for habits completed today (D4).
+  - As built (W6 review): on the Mac the three triggers belong to the process, not the window.
+    `StrideApp.installProcessTriggers` subscribes them once, from `prepareStore` (so only once the
+    real store has opened, including through Try Again), and the activation pass's entitlement
+    re-read and sync moved with them. W6's first cut left them on the main window's ContentView,
+    as on iOS. But a Mac app outlives its windows, and the Dock badge stays after ⌘W. With the main
+    window closed, neither midnight nor the next morning's activation reached any observer, so the
+    badge kept last night's count. A Sync Now from Settings or the menu that pulled a phone
+    check-in did not cancel that habit's snooze. iOS keeps them on the window.
   - The rule is unchanged (unarchived, not done today) everywhere: the badge, the widget and
     Today's card. A schedule-aware "remaining" changes all five surfaces in one release; it is
     added to the plan's backlog next to M5's at-risk math, not done here.
@@ -537,6 +555,10 @@ and habitId) and launch arguments, with matching selftest stub cases.
   - every menu item and shortcut;
   - an empty-area and ⌘-click on the sidebar (the selection stays);
   - Settings open, main window closed, then the Dock and Window → Stride;
+  - the main window minimized, then ⌘0: it comes out of the Dock, and no second window opens;
+  - the main window closed (Stride still running): cross midnight (or change the clock's day) and
+    activate the app, then check that the Dock badge counts the new day. Also: with only Settings
+    open, a menu Sync Now that pulls a check-in made elsewhere updates the badge;
   - the Dock badge (after allowing notifications in the variant's own prompt);
   - Restore's open panel;
   - the Export save panels;

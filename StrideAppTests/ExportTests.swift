@@ -316,6 +316,30 @@ final class ExportTests: XCTestCase {
         XCTAssertEqual(exportDirectories(), [afterTheErase.deletingLastPathComponent().lastPathComponent])
     }
 
+    // MARK: - An export handed to no one (the Mac menu Export, W6 review)
+
+    /// The menu Export's save panel cancelled, or its pass dropped before the panel came up: the
+    /// file was never handed to anything, so its directory goes at once instead of waiting weeks
+    /// for a Mac's next launch (ContentView.writeRequestedExport). Only that export's directory:
+    /// another export beside it stays, and a URL outside a `StrideExport-*` directory removes
+    /// nothing — not the directory a stray URL happens to sit in.
+    func testAnExportHandedToNoOneGoesAtOnceAndAloneAndNothingElseDoes() throws {
+        let dropped = try DataExportService.writeExportFile(Data("{}".utf8), named: "Stride-Backup.json", in: root)
+        let kept = try DataExportService.writeExportFile(Data("a,b\n".utf8), named: "Stride-Export.csv", in: root)
+
+        XCTAssertTrue(DataExportService.removeUnsharedExport(at: dropped))
+        XCTAssertEqual(exportDirectories(), [kept.deletingLastPathComponent().lastPathComponent])
+        XCTAssertFalse(DataExportService.removeUnsharedExport(at: dropped), "already gone")
+
+        let notOurs = root.appendingPathComponent("Picked", isDirectory: true)
+        try FileManager.default.createDirectory(at: notOurs, withIntermediateDirectories: true)
+        let picked = notOurs.appendingPathComponent("Stride-Backup.json")
+        try Data("{}".utf8).write(to: picked)
+        XCTAssertFalse(DataExportService.removeUnsharedExport(at: picked))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: picked.path), "not an export directory: untouched")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: kept.path))
+    }
+
     // MARK: - A write in flight (W4 review)
 
     /// From the tap to the written file, an export is counted (`SyncService.isWritingExport`),

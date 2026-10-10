@@ -24,6 +24,10 @@ struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     /// The menu Export's written file while its save panel is up (`writeRequestedExport`).
     @State private var exportPanelFile: URL?
+    /// The same file, kept until the panel answers: the panel's close clears `exportPanelFile`
+    /// through its binding, and SwiftUI does not say whether that comes before or after
+    /// `onCancellation`, which needs the file to delete it.
+    @State private var exportPanelOffered: URL?
     /// The menu Export's write failed: an alert says so — a menu has no row to put the line under.
     @State private var exportFailed = false
     #endif
@@ -88,9 +92,17 @@ struct ContentView: View {
             // File → Export Backup… / Export as CSV…: written first, then the save panel.
             .task(id: shell.request) { await writeRequestedExport() }
             .fileMover(isPresented: exportPanelShown, file: exportPanelFile) { result in
-                // The file stays in tmp when the move fails; the next sweep takes it.
+                // Moved: nothing is left in tmp. A failed move leaves the file to the sweeps: a move
+                // to another volume copies, then deletes, and its error does not say which step
+                // failed, so the file in tmp may be the only whole copy.
+                exportPanelOffered = nil
                 if case .failure = result { exportFailed = true }
-            } onCancellation: {}
+            } onCancellation: {
+                // Cancelled: the file was handed to no one, so it goes now rather than at the next
+                // launch, which on a Mac can be weeks away (D3: "no tmp copy is left"; W6 review).
+                if let offered = exportPanelOffered { DataExportService.removeUnsharedExport(at: offered) }
+                exportPanelOffered = nil
+            }
             .alert(appLocalized("Couldn't create the file. Try again."), isPresented: $exportFailed) {}
             #endif
     }
@@ -267,23 +279,33 @@ struct ContentView: View {
     ///
     /// Run by `.task(id: shell.request)`: another command replacing the request while the file is
     /// written, or the window closing, cancels this pass, and a cancelled pass presents nothing.
-    /// Its file is left to the tmp sweeps, as a share `ExportShareButton` drops is. So a second
-    /// ⇧⌘E during the write is the same request and starts nothing, and the menu's latest ask is
-    /// the one answered.
+    /// So a second ⇧⌘E during the write is the same request and starts nothing, and the menu's
+    /// latest ask is the one answered.
+    ///
+    /// A pass that drops its file — cancelled, or a sheet in the way — deletes it at once
+    /// (`removeUnsharedExport`), as the panel's Cancel does: unlike a share `ExportShareButton`
+    /// drops, which a sweep takes, this file was never handed to anything that could still be
+    /// reading it (W6 review).
     @MainActor
     private func writeRequestedExport() async {
         // A file still here belongs to a panel that never came up: while one is up, nothing can
         // change the request — the commands that set it beep under the panel, and are disabled
         // with another window in front. Cleared, so this pass's panel is a fresh false → true and
-        // is not lost behind a binding that already reads true.
+        // is not lost behind a binding that already reads true. Not deleted: that rests on the
+        // argument above, and a file deleted under a panel that is up after all would fail the
+        // user's Save; the sweeps take it.
         if exportPanelFile != nil { exportPanelFile = nil }
         guard case .export(let export) = shell.request else { return }
         let written = try? await DataExportService.write(export.file, container: modelContext.container)
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled else {
+            if let written { DataExportService.removeUnsharedExport(at: written.url) }
+            return
+        }
         // Something came up meanwhile — New Habit from Today's +, an alert — and a panel cannot go
         // over it: the ask is dropped, with the menu's beep for "not now", rather than left as a
         // request no panel will ever answer.
         if MenuCommandPress.keyWindowShowsSheet {
+            if let written { DataExportService.removeUnsharedExport(at: written.url) }
             shell.request = nil
             NSSound.beep()
             return
@@ -293,6 +315,7 @@ struct ContentView: View {
             exportFailed = true
             return
         }
+        exportPanelOffered = written.url
         exportPanelFile = written.url
     }
 
