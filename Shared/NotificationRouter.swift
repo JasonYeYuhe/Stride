@@ -54,8 +54,10 @@ enum NotificationRouter {
     enum UserInfoKey {
         /// The habit's `id.uuidString` — canonical, upper case, as `UUID.uuidString` writes it.
         static let habitID = "habitId"
-        /// On a snooze only: the `yyyy-MM-dd` day the original reminder was for
-        /// (`ReminderDay.string(for:)`), copied forward by a snooze of a snooze.
+        /// On a snooze only: the `yyyy-MM-dd` day the original reminder was for — what
+        /// `ReminderDay.resolve` gave when Snooze was tapped (`ReminderDay.string(for:)`), so a
+        /// snooze of a snooze copies it forward while it is still creditable. It is the banner's
+        /// day, not an override: a stale one credits today, as a stale reminder does.
         static let day = "day"
     }
 

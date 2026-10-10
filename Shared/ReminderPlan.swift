@@ -180,19 +180,36 @@ enum ReminderPlan {
 ///   Done wrote TOMORROW's record, synced it everywhere, and left today open. Invisible from
 ///   UTC+9, where this app is built. Every day here goes through `dayKey(forInstant:)`.
 /// - **Stale days.** A delivered banner stays in Notification Center until its id fires again —
-///   a week, for a weekday id. Monday's banner tapped on Thursday must credit Thursday, and a
-///   23:30 reminder snoozed to 00:30 must still credit the day it was for.
+///   a week, for a weekday id — and a snooze's one-shot banner until something withdraws it,
+///   which for someone who only ever acts from the lock screen is nothing at all. Monday's banner
+///   tapped on Thursday must credit Thursday, and a 23:30 reminder snoozed to 00:30 must still
+///   credit the day it was for.
+///
+/// So the answer is only ever one of two days: the day the banner is FOR, or today. Never a
+/// third. The first W1 cut followed D4's four steps literally and broke that twice (W1 code
+/// review, 2026-10-10): a carried snooze day was taken at any age — a snooze banner from Monday
+/// night, tapped on Friday, checked Monday off on every device and left Friday open — and so was
+/// any day in the range check, 2099 included; and the late-night grace credited "yesterday"
+/// whatever the banner was for, so Monday's weekday banner tapped at 00:40 on Thursday checked
+/// off Wednesday, a day it was never for and the habit may not even be scheduled on.
 enum ReminderDay {
-    /// An action this soon after local midnight, on an earlier day's banner, credits yesterday:
-    /// someone ticking off last night's reminder at 00:40 means the day that just ended. Elapsed
+    /// An action this soon after local midnight, on a banner for the day that just ended, credits
+    /// that day: someone ticking off last night's reminder at 00:40 means last night. Elapsed
     /// time, so a DST night does not stretch or shrink it.
     static let lateNightGrace: TimeInterval = 3 * 3_600
 
-    /// The day-key to credit, in this order:
-    /// 1. `userInfo["day"]` — a snooze carries the day of the reminder it came from;
-    /// 2. else the day the banner was delivered, if that is today;
-    /// 3. else yesterday, if the response came within `lateNightGrace` after local midnight;
-    /// 4. else today.
+    /// The day-key to credit. The banner's day is `userInfo["day"]` when a snooze carries one (its
+    /// own delivery can be past midnight), else the day it was delivered. Then:
+    /// 1. the banner's day, if that is today;
+    /// 2. the banner's day, if that is yesterday and the response came within `lateNightGrace`
+    ///    after local midnight;
+    /// 3. else today — a stale banner, original or snooze, is a nudge to do it today, the same
+    ///    answer as the widget and Siri, which both credit now. A carried day in the future
+    ///    lands here too: a check-in is never written ahead of the clock.
+    ///
+    /// A snooze stores what this returns at the moment Snooze is tapped (`string(for:)`), so a
+    /// snooze of a snooze copies its day forward while that day is still creditable, and a snooze
+    /// of a stale one starts over from today rather than carrying the stale day on.
     ///
     /// - Parameters:
     ///   - deliveredAt: `UNNotification.date`.
@@ -200,12 +217,14 @@ enum ReminderDay {
     ///   - calendar: the user's calendar (its time zone decides what "today" is).
     static func resolve(userInfo: [AnyHashable: Any], deliveredAt: Date, respondedAt: Date,
                         calendar: Calendar = .current) -> Date {
-        if let carried = NotificationRouter.day(from: userInfo) { return carried }
         let today = HabitCalendar.dayKey(forInstant: respondedAt, calendar: calendar)
-        if HabitCalendar.dayKey(forInstant: deliveredAt, calendar: calendar) == today { return today }
+        let bannerDay = NotificationRouter.day(from: userInfo)
+            ?? HabitCalendar.dayKey(forInstant: deliveredAt, calendar: calendar)
+        if bannerDay == today { return today }
         let midnight = calendar.startOfDay(for: respondedAt)
         if respondedAt.timeIntervalSince(midnight) < lateNightGrace,
-           let yesterday = HabitCalendar.utc.date(byAdding: .day, value: -1, to: today) {
+           let yesterday = HabitCalendar.utc.date(byAdding: .day, value: -1, to: today),
+           bannerDay == yesterday {
             return yesterday
         }
         return today

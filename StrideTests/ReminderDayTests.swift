@@ -101,17 +101,52 @@ final class ReminderDayTests: XCTestCase {
     }
 
     /// A 23:30 reminder snoozed: the snooze banner arrives at 00:30 the next day and carries the
-    /// day it was for, which wins over everything — at 00:31, next morning, or after a second
-    /// snooze. Its own delivery date would have credited the 14th (Gemini's finding,
-    /// "snooze-credits-next-day").
+    /// day it was for, which stands in for its own delivery date — that would have credited the
+    /// 14th (Gemini's finding, "snooze-credits-next-day"). At 00:31, and after a second snooze at
+    /// 01:31, it credits the 13th.
     func testASnoozeAcrossMidnightCreditsTheDayItCarries() {
         let snoozeBanner = at(newYork, 2026, 7, 14, 0, 30)
         XCTAssertEqual(resolve(newYork, delivered: snoozeBanner, responded: at(newYork, 2026, 7, 14, 0, 31),
                                day: "2026-07-13"), key(2026, 7, 13))
-        XCTAssertEqual(resolve(newYork, delivered: snoozeBanner, responded: at(newYork, 2026, 7, 14, 9),
-                               day: "2026-07-13"), key(2026, 7, 13), "carried, not the grace rule")
         XCTAssertEqual(resolve(newYork, delivered: at(newYork, 2026, 7, 14, 1, 30), responded: at(newYork, 2026, 7, 14, 1, 31),
                                day: "2026-07-13"), key(2026, 7, 13), "a snooze of a snooze")
+        XCTAssertEqual(resolve(newYork, delivered: at(newYork, 2026, 7, 13, 21), responded: at(newYork, 2026, 7, 13, 21, 5),
+                               day: "2026-07-13"), key(2026, 7, 13), "a snooze before midnight, carrying today")
+    }
+
+    /// The carried day is the banner's day, not a trump card: past the grace it is as stale as
+    /// the reminder it came from. Snoozed at 23:45 on the 13th, left in Notification Center (a
+    /// one-shot id nothing re-fires, and nothing withdraws it for a user who never opens the app),
+    /// then tapped the next morning or four days later: today, never the 13th (W1 code review).
+    /// The first cut credited the 13th at any age, checked it off on every device and left the
+    /// day the user was actually in open.
+    func testAStaleSnoozeCreditsToday() {
+        let snoozeBanner = at(newYork, 2026, 7, 14, 0, 45)
+        XCTAssertEqual(resolve(newYork, delivered: snoozeBanner, responded: at(newYork, 2026, 7, 14, 9),
+                               day: "2026-07-13"), key(2026, 7, 14), "the next morning, like an original banner")
+        XCTAssertEqual(resolve(newYork, delivered: snoozeBanner, responded: at(newYork, 2026, 7, 17, 10),
+                               day: "2026-07-13"), key(2026, 7, 17), "four days later")
+        XCTAssertEqual(resolve(newYork, delivered: snoozeBanner, responded: at(newYork, 2026, 7, 17, 0, 40),
+                               day: "2026-07-13"), key(2026, 7, 17),
+                       "inside the grace, but the 13th is not yesterday: today, not the 16th either")
+    }
+
+    /// A carried day ahead of the response — only a hand-made payload or a clock or zone change
+    /// gets one, the range check alone lets 2099 through — is never credited: no check-in is
+    /// written ahead of the clock.
+    func testAFutureCarriedDayCreditsToday() {
+        let delivered = at(newYork, 2026, 7, 15, 20)
+        let responded = delivered.addingTimeInterval(60)
+        for future in ["2026-07-16", "2099-12-31"] {
+            XCTAssertEqual(resolve(newYork, delivered: delivered, responded: responded, day: future), key(2026, 7, 15), future)
+        }
+        // A zone change between the tap and the banner: snoozed at 09:00 on Tokyo's 16th, which
+        // carries the 16th; an hour later the device is on Los Angeles time, where that instant
+        // is 18:00 on the 15th. The 16th has not begun where the user now is.
+        let la = at(losAngeles, 2026, 7, 15, 18)
+        XCTAssertEqual(la, at(tokyo, 2026, 7, 16, 10), "the same instant")
+        XCTAssertEqual(resolve(losAngeles, delivered: la, responded: la.addingTimeInterval(60), day: "2026-07-16"),
+                       key(2026, 7, 15))
     }
 
     /// A malformed carried day falls back to the delivered day; it is never written as is.
@@ -142,6 +177,41 @@ final class ReminderDayTests: XCTestCase {
         XCTAssertEqual(resolve(newYork, delivered: monday, responded: at(newYork, 2026, 7, 16, 10)), key(2026, 7, 16))
         let tokyoMonday = at(tokyo, 2026, 7, 13, 20)
         XCTAssertEqual(resolve(tokyo, delivered: tokyoMonday, responded: at(tokyo, 2026, 7, 16, 10)), key(2026, 7, 16))
+    }
+
+    /// The same banner tapped at 00:40 on Thursday, inside the late-night grace: Thursday. The
+    /// grace credits the day that just ended only when the banner was FOR that day; the first cut
+    /// credited Wednesday here, a day this Monday-only banner was never for (W1 code review).
+    func testThursdayJustAfterMidnightOnMondaysBannerCreditsThursday() {
+        let monday = at(newYork, 2026, 7, 13, 20)
+        XCTAssertEqual(resolve(newYork, delivered: monday, responded: at(newYork, 2026, 7, 16, 0, 40)), key(2026, 7, 16))
+        XCTAssertEqual(resolve(newYork, delivered: monday, responded: at(newYork, 2026, 7, 15, 0, 40)), key(2026, 7, 15),
+                       "two days old: Wednesday itself, not Tuesday")
+        XCTAssertEqual(resolve(newYork, delivered: monday, responded: at(newYork, 2026, 7, 14, 0, 40)), key(2026, 7, 13),
+                       "one day old, inside the grace: Monday, the day it was for")
+    }
+
+    /// The invariant both fixes restore: whatever the times and whatever a snooze carries, the
+    /// credit is the banner's day or today — never a third day. Swept hour by hour over a week of
+    /// responses, for an original banner and for snoozes carrying each day around it, in a
+    /// negative and a positive offset.
+    func testTheCreditIsAlwaysTheBannersDayOrToday() {
+        for zone in [newYork, tokyo] {
+            let cal = calendar(zone)
+            let delivered = at(zone, 2026, 7, 13, 23, 30)
+            let carried: [String?] = [nil, "2026-07-11", "2026-07-12", "2026-07-13", "2026-07-14", "2026-07-20"]
+            for day in carried {
+                let bannerDay = day.flatMap(DataBackup.dayKey) ?? HabitCalendar.dayKey(forInstant: delivered, calendar: cal)
+                for hours in 0..<(7 * 24) {
+                    let responded = delivered.addingTimeInterval(TimeInterval(hours) * 3_600)
+                    let today = HabitCalendar.dayKey(forInstant: responded, calendar: cal)
+                    let credited = resolve(zone, delivered: delivered, responded: responded, day: day)
+                    XCTAssertTrue(credited == bannerDay || credited == today,
+                                  "\(zone) day=\(day ?? "nil") +\(hours)h credited \(credited)")
+                    XCTAssertLessThanOrEqual(credited, today, "never ahead of the clock")
+                }
+            }
+        }
     }
 
     /// The grace is elapsed time: on the night clocks spring forward (New York, 8 March 2026,

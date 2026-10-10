@@ -228,12 +228,20 @@ downgraded, 3 refuted. Everything below is the revised design. The adopted findi
   - It is cancelled by any in-process check-in of that habit.
   - It is also cancelled by the `refreshAfterDataChange` pass (D3) when the habit is already done
     today, which catches check-ins from the widget and from other devices that arrived by sync.
-- **Which day is credited.** `ReminderDay.resolve(userInfo:deliveredAt:respondedAt:calendar:)`, pure,
-  in this order:
-  1. `userInfo["day"]` (a snooze), parsed with the canonical range-checked parser;
-  2. else the delivered **local** day, if it is today;
-  3. else yesterday, if the response came within 3 h after local midnight;
-  4. else today.
+- **Which day is credited.** `ReminderDay.resolve(userInfo:deliveredAt:respondedAt:calendar:)`, pure.
+  The **banner's day** is `userInfo["day"]` (a snooze, parsed with the canonical range-checked
+  parser), else the delivered **local** day. Then:
+  1. the banner's day, if it is today;
+  2. else the banner's day, if it is yesterday and the response came within 3 h after local
+     midnight;
+  3. else today (a stale banner, original or snooze, and a carried day in the future).
+
+  The credit is always the banner's day or today, never a third day. *Narrowed in W1's code
+  review:* the first wording made a carried day win at any age (a snooze banner left from Monday
+  night, tapped on Friday, checked Monday) and any future day too, and step 3 credited yesterday
+  whatever the banner was for (Monday's banner at 00:40 on Thursday checked Wednesday). A snooze
+  stores what `resolve` returns when Snooze is tapped, so a snooze of a snooze copies its day
+  forward while that day is still creditable.
 
   The resulting day is converted with a new non-idempotent `HabitCalendar.dayKey(forInstant:calendar:)`,
   which always reads the local Y/M/D. **Never pass a system date to `HabitCalendar.dayKey(for:)`:** it
