@@ -141,8 +141,18 @@ Release and App Store:
 - `asc_api.py` — the shared ASC API helper. `setup_iap.py`, `upload_iap_screenshot.py`,
   `appstore_metadata.py`, `update_asc_metadata.py`, `update_screenshots.py`,
   `submit_build.py` — one-off ASC jobs from earlier releases, kept for reference; read one
-  before running it.
-- `screenshots.sh`, `generate_screenshots.swift` — App Store screenshots.
+  before running it. Never run `update_screenshots.py` or `appstore_metadata.py` for
+  screenshots: the first wipes every locale's sets and picks a version without a platform, the
+  second rewrites the 1.0 metadata.
+- `store_screenshots.py list|upload --platform IOS|MAC_OS --version <v>` — store screenshots
+  for one version on one platform: `list` is read-only; `upload --set <display type> <files…>`
+  replaces only the named display types, en-US unless `--locale` says otherwise, from an
+  explicit file list, and is a dry run without `--yes` (an owner-approved ASC write).
+- `screenshots.sh`, `generate_screenshots.swift` — the pre-1.4.0 App Store screenshots (AppKit
+  mock images). From 1.4.0 they are captured from real builds (RELEASE-1.4.0.md D8).
+- `mac_variant/build.sh` — the macOS test variant, `yyh.stride.habittracker.mactest`: a StrideMac
+  Debug build that cannot reach the real store on this Mac. Build, preflight, launch rules:
+  [scripts/mac_variant/README.md](scripts/mac_variant/README.md).
 - `a11y_sweep.sh [--size <content size>|default] [--app <Stride.app>]` — the Dynamic Type
   review artefact: every tab, Stats scrolled to each chart, and the paywall, as PNGs in
   `build/a11y/<size>/`. The size defaults to `accessibility-extra-extra-extra-large`;
