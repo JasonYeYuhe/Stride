@@ -652,10 +652,11 @@ Gates on `7ee5f8f`:
 
 ### Review
 
-- [ ] **Codex review.** Its quota ran out five times between 2026-10-04 and 10-07, the last
-  time midway through a whole-branch read. A narrow run is queued for 2026-10-07 19:55: the race
-  fix and the upgrade pass only (`scratchpad/consult/codex-retry3.sh`). Fact-check every claim
-  before adopting it.
+- [x] **Codex review: skipped, on the owner's word** ("codex没反应跳过也行", 2026-10-07). Its quota
+  ran out five times between 2026-10-04 and 10-07, the last time midway through a whole-branch
+  read. The narrow advisory run (race fix and upgrade pass only, 2026-10-07 19:55–21:45) read
+  nothing: its file tool timed out negotiating with the host on every call, and it said so rather
+  than report "none". No Codex finding exists for 1.3.1.
 - [x] **Gemini 3.1 Pro review of the race fix** (2026-10-07, MCP bridge on a throwaway copy of the
   files): "none" in every category. It raised two minor points, both known trade-offs:
   - the first open can block launch for up to 3 s, only while an existing store keeps failing;
@@ -724,7 +725,8 @@ Gates on `7ee5f8f`:
 
 ### Device checks (acceptance 4, 5, 6, 9)
 
-All of these passed in the simulators against a local server (the E2E runs above). **The owner
+These stay unticked because no real device ran them; they are **closed by the waiver below,
+not by a device**. All of them passed in the simulators against a local server (the E2E runs above). **The owner
 waived TestFlight and the real-device pass (2026-10-07: "不需要testflight 以后都可以省略这个步骤
 你直接测试就好")**, for this release and every later one. Agent-run testing replaces it: the
 simulator runs, in-place upgrades from the real 1.2.3 and 1.3.0 builds, the real-store migration
@@ -781,8 +783,13 @@ test on stores those builds wrote, and a Release-build smoke run (round three, b
   Both WAITING_FOR_REVIEW, MANUAL. The owner allowed skipping Codex when it does not answer ("codex
   没反应跳过也行"). The narrow Codex run still goes at 19:55 as an advisory check: anything serious
   goes into 1.3.2, or 1.3.1 is pulled from review if urgent.
-- [ ] After approval: `release.py release 1.3.1` (or the owner releases in ASC). Then merge the
-  `release/1.3.1` → `main` PR and tag `v1.3.1`. If either leads to a code change, the fix ships as
-  build 21.
-  The version is created `MANUAL`; publish with `release.py release 1.3.1` after the device
-  checks.
+- [x] **Approved on both platforms.** iOS 1.3.1 (21) was released by the owner in ASC and is
+  READY_FOR_SALE (found 2026-10-10). Sentry, production environment, 7 days: 1.3.1+21 has 8
+  healthy sessions from 5 installs, none crashed or errored. The server log has no error since the
+  deploy.
+- [ ] **macOS 1.3.1 (21) is PENDING_DEVELOPER_RELEASE**: approved, waiting on the owner's go for
+  `release.py release 1.3.1` (or the Release button in ASC).
+- [x] `release/1.3.1` merged with `main` (`75697be`: the only conflict was `docs/privacy.html`;
+  kept the 2026-10-07 page that stride-site serves, the tree is identical to `315878b`). PR
+  JasonYeYuhe/Stride#6 merged into `main`; tag `v1.3.1` on `315878b`, whose code is the build's
+  tree `c4edb6a` (every later commit is docs).
