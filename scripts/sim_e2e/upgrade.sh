@@ -1,5 +1,6 @@
 #!/bin/bash
 # upgrade.sh <udid> <old app> <new app> [--wait <s>] [--server <name>] [--label <name>] [--relaunch]
+#            [--reminders <daily habit id>,<Mon/Wed/Fri habit id>]
 #                                RELEASE GATE: one in-place upgrade on a simulator, checked.
 # upgrade.sh check-log <device log>     the device-log check alone, on a saved log
 # upgrade.sh check-gate <device log>    the store-gate order alone (no widget open before the app's)
@@ -7,6 +8,8 @@
 # upgrade.sh counts <store dir | file>  row counts of a saved store (read from a scratch copy)
 # upgrade.sh prefs <plist | plutil -p listing>
 #                                       its stride_delivery_* entries
+# upgrade.sh check-reminders <app.sh reminders listing | dir of the plists> <daily id>,<M/W/F id>
+#                                       the after-upgrade reminder check alone (below)
 #
 # Why (E2E U123 and MIG, 2026-10-07): on the first 1.3.1 launch after an in-place upgrade from
 # 1.2.3 or 1.3.0, chronod launched StrideWidgetExtension with the app; StrideWidget.init()
@@ -48,11 +51,26 @@
 #          elsewhere — the U123 relaunch's 17.
 #   5. with --relaunch: a second cold launch (the U123 relaunch pushed the whole store and filled
 #      Recovered Edits), its requests, and the recovered edits again.
+#   6. with --reminders <daily>,<mwf> (1.4.0, RELEASE-1.4.0.md D4/D7): the system's pending
+#      notification store, read from scratch copies of <device data>/Library/UserNotifications/
+#      <dir>/PendingNotifications.plist and Categories.plist (app.sh reminders, notifications.py).
+#        - before the install, as part of the starting point: both habits' bare 1.3.x ids,
+#          stride.habit.reminder.<id>, are pending (else exit 1: the recipe was not followed);
+#        - after the first launch, retried (the daemon writes the file after the app's adds and
+#          removes; STRIDE_E2E_REMINDER_TRIES × STRIDE_E2E_REMINDER_PAUSE s, default 10 × 3):
+#          the Mon/Wed/Fri habit has exactly .2, .4 and .6 and no bare id; the daily habit keeps
+#          exactly its bare id; both categories, stride.habit.binary and stride.habit.count, are
+#          registered; and when the archive's records show categories at all, those four requests
+#          carry one of the two.
+#      Without the flag nothing about reminders is read, so runs on devices with no reminder
+#      habits (every gate run before 1.4.0) work as they did. Why the system's store and not an
+#      app log line: design review upgrade-gate-blind-to-reminders; README, "Reminder habits",
+#      has the starting point (notification permission is granted on the OLD build, by hand).
 # Everything lands in $ROOT/upgrades/<label>/ (default <UTC time>-<pro|promax>), report.txt
 # included. Exit 0 PASS; 3 FAIL (a failed open in the log, any default.store, the app not running
-# after the wait, a widget open before the app's, no marker, unmarked rows, recovered edits); 1
-# the run could not be made. Never uninstalls, never opens the device's store with sqlite3 (it
-# reads scratch copies), never removes anything on the device.
+# after the wait, a widget open before the app's, no marker, unmarked rows, recovered edits,
+# reminders not converted); 1 the run could not be made. Never uninstalls, never opens the
+# device's store with sqlite3 (it reads scratch copies), never removes anything on the device.
 #
 # The check-* commands need no simulator. Each prints what it found; check-log and check-dir exit
 # 3 on a fallback, check-gate on a widget open before the app's, like the run.
@@ -271,6 +289,121 @@ delivery_prefs() {
   fi
 }
 
+# ── Reminders (--reminders) ─────────────────────────────────────────────────────────────────
+# Read from an `app.sh reminders` listing: "request<TAB><id><TAB><category>…" lines (the header of
+# notifications.py). The ids are NotificationService's: stride.habit.reminder.<habit id> for a
+# daily trigger (1.3.x and 1.4.0 alike), stride.habit.reminder.<habit id>.<w> (w = 1 Sun … 7 Sat)
+# for 1.4.0's weekday triggers (D4).
+REMINDER_PREFIX="stride.habit.reminder."
+REMINDER_CATEGORIES="stride.habit.binary stride.habit.count"
+UUID_RE='^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$'
+
+# "<daily>,<mwf>" → REM_DAILY, REM_MWF (upper-cased: Habit.id.uuidString is upper case).
+parse_reminders_arg() {
+  local daily mwf
+  [[ "$1" == *,* ]] || die "--reminders <daily habit id>,<Mon/Wed/Fri habit id> (got '$1')"
+  daily="$(tr '[:lower:]' '[:upper:]' <<<"${1%%,*}")"
+  mwf="$(tr '[:lower:]' '[:upper:]' <<<"${1#*,}")"
+  [[ "$daily" =~ $UUID_RE && "$mwf" =~ $UUID_RE ]] || die "--reminders: two habit UUIDs, comma-separated (got '$1')"
+  [[ "$daily" != "$mwf" ]] || die "--reminders: the daily and the Mon/Wed/Fri habit must be two habits"
+  REM_DAILY="$daily"
+  REM_MWF="$mwf"
+}
+
+# The request ids of one habit in a listing, bare and .<w>, sorted, space-separated.
+habit_requests() {
+  awk -F'\t' -v p="$REMINDER_PREFIX$2" '$1 == "request" && ($2 == p || index($2, p ".") == 1) { print $2 }' "$1" \
+    | sort -u | tr '\n' ' ' | sed 's/ $//'
+}
+
+# A listing for an `app.sh reminders` output file or a directory holding the plists themselves.
+reminders_listing() {
+  local src="$1" out="$2"
+  if [[ -d "$src" ]]; then
+    {
+      printf 'source\t%s\n' "$src"
+      if [[ -f "$src/PendingNotifications.plist" ]]; then notifications_py requests "$src/PendingNotifications.plist"; else printf 'decoded-requests\tnone\n'; fi
+      if [[ -f "$src/Categories.plist" ]]; then notifications_py categories "$src/Categories.plist"; else printf 'decoded-categories\tnone\n'; fi
+    } >"$out" || die "could not decode the stores in $src"
+  else
+    [[ -f "$src" ]] || die "no reminders listing at $src"
+    cp "$src" "$out"
+  fi
+}
+
+# Before the install: the old build's state the run starts from. Both bare ids, nothing else for
+# the two habits (1.3.x knows no weekday id). Prints; returns 1 when the starting point is wrong.
+check_reminders_before() {
+  local listing="$1" id got rc=0
+  for id in "$REM_DAILY" "$REM_MWF"; do
+    got="$(habit_requests "$listing" "$id")"
+    if [[ "$got" == "$REMINDER_PREFIX$id" ]]; then
+      echo "reminders before: $REMINDER_PREFIX$id pending (the old build's daily trigger)"
+    else
+      echo "reminders before: habit $id has [${got:-nothing pending}], not exactly its bare id"
+      rc=1
+    fi
+  done
+  return $rc
+}
+
+# After the first launch: D4's conversion. Prints each finding; returns 3 on any failure.
+check_reminders() {
+  local listing="$1" got want rc=0 mode id cat cats_seen c cat_bad=0
+  mode="$(awk -F'\t' '$1 == "decoded-requests" { print $2; exit }' "$listing")"
+  [[ "$mode" != none && -n "$mode" ]] || { echo "reminders: NO PendingNotifications.plist after the launch (every request removed?)"; return 3; }
+  got="$(habit_requests "$listing" "$REM_DAILY")"
+  want="$REMINDER_PREFIX$REM_DAILY"
+  if [[ "$got" == "$want" ]]; then
+    echo "reminders: the daily habit keeps exactly its bare id ($want)"
+  else
+    echo "reminders: DAILY HABIT $REM_DAILY has [${got:-nothing pending}], want exactly [$want]"
+    rc=3
+  fi
+  got="$(habit_requests "$listing" "$REM_MWF")"
+  want="$REMINDER_PREFIX$REM_MWF.2 $REMINDER_PREFIX$REM_MWF.4 $REMINDER_PREFIX$REM_MWF.6"
+  if [[ "$got" == "$want" ]]; then
+    echo "reminders: the Mon/Wed/Fri habit has exactly .2 .4 .6 and no bare id"
+  else
+    echo "reminders: MON/WED/FRI HABIT $REM_MWF has [${got:-nothing pending}], want exactly [$want]"
+    rc=3
+  fi
+  # The requests' categories. Asserted only when the archive's records show categories at all:
+  # the record keys were read from the runtime's strings, not from a real store (notifications.py),
+  # so "no category anywhere" may be a key the decoder does not know rather than a missing one.
+  if [[ "$mode" == strings ]]; then
+    echo "NOTE: the pending store's records were not decoded (strings fallback): request categories not checked"
+  else
+    cats_seen="$(awk -F'\t' '$1 == "request" && index($2, "stride.habit.") == 1 && $3 != "-" { print $3 }' "$listing" | sort -u | tr '\n' ' ')"
+    if [[ -z "$cats_seen" ]]; then
+      echo "NOTE: no Stride request in the store shows a category: either none was set (a D4 bug) or the record keeps it under a key notifications.py does not know — read reminders-after/PendingNotifications.plist with plutil -p"
+    else
+      for id in "$REM_DAILY" "$REM_MWF.2" "$REM_MWF.4" "$REM_MWF.6"; do
+        cat="$(awk -F'\t' -v i="$REMINDER_PREFIX$id" '$1 == "request" && $2 == i { print $3; exit }' "$listing")"
+        case " $REMINDER_CATEGORIES " in
+          *" $cat "*) ;;
+          *) [[ -z "$cat" ]] || { echo "reminders: $REMINDER_PREFIX$id carries category '$cat', not stride.habit.binary or stride.habit.count"; cat_bad=1; } ;;
+        esac
+      done
+      if [[ $cat_bad -eq 0 ]]; then echo "reminders: the requests carry ${cats_seen% }"; else rc=3; fi
+    fi
+  fi
+  if [[ "$(awk -F'\t' '$1 == "decoded-categories" { print $2; exit }' "$listing")" == none ]]; then
+    echo "reminders: NO Categories.plist: the app registered no notification category"
+    rc=3
+  else
+    for c in $REMINDER_CATEGORIES; do
+      if awk -F'\t' -v c="$c" '$1 == "category" && $2 == c { f = 1 } END { exit !f }' "$listing"; then
+        echo "reminders: category $c registered ($(awk -F'\t' -v c="$c" '$1 == "category" && $2 == c { print $3; exit }' "$listing"))"
+      else
+        echo "reminders: CATEGORY $c NOT REGISTERED"
+        rc=3
+      fi
+    done
+  fi
+  return $rc
+}
+
 # ── Offline commands ────────────────────────────────────────────────────────────────────────
 RC=0
 case "${1:-}" in
@@ -294,12 +427,21 @@ case "${1:-}" in
     [[ -n "${2:-}" ]] || die "usage: upgrade.sh prefs <plist | plutil -p listing>"
     delivery_prefs "$2"
     exit 0 ;;
+  check-reminders)
+    [[ -n "${2:-}" && -n "${3:-}" ]] || die "usage: upgrade.sh check-reminders <app.sh reminders listing | dir of the plists> <daily id>,<M/W/F id>"
+    parse_reminders_arg "$3"
+    mkdir -p "$ROOT/scratch"
+    L="$ROOT/scratch/reminders-listing.$$"
+    reminders_listing "$2" "$L"
+    check_reminders "$L" || RC=$?
+    rm -f "$L"
+    exit $RC ;;
   ""|-h|--help)
-    die "usage: upgrade.sh <udid> <old app> <new app> [--wait <s>] [--server <name>] [--label <name>] [--relaunch] | check-log <log> | check-gate <log> | check-dir <dir> | counts <store> | prefs <plist>" ;;
+    die "usage: upgrade.sh <udid> <old app> <new app> [--wait <s>] [--server <name>] [--label <name>] [--relaunch] [--reminders <daily id>,<M/W/F id>] | check-log <log> | check-gate <log> | check-dir <dir> | counts <store> | prefs <plist> | check-reminders <listing|dir> <daily id>,<M/W/F id>" ;;
 esac
 
 # ── The run ─────────────────────────────────────────────────────────────────────────────────
-[[ $# -ge 3 ]] || die "usage: upgrade.sh <udid> <old app> <new app> [--wait <s>] [--server <name>] [--label <name>] [--relaunch]"
+[[ $# -ge 3 ]] || die "usage: upgrade.sh <udid> <old app> <new app> [--wait <s>] [--server <name>] [--label <name>] [--relaunch] [--reminders <daily id>,<M/W/F id>]"
 UDID="$(resolve_udid "$1")"
 OLD="$2"
 NEW="$3"
@@ -308,9 +450,15 @@ WAIT=20
 SERVER=""
 LABEL=""
 RELAUNCH=0
+REM_DAILY=""
+REM_MWF=""
+REM_TRIES="${STRIDE_E2E_REMINDER_TRIES:-10}"
+REM_PAUSE="${STRIDE_E2E_REMINDER_PAUSE:-3}"
+[[ "$REM_TRIES" =~ ^[1-9][0-9]*$ && "$REM_PAUSE" =~ ^[0-9]+$ ]] || die "STRIDE_E2E_REMINDER_TRIES (≥ 1) and STRIDE_E2E_REMINDER_PAUSE must be whole numbers"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --relaunch) RELAUNCH=1 ;;
+    --reminders) [[ -n "${2:-}" ]] || die "--reminders <daily id>,<M/W/F id>"; parse_reminders_arg "$2"; shift ;;
     --wait) [[ "${2:-}" =~ ^[0-9]+$ ]] || die "--wait <seconds>"; WAIT="$2"; shift ;;
     --server) [[ -n "${2:-}" ]] || die "--server <name>"; SERVER="$2"; check_name "$SERVER"; shift ;;
     --label) [[ "${2:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "--label <letters, digits, . _ ->"; LABEL="$2"; shift ;;
@@ -349,6 +497,7 @@ copy_store() {
 
 run() {
   local installed grp grp2 data t0 mark="" log="" pid fail="" ck_before ck_after last_sync="" qualify edits_before edits marker mark2
+  local try rem_ok
   echo "upgrade.sh: $OLD_V → $NEW_V on $DEV ($UDID), evidence in $OUT"
 
   section "starting point"
@@ -380,6 +529,15 @@ run() {
   qualify="$(qualifying_rows "$OUT/before/Stride.store" "$last_sync")"
   echo "  rows the delivery migration must mark (5+ min before the last sync${last_sync:+, $last_sync}): $qualify"
   edits_before="$(recovered_edits "$data")"
+  if [[ -n "$REM_DAILY" ]]; then
+    # Read while the old build's requests are all there is. The stores live outside the app's
+    # containers, so the in-place install should leave them alone; the new build's first launch
+    # is what changes them (its reschedule and prune, D4).
+    "$APP_SH" reminders "$UDID" "$OUT/reminders-before" >"$OUT/reminders-before.txt" \
+      || die "--reminders: could not read the device's notification store before the upgrade (above). The starting point needs notifications allowed and both reminder habits on, on the OLD build: README, \"Reminder habits\""
+    check_reminders_before "$OUT/reminders-before.txt" \
+      || die "--reminders: the starting point is not the old build's two reminders (reminders-before.txt): README, \"Reminder habits\""
+  fi
 
   section "in-place install of $NEW_V"
   # From before the install: chronod may start the widget before the app's first launch.
@@ -486,6 +644,37 @@ run() {
     fail="$fail; $((edits - edits_before)) recovered edit(s) after the first launch"
   fi
 
+  if [[ -n "$REM_DAILY" ]]; then
+    section "reminders after the first launch (reminders-before.txt, reminders-after.txt, reminders-check.txt)"
+    # Retried: usernotificationsd applies the app's removes and adds asynchronously and writes the
+    # plist after them, so the first read can still show the old build's state.
+    rem_ok=0
+    try=1
+    while :; do
+      rm_under_root "$OUT/reminders-after"
+      : >"$OUT/reminders-check.txt"
+      if "$APP_SH" reminders "$UDID" "$OUT/reminders-after" >"$OUT/reminders-after.txt" 2>"$OUT/reminders-after.err" \
+         && check_reminders "$OUT/reminders-after.txt" >"$OUT/reminders-check.txt"; then
+        rem_ok=1
+        break
+      fi
+      [[ $try -lt $REM_TRIES ]] || break
+      sleep "$REM_PAUSE"
+      try=$((try + 1))
+    done
+    echo "read $try time(s); pending for the two habits:"
+    echo "  before: daily [$(habit_requests "$OUT/reminders-before.txt" "$REM_DAILY")]  M/W/F [$(habit_requests "$OUT/reminders-before.txt" "$REM_MWF")]"
+    if [[ -s "$OUT/reminders-check.txt" ]]; then
+      echo "  after:  daily [$(habit_requests "$OUT/reminders-after.txt" "$REM_DAILY")]  M/W/F [$(habit_requests "$OUT/reminders-after.txt" "$REM_MWF")]"
+      cat "$OUT/reminders-check.txt"
+    else
+      echo "  after:  could not be read: $(tail -1 "$OUT/reminders-after.err" 2>/dev/null)"
+    fi
+    if [[ $rem_ok -eq 0 ]]; then
+      fail="$fail; the reminders were not converted as D4 requires (reminders-check.txt)"
+    fi
+  fi
+
   if [[ $RELAUNCH -eq 1 ]]; then
     section "relaunch (relaunch.png, requests-relaunch.txt)"
     if [[ -n "$SERVER" ]]; then mark2="$(wc -l <"$log" | tr -d ' ')"; fi
@@ -518,10 +707,14 @@ run() {
       *default.store*|*"failed store open"*|*"before the app had"*|*"marked none"*|*"recovered edit"*)
         echo "The first launch after the upgrade did not open Stride.store: an App Store update would show the user an empty app (the fallback, then a whole-store push on the next launch, E2E U123) or the store error screen, not their habits." ;;
     esac
+    case "$fail" in
+      *"reminders were not converted"*)
+        echo "The 1.3.x reminders were not turned into 1.4.0's: a specific-days habit would keep nagging on rest days (or a daily one fall silent), and the action buttons need the categories (D4)." ;;
+    esac
     echo "Evidence: $OUT"
     return 3
   fi
-  echo "PASS: $OLD_V → $NEW_V on $DEV: the first launch opened Stride.store; no failed open in the device log, no default.store, no widget open before the app's, no unmarked rows, no recovered edits. Evidence: $OUT"
+  echo "PASS: $OLD_V → $NEW_V on $DEV: the first launch opened Stride.store; no failed open in the device log, no default.store, no widget open before the app's, no unmarked rows, no recovered edits${REM_DAILY:+; the reminders converted (.2 .4 .6 for the M/W/F habit, the daily bare id kept, both categories registered)}. Evidence: $OUT"
 }
 
 run 2>&1 | tee "$OUT/report.txt"
