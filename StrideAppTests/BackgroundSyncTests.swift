@@ -370,6 +370,13 @@ final class BackgroundSyncTests: XCTestCase {
         let start = ContinuousClock.now
         _ = await BackgroundSync.handle(container: container, environment: answersLate, answerWait: .milliseconds(300))
         XCTAssertLessThan(ContinuousClock.now - start, .seconds(3), "not held open past the bound")
+        // The submit runs in a detached task that `handle` starts before its run, but nothing
+        // promises that task has reached the submitter within a 300 ms bound: on a loaded CI runner
+        // it had not (CI run 38062629860, `[]`). What this asserts is that the resubmit was made,
+        // not how fast the executor picked it up, so wait for it (the bound above is the timing claim).
+        for _ in 0..<100 where slow.reasons.isEmpty {
+            try await Task.sleep(for: .milliseconds(50))
+        }
         XCTAssertEqual(slow.reasons, [.resubmit])
         XCTAssertEqual(slow.answered, 0)
     }
