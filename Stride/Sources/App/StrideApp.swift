@@ -101,6 +101,9 @@ struct StrideApp: App {
         Settings {
             StoreGateView(launch: storeLaunch) { modelContainer in
                 SettingsView()
+                    // The window's title, as 1.3.x's SettingsView set it itself: since 1.4.0 the
+                    // shell titles its places, and SettingsView sets none (RELEASE-1.4.0.md D2).
+                    .navigationTitle("Settings")
                     .modelContainer(modelContainer)
             }
             .environment(\.locale, languageManager.locale ?? .current)

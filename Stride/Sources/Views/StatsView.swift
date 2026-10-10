@@ -6,21 +6,36 @@ struct StatsView: View {
            sort: \Habit.sortOrder)
     private var habits: [Habit]
 
-    // An id, not a Habit. Holding the @Model object in @State kept it alive outside the @Query
-    // result set, and nothing cleared it when that habit was deleted — in Settings, or with no
-    // user action at all by a sync tombstone from another device. The next render then read
-    // properties of an invalidated model. Resolving the id against the live query can't do that.
-    @State private var selectedHabitID: UUID?
+    /// The habit shown is the window's shell's (`ShellState.statsHabitID`, an id resolved against
+    /// the live query below — see there why never a Habit): at regular width and on the Mac this
+    /// view is created on the first visit and kept, and a size-class crossing rebuilds it, so it
+    /// cannot own the pick (RELEASE-1.4.0.md D2).
+    let shell: ShellState
+    /// False while the shell keeps this tab hidden; its toolbar item is withdrawn then.
+    @Environment(\.shellTabIsActive) private var isActive
+    @Environment(\.shellUsesRegularLayout) private var regularLayout
 
     private var selectedHabit: Habit? {
-        habits.first { $0.id == selectedHabitID } ?? habits.first
+        habits.first { $0.id == shell.statsHabitID } ?? habits.first
     }
     @State private var showingWeeklyReview = false
     @State private var showingPaywall = false
     private var store = StoreService.shared
+    #if DEBUG
+    /// Counts this view's creations for the hosted shell tests (`ShellTabLifetime`).
+    @StateObject private var lifetime: ShellTabLifetime
+    #endif
+
+    init(shell: ShellState) {
+        self.shell = shell
+        #if DEBUG
+        _lifetime = StateObject(wrappedValue: ShellTabLifetime(.stats, shell: shell))
+        #endif
+    }
 
     var body: some View {
         #if DEBUG
+        let _ = lifetime
         ScrollViewReader { proxy in
             statsContent
                 .task { await scrollToLaunchAnchor(proxy) }
@@ -42,6 +57,10 @@ struct StatsView: View {
     ///
     /// Insights and the trend are Pro-only. Without Pro both anchors land on the locked card that
     /// replaces them, so a sweep on a simulator with no purchase shows that card twice.
+    ///
+    /// "On launch" means when this view is created. With `-tab 1` that is the launch on every
+    /// layout; since 1.4.0 the regular-width shell creates Stats on its first visit, and this
+    /// `.task` runs then.
     private func scrollToLaunchAnchor(_ proxy: ScrollViewProxy) async {
         let arguments = CommandLine.arguments
         guard !didScrollToLaunchAnchor,
@@ -59,78 +78,82 @@ struct StatsView: View {
 
     private var statsContent: some View {
         ScrollView {
-            if habits.isEmpty {
-                VStack(spacing: 12) {
-                    Image(systemName: "chart.bar")
-                        .scaledSystemFont(size: 50, relativeTo: .largeTitle)
-                        .foregroundStyle(.secondary)
-                        .accessibilityHidden(true)
-                        // Decoration: past .accessibility2 it would only push the text that
-                        // explains the empty screen below the fold.
-                        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
-                    Text("No habits yet")
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
-                    Text("Add a habit to start seeing statistics.")
-                        .font(.body)
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(.top, 100)
-            } else {
-                VStack(spacing: 20) {
-                    OverallStatsCard(habits: habits)
-                        .padding(.horizontal)
+            Group {
+                if habits.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "chart.bar")
+                            .scaledSystemFont(size: 50, relativeTo: .largeTitle)
+                            .foregroundStyle(.secondary)
+                            .accessibilityHidden(true)
+                            // Decoration: past .accessibility2 it would only push the text that
+                            // explains the empty screen below the fold.
+                            .dynamicTypeSize(...DynamicTypeSize.accessibility2)
+                        Text("No habits yet")
+                            .font(.title3)
+                            .foregroundStyle(.secondary)
+                        Text("Add a habit to start seeing statistics.")
+                            .font(.body)
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.top, 100)
+                } else {
+                    VStack(spacing: 20) {
+                        OverallStatsCard(habits: habits)
+                            .padding(.horizontal)
 
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 10) {
-                            ForEach(habits) { habit in
-                                HabitChip(
-                                    habit: habit,
-                                    isSelected: selectedHabit?.id == habit.id
-                                )
-                                .onTapGesture {
-                                    withAnimation {
-                                        selectedHabitID = habit.id
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 10) {
+                                ForEach(habits) { habit in
+                                    HabitChip(
+                                        habit: habit,
+                                        isSelected: selectedHabit?.id == habit.id
+                                    )
+                                    .onTapGesture {
+                                        withAnimation {
+                                            shell.statsHabitID = habit.id
+                                        }
                                     }
                                 }
                             }
+                            .padding(.horizontal)
                         }
-                        .padding(.horizontal)
-                    }
 
-                    if let habit = selectedHabit {
-                        VStack(spacing: 16) {
-                            HabitDetailStatsCard(habit: habit)
-                                .statsLaunchAnchor("detail")
-                            if store.isPro {
-                                InsightsCard(habit: habit)
-                                    .statsLaunchAnchor("insights")
-                                TrendCard(habit: habit)
-                                    .statsLaunchAnchor("trend")
-                            } else {
-                                ProLockedCard(
-                                    title: "Advanced Analytics",
-                                    message: "8-week trends, insights & weekly review"
-                                ) { showingPaywall = true }
-                                .statsLaunchAnchor("analytics")
+                        if let habit = selectedHabit {
+                            VStack(spacing: 16) {
+                                HabitDetailStatsCard(habit: habit)
+                                    .statsLaunchAnchor("detail")
+                                if store.isPro {
+                                    InsightsCard(habit: habit)
+                                        .statsLaunchAnchor("insights")
+                                    TrendCard(habit: habit)
+                                        .statsLaunchAnchor("trend")
+                                } else {
+                                    ProLockedCard(
+                                        title: "Advanced Analytics",
+                                        message: "8-week trends, insights & weekly review"
+                                    ) { showingPaywall = true }
+                                    .statsLaunchAnchor("analytics")
+                                }
+                                WeeklyBarChart(habit: habit)
+                                    .statsLaunchAnchor("weekday")
+                                HeatmapView(habit: habit)
+                                    .statsLaunchAnchor("heatmap")
                             }
-                            WeeklyBarChart(habit: habit)
-                                .statsLaunchAnchor("weekday")
-                            HeatmapView(habit: habit)
-                                .statsLaunchAnchor("heatmap")
+                            .padding(.horizontal)
                         }
-                        .padding(.horizontal)
                     }
+                    .padding(.vertical)
                 }
-                .padding(.vertical)
             }
+            .shellReadableWidth(regularLayout)
         }
         .background(Color.appBackground)
-        .navigationTitle("Statistics")
+        // No title of its own: the shell sets it (ContentView.title).
         .toolbar {
             // With no habits the review has nothing to show, and for a free user the button
-            // opened the paywall to sell a feature that would then be empty.
-            if !habits.isEmpty {
+            // opened the paywall to sell a feature that would then be empty. And only while this
+            // tab shows: every kept tab's toolbar lands in the shell's one navigation bar (D2).
+            if isActive && !habits.isEmpty {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         if store.isPro { showingWeeklyReview = true } else { showingPaywall = true }
@@ -679,31 +702,18 @@ struct WeeklyBarChart: View {
 // MARK: - Heatmap
 struct HeatmapView: View {
     let habit: Habit
-    private let weeks = 12
     private var calendar: Calendar { appCalendar }
     /// The legend's swatches grow with the "Less"/"More" beside them; 12 at the default size.
     @ScaledMetric(relativeTo: .caption2) private var swatch: CGFloat = 12
 
-    private var days: [Date] {
-        Date.lastNDays(weeks * 7)
-    }
-
-    private var weekColumns: [[Date]] {
-        var columns: [[Date]] = []
-        var currentWeek: [Date] = []
-
-        for day in days {
-            let weekday = calendar.component(.weekday, from: day)
-            if weekday == calendar.firstWeekday && !currentWeek.isEmpty {
-                columns.append(currentWeek)
-                currentWeek = []
-            }
-            currentWeek.append(day)
-        }
-        if !currentWeek.isEmpty {
-            columns.append(currentWeek)
-        }
-        return columns
+    /// Twelve weeks ending today as week columns of seven cells, each day in the row of its own
+    /// weekday and the oldest week padded at the TOP (`HeatmapLayout`, RELEASE-1.4.0.md D2). The
+    /// grid used to split the days at `firstWeekday` and pad every short column at the bottom, so
+    /// the oldest, partial week was drawn from the top row down — Thursday beside "S" — whenever
+    /// the twelve weeks did not start on the first day of a week, six days in seven.
+    private var weekColumns: [[Date?]] {
+        let calendar = self.calendar
+        return HeatmapLayout.columns(of: HeatmapLayout.days(endingOn: Date(), calendar: calendar), calendar: calendar)
     }
 
     var body: some View {
@@ -747,23 +757,38 @@ struct HeatmapView: View {
 /// The weekday letters and the 12-week grid. Its own view so that the `@ScaledMetric` cell size
 /// reads the Dynamic Type size HeatmapView caps, not the uncapped one.
 ///
-/// At the default size the 12 columns (201 pt) fit beside the letters with room to spare. The
-/// cells scale with the letters, and from the first accessibility size the grid is wider than a
-/// phone: it becomes a horizontally scrolling strip that opens on the CURRENT week (the trailing
-/// end) with its indicator shown, instead of overflowing the card or opening on the oldest week.
+/// Compact width (phones): the `@ScaledMetric` cell, 14 pt at the default size, as in 1.3.x. The
+/// 12 or 13 columns (at most 218 pt) fit beside the letters with room to spare. The cells scale
+/// with the letters, and from the first accessibility size the grid is wider than a phone: it
+/// becomes a horizontally scrolling strip that opens on the CURRENT week (the trailing end) with
+/// its indicator shown, instead of overflowing the card or opening on the oldest week.
+///
+/// Regular width and the Mac (D2): the fixed cell drew the grid across about a quarter of an
+/// iPad's card. There the cell grows until 13 columns and the letters fill the row
+/// (`HeatmapLayout.cellSize`; 41 pt at the 680 pt cap, 99.5 % of the card), never below the
+/// scaled cell, so a narrow window or the accessibility strip still scrolls as on a phone. The
+/// row is measured here, OUTSIDE the horizontal ScrollView, which proposes unlimited width to
+/// what is inside it. The grid hugs its columns at the row's trailing edge: on the one day in
+/// seven with only 12 columns the spare width sits on the leading side and the current week
+/// still ends at the card's edge, and the cell, sized for 13, does not change from day to day.
 private struct HeatmapGrid: View {
     let habit: Habit
-    let columns: [[Date]]
+    /// Seven cells each, top to bottom in the letters' order; nil is an empty cell.
+    let columns: [[Date?]]
     let calendar: Calendar
     @Environment(\.dynamicTypeSize) private var typeSize
-    @ScaledMetric(relativeTo: .caption2) private var cell: CGFloat = 14
+    @Environment(\.shellUsesRegularLayout) private var regularLayout
+    @ScaledMetric(relativeTo: .caption2) private var scaledCell: CGFloat = 14
+    /// The row's width (the card's inside), 0 until the first layout pass has measured it.
+    @State private var rowWidth: CGFloat = 0
 
     var body: some View {
         let strip = typeSize.isAccessibilitySize
-        HStack(alignment: .top, spacing: 3) {
+        let cell = HeatmapLayout.cellSize(scaled: scaledCell, availableWidth: rowWidth, regular: regularLayout)
+        HStack(alignment: .top, spacing: HeatmapLayout.spacing) {
             // Row labels that only mean anything through visual alignment with the grid;
             // each cell names its own weekday instead.
-            VStack(alignment: .trailing, spacing: 3) {
+            VStack(alignment: .trailing, spacing: HeatmapLayout.spacing) {
                 ForEach(0..<7, id: \.self) { i in
                     let symbols = calendar.veryShortWeekdaySymbols
                     let index = (calendar.firstWeekday - 1 + i) % 7
@@ -776,24 +801,11 @@ private struct HeatmapGrid: View {
             .accessibilityHidden(true)
 
             ScrollView(.horizontal, showsIndicators: strip) {
-                HStack(spacing: 3) {
+                HStack(spacing: HeatmapLayout.spacing) {
                     ForEach(columns.indices, id: \.self) { weekIndex in
-                        VStack(spacing: 3) {
-                            ForEach(columns[weekIndex], id: \.self) { day in
-                                let completed = habit.isCompletedOn(day)
-                                // `monthYear` is a hard-coded "MMMM yyyy", so cells announced
-                                // "September 2026 16" — English field order, the year on all 84
-                                // cells, and never the weekday the columns are organised by.
-                                let dateLabel = day.formatted(.dateTime.weekday(.wide).month().day().locale(appLocale))
-                                RoundedRectangle(cornerRadius: 2)
-                                    .fill(completed ? habit.color : Color.gray.opacity(0.15))
-                                    .frame(width: cell, height: cell)
-                                    .accessibilityLabel(completed ? "\(dateLabel), completed" : "\(dateLabel), not completed")
-                            }
-                            if columns[weekIndex].count < 7 {
-                                ForEach(0..<(7 - columns[weekIndex].count), id: \.self) { _ in
-                                    Color.clear.frame(width: cell, height: cell)
-                                }
+                        VStack(spacing: HeatmapLayout.spacing) {
+                            ForEach(0..<7, id: \.self) { row in
+                                dayCell(columns[weekIndex][row], side: cell)
                             }
                         }
                     }
@@ -803,6 +815,41 @@ private struct HeatmapGrid: View {
             // scroll view: an anchor can also position content like that, and at the default
             // size nothing may move (store screenshots are diffed).
             .defaultScrollAnchor(strip ? .trailing : nil)
+            .frame(width: scrollWidth(cell: cell))
+        }
+        .frame(maxWidth: .infinity, alignment: regularLayout ? .trailing : .leading)
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { width in
+            rowWidth = width
+        }
+    }
+
+    /// At regular width, once measured: the columns' own width, or what the row leaves beside the
+    /// letters when they are wider (the strip, a narrow Mac window) — so the grid can sit at the
+    /// trailing edge. Otherwise nil, and the scroll view takes the row, as in 1.3.x.
+    private func scrollWidth(cell: CGFloat) -> CGFloat? {
+        guard regularLayout, rowWidth > 0, !columns.isEmpty else { return nil }
+        let spacing = HeatmapLayout.spacing
+        let columnsWidth = CGFloat(columns.count) * cell + CGFloat(columns.count - 1) * spacing
+        return min(columnsWidth, max(0, rowWidth - cell - spacing))
+    }
+
+    @ViewBuilder
+    private func dayCell(_ day: Date?, side: CGFloat) -> some View {
+        if let day {
+            let completed = habit.isCompletedOn(day)
+            // `monthYear` is a hard-coded "MMMM yyyy", so cells announced
+            // "September 2026 16" — English field order, the year on all 84
+            // cells, and never the weekday the columns are organised by.
+            let dateLabel = day.formatted(.dateTime.weekday(.wide).month().day().locale(appLocale))
+            RoundedRectangle(cornerRadius: 2)
+                .fill(completed ? habit.color : Color.gray.opacity(0.15))
+                .frame(width: side, height: side)
+                .accessibilityLabel(completed ? "\(dateLabel), completed" : "\(dateLabel), not completed")
+        } else {
+            // Before the twelve weeks, or after today: room, not a day.
+            Color.clear.frame(width: side, height: side)
         }
     }
 }

@@ -66,6 +66,9 @@ struct SettingsView: View {
     private var auth = AuthService.shared
     private var sync = SyncService.shared
     private var languageManager = LanguageManager.shared
+    /// False while the iPad shell keeps Settings alive but hidden (RELEASE-1.4.0.md D2); the
+    /// "when shown" refreshes below wait for it. Always true in the Mac's Settings window.
+    @Environment(\.shellTabIsActive) private var isActive
 
     private var activeHabits: [Habit] {
         allHabits.filter { !$0.isArchived }
@@ -610,7 +613,8 @@ struct SettingsView: View {
                     }
                 }
             }
-            .navigationTitle("Settings")
+            // No title of its own: the shell sets it (ContentView.title), and the Mac's Settings
+            // window gets it from StrideApp.
             .alert("Delete Habit", isPresented: $showingDeleteAlert) {
                 Button("Cancel", role: .cancel) {
                     habitToDelete = nil
@@ -747,7 +751,12 @@ struct SettingsView: View {
                     Task { await sync.sync(context: modelContext) }
                 }
             }
-            .task {
+            // Each time Settings is shown. A `.task` alone runs when the view appears, and at
+            // regular width the shell keeps Settings alive once visited, hidden while another place
+            // shows: it would appear once, and the permission, Pro and recovered-edits reads would
+            // never be redone on a later visit. Keyed on being shown, and doing nothing while hidden.
+            .task(id: isActive) {
+                guard isActive else { return }
                 #if DEBUG
                 SyncSectionDemo.seedIfNeeded(context: modelContext, sync: sync)
                 presentDemoSheet()

@@ -727,7 +727,7 @@ final class AccountSwitchTests: XCTestCase {
     private func hostToday() throws -> UIWindow {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let window = UIWindow(windowScene: scene)
-        window.rootViewController = UIHostingController(rootView: NavigationStack { TodayView() }
+        window.rootViewController = UIHostingController(rootView: NavigationStack { TodayView(shell: ShellState(launchArguments: [])) }
             .modelContainer(container)
             .environment(\.locale, LanguageManager.shared.locale ?? .current))
         window.makeKeyAndVisible()
