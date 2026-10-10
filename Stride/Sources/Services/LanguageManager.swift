@@ -37,6 +37,13 @@ final class LanguageManager {
     var selectedLanguage: AppLanguage {
         didSet {
             UserDefaults.standard.set(selectedLanguage.rawValue, forKey: key)
+            // The reminder actions' titles and the pending reminders' text are strings the SYSTEM
+            // holds, resolved through `appLocalized` when they were handed over; nothing redraws
+            // them the way SwiftUI redraws `Text`. Hand them over again in the new language
+            // (RELEASE-1.4.0.md D4). The store is the one the launch opened, if it did.
+            if selectedLanguage != oldValue {
+                NotificationService.shared.languageDidChange(modelContainer: SharedModelContainer.opened)
+            }
         }
     }
 

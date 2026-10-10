@@ -64,7 +64,9 @@ struct CompleteHabitIntent: AppIntent {
         try context.save()
 
         NotificationCenter.default.post(name: .habitDataChanged, object: nil)
-        WidgetCenter.shared.reloadAllTimelines()
+        // Widgets, this habit's snooze and banners, and the badge — which this path never set
+        // before 1.4.0 (RELEASE-1.4.0.md D4). Awaited: Siri may suspend the app once this returns.
+        await CheckInEffects.live.afterCheckIn(habitID: habit.id, container: container)
 
         if habit.habitKind == .count && !result.isCompleted {
             let unit = habit.unit.map { " \($0)" } ?? ""

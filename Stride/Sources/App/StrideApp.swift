@@ -28,6 +28,11 @@ struct StrideApp: App {
             open: { SharedModelContainer.openForApp(reloadWidgets: { WidgetCenter.shared.reloadAllTimelines() }) },
             prepare: Self.prepareStore,
             report: AppStoreLaunch.reportToSentry)
+        // The reminder actions (RELEASE-1.4.0.md D4): the delegate and the Mark Done / Add 1 /
+        // Snooze categories, here and not in a `.task`. A button on a lock-screen banner launches a
+        // terminated app in the background with no scene at all, and its response goes to whoever
+        // is the delegate when launch finishes. After the store open, which the handler writes to.
+        NotificationActionHandler.install()
         // Copies of the user's data that nothing else ever removed, off the main thread: the
         // export files earlier share sheets wrote to tmp — backups, recovered edits, a deleted
         // account's among them (E2E S-DEL) — and the answers and cookies earlier builds left in
@@ -122,12 +127,29 @@ struct StrideApp: App {
             // or a sync pulling in another device's check-ins — left it stale until its next
             // scheduled refresh at midnight; a deleted habit stayed listed, and tapping it did
             // nothing. A new save site can't forget this.
+            //
+            // 1.4.0: and the badge, the snoozes and the banners (RELEASE-1.4.0.md D3, D4). A
+            // check-in from the widget runs in another process and one from another device
+            // arrives by sync; neither passes through `CheckInEffects`, so this pass is what
+            // cancels a snooze, withdraws a banner and recounts the badge for them.
             .onReceive(
                 NotificationCenter.default.publisher(for: .habitDataChanged)
                     .merge(with: NotificationCenter.default.publisher(for: ModelContext.didSave))
                     .throttle(for: .seconds(2), scheduler: DispatchQueue.main, latest: true)
             ) { _ in
                 WidgetCenter.shared.reloadAllTimelines()
+                NotificationService.shared.refreshAfterDataChange(modelContainer: modelContainer)
+            }
+            // The day changed under a running app (midnight, or the wake after it): yesterday's
+            // banners go, the badge counts the new day's habits as remaining again, and a snooze
+            // cancelled for "done today" is judged on the new today. Posted on no particular
+            // thread, hence the hop.
+            .onReceive(
+                NotificationCenter.default.publisher(for: .NSCalendarDayChanged)
+                    .receive(on: DispatchQueue.main)
+            ) { _ in
+                NotificationService.shared.refreshAfterDataChange(modelContainer: modelContainer)
+                NotificationService.shared.pruneDeliveredBeforeToday()
             }
             // One-tap sign-in: the magic link in the email is a universal link
             // (`https://stride-api.colorarchive.me/login?token=…`, the associated-domains
@@ -158,7 +180,10 @@ struct StrideApp: App {
                 for: UIApplication.willEnterForegroundNotification
             )) { _ in
                 Task { @MainActor in
-                    NotificationService.shared.updateBadge(modelContainer: modelContainer)
+                    // The badge, and the snoozes and banners of what the widget or another device
+                    // checked in meanwhile; then banners from before today (D4).
+                    NotificationService.shared.refreshAfterDataChange(modelContainer: modelContainer)
+                    NotificationService.shared.pruneDeliveredBeforeToday()
                     // A subscription can lapse, renew or be refunded while backgrounded;
                     // nothing else re-reads entitlements after launch.
                     await StoreService.shared.refreshPurchasedProducts()
@@ -179,6 +204,10 @@ struct StrideApp: App {
                 for: NSApplication.didBecomeActiveNotification
             )) { _ in
                 Task { @MainActor in
+                    // The Dock badge, the snoozes and the banners, as iOS on willEnterForeground
+                    // (RELEASE-1.4.0.md D3, D4).
+                    NotificationService.shared.refreshAfterDataChange(modelContainer: modelContainer)
+                    NotificationService.shared.pruneDeliveredBeforeToday()
                     await StoreService.shared.refreshPurchasedProducts()
                     await syncIfLoggedIn(modelContainer)
                 }
@@ -194,7 +223,15 @@ struct StrideApp: App {
         let context = modelContainer.mainContext
         // Automatic: skipped while the server has asked this device to wait, or failures are
         // backing off. Sync Now in Settings still goes at once.
-        await SyncService.shared.sync(context: context, trigger: .automatic)
+        if await SyncService.shared.sync(context: context, trigger: .automatic) {
+            // A pull can change a habit's kind, days or reminder time, and pending requests keep
+            // what they were scheduled with: a Mon/Wed/Fri habit made daily on the phone kept its
+            // three weekday triggers here, and a kind change kept the other button, until the next
+            // cold launch — on iOS, days (RELEASE-1.4.0.md D4; design review,
+            // "stale-category-addone-untoggles-binary"). Every habit's requests are replaced
+            // whole. No prune: that stays with the launch pass, see `scheduleAllHabitReminders`.
+            NotificationService.shared.scheduleAllHabitReminders(modelContainer: modelContainer)
+        }
     }
 
     /// Signs in from a login link when signed out, then syncs — the same sync SettingsView runs
@@ -222,8 +259,10 @@ struct StrideApp: App {
 
     @MainActor
     private func setupNotifications(_ modelContainer: ModelContainer) async {
-        // Update badge on launch
-        NotificationService.shared.updateBadge(modelContainer: modelContainer)
+        // The badge on launch, with the snoozes and banners of habits already done today, and the
+        // banners delivered before today (RELEASE-1.4.0.md D3, D4).
+        NotificationService.shared.refreshAfterDataChange(modelContainer: modelContainer)
+        NotificationService.shared.pruneDeliveredBeforeToday()
 
         // Re-schedule if reminders were previously enabled
         if NotificationService.shared.isReminderEnabled {

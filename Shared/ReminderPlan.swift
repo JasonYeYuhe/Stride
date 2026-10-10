@@ -217,8 +217,17 @@ enum ReminderDay {
     ///   - calendar: the user's calendar (its time zone decides what "today" is).
     static func resolve(userInfo: [AnyHashable: Any], deliveredAt: Date, respondedAt: Date,
                         calendar: Calendar = .current) -> Date {
+        resolve(carriedDay: NotificationRouter.day(from: userInfo), deliveredAt: deliveredAt,
+                respondedAt: respondedAt, calendar: calendar)
+    }
+
+    /// The same rule from a day the router already read: the `day` of `NotificationRoute.checkIn`
+    /// or `.snooze` — `NotificationRouter.day(from:)` of the same `userInfo`, so the two forms
+    /// cannot disagree. The action handler (Stride/Sources) holds the route, not the payload.
+    static func resolve(carriedDay: Date?, deliveredAt: Date, respondedAt: Date,
+                        calendar: Calendar = .current) -> Date {
         let today = HabitCalendar.dayKey(forInstant: respondedAt, calendar: calendar)
-        let bannerDay = NotificationRouter.day(from: userInfo)
+        let bannerDay = carriedDay
             ?? HabitCalendar.dayKey(forInstant: deliveredAt, calendar: calendar)
         if bannerDay == today { return today }
         let midnight = calendar.startOfDay(for: respondedAt)

@@ -224,6 +224,25 @@ final class ReminderDayTests: XCTestCase {
         XCTAssertEqual(resolve(newYork, delivered: saturday, responded: at(newYork, 2026, 3, 8, 4, 1)), key(2026, 3, 8))
     }
 
+    /// The action handler resolves from the route's `day` (`resolve(carriedDay:)`), not from the
+    /// payload. Both forms must give the same answer for every payload the router reads, a missing
+    /// and a malformed day included (the router turns those into nil, the delivered day's path).
+    func testTheRoutesDayResolvesLikeThePayload() {
+        let cal = calendar(newYork)
+        let delivered = at(newYork, 2026, 7, 13, 20)
+        for day in [nil, "2026-07-13", "2026-07-14", "2026-07-20", "2026-02-30", "garbage"] as [String?] {
+            var info: [AnyHashable: Any] = [NotificationRouter.UserInfoKey.habitID: UUID().uuidString]
+            if let day { info[NotificationRouter.UserInfoKey.day] = day }
+            for responded in [delivered, at(newYork, 2026, 7, 14, 0, 40), at(newYork, 2026, 7, 16, 9)] {
+                XCTAssertEqual(
+                    ReminderDay.resolve(carriedDay: NotificationRouter.day(from: info), deliveredAt: delivered,
+                                        respondedAt: responded, calendar: cal),
+                    ReminderDay.resolve(userInfo: info, deliveredAt: delivered, respondedAt: responded, calendar: cal),
+                    "day=\(day ?? "nil") responded=\(responded)")
+            }
+        }
+    }
+
     /// Whatever the path, the answer is a day-key: what `HabitCheckIn` keys idempotently.
     func testTheResultIsAlwaysADayKey() {
         let delivered = at(losAngeles, 2026, 1, 15, 16)

@@ -489,6 +489,7 @@ struct AddHabitView: View {
 
     private func updateHabit() async {
         guard let habit = editingHabit else { return }
+        let kindChanged = habit.habitKind != kind
         habit.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         habit.emoji = selectedEmoji
         habit.colorHex = selectedColor.hex
@@ -502,6 +503,12 @@ struct AddHabitView: View {
         habit.touch()
         do {
             try modelContext.save()
+            if kindChanged {
+                // A banner already delivered keeps the button of the kind it was scheduled for —
+                // "Add 1" on a habit that is now yes/no — and rescheduling cannot change it
+                // (RELEASE-1.4.0.md D4). Harmless, since the write follows the kind now, but wrong.
+                NotificationService.shared.withdrawDeliveredReminders(for: habit.id)
+            }
             if reminderEnabled {
                 await NotificationService.shared.enableHabitReminder(for: habit)
             } else {

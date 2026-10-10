@@ -684,8 +684,19 @@ struct HabitRowView: View {
             print("Failed to save habit completion: \(error)")
             #endif
         }
-        WidgetCenter.shared.reloadAllTimelines()
-        NotificationService.shared.updateBadge(modelContainer: modelContext.container)
+        refresh(checkedIn: result.deletedRecordID == nil)
+    }
+
+    /// After a save: the widgets and the badge, always. A check-in also ends the habit's snooze
+    /// and withdraws its banners (`CheckInEffects`, RELEASE-1.4.0.md D4); taking one back — an
+    /// un-check, a unit removed — leaves them, since they still ask for something not done.
+    private func refresh(checkedIn: Bool) {
+        if checkedIn {
+            CheckInEffects.afterCheckIn(habitID: habit.id, container: modelContext.container)
+        } else {
+            WidgetCenter.shared.reloadAllTimelines()
+            NotificationService.shared.updateBadge(modelContainer: modelContext.container)
+        }
     }
 
     // MARK: - Count habit logging
@@ -710,7 +721,7 @@ struct HabitRowView: View {
         #if os(iOS)
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         #endif
-        saveAndRefresh()
+        saveAndRefresh(checkedIn: true)
     }
 
     private func decrementCount() {
@@ -722,17 +733,17 @@ struct HabitRowView: View {
             record.value -= 1
             record.touch()
         }
-        saveAndRefresh()
+        saveAndRefresh(checkedIn: false)
     }
 
     private func resetCount() {
         guard let record = habit.record(on: date) else { return }
         SyncService.shared.trackDeletedEntry(record.id.uuidString)
         modelContext.delete(record)
-        saveAndRefresh()
+        saveAndRefresh(checkedIn: false)
     }
 
-    private func saveAndRefresh() {
+    private func saveAndRefresh(checkedIn: Bool) {
         do {
             try modelContext.save()
         } catch {
@@ -740,8 +751,7 @@ struct HabitRowView: View {
             print("Failed to save count update: \(error)")
             #endif
         }
-        WidgetCenter.shared.reloadAllTimelines()
-        NotificationService.shared.updateBadge(modelContainer: modelContext.container)
+        refresh(checkedIn: checkedIn)
     }
 }
 
