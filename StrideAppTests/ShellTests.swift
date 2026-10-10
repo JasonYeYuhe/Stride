@@ -1,5 +1,6 @@
 import XCTest
 import SwiftUI
+import Observation
 import SwiftData
 @testable import Stride
 
@@ -17,7 +18,10 @@ import SwiftData
 /// opened, whether or not it exists.
 ///
 /// The views read the app's shared services (AuthService, SyncService, StoreService); signed out
-/// or not, Today and Stats only read them here. Settings, whose refreshes write, is never opened.
+/// or not, Today and Stats only read them here. Settings is opened by one test, the one that needs
+/// it, over a NotificationService of its own (a recording center, throwaway defaults); its other
+/// "when shown" refreshes re-read what the host app reads anyway (the recovered-edits count, the
+/// entitlements).
 @MainActor
 final class ShellTests: XCTestCase {
 
@@ -26,6 +30,9 @@ final class ShellTests: XCTestCase {
     private var host: UIHostingController<AnyView>?
     private var window: UIWindow?
     private var automation: Bool?
+    /// The defaults behind `NotificationService.testOverride`, while a test has one. Undone in
+    /// tearDown, after the window is gone, so no Settings left on screen reaches the real one.
+    private var notificationDefaults: ScratchDefaults?
 
     /// Two habits: Stats' toolbar item exists only with habits, and the second one is a pick
     /// that differs from Stats' default (the first).
@@ -64,6 +71,11 @@ final class ShellTests: XCTestCase {
         }
         window = nil
         host = nil
+        if let notificationDefaults {
+            NotificationService.testOverride = nil
+            notificationDefaults.remove()
+            self.notificationDefaults = nil
+        }
         if let automation { AccessibilityAutomation.restore(automation) }
         if let container { Self.retiredContainers.append(container) }
         context = nil
@@ -184,6 +196,103 @@ final class ShellTests: XCTestCase {
         XCTAssertEqual(ShellRequest.Export.json.file, .ownerBackup)
     }
 
+    // MARK: - Settings, shown again
+
+    /// Settings' Reminders rows are copies of NotificationService, read when the view is created.
+    /// The 1.3.x `switch` created Settings on every visit; the shell keeps it, so the rows are read
+    /// again each time it is shown — and reading writes nothing back (W5 review). Each step is
+    /// another window, or the Settings app, changing something while this window shows Today.
+    ///
+    /// The last step is the write-back that hurts: the reminder switched on elsewhere, then
+    /// permission revoked. A copied "on" handed to the toggle's handler asks for permission, is
+    /// refused, bounces the toggle off and switches the reminder off for every window.
+    ///
+    /// Read off the accessibility tree: a switch's value is "1" or "0", and the time is matched by
+    /// its digits, which the short time keeps in every language the app has ("7:00 AM", "7:00",
+    /// "오전 7:00").
+    func testSettingsRereadsItsReminderRowsEachTimeItIsShownAndWritesNothingBack() async throws {
+        let scratch = ScratchDefaults("shell.reminders")
+        notificationDefaults = scratch
+        let center = RecordingCenter()
+        let service = NotificationService(center: center, defaults: scratch.defaults)
+        service.isReminderEnabled = true   // at the default 20:00, the morning one off
+        center.status = .denied            // switched on, then refused in the Settings app
+        NotificationService.testOverride = service
+
+        let daily = appLocalized("Daily Reminder")
+        let morning = appLocalized("Morning Motivation")   // its label goes on: ", Daily at 8:00 AM"
+        let warning = appLocalized("Notifications are disabled. Go to Settings → Stride to enable.")
+        let onFooter = appLocalized("You'll receive a reminder to check your habits at the time above.")
+
+        let shell = ShellState(launchArguments: [])
+        shell.selection = .settings
+        let window = try await hostShell(shell)
+        let switchValue = { (prefix: String) -> String? in
+            self.elements(in: window) { $0.accessibilityLabel?.hasPrefix(prefix) == true }.first?.accessibilityValue
+        }
+        let showsSeven = { () -> Bool in
+            !self.elements(in: window) { $0.accessibilityLabel?.contains("7:00") == true }.isEmpty
+        }
+        try await scrollToTop(daily, in: window)
+        try await waitUntil("on at 20:00, the morning one off, and the warning") {
+            switchValue(daily) == "1" && switchValue(morning) == "0" && !showsSeven()
+                && self.count(labeled: warning, in: window) == 1
+        }
+
+        // Notifications allowed again in the Settings app. The check used to set the warning,
+        // never clear it.
+        try await showToday(shell, in: window)
+        center.status = .authorized
+        shell.selection = .settings
+        try await waitUntil("the warning is gone") {
+            self.count(labeled: warning, in: window) == 0 && self.count(labeled: onFooter, in: window) == 1
+        }
+
+        // Another window moves the reminder to 07:00 and switches the morning one on.
+        try await showToday(shell, in: window)
+        service.reminderHour = 7
+        service.isMorningMotivationEnabled = true
+        var events = center.events
+        shell.selection = .settings
+        try await waitUntil("07:00, the morning one on") { showsSeven() && switchValue(morning) == "1" }
+        try await Task.sleep(for: .milliseconds(500))   // time for a write-back to happen
+        XCTAssertEqual(center.events, events, "nothing written back: no reschedule")
+        XCTAssertEqual(service.reminderHour, 7)
+        XCTAssertTrue(service.isMorningMotivationEnabled)
+
+        // Another window switches the reminder off.
+        try await showToday(shell, in: window)
+        service.isReminderEnabled = false
+        shell.selection = .settings
+        try await waitUntil("the reminder shows off") {
+            switchValue(daily) == "0" && !showsSeven() && self.count(labeled: onFooter, in: window) == 0
+        }
+
+        // Another window switches it on again, and then permission is revoked.
+        try await showToday(shell, in: window)
+        service.isReminderEnabled = true
+        center.status = .denied
+        events = center.events
+        shell.selection = .settings
+        try await waitUntil("on, with the warning") {
+            switchValue(daily) == "1" && self.count(labeled: warning, in: window) == 1
+        }
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(center.events, events, "no permission request, no reschedule")
+        XCTAssertTrue(service.isReminderEnabled, "the reminder is still on, for every window")
+        XCTAssertEqual(switchValue(daily), "1", "and the switch did not bounce off")
+    }
+
+    /// Moves the window to Today and waits until Settings is hidden (out of the accessibility
+    /// tree), so the next change is made while it is not showing.
+    private func showToday(_ shell: ShellState, in window: UIWindow) async throws {
+        shell.selection = .today
+        try await waitUntil("Today is showing") {
+            self.count(labeled: appLocalized("New Habit"), in: window) == 1
+                && self.count(labeled: appLocalized("Daily Reminder"), in: window) == 0
+        }
+    }
+
     // MARK: - Re-anchoring
 
     /// Midnight passes with Today open since yesterday: the shell moves it to the new day, and the
@@ -222,13 +331,69 @@ final class ShellTests: XCTestCase {
         try await waitUntil("Today is created") { shell.tabCreations[.today] == 1 }
     }
 
-    /// Within the same day re-anchoring writes nothing: a day picked in the strip stays picked.
-    func testReanchorWithinTheDayKeepsAPickedDay() throws {
-        let shell = ShellState(launchArguments: [])
-        let picked = try XCTUnwrap(Calendar.current.date(byAdding: .day, value: -3, to: shell.todayAnchor))
-        shell.todayDate = picked
-        shell.reanchor(now: shell.todayAnchor.addingTimeInterval(60))
-        XCTAssertEqual(shell.todayDate, picked)
+    /// Within the same day re-anchoring writes nothing — not the day, not the anchor, not an equal
+    /// value. Every activation of the scene and every switch to Today calls it, and Observation
+    /// reports an assignment whether or not the value changed, so a write here redraws every view
+    /// that reads the day each time; the guard in `reanchor` exists for that.
+    ///
+    /// Watched by Observation itself, and with the anchor asserted: a day picked in the strip
+    /// stays picked whether `reanchor` runs, skips or is gone, so the day alone proves nothing
+    /// (W5 review). From just after one midnight to just before the next, on a calendar and clock
+    /// of the test's own: the most a day can stretch.
+    func testReanchorWithinTheDayWritesNothing() throws {
+        let anchor = try instant(day: 14, 0, 0, 30)
+        let lateThatDay = try instant(day: 14, 23, 59, 30)
+        let pickedInTheStrip = try instant(day: 11, 9, 0)
+        for picked in [anchor, pickedInTheStrip] {   // today showing, and a day picked
+            let shell = ShellState(launchArguments: [], now: anchor)
+            shell.todayDate = picked
+            let wrote = expectation(description: "a write to Today's day or its anchor")
+            wrote.isInverted = true
+            withObservationTracking {
+                _ = shell.todayDate
+                _ = shell.todayAnchor
+            } onChange: {
+                wrote.fulfill()
+            }
+            shell.reanchor(now: lateThatDay, calendar: Self.calendar)
+            wait(for: [wrote], timeout: 0.1)
+            XCTAssertEqual(shell.todayDate, picked)
+            XCTAssertEqual(shell.todayAnchor, anchor, "the anchor stays where it was")
+        }
+    }
+
+    /// A minute apart on the clock, a day apart on the calendar: the anchor moves to the new day,
+    /// Today with it when today was showing, and a day picked in the strip stays picked. The
+    /// guard is on the calendar day, not on elapsed time, which would let this minute through.
+    func testReanchorAcrossMidnightMovesTheAnchor() throws {
+        let lastMinute = try instant(day: 14, 23, 59, 30)
+        let firstMinute = try instant(day: 15, 0, 0, 30)
+
+        let showingToday = ShellState(launchArguments: [], now: lastMinute)
+        showingToday.reanchor(now: firstMinute, calendar: Self.calendar)
+        XCTAssertEqual(showingToday.todayDate, firstMinute, "today was showing: the new today is")
+        XCTAssertEqual(showingToday.todayAnchor, firstMinute)
+
+        let picked = try instant(day: 12, 9, 0)
+        let showingPicked = ShellState(launchArguments: [], now: lastMinute)
+        showingPicked.todayDate = picked
+        showingPicked.reanchor(now: firstMinute, calendar: Self.calendar)
+        XCTAssertEqual(showingPicked.todayDate, picked, "still in the week strip: still picked")
+        XCTAssertEqual(showingPicked.todayAnchor, firstMinute)
+    }
+
+    /// The re-anchoring tests' calendar: one zone whatever the machine's, and not UTC+9, the zone
+    /// this project's machine runs in and the one that hides day-boundary bugs best.
+    private static let calendar: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/New_York") ?? .gmt
+        return calendar
+    }()
+
+    /// An instant in October 2026 on `calendar`.
+    private func instant(day: Int, _ hour: Int, _ minute: Int, _ second: Int = 0) throws -> Date {
+        try XCTUnwrap(Self.calendar.date(from: DateComponents(year: 2026, month: 10, day: day,
+                                                              hour: hour, minute: minute, second: second)))
     }
 
     // MARK: - Selection
@@ -312,17 +477,76 @@ final class ShellTests: XCTestCase {
         try await waitUntil("the sheet is gone") { self.host?.presentedViewController == nil }
     }
 
+    /// Scrolls the list holding the element labelled `label` until that element is at its top, so
+    /// the rows under it are on screen: a List builds only the cells it shows, and only those are
+    /// in the accessibility tree.
+    private func scrollToTop(_ label: String, in window: UIWindow) async throws {
+        var target: NSObject?
+        try await waitUntil("the list is laid out") { !self.scrollableViews(in: window).isEmpty }
+        for _ in 0..<40 {
+            target = firstElement(labeled: label, in: window)
+            if target != nil { break }
+            // Not built yet: half a screen further down, in every list that scrolls.
+            for scrollView in scrollableViews(in: window) {
+                let y = min(scrollView.contentOffset.y + scrollView.bounds.height / 2, maxOffset(of: scrollView))
+                scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: y), animated: false)
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        let element = try XCTUnwrap(target, "an element labelled “\(label)” in a list")
+        let frame = element.accessibilityFrame
+        let center = CGPoint(x: frame.midX, y: frame.midY)
+        let scrollView = try XCTUnwrap(scrollableViews(in: window).last {
+            $0.convert($0.bounds, to: nil).contains(center)
+        }, "the list holding “\(label)”")
+        let top = scrollView.convert(scrollView.bounds, to: nil).minY + scrollView.adjustedContentInset.top
+        let y = min(max(scrollView.contentOffset.y + frame.minY - top - 8, -scrollView.adjustedContentInset.top),
+                    maxOffset(of: scrollView))
+        scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: y), animated: false)
+        try await waitUntil("“\(label)” still on screen") { self.count(labeled: label, in: window) == 1 }
+    }
+
+    private func maxOffset(of scrollView: UIScrollView) -> CGFloat {
+        max(-scrollView.adjustedContentInset.top,
+            scrollView.contentSize.height - scrollView.bounds.height + scrollView.adjustedContentInset.bottom)
+    }
+
+    /// The visible scroll views under `root` whose content is taller than they are, outermost first.
+    private func scrollableViews(in root: UIView) -> [UIScrollView] {
+        guard !root.isHidden, root.alpha > 0 else { return [] }
+        var found: [UIScrollView] = []
+        if let scrollView = root as? UIScrollView, scrollView.contentSize.height > scrollView.bounds.height + 1 {
+            found.append(scrollView)
+        }
+        for subview in root.subviews { found += scrollableViews(in: subview) }
+        return found
+    }
+
+    /// The first accessibility element labelled `label` under `root`.
+    private func firstElement(labeled label: String, in root: NSObject) -> NSObject? {
+        elements(in: root) { $0.accessibilityLabel == label }.first
+    }
+
     /// The distinct accessibility elements labelled `label` under `root`, as VoiceOver would
     /// reach them.
     private func count(labeled label: String, in root: NSObject) -> Int {
-        var seen = Set<ObjectIdentifier>()
-        collect(labeled: label, in: root, into: &seen, depth: 0)
-        return seen.count
+        elements(in: root) { $0.accessibilityLabel == label }.count
     }
 
-    private func collect(labeled label: String, in root: NSObject, into seen: inout Set<ObjectIdentifier>, depth: Int) {
+    /// The distinct accessibility elements under `root` that `matches`, in tree order.
+    private func elements(in root: NSObject, where matches: (NSObject) -> Bool) -> [NSObject] {
+        var seen = Set<ObjectIdentifier>()
+        var found: [NSObject] = []
+        collect(in: root, where: matches, seen: &seen, found: &found, depth: 0)
+        return found
+    }
+
+    private func collect(in root: NSObject, where matches: (NSObject) -> Bool,
+                         seen: inout Set<ObjectIdentifier>, found: inout [NSObject], depth: Int) {
         guard depth < 80 else { return }
-        if root.isAccessibilityElement, root.accessibilityLabel == label { seen.insert(ObjectIdentifier(root)) }
+        if root.isAccessibilityElement, matches(root), seen.insert(ObjectIdentifier(root)).inserted {
+            found.append(root)
+        }
         if root.accessibilityElementsHidden { return }
         var children: [NSObject] = (root.accessibilityElements as? [NSObject]) ?? []
         let count = root.accessibilityElementCount()
@@ -334,7 +558,7 @@ final class ShellTests: XCTestCase {
             children += view.subviews
         }
         for child in children {
-            collect(labeled: label, in: child, into: &seen, depth: depth + 1)
+            collect(in: child, where: matches, seen: &seen, found: &found, depth: depth + 1)
         }
     }
 

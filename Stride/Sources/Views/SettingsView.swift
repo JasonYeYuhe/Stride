@@ -23,7 +23,8 @@ struct SettingsView: View {
     @State private var showSaveError = false
     @State private var habitToEdit: Habit?
 
-    // Notification states
+    // Notification states: copies of NotificationService (not observable), read when the view is
+    // created and again each time Settings is shown (`refreshReminderSettings`).
     @State private var reminderEnabled = NotificationService.shared.isReminderEnabled
     @State private var reminderTime = NotificationService.shared.reminderTime
     @State private var morningEnabled = NotificationService.shared.isMorningMotivationEnabled
@@ -275,6 +276,15 @@ struct SettingsView: View {
                     }
                     .tint(.green)
                     .onChange(of: reminderEnabled) { _, newValue in
+                        // The three rows write to the service only what it does not already
+                        // hold. Not every change here is the user's: the refresh each time
+                        // Settings is shown copies the service's values in
+                        // (`refreshReminderSettings`), and writing one back is not free. "On"
+                        // asks for permission and reschedules every habit; where permission has
+                        // since been revoked, the ask is refused, the toggle bounces off and the
+                        // reminder is switched off for every window, with nobody touching it
+                        // (ShellTests watches for the write-back).
+                        guard newValue != NotificationService.shared.isReminderEnabled else { return }
                         handleReminderToggle(newValue)
                     }
 
@@ -285,6 +295,7 @@ struct SettingsView: View {
                             displayedComponents: .hourAndMinute
                         )
                         .onChange(of: reminderTime) { _, newValue in
+                            guard !Self.sameClockTime(newValue, NotificationService.shared.reminderTime) else { return }
                             NotificationService.shared.reminderTime = newValue
                         }
 
@@ -302,6 +313,7 @@ struct SettingsView: View {
                         }
                         .tint(.orange)
                         .onChange(of: morningEnabled) { _, newValue in
+                            guard newValue != NotificationService.shared.isMorningMotivationEnabled else { return }
                             NotificationService.shared.isMorningMotivationEnabled = newValue
                         }
                     }
@@ -753,8 +765,9 @@ struct SettingsView: View {
             }
             // Each time Settings is shown. A `.task` alone runs when the view appears, and at
             // regular width the shell keeps Settings alive once visited, hidden while another place
-            // shows: it would appear once, and the permission, Pro and recovered-edits reads would
-            // never be redone on a later visit. Keyed on being shown, and doing nothing while hidden.
+            // shows: it would appear once, and the reminder, permission, Pro and recovered-edits
+            // reads would never be redone on a later visit. Keyed on being shown, and doing nothing
+            // while hidden.
             .task(id: isActive) {
                 guard isActive else { return }
                 #if DEBUG
@@ -764,7 +777,7 @@ struct SettingsView: View {
                 // The recovered-edits count is read when Settings asks, not at launch
                 // (SyncService.refreshRecoveredEdits); a run that archives refreshes it too.
                 sync.refreshRecoveredEdits()
-                await checkNotificationStatus()
+                await refreshReminderSettings()
                 await store.refreshPurchasedProducts()
             }
     }
@@ -1219,11 +1232,40 @@ struct SettingsView: View {
         }
     }
 
-    private func checkNotificationStatus() async {
-        let status = await NotificationService.shared.checkPermission()
-        if status == .denied && reminderEnabled {
-            notificationDenied = true
+    /// The Reminders rows and their warning, read again each time Settings is shown.
+    ///
+    /// The rows are `@State` copies of NotificationService, which is not observable. In 1.3.x
+    /// that was enough on iPad: the detail was a `switch` that built Settings anew on every
+    /// visit. The 1.4.0 shell keeps it alive (RELEASE-1.4.0.md D2), so without this a change made
+    /// in another iPad window — the reminder switched off, or moved from 21:00 to 07:00 — never
+    /// reached this window's rows however often Settings was reopened, and "Notifications are
+    /// disabled" stayed after the user had turned them back on in the Settings app: the check
+    /// could only ever set the warning, never clear it (W5 review).
+    ///
+    /// A copy is assigned only when it differs, and the rows' `.onChange` handlers do not write
+    /// back a value the service already holds, so reading the service never changes it.
+    private func refreshReminderSettings() async {
+        let service = NotificationService.shared
+        if reminderEnabled != service.isReminderEnabled {
+            reminderEnabled = service.isReminderEnabled
         }
+        if !Self.sameClockTime(reminderTime, service.reminderTime) {
+            reminderTime = service.reminderTime
+        }
+        if morningEnabled != service.isMorningMotivationEnabled {
+            morningEnabled = service.isMorningMotivationEnabled
+        }
+        let status = await service.checkPermission()
+        // Both ways: notifications allowed again clear the warning.
+        notificationDenied = status == .denied && reminderEnabled
+    }
+
+    /// Whether two reminder times are the same hour and minute, the only parts NotificationService
+    /// keeps (in `Calendar.current`, as it does). The DatePicker's date and the service's are
+    /// different days at the same time.
+    private static func sameClockTime(_ a: Date, _ b: Date) -> Bool {
+        let calendar = Calendar.current
+        return calendar.dateComponents([.hour, .minute], from: a) == calendar.dateComponents([.hour, .minute], from: b)
     }
 }
 
