@@ -684,7 +684,100 @@ Refuted or not adopted:
 
 Then: a whole-branch review, the E2E and Mac passes, release mechanics.
 
+## As built: deviations not recorded inline
+
+W4 and W6 wrote theirs into D3 and D6 ("As built"). The other workstreams' deviations from the
+design are below. Each was checked by that workstream's reviewer.
+
+- **W1 (Shared):**
+  - The action ids are `stride.habit.action.markDone`, `.addOne` and `.snooze`, pinned by tests.
+  - Either check-in action in either of our categories routes to `.checkIn`. The route carries no
+    kind, so a mismatch cannot matter.
+  - `fromReminder` also returns nil for an archived habit.
+  - Heatmap cap: `max(scaled, min(44, floor((W − 39) / 14)))`, so a Dynamic Type cell is never
+    shrunk.
+  - Deletion-queue lock: the App Group container; without one, the app's Library (not
+    cfprefsd's Preferences).
+  - **The day resolver as finally built:**
+    - a carried snooze day is credited only if it is today, or yesterday within the 3 h
+      after-midnight grace;
+    - an original banner credits yesterday only within that grace;
+    - otherwise today, never a third day.
+
+    This is stricter than D4's first wording, which would let last night's snooze back-fill
+    yesterday at 09:00.
+  - Menu Sync Now is not window-scoped. It needs no focused main window, the same as Settings'
+    row.
+- **W2 (notifications):**
+  - The seam's `getDeliveredNotifications` returns a value type: `UNNotification` cannot be
+    constructed in tests.
+  - `setBadgeCount` goes through the seam, so hosted runs never touch the host's badge.
+  - `CheckInEffects.afterCheckIn` takes an explicit `endsReminders:`. A back-fill of a past day
+    does not cancel today's snooze or withdraw today's banners; the action handler and the Siri
+    intent pass true.
+  - An action on an already-done day is a complete no-op.
+  - Kind changes, local or pulled, are handled generically by `refreshAfterDataChange`:
+    - banners whose category no longer matches the habit's kind, or whose habit is gone or
+      archived, are withdrawn;
+    - snoozes in those states are cancelled, never re-added, because a pending trigger cannot say
+      when it would fire.
+  - `pruneDeliveredBeforeToday` withdraws only habit banners. The global evening and morning
+    reminders have no buttons.
+  - A single habit's schedule is budgeted together with its whole store.
+  - A language change also re-adds the global reminders, whose text is localized.
+  - The Snooze route waits for its add to complete before `didReceive` returns.
+- **W3 (background sync):**
+  - `run` awaits `waitUntilIdle()` before its `.background` sync, so a sync already in flight
+    cannot drop the refresh's check-in.
+  - `afterSync` runs `refreshAfterDataChange` and an awaited prune (`rescheduleAllHabitRemindersAndWait`).
+  - The resubmit goes in **before** the run. Its answer is then awaited for at most 2 s, and not
+    at all once the task has expired, so an expiring run cannot end the refresh chain.
+  - `-runBackgroundSync` (DEBUG) goes through `handle()`, so it also logs the resubmit.
+  - A launch check that fails after `recheckStoredSessionIfNeeded` succeeded no longer clears the
+    user: users loaded are counted. That also closes the same pre-existing race with
+    `verifyToken`.
+  - Overlapping foreground passes are coalesced per SyncService instance.
+  - Store file protection is applied in `AppStoreOpen.run` to whatever location was opened.
+  - `verify_archive.sh --exported` compares entitlement values, not only presence. The 1.3.1 Mac
+    export correctly fails it for lacking `files.user-selected.read-write`.
+  - No `earliestBeginDate`: the system decides when.
+- **W5 (shell):**
+  - Today's title compares the selected date with ShellState's anchor, not the clock, so it
+    redraws exactly when re-anchoring moves. Its formatter now follows the in-app language.
+  - TodayView's own scenePhase and day-change re-anchor hooks are gone; ContentView re-anchors
+    above the branch.
+  - TodayView and StatsView take `init(shell:)`.
+  - The newHabit and weeklyReview requests are presented by the shell above the size-class branch.
+  - The Mac Settings scene sets its own title, because SettingsView no longer does.
+  - Kept-alive Settings re-reads its reminder rows each time it is shown, and those reads write
+    nothing back. Settings' `onChange(isLoggedIn)` sync is not gated on active, as in 1.3.x's
+    compact TabView.
+  - Known, not fixed: with up to three scroll views on screen at regular width, tapping the status
+    bar probably no longer scrolls to the top on iPad. SwiftUI has no public API for this.
+
 ## Progress log
 
 - 2026-10-10: branch cut; codebase map; Mac Restore sandbox bug verified; design written, reviewed
   adversarially (4 lenses + Gemini, skeptic-verified) and revised.
+- 2026-10-10/11: W0 scaffold; W1–W6 implemented one after another, each with an adversarial review of its
+  diff and a fixer pass (several fixes confirmed by mutation checks); W7 tooling in parallel and
+  cherry-picked. Gates on `148ac7a`:
+  - StrideTests 540 (en and ja/JP, 2 known skips);
+  - hosted 238;
+  - sync_rehearsal 81/0/1;
+  - drift clean;
+  - iOS and Mac builds with no new warnings.
+
+  PR JasonYeYuhe/Stride#7 opened as a draft.
+- 2026-10-11:
+  - **The disk filled to 100 %** in the middle of verification: this session's four scratch
+    derived-data folders (~14 GB) plus the kit builds. Every tool failed with ENOSPC.
+  - The workflow was stopped, and so were its kit server and the iPad it had booted. Its locks
+    were released.
+  - The owner approved a one-time permanent delete of exactly those four folders. Trashing frees
+    nothing on the same volume. 13 GB was free afterwards.
+  - The kit's partly written build (a truncated Sentry artifact) was trashed and rebuilt.
+  - From here on, one build per session is reused everywhere.
+  - CI's first full run failed one timing-sensitive test, `testAFinishedRunWaitsForTheResubmitsAnswerUpToItsBound`:
+    the detached submit had not reached its stub within 300 ms on a loaded runner. The test now
+    waits for the submit; the bound assertion is unchanged (`8e2ed8a`).
