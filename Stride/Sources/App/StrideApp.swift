@@ -4,16 +4,59 @@ import WidgetKit
 
 @main
 struct StrideApp: App {
-    let modelContainer: ModelContainer
+    /// The store, or why it could not be opened. Everything that touches data hangs off its
+    /// `ready` state (upgrade race, E2E U123: a failed open used to fall back to an empty store).
+    private let storeLaunch: AppStoreLaunch
     private var languageManager = LanguageManager.shared
+    /// The account screen for a one-tap sign-in with no login sheet open (AccountChoiceRouter).
+    private var accountRouter = AccountChoiceRouter.shared
     @State private var showOnboarding = !UserDefaults.standard.bool(forKey: "stride_onboarding_completed")
 
     init() {
         SentryBootstrap.start()   // crash/hang reporting; no-op until SentryDSN is set
-        self.modelContainer = SharedModelContainer.modelContainer
+        // The real store, or the error screen — never another store. The app is the only process
+        // that may create or migrate it; once it has, the widget is told it may open it too
+        // (SharedModelContainer.openForApp). Blocks up to ~3 s only while a store that exists
+        // fails to open.
+        self.storeLaunch = AppStoreLaunch(
+            open: { SharedModelContainer.openForApp(reloadWidgets: { WidgetCenter.shared.reloadAllTimelines() }) },
+            prepare: Self.prepareStore,
+            report: AppStoreLaunch.reportToSentry)
+        // Copies of the user's data that nothing else ever removed, off the main thread: the
+        // export files earlier share sheets wrote to tmp — backups, recovered edits, a deleted
+        // account's among them (E2E S-DEL) — and the answers and cookies earlier builds left in
+        // the shared URL cache and cookie store, the live session token among them (E2E S9). No
+        // share sheet is open yet, and this build's requests use neither store.
+        Task.detached(priority: .utility) {
+            DataExportService.removeExportFiles()
+            APIClient.purgeStoredHTTPState()
+        }
+        #if DEBUG
+        // `-demoScenario accountConflict | accountUnknownOwner`: the account screen with fake
+        // accounts and no network sign-in, for screenshots (AccountChoiceRouter.demoRequest).
+        AccountChoiceRouter.shared.request = AccountChoiceRouter.demoRequest()
+        #endif
+        // Instantiate StoreService now so its Transaction.updates listener is running before any
+        // network work. It used to be created lazily, and on macOS the default Today tab never
+        // touches it, so the listener waited until the launch sync had finished.
+        _ = StoreService.shared
+    }
+
+    /// The launch's data work, once, on the real store and before anything syncs — so only after
+    /// the open succeeded (AppStoreLaunch): on a store opened in its place these one-time
+    /// migrations would spend their per-install flags (E2E U123). Each also refuses any store but
+    /// the real one itself (`SharedModelContainer.isRealStore`).
+    @MainActor
+    private static func prepareStore(_ modelContainer: ModelContainer) {
         // Re-anchor legacy local-midnight records to UTC day-keys before any
         // streak math or sync runs (idempotent — see SharedModelContainer).
         SharedModelContainer.migrateRecordDayKeysIfNeeded(modelContainer)
+        // Before any sync: the 1.3.1 migrated-rows rule (rows a 1.3.0 snapshot already pushed
+        // count as delivered, so a full pull may delete them if another device did) and the
+        // owner-unknown note. Once per install each; the Keychain read is the one AuthService
+        // makes anyway. See SyncService.prepareLaunch.
+        SyncService.prepareLaunch(context: modelContainer.mainContext, defaults: .standard,
+                                  hasStoredSession: KeychainSessionTokenStore().read() != nil)
         #if DEBUG
         // DEBUG-only, like `-paywall`: populate() erases the store (habits, check-ins, groups)
         // without queueing tombstones, and this file is compiled into StrideMac too, where
@@ -25,124 +68,154 @@ struct StrideApp: App {
             DemoData.populate(container: modelContainer, scenario: .fromLaunchArguments())
         }
         #endif
-        // Instantiate StoreService now so its Transaction.updates listener is running before any
-        // network work. It used to be created lazily, and on macOS the default Today tab never
-        // touches it, so the listener waited until the launch sync had finished.
-        _ = StoreService.shared
     }
 
     var body: some Scene {
         windowGroup
         #if os(macOS)
         Settings {
-            SettingsView()
-                .modelContainer(modelContainer)
-                .environment(\.locale, languageManager.locale ?? .current)
+            StoreGateView(launch: storeLaunch) { modelContainer in
+                SettingsView()
+                    .modelContainer(modelContainer)
+            }
+            .environment(\.locale, languageManager.locale ?? .current)
         }
         #endif
     }
 
     private var windowGroup: some Scene {
         WindowGroup {
-            ContentView()
-                .environment(\.locale, languageManager.locale ?? .current)
-                .task {
-                    // Entitlements FIRST. Transaction.currentEntitlements is a local read that works
-                    // offline and returns in milliseconds. It used to be the last of four awaits,
-                    // behind notifications, the sync (up to 10 s waiting for session restore, then
-                    // network with default timeouts) and product loading (up to 30 s of retries),
-                    // so on a poor connection a Lifetime owner saw Pro locked — "Upgrade to Pro"
-                    // in Settings, the paywall instead of Weekly Review — for most of a minute.
-                    await StoreService.shared.refreshPurchasedProducts()
-                    await setupNotifications()
-                    await syncIfLoggedIn()
-                    await StoreService.shared.loadProducts()
-                }
-                // Every SwiftData save in the app, not a list of call sites. Only check-ins used to
-                // reload the widget, so adding, deleting, archiving, renaming or reordering a habit —
-                // or a sync pulling in another device's check-ins — left it stale until its next
-                // scheduled refresh at midnight; a deleted habit stayed listed, and tapping it did
-                // nothing. A new save site can't forget this.
-                .onReceive(
-                    NotificationCenter.default.publisher(for: .habitDataChanged)
-                        .merge(with: NotificationCenter.default.publisher(for: ModelContext.didSave))
-                        .throttle(for: .seconds(2), scheduler: DispatchQueue.main, latest: true)
-                ) { _ in
-                    WidgetCenter.shared.reloadAllTimelines()
-                }
-                // One-tap sign-in: the magic link in the email is a universal link
-                // (`https://stride-api.colorarchive.me/login?token=…`, the associated-domains
-                // entitlement + the server's AASA file). Which modifier receives it depends on the
-                // platform and launch path — macOS delivers universal links as a browsing-web
-                // user activity, which `.onOpenURL` never sees — so both are wired, and
-                // AuthService ignores a second delivery of the same tap. Links that fail to
-                // open the app (Gmail's link proxy, in-app mail browsers) land on the /login
-                // page with the token to paste, as before.
-                .onOpenURL { url in handleLoginLink(url) }
-                .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
-                    guard let url = activity.webpageURL else { return }
-                    handleLoginLink(url)
-                }
-                // Deliver links to the window that is already open. Without this, macOS opens a
-                // second main window for every incoming URL (WindowGroup's default).
-                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
-                #if os(iOS)
-                .fullScreenCover(isPresented: $showOnboarding) {
-                    OnboardingView(isPresented: $showOnboarding)
-                }
-                .onReceive(NotificationCenter.default.publisher(
-                    for: UIApplication.willEnterForegroundNotification
-                )) { _ in
-                    Task { @MainActor in
-                        NotificationService.shared.updateBadge(modelContainer: modelContainer)
-                        // A subscription can lapse, renew or be refunded while backgrounded;
-                        // nothing else re-reads entitlements after launch.
-                        await StoreService.shared.refreshPurchasedProducts()
-                        await syncIfLoggedIn()
-                    }
-                }
-                #else
-                .sheet(isPresented: $showOnboarding) {
-                    OnboardingView(isPresented: $showOnboarding)
-                }
-                // A Mac app can stay open for days; re-read entitlements when it comes forward so
-                // a lapsed or renewed subscription is reflected without a relaunch.
-                .onReceive(NotificationCenter.default.publisher(
-                    for: NSApplication.didBecomeActiveNotification
-                )) { _ in
-                    Task { @MainActor in await StoreService.shared.refreshPurchasedProducts() }
-                }
-                #endif
+            StoreGateView(launch: storeLaunch) { modelContainer in
+                app(over: modelContainer)
+            }
+            .environment(\.locale, languageManager.locale ?? .current)
         }
-        .modelContainer(modelContainer)
         #if os(macOS)
         .windowStyle(.titleBar)
         .defaultSize(width: 900, height: 650)
         #endif
     }
 
+    /// The app itself, over the opened store.
+    private func app(over modelContainer: ModelContainer) -> some View {
+        ContentView()
+            .task {
+                // Entitlements FIRST. Transaction.currentEntitlements is a local read that works
+                // offline and returns in milliseconds. It used to be the last of four awaits,
+                // behind notifications, the sync (up to 10 s waiting for session restore, then
+                // network with default timeouts) and product loading (up to 30 s of retries),
+                // so on a poor connection a Lifetime owner saw Pro locked — "Upgrade to Pro"
+                // in Settings, the paywall instead of Weekly Review — for most of a minute.
+                await StoreService.shared.refreshPurchasedProducts()
+                await setupNotifications(modelContainer)
+                await syncIfLoggedIn(modelContainer)
+                await StoreService.shared.loadProducts()
+            }
+            // Every SwiftData save in the app, not a list of call sites. Only check-ins used to
+            // reload the widget, so adding, deleting, archiving, renaming or reordering a habit —
+            // or a sync pulling in another device's check-ins — left it stale until its next
+            // scheduled refresh at midnight; a deleted habit stayed listed, and tapping it did
+            // nothing. A new save site can't forget this.
+            .onReceive(
+                NotificationCenter.default.publisher(for: .habitDataChanged)
+                    .merge(with: NotificationCenter.default.publisher(for: ModelContext.didSave))
+                    .throttle(for: .seconds(2), scheduler: DispatchQueue.main, latest: true)
+            ) { _ in
+                WidgetCenter.shared.reloadAllTimelines()
+            }
+            // One-tap sign-in: the magic link in the email is a universal link
+            // (`https://stride-api.colorarchive.me/login?token=…`, the associated-domains
+            // entitlement + the server's AASA file). Which modifier receives it depends on the
+            // platform and launch path — macOS delivers universal links as a browsing-web
+            // user activity, which `.onOpenURL` never sees — so both are wired, and
+            // AuthService ignores a second delivery of the same tap. Links that fail to
+            // open the app (Gmail's link proxy, in-app mail browsers) land on the /login
+            // page with the token to paste, as before.
+            .onOpenURL { url in handleLoginLink(url, modelContainer) }
+            .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+                guard let url = activity.webpageURL else { return }
+                handleLoginLink(url, modelContainer)
+            }
+            // Deliver links to the window that is already open. Without this, macOS opens a
+            // second main window for every incoming URL (WindowGroup's default).
+            .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
+            // The account screen as the continuation of a one-tap sign-in (handleLoginLink).
+            // Never presented by a launch or foreground sync: those block silently.
+            .sheet(item: Bindable(accountRouter).request) { request in
+                AccountChoiceSheet(request: request) { accountRouter.request = nil }
+            }
+            #if os(iOS)
+            .fullScreenCover(isPresented: $showOnboarding) {
+                OnboardingView(isPresented: $showOnboarding)
+            }
+            .onReceive(NotificationCenter.default.publisher(
+                for: UIApplication.willEnterForegroundNotification
+            )) { _ in
+                Task { @MainActor in
+                    NotificationService.shared.updateBadge(modelContainer: modelContainer)
+                    // A subscription can lapse, renew or be refunded while backgrounded;
+                    // nothing else re-reads entitlements after launch.
+                    await StoreService.shared.refreshPurchasedProducts()
+                    await syncIfLoggedIn(modelContainer)
+                }
+            }
+            #else
+            .sheet(isPresented: $showOnboarding) {
+                OnboardingView(isPresented: $showOnboarding)
+            }
+            // A Mac app can stay open for days; re-read entitlements when it comes forward so
+            // a lapsed or renewed subscription is reflected without a relaunch — and sync, as
+            // iOS does on willEnterForeground. Without it nothing on the Mac met a revoked
+            // session's 401 or the pause switch's 503 until a relaunch or Sync Now, so Today's
+            // "Sign in again" row and "Sync paused" (acceptance (9)) never showed on a Mac left
+            // open (review critic-3). Automatic: it waits out the owner's backoff window.
+            .onReceive(NotificationCenter.default.publisher(
+                for: NSApplication.didBecomeActiveNotification
+            )) { _ in
+                Task { @MainActor in
+                    await StoreService.shared.refreshPurchasedProducts()
+                    await syncIfLoggedIn(modelContainer)
+                }
+            }
+            #endif
+            .modelContainer(modelContainer)
+    }
+
     @MainActor
-    private func syncIfLoggedIn() async {
+    private func syncIfLoggedIn(_ modelContainer: ModelContainer) async {
         await AuthService.shared.waitForSessionRestore()
         guard AuthService.shared.isLoggedIn else { return }
         let context = modelContainer.mainContext
-        await SyncService.shared.sync(context: context)
+        // Automatic: skipped while the server has asked this device to wait, or failures are
+        // backing off. Sync Now in Settings still goes at once.
+        await SyncService.shared.sync(context: context, trigger: .automatic)
     }
 
     /// Signs in from a login link when signed out, then syncs — the same sync SettingsView runs
     /// when `isLoggedIn` turns true, needed here because Settings may not be on screen (or, on
-    /// macOS, open at all). SyncService ignores the second of two overlapping syncs. The login
-    /// sheet, if it is open waiting for a pasted token, closes itself on the sign-in.
+    /// macOS, open at all). SyncService ignores the second of two overlapping syncs.
+    ///
+    /// Between the two, the owner is settled (`SyncService.settleSignIn`) exactly as a typed
+    /// code settles it in LoginView: a link into an account that does not own this device's
+    /// habits continues with the account screen, and the sync after it is blocked until the
+    /// choice (it makes no request). If the login sheet is open — waiting on "Check your email"
+    /// — it shows the screen itself, in its own sheet; otherwise it is presented here.
     @MainActor
-    private func handleLoginLink(_ url: URL) {
+    private func handleLoginLink(_ url: URL, _ modelContainer: ModelContainer) {
         Task { @MainActor in
             guard await AuthService.shared.handleLoginLink(url) == .signedIn else { return }
-            await SyncService.shared.sync(context: modelContainer.mainContext)
+            let context = modelContainer.mainContext
+            if accountRouter.loginFlowsOpen == 0,
+               case .chooseAccountData(let conflict) = SyncService.shared.settleSignIn(in: context) {
+                accountRouter.request = AccountChoiceRequest(conflict: conflict)
+                return
+            }
+            await SyncService.shared.sync(context: context)
         }
     }
 
     @MainActor
-    private func setupNotifications() async {
+    private func setupNotifications(_ modelContainer: ModelContainer) async {
         // Update badge on launch
         NotificationService.shared.updateBadge(modelContainer: modelContainer)
 

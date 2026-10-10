@@ -19,11 +19,20 @@ import Foundation
 /// key is still a read-modify-write across processes — UserDefaults offers nothing atomic —
 /// so a widget write landing in the same instant as `acknowledge` can still be lost; this
 /// narrows that window, it does not close it.
+///
+/// From 1.3.1 the push is chunked (`SyncPushPlanner`): the ids are spread over the chunks by
+/// encoded size — deleting a multi-year habit queues one entry id per check-in, and the server
+/// caps no deletion list, only the 5 MB body — and each chunk's 200 acknowledges only the ids that
+/// chunk carried (`SyncPushResolver.resolve`). A failure at chunk k leaves the ids of chunks ≥ k
+/// queued for the retry.
 struct SyncDeletionQueue {
     struct Batch: Equatable {
         var habits: [String] = []
         var entries: [String] = []
         var groups: [String] = []
+
+        var count: Int { habits.count + entries.count + groups.count }
+        var isEmpty: Bool { count == 0 }
     }
 
     static let habitsKey = "stride_deleted_habit_ids"
@@ -73,6 +82,17 @@ struct SyncDeletionQueue {
         let sentEntries = Set(sent.entries)
         remove(sentEntries, key: Self.entriesKey, in: local)
         if let shared { remove(sentEntries, key: Self.sharedEntriesKey, in: shared) }
+    }
+
+    /// Forgets every queued id, the widget's included. Only for a device that starts from
+    /// another account's data (M2, account isolation): the queue belongs to the account whose
+    /// rows were deleted, and sent under another account its ids would be answered for rows that
+    /// account never had. Sign-out does NOT clear it — re-login to the same account resumes.
+    func clearAll() {
+        local.removeObject(forKey: Self.habitsKey)
+        local.removeObject(forKey: Self.entriesKey)
+        local.removeObject(forKey: Self.groupsKey)
+        shared?.removeObject(forKey: Self.sharedEntriesKey)
     }
 
     private func append(_ id: String, key: String, in defaults: UserDefaults) {

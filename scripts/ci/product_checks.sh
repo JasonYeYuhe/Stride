@@ -116,6 +116,13 @@ check_app_common() {
     check_bundle_versions "$label" "$info"
     check_display_name "$label" "$info"
     check_privacy_manifest "$label" "$privacy"
+    # 1.3.1 re-declares Product Interaction (Sentry's per-launch session record) after 1.3.0
+    # dropped it while App Store Connect kept the label — the manifest must say what the app does.
+    if plutil -convert xml1 -o - "$privacy" 2>/dev/null | grep -q NSPrivacyCollectedDataTypeProductInteraction; then
+        pass "$label: privacy manifest declares Product Interaction"
+    else
+        fail "$label: privacy manifest does not declare NSPrivacyCollectedDataTypeProductInteraction"
+    fi
     local exe; exe="$(plist_get "$info" :CFBundleExecutable)"
     check_sentry "$frameworks" "$exe_dir/${exe:-Stride}"
 }

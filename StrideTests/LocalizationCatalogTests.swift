@@ -209,6 +209,94 @@ final class LocalizationCatalogTests: XCTestCase {
         XCTAssertEqual(resolve(Text("\(1) of \(1) habits completed", bundle: bundle), "en"), "1 of 1 habit completed")
     }
 
+    /// The M2 (1.3.1) sync counts — Today's status line, Settings > Sync, the account screen and the
+    /// restore hand-over — through both paths the app uses: `String(localized:bundle:locale:)` as
+    /// `appLocalized` calls it, and SwiftUI's own `Text` resolution. Each one is an inline row a
+    /// user reads with a count of 1 most of the time ("1 change can't sync"), which is exactly the
+    /// case a missing plural entry gets wrong ("1 changes").
+    @MainActor
+    func testSyncCountsResolveOneAndOtherInEnglishAndSpanish() throws {
+        let bundles = ["en": try lproj("en"), "es": try lproj("es"), "ja": try lproj("ja"),
+                       "zh-Hans": try lproj("zh-Hans")]
+        func loc(_ value: String.LocalizationValue, _ language: String) -> String {
+            String(localized: value, bundle: bundles[language]!, locale: Locale(identifier: language))
+        }
+        let testBundle = Bundle(for: Self.self)
+        func text(_ text: Text, _ language: String) -> String {
+            var environment = EnvironmentValues()
+            environment.locale = Locale(identifier: language)
+            return text._resolveText(in: environment)
+        }
+        for n in [1, 2] {
+            let one = n == 1
+            // The held rows' button and Discard confirmation in the number they act on (E2E
+            // upgrade run: "Restore it as a new copy" above a "Restore as New Copies" button).
+            // "(… held)" only picks the form; one-form languages read for one or many.
+            XCTAssertEqual(loc("Restore as New Copies (\(n) held)", "en"), one ? "Restore as a New Copy" : "Restore as New Copies")
+            XCTAssertEqual(loc("Restore as New Copies (\(n) held)", "es"), one ? "Restaurar como copia nueva" : "Restaurar como copias nuevas")
+            XCTAssertEqual(loc("Discard These Items? (\(n) held)", "en"), one ? "Discard This Item?" : "Discard These Items?")
+            XCTAssertEqual(loc("Discard These Items? (\(n) held)", "zh-Hans"), "要丢弃吗？")
+            XCTAssertEqual(loc("They're removed from this device. Your backup file still has them. (\(n) held)", "en"),
+                           one ? "It's removed from this device. Your backup file still has it."
+                               : "They're removed from this device. Your backup file still has them.")
+            XCTAssertEqual(loc("They're removed from this device, and they may not exist anywhere else. Export a backup first if you might want them. (\(n) held)", "es"),
+                           one ? "Se elimina de este dispositivo y puede que no exista en ningún otro sitio. Si puedes necesitarlo, exporta primero una copia de seguridad."
+                               : "Se eliminan de este dispositivo y puede que no existan en ningún otro sitio. Si puedes necesitarlos, exporta primero una copia de seguridad.")
+            XCTAssertEqual(loc("They're removed from this device. Your backup file still has them. (\(n) held)", "ja"),
+                           "このデバイスから削除されます。バックアップファイルには残っています。")
+            // Today (SyncStatusRow).
+            XCTAssertEqual(loc("Offline — \(n) changes waiting", "en"), one ? "Offline — 1 change waiting" : "Offline — 2 changes waiting")
+            XCTAssertEqual(loc("Offline — \(n) changes waiting", "es"), one ? "Sin conexión — 1 cambio pendiente" : "Sin conexión — 2 cambios pendientes")
+            XCTAssertEqual(loc("\(n) changes waiting to sync", "en"), one ? "1 change waiting to sync" : "2 changes waiting to sync")
+            XCTAssertEqual(loc("\(n) changes can't sync — see Settings", "es"),
+                           one ? "1 cambio no se puede sincronizar — consulta Ajustes" : "2 cambios no se pueden sincronizar — consulta Ajustes")
+            XCTAssertEqual(text(Text("\(n) changes can't sync — see Settings", bundle: testBundle), "en"),
+                           one ? "1 change can't sync — see Settings" : "2 changes can't sync — see Settings")
+            XCTAssertEqual(text(Text("Offline — \(n) changes waiting", bundle: testBundle), "es"),
+                           one ? "Sin conexión — 1 cambio pendiente" : "Sin conexión — 2 cambios pendientes")
+            // Settings > Sync (SyncSectionView).
+            XCTAssertEqual(loc("\(n) changes can't sync", "en"), one ? "1 change can't sync" : "2 changes can't sync")
+            XCTAssertEqual(text(Text("\(n) changes can't sync", bundle: testBundle), "es"),
+                           one ? "1 cambio no se puede sincronizar" : "2 cambios no se pueden sincronizar")
+            XCTAssertEqual(text(Text("\(n) habits belong to another account", bundle: testBundle), "en"),
+                           one ? "1 habit belongs to another account" : "2 habits belong to another account")
+            XCTAssertEqual(loc("\(n) restored items were deleted on another device", "es"),
+                           one ? "1 elemento restaurado se eliminó en otro dispositivo" : "2 elementos restaurados se eliminaron en otro dispositivo")
+            XCTAssertEqual(text(Text("Recovered Edits (\(n))", bundle: testBundle), "en"), "Recovered Edits (\(n))")
+            // A held row's explanation in the number its title counts (E2E S6: "1 restored habit
+            // was deleted…" over "Restore them…"). The count picks the form and is not shown.
+            XCTAssertEqual(loc("Restore them as new copies to bring them back to your account, or discard them. Your backup file keeps them either way. (\(n) held)", "en"),
+                           one ? "Restore it as a new copy to bring it back to your account, or discard it. Your backup file keeps it either way."
+                               : "Restore them as new copies to bring them back to your account, or discard them. Your backup file keeps them either way.")
+            XCTAssertEqual(text(Text("Restore them as new copies to bring them back to your account, or discard them. Your backup file keeps them either way. (\(n) held)", bundle: testBundle), "es"),
+                           one ? "Restáuralo como copia nueva para devolverlo a tu cuenta, o descártalo. Tu archivo de copia de seguridad lo conserva en ambos casos."
+                               : "Restáuralos como copias nuevas para devolverlos a tu cuenta, o descártalos. Tu archivo de copia de seguridad los conserva en ambos casos.")
+            XCTAssertEqual(text(Text("They came from another account's data, so this account can't sync them as they are. Restore them as new copies to add them to this account. (\(n) held)", bundle: testBundle), "en"),
+                           one ? "It came from another account's data, so this account can't sync it as it is. Restore it as a new copy to add it to this account."
+                               : "They came from another account's data, so this account can't sync them as they are. Restore them as new copies to add them to this account.")
+            XCTAssertEqual(loc("They came from another account's data, so this account can't sync them as they are. Restore them as new copies to add them to this account. (\(n) held)", "es"),
+                           one ? "Procede de los datos de otra cuenta, así que esta cuenta no puede sincronizarlo tal como está. Restáuralo como copia nueva para añadirlo a esta cuenta."
+                               : "Proceden de los datos de otra cuenta, así que esta cuenta no puede sincronizarlos tal como están. Restáuralos como copias nuevas para añadirlos a esta cuenta.")
+            XCTAssertEqual(loc("Restore them as new copies to bring them back to your account, or discard them. Your backup file keeps them either way. (\(n) held)", "ja"),
+                           "新しいコピーとして復元してアカウントに戻すか、破棄してください。どちらの場合もバックアップファイルには残ります。")
+            // The account screen and the restore hand-over.
+            XCTAssertEqual(text(Text("\(n) deletions not yet synced", bundle: testBundle), "en"),
+                           one ? "1 deletion not yet synced" : "2 deletions not yet synced")
+            XCTAssertEqual(loc("\(n) recovered edits", "en"), one ? "1 recovered edit" : "2 recovered edits")
+            XCTAssertEqual(text(Text("\(n) recovered edits", bundle: testBundle), "es"),
+                           one ? "1 edición recuperada" : "2 ediciones recuperadas")
+            // The restore hand-over counts the same queue with the account screen's key.
+            XCTAssertEqual(loc("\(n) deletions not yet synced", "es"),
+                           one ? "1 eliminación aún sin sincronizar" : "2 eliminaciones aún sin sincronizar")
+            // A single form, the number inside the sentence.
+            XCTAssertEqual(loc("\(n) changes waiting to sync", "ja"), "\(n)件の変更が同期待ち")
+        }
+        // Plain keys with an argument: the email stays where each language puts it.
+        XCTAssertEqual(loc("This backup is from another account (\("a@example.com")). Its habits will be added to this account as new copies.", "ja"),
+                       "このバックアップは別のアカウント（a@example.com）のものです。習慣は新しいコピーとしてこのアカウントに追加されます。")
+        XCTAssertEqual(loc("Synced \("hace 2 minutos")", "es"), "Sincronizado hace 2 minutos")
+    }
+
     /// Every plural entry in every language renders for 1 and 2 without leaving a specifier or
     /// "(null)" behind — a malformed entry fails here rather than on a user's screen.
     func testEveryPluralEntryFormats() throws {
@@ -263,7 +351,10 @@ final class LocalizationCatalogTests: XCTestCase {
         let ja = try lproj("ja")
         for key in ["Measurable", "Times per week", "Weekly Review", "Habit Templates", "Welcome to Stride",
                     "Delete Account?", "%lld week streak", "Drink Water", "Health & Fitness",
-                    "weeks (unit after %lld)", "Restore from Backup…", "Sync is paused for maintenance. Your data is safe on this device and will sync when the pause ends."] {
+                    "weeks (unit after %lld)", "Restore from Backup…", "Sync is paused for maintenance. Your data is safe on this device and will sync when the pause ends.",
+                    // M2 (1.3.1): the sync rows and the account screen.
+                    "Sync paused", "Sign in again to keep syncing", "%lld changes can't sync — see Settings",
+                    "This Device's Habits", "Start from This Account's Data", "Recovered Edits (%lld)", "Before You Restore"] {
             let value = ja.localizedString(forKey: key, value: "MISSING", table: nil)
             XCTAssertNotEqual(value, "MISSING", "no ja entry for \"\(key)\"")
             XCTAssertNotEqual(value, key, "ja \"\(key)\" is still English")

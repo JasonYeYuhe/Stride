@@ -2,6 +2,7 @@
 /// <reference path="../types.d.ts" />
 
 const express = require("express");
+const Sentry = require("@sentry/node");
 const router = express.Router();
 const { rateLimit } = require("express-rate-limit");
 const {
@@ -57,6 +58,16 @@ router.post("/request-link", magicLinkLimiter, async (req, res) => {
     return res.json({ ok: true });
   } catch (err) {
     console.error("request-link error:", err);
+    // Reported, not just logged: the magic link is the ONLY way to sign in, so a broken mail
+    // provider (revoked key, unverified domain, quota) locks every signed-out user out, and a
+    // log line alerts nobody. The event carries neither the address nor the link: the
+    // scrubber (lib/sentryScrub.js) drops the request body and redacts emails and tokens from
+    // the error message, which a provider error may quote. Nothing is added here to scrub.
+    // Note: resend 3.x RETURNS API and network failures as `{ error }` instead of throwing, so
+    // this only sees them once sendMagicLinkEmail (email.js) throws on that result.
+    if (process.env.SENTRY_DSN) {
+      Sentry.captureException(err, { tags: { area: "magic-link" }, level: "error" });
+    }
     return res.status(500).json({ error: "Failed to send login link" });
   }
 });

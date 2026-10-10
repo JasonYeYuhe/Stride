@@ -28,10 +28,19 @@ func run() async throws {
     let schema = Schema([Habit.self, HabitRecord.self, HabitGroup.self])
     let container = try ModelContainer(for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
     let context = container.mainContext
-    try SyncReconciler.apply(response, to: context, isFullPull: true)
+    // The 1.3.1 reconciler validates a full pull and reports what it would not apply. No
+    // recovery log: the store starts empty, so its deletion pass has nothing to take.
+    let report = try SyncReconciler.apply(response, to: context, isFullPull: true)
 
     let habits = try context.fetch(FetchDescriptor<Habit>())
-    print("after reconcile: \(habits.count) habits")
+    print("after reconcile: \(habits.count) habits (applied \(report.applied.habits) habits, \(report.applied.entries) entries, \(report.applied.groups) groups)")
+    // A row the reconciler rejects (bad id, missing habit, two entries on one day, a date it
+    // cannot parse) never reaches a reviewer's screen. Missing or mismatched `totals` only skip
+    // the deletion pass, which cannot matter to an empty store — reported, not failed.
+    let rowIssues = report.issues.filter { $0.reason != .totalsMissing && $0.reason != .totalsMismatch }
+    for issue in report.issues {
+        print("  issue: \(issue.reason.rawValue) \(issue.kind?.rawValue ?? "-") \(issue.id ?? "-")")
+    }
     var zeroStreak = 0, zeroRate = 0, noHistory = 0, createdToday = 0
     let today = HabitCalendar.dayKey(for: Date())
     for habit in habits.sorted(by: { $0.name < $1.name }) {
@@ -46,7 +55,7 @@ func run() async throws {
         print(String(format: "  %-20@ records=%3d streak=%2d best=%2d rate=%3d%% created=%@",
                      habit.name as NSString, habit.records.count, streak, best, rate, String(created)))
     }
-    print("no history: \(noHistory) | zero current streak: \(zeroStreak) | zero 30-day rate: \(zeroRate) | created today: \(createdToday)")
+    print("no history: \(noHistory) | zero current streak: \(zeroStreak) | zero 30-day rate: \(zeroRate) | created today: \(createdToday) | rejected rows: \(rowIssues.count)")
 
     // Before any exit below, so a failing run doesn't leave a session behind.
     var logout = URLRequest(url: URL(string: "\(base)/v1/auth/logout")!)
@@ -56,7 +65,7 @@ func run() async throws {
     logout.httpBody = Data("{}".utf8)
     _ = try? await URLSession.shared.data(for: logout)
 
-    if noHistory > 0 || createdToday > 0 {
+    if noHistory > 0 || createdToday > 0 || !rowIssues.isEmpty {
         print("FAIL: a reviewer would see a broken demo account (re-seed, or check the sync fixes)")
         exit(2)
     }

@@ -83,10 +83,18 @@ It copies the working tree's `server/` and an online `.backup` of the live `stri
 (no Sentry, no email, no APM), runs [`ops/rehearsal-checks.js`](ops/rehearsal-checks.js)
 against it as the App Review demo account, prints the server log and deletes the directory.
 The live process and database are never touched. The checks: `integrity_check` on the
-migrated copy and the new tables present; `/health`; the AASA file; the demo token signs in;
+migrated copy and the new tables present; `deletion_tombstones.habit_id` / `.entry_date` added
+with every existing row NULL; `/health`; the AASA file; the demo token signs in, and the verify
+and full-pull answers are `Cache-Control: no-store` with no `ETag`;
 a full pull whose `totals` equal its arrays, every entry matched to a habit, every id upper
 case; a 1.2.3-shaped snapshot of the real account applying with nothing skipped and bumping
-no `updated_at`; an unknown-habit entry landing in `skipped.entries`; `cursor_expired` only
+no `updated_at` (which is also the LWW re-feed's negative case on real rows: the demo rows carry
+millisecond stamps, so the whole-second echo is strictly older with the same values); a pull
+with `ios/1.3.1(19)` serving fixed-width millisecond stamps for the same instants that
+`ios/1.3.0(18)` and a header-less pull serve in whole seconds; an unknown-habit entry landing in `skipped.entries`;
+an uncheck + re-check of a real demo check-in pushed as `ios/1.3.1(20)`, whose tombstone names the
+row's habit and date exactly as stored, and whose deletion a `since` pull holds back from
+`ios/1.3.0(19)` and header-less apps but sends to `ios/1.3.1(20)` (E2E S4, below); `cursor_expired` only
 with a ≥ 1.3.1 header; a 20-day-old session sliding to 30 days; and the pause flag answering
 503 then 200.
 
@@ -135,6 +143,55 @@ bad answer outlives the fix. The rehearsal checks the app on `127.0.0.1`; only t
 checks the path through nginx.
 
 Then from the Mac, `scripts/check_demo_account.sh` should exit 0.
+
+After a deploy that changes the pull's timestamps (1.3.1's millisecond pull, DEV-PLAN-1.3.md
+M2 acceptance 7), check both forms through nginx as the demo account. The token is read from
+the host and never printed; the session is signed out at the end:
+
+```bash
+DEMO_TOKEN="$(ssh -o IdentityAgent=none -i ~/.ssh/id_ed25519 azureuser@172.207.80.109 \
+  'sudo grep "^DEMO_TOKEN=" /root/stride-server/.env | cut -d= -f2- | tr -d "\"\r"')"
+S="$(curl -s https://stride-api.colorarchive.me/v1/auth/verify -H 'Content-Type: application/json' \
+  -d "{\"token\":\"$DEMO_TOKEN\"}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["sessionToken"])')"
+pull() { curl -s https://stride-api.colorarchive.me/v1/sync/pull -H "Authorization: Bearer $S" \
+  -H "X-Stride-Client: $1" | python3 -c 'import sys,json;print(json.load(sys.stdin)["habits"][0]["updatedAt"])'; }
+pull 'ios/1.3.1(19)'   # …:SS.mmmZ
+pull 'ios/1.3.0(18)'   # …:SSZ
+pull ''                # …:SSZ — an empty header is a legacy app, like none at all
+curl -s -D - -o /dev/null https://stride-api.colorarchive.me/v1/sync/pull -H "Authorization: Bearer $S" \
+  | grep -iE '^HTTP|^cache-control|^etag'   # 200 and cache-control: no-store — no etag line (E2E S9, below)
+curl -s -o /dev/null -X POST https://stride-api.colorarchive.me/v1/auth/logout \
+  -H "Authorization: Bearer $S" -H 'Content-Type: application/json' -d '{}'
+```
+
+After deploying the 1.3.1 server, two more checks, neither needing an account:
+
+- **API answers are not stored** (E2E S9 URL cache, [below](#api-answers-are-never-stored-e2e-s9-url-cache)).
+  Every `/v1` answer through nginx carries `Cache-Control: no-store` and no `ETag`; the legal
+  pages keep their own validators:
+
+  ```bash
+  curl -sI https://stride-api.colorarchive.me/v1/auth/session | grep -iE '^HTTP|^cache-control|^etag'
+  #   200, cache-control: no-store — and no etag line
+  curl -sI https://stride-api.colorarchive.me/privacy | grep -iE '^HTTP|^cache-control|^etag'
+  #   200, cache-control: public, max-age=0, and an etag line: static pages are unchanged
+  ```
+
+- **The tombstone migration** (E2E S4, [below](#a-deletion-and-its-same-day-replacement-e2e-s4)).
+  Right after the restart the two columns exist and no row that was there before has a value:
+
+  ```bash
+  ssh -o IdentityAgent=none -i ~/.ssh/id_ed25519 azureuser@172.207.80.109 \
+    "sudo sqlite3 /root/stride-server/stride.db 'PRAGMA table_info(deletion_tombstones);'" | cut -d'|' -f2 | xargs
+  #   id user_id entity_type entity_id deleted_at habit_id entry_date
+  ssh -o IdentityAgent=none -i ~/.ssh/id_ed25519 azureuser@172.207.80.109 \
+    "sudo sqlite3 /root/stride-server/stride.db 'SELECT COUNT(*), COUNT(habit_id) FROM deletion_tombstones;'"
+  #   <n>|0 — every tombstone from before the deploy keeps NULL
+  ```
+
+  From then on an entry deletion writes a tombstone that names its habit and day, and a pull
+  that held a deletion back says so on its request line (`withheld=<n>`), e.g.
+  `sudo pm2 logs stride-server --lines 5000 --nostream | grep -c ' withheld='`.
 
 ## Setup on the host
 
@@ -258,8 +315,12 @@ unless you know nothing else sends as it.
   Mirrored into the ASC App Review sign-in fields; rotate in both places at once.
 - `SENTRY_DSN` — optional for the server, which reports errors to Sentry when it is set;
   `ops/restore-drill.js` reads it too and cannot alert without it. Not set on production
-  as of 2026-09-26 (no Sentry project for the server yet).
-- `SENTRY_TRACES_SAMPLE_RATE` — optional, default `0.1`.
+  as of 2026-09-28 (no Sentry project for the server yet) — see
+  [Error reporting (Sentry)](#error-reporting-sentry) for turning it on.
+- `SENTRY_TRACES_SAMPLE_RATE` — **leave unset.** The default is `0`: errors only, no
+  performance transactions. It used to default to `0.1` (and `.env.example` said so), which
+  would have sent a transaction for one request in ten, sync included, the day the DSN went in.
+  A malformed or out-of-range value also means `0`.
 - Datadog APM (`dd-trace`) auto-initializes when `NODE_ENV !== test`; configure
   via the standard `DD_*` env vars (no-op without a local agent).
 - Sync switches and limits, all optional and commented out in `.env.example` with their
@@ -268,6 +329,87 @@ unless you know nothing else sends as it.
   `SYNC_AUTH_FAILURE_LIMIT_PER_15MIN` (100, per IP, sync requests without a valid session),
   `GLOBAL_RATE_LIMIT_PER_15MIN` (100, per IP, everything except sync). None is set on
   production; the defaults are the intended values.
+- `STRIDE_TEST_HOOKS` — **never set on the host.** With `NODE_ENV=test` it mounts
+  `POST /__test/sweep-tombstones` for `scripts/sync_rehearsal.sh` (M2's swept-tombstone case);
+  under `NODE_ENV=production` nothing is mounted even with it set, and a mounted route still
+  404s any request carrying the proxy headers the nginx block above sets (`X-Real-IP`,
+  `X-Forwarded-For` — nginx adds neither by default, so keep those lines) — see
+  `lib/testHooks.js` and its tests.
+
+### Error reporting (Sentry)
+
+What reaches Sentry once `SENTRY_DSN` is set: every 5xx through the global error handler in
+`index.js`, uncaught exceptions and unhandled rejections, and every failed
+`POST /auth/request-link` (tag `area=magic-link`) — the magic link is the only way to sign in,
+so a broken mail provider locks out every signed-out user and must page someone. 4xx answers
+are not reported. `GET /health` failures are not either (the uptime monitor below owns them;
+they go to the log as `[health] database check failed: …`).
+
+What an event actually carries (checked against a local fake ingest, 2026-09-28): the
+exception with its stack, the tags (`area=magic-link`, or `route=<METHOD> <route pattern>`
+such as `PUT /v1/habits/:id` on a 5xx — never an id or a query string), and at most
+scrubbed breadcrumbs of outgoing http calls (URL path, method, status). It carries
+**no `request` block and no `user`**: `Sentry.init` runs after express is loaded, so the SDK
+never gets a per-request scope to fill them from. The same missing scope made every
+console line of the whole process — other accounts' `sync user=<id>` lines included — ride
+along as breadcrumbs, so console breadcrumbs are dropped entirely.
+
+What does not reach it, by construction ([`lib/sentryScrub.js`](lib/sentryScrub.js), run on
+every event, transaction and breadcrumb, with its tests in `test/api.test.js`), should any
+of it ever be collected (for example if `Sentry.init` moves above `require("express")`):
+request bodies (push bodies hold habit names and notes; auth bodies hold emails and
+tokens), every request header except `Content-Type`, `Content-Length`, `User-Agent` and
+`X-Stride-Client` (so no `Authorization`, `Cookie` or `X-Forwarded-For`), cookies, query
+strings (the URL keeps its path only — `/login?token=` is a live login), the account's email
+and IP (`user` would be the account id only), console lines, and anything shaped like a
+64-hex token, an email address (any address `/auth/request-link` accepts, non-ASCII
+included) or a `Bearer …` credential in exception messages, extra data, tags and
+breadcrumbs. `sendDefaultPii` is `false`. dd-trace reports only to a local Datadog agent and
+adds nothing to Sentry events.
+
+**Turning it on (owner, once):**
+
+1. In sentry.io (org `jason-yeyuhe`) create project **`stride-server`**, platform
+   *Node.js / Express*, default alert "alert me on every new issue", email. (The apps report
+   to `stride-apple`; keep the server separate so a server alert is never muted with an app
+   one.) In the project's *Settings → Security & Privacy*, turn on **Prevent Storing of IP
+   Addresses** and keep **Data Scrubber** and **Use Default Scrubbers** on — a second line
+   behind the server's own scrubbing.
+2. Add one more alert rule: *An event is captured*, filter *tag `area` equals
+   `magic-link`*, action email, action interval 30 minutes. The default rule fires only when
+   an issue is first seen (or regresses); a mail outage is the same issue over and over and
+   must alert every time it recurs.
+3. Copy the project's DSN (*Settings → Client Keys*) into the host `.env` and restart:
+
+   ```bash
+   ssh -o IdentityAgent=none -i ~/.ssh/id_ed25519 azureuser@172.207.80.109
+   sudo nano /root/stride-server/.env        # SENTRY_DSN=https://…@….ingest.sentry.io/…
+   sudo grep -n '^SENTRY' /root/stride-server/.env
+   #   exactly one line, SENTRY_DSN=… — if SENTRY_TRACES_SAMPLE_RATE is there (copied from the
+   #   old .env.example, which said 0.1), delete that line
+   sudo pm2 restart stride-server --update-env
+   curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3002/health   # 200
+   ```
+
+4. Send a test event through the same init options and scrubbers the server uses:
+
+   ```bash
+   cd /root/stride-server && sudo node -e '
+     require("dotenv").config();
+     const Sentry = require("@sentry/node");
+     Sentry.init(require("./lib/sentryScrub").sentryInitOptions(process.env));
+     Sentry.captureMessage("stride-server: test event", { level: "info", tags: { area: "deploy-check" } });
+     Sentry.flush(10000).then((ok) => console.log(ok ? "sent" : "NOT sent (flush timed out)"));'
+   ```
+
+   It prints `sent`, and within a minute the issue *stride-server: test event* appears in the
+   project with `environment: production` — resolve it. The next 04:10 restore drill also
+   starts sending its cron check-in (monitor `stride-restore-drill`, see
+   [Restore drill](#restore-drill)); check it shows up the next morning.
+
+Until the DSN is set nothing is sent anywhere: `Sentry.init` and the magic-link report are
+both behind `if (process.env.SENTRY_DSN)`, and a failed request-link is only a
+`request-link error:` line in the pm2 error log.
 
 ## Sync contract — what a client can be told
 
@@ -279,11 +421,13 @@ An app identifies itself with `X-Stride-Client: ios|macos/<version>(<build>)`, e
 `ios/1.3.1(19)`, sent from 1.3.0 on. **No header, or one that does not parse, means a shipped
 app ≤ 1.2.3**, and those are never sent anything they cannot handle: they push their whole
 history on every sync, cannot split a request, and have no handler for a cursor error — for
-them a 400 is as fatal as a 413 and a 409 would be an endless loop.
+them a 400 is as fatal as a 413 and a 409 would be an endless loop. **1.3.0 sends the header
+but is in the same position** — it still pushes a full snapshot and has no `cursor_expired`
+handler — so every gate below is ≥ 1.3.1, and 1.3.0 is treated exactly like the legacy apps.
 
 | Status | `code` | Who can get it | Meaning / what the app does |
 |---|---|---|---|
-| 200 | — | everyone | Push: `{ok, applied, skipped, skippedReasons}`. Pull: arrays + `totals` + `serverTime`. |
+| 200 | — | everyone | Push: `{ok, applied, skipped, skippedReasons}`, plus `aliases` for a header ≥ 1.3.1 when there are any. Pull: arrays + `totals` + `serverTime`, plus `deletionsSince` for a header ≥ 1.3.1 whose full pull asked for it. |
 | 401 | — | everyone | `{error:"Unauthorized"}` — no or expired session; sign in again. |
 | 400 | `invalid_payload` | everyone | A present field is not an array, or `since` is repeated. A client bug. |
 | 400 | `too_many_rows` | header ≥ 1.3.1 | Over 500 habits / 5,000 entries / 200 groups in one push; `limits` says which. Deletion lists are not capped. |
@@ -299,11 +443,39 @@ because 1.2.3 prints `error` verbatim in the Settings footer — a user should r
 sync requests, please try again later", not `rate_limited`. The older errors (401, the
 global 429, 413) are unchanged.
 
+**Timestamps on pull.** With a header ≥ 1.3.1, `createdAt` / `updatedAt` go out with
+milliseconds in `toISOString()`'s fixed-width form (`2026-09-15T17:33:18.700Z`); to 1.3.0 and
+to header-less apps, in whole seconds (`…:18Z`), because apps up to 1.2.2 parse them with a
+default `ISO8601DateFormatter` that returns nil on a fraction (the demo account's "created
+today" incident), and 1.2.3 / 1.3.0 were built against whole seconds. 1.3.1 needs the milliseconds: served truncated, a remote edit at :18.700
+would lose on that device to its own local :18.300. Pushed stamps are stored the same way,
+whatever their precision (`…:18Z` becomes `…:18.000Z`), so the edit-time comparison — a string
+comparison — stays chronological across old and new apps. An older app's edit is only as
+precise as its string: 1.2.3's :18.900 is stored as :18.000 and loses to 1.3.1's :18.400.
+
+**The LWW re-feed.** A push that loses to a stored edit is still `applied`. When the stored
+edit is strictly newer *and* the values differ (as an app would hold them), the push moves
+the stored row's `updated_at` to now, so the losing device's next pull brings the winner even
+though its cursor is past it (a slow clock stamped its edit earlier than the one it had
+already pulled). Both conditions matter: every 1.3.0 snapshot echoes a 1.3.1 millisecond stamp
+truncated to seconds with the same values, and must not re-feed. Counted as
+`lww_refeed.<habits|entries|groups>` and shown as `refed=` on the request line.
+
 Skipped rows are reported, never silently dropped: `skippedReasons` names why (`tombstoned`,
 `tombstoned_habit`, `missing_field`, `row_error`, `not_owned`, `not_owned_habit`,
 `skipped_habit`, `unknown_habit`, `invalid_value`). A shipped app ignores all of it — it decodes
 only `ok` and re-sends everything next time — so the field is additive. It matters from 1.3.1,
 when apps send only what changed and a silently dropped row would be a row that never syncs.
+
+**Entry aliases.** Entries conflict on (habit, day) and the stored row keeps its id, so a day two
+devices checked before either pulled the other's check-in is one row under two ids. To a header
+≥ 1.3.1, a push whose applied entry landed on such a row says so: `aliases: {entries: {<sent id>:
+<stored id>}}`, the key present only when there is one. The app takes the stored id as it
+acknowledges. Before, it learnt it only from its next pull, so an uncheck made first queued an id
+the server does not hold: the delete matched nothing and the next pull checked the day again. Older
+apps still learn the id from that pull. The cost is one indexed read per entry a 1.3.1 app pushes.
+
+**Deletions since (full pull, ≥ 1.3.1).** `GET /v1/sync/pull?deletionsSince=<ISO>` with no `since` adds `deletionsSince: {complete: true, habitIds, entryIds, groupIds}` — the account's tombstones after that time, read in the snapshot's transaction — or `{complete: false}` when the time is past the 355-day horizon or unreadable; a 1.3.1 store's first full pull after the update asks with 1.3.0's cursor, to tell a deletion elsewhere from a row the 1.3.0 server refused. Logged as `deletionsSince=<n>|incomplete`.
 
 `invalid_value` (1.3.0 server) is a row with a number no app can produce, which the server used
 to store and hand to every device on the account: every app up to 1.2.3 traps on `Int(value)`
@@ -319,11 +491,12 @@ refusing one would cost a restored habit — its entries come back `skipped_habi
 pull lacks it, and the reconciler deletes it and its check-ins on that device. Absent or `null` still means the column default. Still a 200 — one bad row
 never fails a push, for any client. **What a 1.3.1 client does with it (M2): quarantine** — keep
 the row locally, stop re-sending it, do not count it as delivered, and send it again only once
-the user edits it (a new `updatedAt`); mark it in the sync diagnostics. Entries of a quarantined
-*new* habit come back `skipped_habit`; hold them with their habit rather than retrying them.
+the user edits it (a new `updatedAt`); mark it in the sync diagnostics. The planner does not
+send the entries of a held habit; an entry that does come back `skipped_habit` or
+`unknown_habit` stays pending and is retried (its habit's chunk may not have landed).
 
 Rows already stored before this check are still served on pull (pull is not filtered: a
-≤ 1.2.3 app deletes whatever a full pull lacks). Before deploying, count them on the backup:
+≤ 1.3.0 app deletes whatever a full pull lacks). Before deploying, count them on the backup:
 
 ```sql
 SELECT 'entry', COUNT(*) FROM habit_entries WHERE typeof(value) NOT IN ('integer','real') OR abs(value) > 1e9
@@ -347,8 +520,55 @@ non-optional `Double` — the same whole-pull failure. Pushes can no longer chan
 (any re-send of it reads `invalid_value`), so it stays until it is repaired by hand.
 
 The request log line carries what an operator needs to answer "what did that device send":
-`client=<header or ->`, and for sync `user=… in=… applied=… skipped=… reasons=…` or
-`pull=full|since out=…`.
+`client=<header or ->`, and for sync `user=… in=… applied=… skipped=… refed=… reasons=…` or
+`pull=full|since out=… withheld=…` (`refed` only when the LWW re-feed moved a row, `withheld`
+only when a pull held back a replaced entry deletion, below).
+
+### A deletion and its same-day replacement (E2E S4)
+
+Found end to end with the real 1.3.0 (build 19). Unchecking and re-checking a day with no sync in
+between deletes entry X and creates entry Y — a new id — for the same habit and day, and a 1.3.1
+device pushes both. Every app below 1.3.1 applies a pull's deletions first and then matches each
+pulled entry to a local record **by day**; `Habit.records` has no inverse, so the deleted X is
+still in the habit's array, Y lands on it, and the save loses Y. That device shows the day
+unchecked until a full pull. The server's data is right and those apps cannot be updated, so the
+pull no longer sends them that combination: to a client below 1.3.1 (no header, 1.2.x, 1.3.0),
+an entry deletion whose habit and day the same response carries under another id is **held
+back**. The old app then day-matches its still-live X, re-IDs it to Y and takes Y's value. A
+deletion with no replacement in the response is sent as before, and ≥ 1.3.1 gets every deletion,
+unchanged. Why "in the same response" is enough is the comment above `replacedEntryDeletions` in
+`routes/sync.js`.
+
+**The migration.** To know a deleted entry's day once its row is gone, `deletion_tombstones` gains
+two nullable `TEXT` columns, `habit_id` and `entry_date`, copied from the row a sync push (or the
+REST uncheck) deletes, exactly as `habit_entries` stored them. It is **additive and idempotent**:
+`db.js` adds each column with `ALTER TABLE … ADD COLUMN` only when `PRAGMA table_info` lacks it,
+in the startup migration transaction on the first boot after the rsync; nothing to run by hand,
+and a second boot changes nothing. No default and no backfill: every existing row keeps NULL (the
+day of a row deleted before the deploy left with the row), and a tombstone that names no day is
+served exactly as before: the hold-back covers deletions pushed after the deploy. A retried push
+that lists a deletion again writes a second row, NULL because the entry was already gone; that
+does not undo the hold-back, since an id is held back when any of its rows in the window names
+the replaced day. Habit and group tombstones never fill the columns. Rolling the code back leaves
+them in place, unused and harmless (the old code names its four columns in every INSERT).
+
+## API answers are never stored (E2E S9 URL cache)
+
+The apps' default `URLCache` kept the `/v1/auth/verify` answer — the live `sessionToken` — and
+`/v1/sync/pull` bodies in `Caches/Cache.db`, and revalidated `GET /v1/auth/session` with Express's
+weak `ETag` into a `304`. The apps are fixed separately; the server now says it too (`index.js`):
+
+- every answer on `/v1/*` and on the legacy `/sync`, `/auth` and `/habits` mounts — errors, 401,
+  429 and 503 included — carries `Cache-Control: no-store`, and their `If-None-Match` /
+  `If-Modified-Since` are ignored, so none of them is ever a `304`;
+- no `ETag` on anything `res.send` answers (`app.set("etag", false)`; Express has no per-router
+  switch): the API, `/health`, `/login` and error bodies;
+- `/login`, which shows a live magic-link token, is `no-store` as well;
+- unchanged: the legal pages (`express.static` keeps its own `ETag`, `Last-Modified` and
+  `Cache-Control: public, max-age=0`, and still answers `304`), and the AASA file, which gets no
+  `Cache-Control` from us because Apple's CDN caches it by its own rules.
+
+nginx passes these headers through unchanged; the `curl -sI` in step 5 checks that.
 
 ## Database Backups
 
@@ -567,12 +787,14 @@ A 6-hour timer (and one run at boot) sweeps expired sessions and magic links,
 `usage_counters` and `user_clients` rows older than 400 days, and snapshot requests
 answered more than 90 days ago (`db.sweepStaleData()` in `db.js`). No external cron needed.
 
-**Deletion tombstones are kept indefinitely.** Sweeping them would let a ≤ 1.2.3 app
+**Deletion tombstones are kept indefinitely.** Sweeping them would let a ≤ 1.3.0 app
 resurrect deleted rows: it cannot be told its cursor is too old (it has no
-`cursor_expired` handler), pulls past the swept window, and pushes the deleted rows back
-with its next full snapshot. Tombstones are about 100 bytes each. Sweeping returns — at 365
-days, `sweepStaleData({ tombstoneRetentionDays: 365 })` — only after a 426 minimum-version
-floor retires ≤ 1.2.3, and the [usage report](#usage-report) is what says when that is.
+`cursor_expired` handler — 1.3.0 included), pulls past the swept window, and pushes the
+deleted rows back with its next full snapshot. Tombstones are about 100 bytes each (an entry's
+about 150 from the 1.3.1 server, which also records its habit and day). Sweeping
+returns — at 365 days, `sweepStaleData({ tombstoneRetentionDays: 365 })` — only after a 426
+minimum-version floor retires ≤ 1.3.0, i.e. a floor of **at least 1.3.1**, and the
+[usage report](#usage-report)'s < 1.3.1 cohort is what says when that is.
 (Until 2026-09-27 this section said tombstones were swept at 90 days; they were, until M0.)
 
 The three tables M0 added — `sync_snapshot_requests`, `usage_counters`, `user_clients` —
@@ -627,7 +849,8 @@ cd /root/stride-server && sudo node ops/usage-report.js [--days N] [--db path]
 Active accounts by client version over 7 / 28 / 56 days, the legacy (no header) and < 1.3.1
 cohorts, and counter totals by UTC day: `snake_fallback.*` (the snake_case shim),
 `habit_without_kind`, `mount.*` (hits on the legacy `/sync`, `/auth`, `/habits` mounts),
-`client.*`. It opens the database read-only and runs no migrations, so it is safe on the live
+`client.*`, and `lww_refeed.*` (the LWW re-feed — not a shim counter; it should stay small, and
+one that climbs every day is a device that cannot hold the winner). It opens the database read-only and runs no migrations, so it is safe on the live
 host or on a copy. The process flushes its counters hourly and on SIGTERM, so the report
 trails live traffic by up to an hour. **These numbers, not a date, decide when the
 snake_case shim, the legacy mounts, the 426 floor and tombstone sweeping can go.**

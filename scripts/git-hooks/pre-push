@@ -10,11 +10,18 @@
 # this is the gate that still stops a push whose app has lost its widget extension or a
 # privacy manifest — the 1.2.x class of bug, which a green compile does not catch.
 #
-# What it builds is the WORKING TREE, incrementally (derived data persists, so a push costs
-# seconds to a couple of minutes, not a clean build). For that to say anything about the
-# commits being pushed, the Apple paths in the working tree must equal the pushed commit;
-# if they do not (uncommitted edits, untracked sources, pushing a branch that is not checked
-# out), the hook refuses rather than vouching for code it did not build.
+# What it builds is the PUSHED COMMIT, checked out on its own (git worktree add --detach) into
+# a temporary directory, never the working tree. Until 1.3.1 it built the working tree, after
+# checking once that the Apple paths there equalled the commit; on 2026-09-28 it built another
+# agent's half-finished, uncommitted edits in the shared checkout and passed — a check made
+# before minutes of building says nothing about what the compiler then reads, and it vouched
+# for a tree nobody was pushing. A checkout of the commit also catches what a working-tree
+# build never can: a source file that exists here but was never `git add`ed.
+#
+# Speed: derived data persists across pushes (~/Library/Developer/Xcode/DerivedData/
+# Stride-prepush), and the checkout goes to the SAME path every time, so Xcode reuses its build
+# description, the resolved packages and the built Sentry framework. Every file of the fresh
+# checkout is new to the compiler, so the app itself recompiles (see the timing it prints).
 set -uo pipefail
 
 if [[ "${SKIP_STRIDE_HOOKS:-}" == "1" ]]; then
@@ -25,9 +32,14 @@ fi
 ROOT="$(git rev-parse --show-toplevel)"
 CI="$ROOT/scripts/ci"
 DERIVED="${STRIDE_HOOK_DERIVED_DATA:-$HOME/Library/Developer/Xcode/DerivedData/Stride-prepush}"
-# Keep in sync with the Apple patterns in scripts/ci/changed_areas.sh.
-# (':(glob)' because a plain 'Stride*/' pathspec matches nothing.)
-APPLE_PATHS=(project.yml ':(glob)Stride*/**' Shared/ scripts/ci/)
+# The pushed commit is checked out here — one fixed path, not a fresh mktemp name, because
+# derived data is keyed by source paths: a new path each push would be a cold build each push.
+TREE="${STRIDE_HOOK_TREE:-${TMPDIR:-/tmp}/stride-prepush-tree}"
+TREE="${TREE%/}"
+# It is removed with rm -rf before and after every run, so a bad override must not reach that.
+case "$TREE" in
+    ""|"$HOME"|"$ROOT"|"$ROOT"/*) echo "pre-push: ✗ refusing STRIDE_HOOK_TREE='$TREE'."; exit 1 ;;
+esac
 ZERO="0000000000000000000000000000000000000000"
 
 # stdin: "<local ref> <local sha> <remote ref> <remote sha>" per ref being pushed.
@@ -43,6 +55,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
         # New remote branch: compare with where it leaves main.
         base="$(git merge-base "$local_sha" origin/main 2>/dev/null || echo "$ZERO")"
     fi
+    # The Apple-paths filter: one list, in changed_areas.sh, shared with CI.
     # Captured, not piped into `grep -q`: grep exiting early can SIGPIPE the script, and
     # under pipefail that turns a match into a failure.
     areas="$("$CI/changed_areas.sh" "$base" "$local_sha")"
@@ -58,21 +71,39 @@ done
 
 [[ -z "$target" ]] && exit 0   # nothing on the Apple side: nothing to build
 
-cd "$ROOT"
-echo "pre-push: Apple paths changed in $(git rev-parse --short "$target") — building for generic iOS."
+echo "pre-push: Apple paths changed in $(git rev-parse --short "$target") — building that commit for generic iOS."
 
-# The working tree must be the commit being pushed, at least where the build looks.
-if ! git diff --quiet "$target" -- "${APPLE_PATHS[@]}" \
-    || [[ -n "$(git ls-files --others --exclude-standard -- "${APPLE_PATHS[@]}")" ]]; then
-    echo "pre-push: ✗ the working tree differs from $(git rev-parse --short "$target") under"
-    echo "          project.yml, Stride*/, Shared/ or scripts/ci/ — the build would not be of"
-    echo "          what you are pushing."
-    echo "          Commit or stash, or check out the branch being pushed; or SKIP_STRIDE_HOOKS=1."
+# Git runs hooks with GIT_DIR (and sometimes GIT_INDEX_FILE) exported for THIS checkout.
+# Left set, every git command in the scripts below — the drift check's `git diff` — would
+# read the main checkout's index instead of the temporary one.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX
+
+# One run at a time: the checkout path and derived data are shared. mkdir is the atomic test.
+LOCK="$TREE.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+    echo "pre-push: ✗ another pre-push is building ($LOCK exists). If none is running, a killed"
+    echo "          one left it behind: rmdir '$LOCK' and push again (or SKIP_STRIDE_HOOKS=1)."
     exit 1
 fi
+remove_tree() {
+    git -C "$ROOT" worktree remove --force "$TREE" >/dev/null 2>&1
+    rm -rf "$TREE"
+    git -C "$ROOT" worktree prune >/dev/null 2>&1
+}
+cleanup() { remove_tree; rmdir "$LOCK" 2>/dev/null; }
+trap cleanup EXIT
+trap 'exit 130' INT TERM HUP   # through the EXIT trap, so ^C still removes the checkout
+
+remove_tree   # a checkout left by a hook that was killed outright (kill -9, a crash)
+if ! git -C "$ROOT" worktree add --detach --quiet "$TREE" "$target"; then
+    echo "pre-push: ✗ could not check out $(git -C "$ROOT" rev-parse --short "$target") into $TREE."
+    exit 1
+fi
+CI="$TREE/scripts/ci"   # the pushed commit's own checks, as CI would run them for it
 
 # Drift check only with the pinned XcodeGen (exit 3 = other version): a different version
 # writes a different project, and "regenerate with the wrong tool" is not a useful failure.
+# It regenerates inside the temporary checkout and compares with the commit there.
 "$CI/check_xcodegen_drift.sh"
 case $? in
     0) ;;
@@ -82,7 +113,8 @@ esac
 
 start=$(date +%s)
 if ! "$CI/build_ios_generic.sh" "$DERIVED"; then
-    echo "pre-push: ✗ iOS build or product check failed — push aborted. (SKIP_STRIDE_HOOKS=1 to override.)"
+    echo "pre-push: ✗ iOS build or product check failed for $(git -C "$ROOT" rev-parse --short "$target") — push aborted."
+    echo "          (SKIP_STRIDE_HOOKS=1 to override.)"
     exit 1
 fi
-echo "pre-push: ✓ iOS build and product check passed in $(( $(date +%s) - start ))s."
+echo "pre-push: ✓ iOS build and product check of $(git -C "$ROOT" rev-parse --short "$target") passed in $(( $(date +%s) - start ))s."

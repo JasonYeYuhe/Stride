@@ -88,9 +88,14 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS deletion_tombstones (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id    INTEGER NOT NULL,
-    entity_type TEXT NOT NULL,  -- 'habit' or 'entry'
+    entity_type TEXT NOT NULL,  -- 'habit', 'entry' or 'group'
     entity_id  TEXT NOT NULL,
     deleted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    -- An 'entry' row's habit and day, copied from the row it deleted (E2E S4, routes/sync.js
+    -- pull). NULL on habit and group rows, on rows from before the 1.3.1 server, and when the
+    -- server no longer held the entry. Added by migrateIfNeeded on an existing database.
+    habit_id   TEXT,
+    entry_date TEXT,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );
 
@@ -223,6 +228,15 @@ const migrateIfNeeded = db.transaction(() => {
   if (!snapCols.includes("answered_at")) db.exec("ALTER TABLE sync_snapshot_requests ADD COLUMN answered_at TEXT");
   if (!snapCols.includes("answered_client")) db.exec("ALTER TABLE sync_snapshot_requests ADD COLUMN answered_client TEXT");
 
+  // E2E S4 (the 1.3.1 server): an entry tombstone names the deleted row's habit and day, so a
+  // pull can hold the deletion back from an app below 1.3.1 when the same response carries that
+  // day's replacement (routes/sync.js). Nullable with no default, so this is additive: every
+  // existing tombstone keeps NULL, which the pull treats exactly as before. Before
+  // canonicalizeIds, which upper-cases habit_id along with the ids it mirrors.
+  const tombCols = db.prepare("PRAGMA table_info(deletion_tombstones)").all().map((c) => /** @type {PragmaColumn} */ (c).name);
+  if (!tombCols.includes("habit_id")) db.exec("ALTER TABLE deletion_tombstones ADD COLUMN habit_id TEXT");
+  if (!tombCols.includes("entry_date")) db.exec("ALTER TABLE deletion_tombstones ADD COLUMN entry_date TEXT");
+
   // Upper-case every stored id so server-generated (lower-case) ids match what the apps
   // send. See migrations/canonicalizeIds.js — it needs this surrounding transaction.
   canonicalizeIds(db);
@@ -256,31 +270,48 @@ const USAGE_RETENTION_DAYS = 400;
 const ANSWERED_SNAPSHOT_RETENTION_DAYS = 90;
 
 /**
+ * The youngest a deletion tombstone may be swept at: every cursor an app may still pull with
+ * (routes/sync.js CURSOR_RETENTION_DAYS, 365). Past that age a pull is `cursor_expired`, and a
+ * 1.3.1 app's first full pull after the update gets `deletionsSince: {complete: false}`. Swept
+ * younger, a deletion would be missing from a list the server calls complete, and that app would
+ * resend the row as one the 1.3.0 server refused: a habit deleted on another device back in the
+ * account (review data-safety-1, routes/sync.js `deletionsSince`). Only the rehearsal's test hook
+ * and the server tests go below it, by saying so (`belowCursorHorizon`).
+ */
+const MIN_TOMBSTONE_RETENTION_DAYS = 365;
+
+/**
  * Garbage-collect expired sessions and magic links.
  *
  * Deletion tombstones are NOT swept unless a caller asks (`tombstoneRetentionDays`). They
  * were swept after 90 days until 1.3, and every sweep was a resurrection window: an app up to
- * 1.2.3 that pulls with a cursor older than the oldest remaining tombstone never learns about
+ * 1.3.0 that pulls with a cursor older than the oldest remaining tombstone never learns about
  * the deletions that were swept, keeps those rows, and pushes them straight back in its next
  * full snapshot — a habit deleted on the phone reappears from the iPad that was in a drawer
- * for four months. Those apps have no way to be told their cursor is too old (the 1.3.1
- * `cursor_expired` 409 is gated on the X-Stride-Client header they don't send). A tombstone
- * is ~100 bytes, so keeping all of them costs nothing.
+ * for four months. Those apps have no way to be told their cursor is too old: the
+ * `cursor_expired` 409 is gated on an X-Stride-Client header >= 1.3.1, which <= 1.2.3 does not
+ * send and 1.3.0 sends below the gate (it has no handler either). A tombstone is ~100 bytes,
+ * so keeping all of them costs nothing.
  *
- * What turns sweeping back on: a 426 minimum-version floor that retires the <= 1.2.3 apps
- * (decided from the legacy-client counters, not a date). After that, sweep at
- * CURSOR_RETENTION_DAYS (365, routes/sync.js) — every client left handles cursor_expired.
+ * What turns sweeping back on: a 426 minimum-version floor that retires every app <= 1.3.0,
+ * i.e. a floor of at least 1.3.1 (decided from the usage report's < 1.3.1 cohort, not a date).
+ * After that, sweep at CURSOR_RETENTION_DAYS (365, routes/sync.js) — every client left handles
+ * cursor_expired. Never younger: see MIN_TOMBSTONE_RETENTION_DAYS, which this function enforces.
  *
  * Also drops usage counters and client-cohort rows (metrics.js) older than
  * USAGE_RETENTION_DAYS: long enough to compare a year against the year before, short enough
  * that a departed user's app version does not sit here forever. And snapshot requests answered
  * more than ANSWERED_SNAPSHOT_RETENTION_DAYS ago (pending ones stay until answered or cleared).
  *
- * @param {{ tombstoneRetentionDays?: number }} [opts] retention in days; omit to keep all tombstones
+ * @param {{ tombstoneRetentionDays?: number, belowCursorHorizon?: boolean }} [opts] retention in
+ *   days, omitted to keep all tombstones; `belowCursorHorizon` only from the test hook and tests
  * @returns {{ tombstones: number, sessions: number, magicLinks: number, usageCounters: number, userClients: number, snapshotRequests: number }}
  */
 function sweepStaleData(opts = {}) {
   const retentionDays = opts.tombstoneRetentionDays;
+  if (retentionDays !== undefined && retentionDays < MIN_TOMBSTONE_RETENTION_DAYS && !opts.belowCursorHorizon) {
+    throw new Error(`sweepStaleData: tombstones are kept at least ${MIN_TOMBSTONE_RETENTION_DAYS} days (asked ${retentionDays})`);
+  }
   const nowMs = Date.now();
 
   const sweep = db.transaction(() => {

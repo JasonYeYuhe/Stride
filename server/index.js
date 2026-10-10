@@ -13,18 +13,21 @@ const cors = require("cors");
 const helmet = /** @type {any} */ (require("helmet"));
 const { createGlobalLimiter } = require("./lib/rateLimits");
 const Sentry = require("@sentry/node");
-const { requestLogger } = require("./logger");
+const { sentryInitOptions, routeTag } = require("./lib/sentryScrub");
+const { checkDatabase } = require("./lib/health");
+const { requestLogger, redactUrl } = require("./logger");
 const metrics = require("./metrics");
 const origins = require("./origins");
 const db = require("./db");
 
 // Error tracking — only active when a DSN is configured (so tests/dev stay quiet).
+// Errors only: tracing defaults to 0 (it used to default to 0.1, a transaction with URLs for
+// one request in ten, sync included), and every event, transaction and breadcrumb is scrubbed
+// of bodies, headers, query strings, emails and tokens first — see lib/sentryScrub.js for what
+// 8.x would otherwise send. dd-trace (above) instruments the same http calls but reports only
+// to a local Datadog agent; it adds nothing to Sentry events.
 if (process.env.SENTRY_DSN) {
-  Sentry.init({
-    dsn: process.env.SENTRY_DSN,
-    environment: process.env.NODE_ENV || "development",
-    tracesSampleRate: Number(process.env.SENTRY_TRACES_SAMPLE_RATE ?? 0.1),
-  });
+  Sentry.init(sentryInitOptions(process.env));
 }
 
 origins.warnIfUnset();
@@ -47,6 +50,27 @@ app.use(helmet({
     },
   },
 }));
+
+// API answers are never stored (E2E S9 URL cache). The apps' default URLCache kept the
+// /v1/auth/verify answer — the live sessionToken — and /v1/sync/pull bodies in
+// Caches/Cache.db, because nothing here said otherwise: no Cache-Control, and Express's weak
+// ETag, with which the app then revalidated GET /v1/auth/session and got a 304. The apps are
+// fixed separately; the server says it too. It covers every mount the apps call, the legacy
+// ones included, and every answer on them — 401, 429, 503 and error bodies too, which is why it
+// runs ahead of every limiter and router. The conditional headers are dropped as well, so no
+// answer here is ever a 304: without an ETag Express still answers `If-None-Match: *` with one.
+app.use(["/v1", "/sync", "/auth", "/habits"], (req, res, next) => {
+  res.setHeader("Cache-Control", "no-store");
+  delete req.headers["if-none-match"];
+  delete req.headers["if-modified-since"];
+  next();
+});
+// And no ETag: Express has no per-router switch, and nothing else res.send answers — /health
+// (its uptime changes every call), /login, error bodies — gains from one. The legal pages keep
+// theirs: express.static (serve-static) sets its own ETag and Last-Modified and never reads
+// this setting. The AASA file below never had one (res.end) and stays as it was, with no
+// Cache-Control from us: Apple's CDN fetches it and caches it by its own rules.
+app.set("etag", false);
 
 // Apple App Site Association: the server half of one-tap sign-in (M1). With it, iOS opens
 // the magic link `/login?token=…` from the email straight in the app instead of the /login
@@ -131,6 +155,11 @@ app.use("/v1/habits", metrics.countRequests("mount./v1/habits"), habitsRouter);
 app.use("/auth", metrics.countRequests("mount./auth"), authRouter);
 app.use("/habits", metrics.countRequests("mount./habits"), habitsRouter);
 
+// Test-only routes (the swept-tombstone switch for scripts/sync_rehearsal.sh). Mounted only
+// under NODE_ENV=test with STRIDE_TEST_HOOKS=1, and then only for loopback requests without
+// proxy headers — lib/testHooks.js lists why production can never reach it.
+require("./lib/testHooks").mountTestHooks(app, /** @type {any} */ (db));
+
 // Magic link login page — handles email link taps from mobile
 app.get("/login", (req, res) => {
   const token = /** @type {string} */ (req.query.token) || "";
@@ -139,6 +168,9 @@ app.get("/login", (req, res) => {
     s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   const safeToken = escapeHtml(token);
+  // The page holds a live login token (viewing it does not consume it), so a browser must not
+  // keep it either — the same reason the API answers are no-store (E2E S9 URL cache, above).
+  res.setHeader("Cache-Control", "no-store");
   res.send(`<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Stride - Complete Login</title>
@@ -169,12 +201,14 @@ ${safeToken ? `<div class="token-box">${safeToken}</div>` : '<p style="color:#ff
 </div></body></html>`);
 });
 
-// Health check — also verifies DB connectivity so a locked/corrupt SQLite
-// reports unhealthy instead of falsely OK.
+// Health check — also reads the tables every sign-in and sync touches (lib/health.js), so a
+// locked, corrupt or wrong SQLite file reports unhealthy instead of falsely OK. Hit every
+// minute by the uptime monitor (DEPLOY.md), so it stays O(1) and reports to the log only.
 app.get("/health", (req, res) => {
   try {
-    db.prepare("SELECT 1").get();
+    checkDatabase(db);
   } catch (err) {
+    console.error(`[health] database check failed: ${err && err.message}`);
     return res.status(503).json({ ok: false, error: "database unavailable" });
   }
   res.json({ ok: true, version: "1.0.0", apiVersions: ["v1"], uptime: process.uptime() });
@@ -187,8 +221,15 @@ app.get("/health", (req, res) => {
 app.use((err, req, res, next) => {
   const status = err.status || err.statusCode || 500;
   if (status >= 500) {
-    console.error(`[ERROR] ${req.method} ${req.originalUrl}:`, err && err.stack ? err.stack : err);
-    if (process.env.SENTRY_DSN) Sentry.captureException(err);
+    // redactUrl: the same /login?token= leak the request log was fixed for (logger.js).
+    console.error(`[ERROR] ${req.method} ${redactUrl(req.originalUrl)}:`, err && err.stack ? err.stack : err);
+    // Sentry.init runs after express is loaded, so the SDK attaches no `request` to events (no
+    // per-request scope; lib/sentryScrub.js). The route PATTERN says which endpoint failed:
+    // `/v1/habits/:id`, never the id, never the query string.
+    if (process.env.SENTRY_DSN) {
+      const route = routeTag(req.method, req.originalUrl, req.route && req.route.path);
+      Sentry.captureException(err, { tags: { route } });
+    }
   }
   if (res.headersSent) return next(err);
   const message = status >= 500

@@ -3,7 +3,14 @@
 
     scripts/release.py prepare 1.2.1     # create the version records + What's New
     scripts/release.py finish  1.2.1 15  # attach build N, then submit for review
+    scripts/release.py release 1.2.1     # after approval + the device check: go live
+    scripts/release.py cancel  1.2.1     # pull a version out of review (e.g. to swap its build)
     scripts/release.py show    1.2.1     # report state without changing anything
+
+Versions are created with releaseType MANUAL: an approved version waits in
+PENDING_DEVELOPER_RELEASE until `release` is run. It used to be AFTER_APPROVAL, so an
+approval could publish a build before anyone had tapped a sign-in link on a real device —
+1.3.0 was switched to MANUAL while already in review (2026-09-28) for exactly that.
 
 Why this exists: scripts/asc_api.py is platform-blind (it grabs versions[0] and
 hopes) and still posts to appStoreVersionSubmissions, which Apple replaced with
@@ -245,6 +252,97 @@ WHATS_NEW_BY_VERSION = {
              "idioma de Stride se aplica en toda la app."
              "\n\u2022 Volver a marcar un hábito justo después de desmarcarlo funciona a la primera. Antes seguía sin marcar hasta volver a abrir Stride.",
   },
+  "1.3.1": {
+    "en-US": "Sync is rebuilt in this version, so save a backup first: Settings → Export "
+             "as JSON.\n\n"
+             "• Sync now sends only what changed since the last sync, so it is much faster "
+             "on a long history.\n"
+             "• Signing in to a different account on a device that holds another account’s "
+             "habits now asks first what to do with them. You can export a backup, then start "
+             "from that account’s data, or cancel and leave this device as it is. Habits from two "
+             "accounts are no longer mixed. Habits that don’t "
+             "belong to any account yet can also be uploaded to the account you sign in to.\n"
+             "• If a habit is deleted on another device while you edit it offline, the "
+             "deletion still wins, but your edits are kept in Settings → Recovered Edits, "
+             "ready to export.\n"
+             "• A backup made under another account now comes back as new copies instead of "
+             "disappearing at the next sync, and a restored habit that another device had deleted "
+             "can be brought back with Restore as New Copies in Settings.\n"
+             "• When you need to sign in again, Today shows “Sign in again to keep "
+             "syncing” instead of sync failing silently.",
+    "zh-Hans": "本版本重写了同步，请先保存一份备份：设置 →「导出为 JSON」。\n\n"
+               "• 同步现在只发送上次同步以来的改动，记录很多时也快得多。\n"
+               "• 在存有其他账户习惯的设备上登录另一个账户时，会先询问如何处理这些习惯："
+               "你可以先导出备份，再从此账户的数据开始；也可以取消，让这台设备保持原样。"
+               "两个账户的习惯不会再混在一起。还不属于任何账户的"
+               "习惯，也可以上传到你登录的账户。\n"
+               "• 离线编辑某个习惯时，如果它在另一台设备上被删除，删除仍会生效，但你的编辑会"
+               "保留在「设置 → 找回的编辑」中，可以导出。\n"
+               "• 在另一个账户下制作的备份，现在会以新副本的形式恢复，不会在下次同步时消失；"
+               "如果恢复的习惯已被另一台设备删除，可以在设置中用「恢复为新副本」找回。\n"
+               "• 需要重新登录时，「今天」页面会显示「重新登录以继续同步」，同步不再无声地失败。",
+    "zh-Hant": "本版本重寫了同步，請先儲存一份備份：設定 →「匯出為 JSON」。\n\n"
+               "• 同步現在只傳送上次同步以來的變更，紀錄很多時也快得多。\n"
+               "• 在存有其他帳號習慣的裝置上登入另一個帳號時，會先詢問如何處理這些習慣："
+               "你可以先匯出備份，再從此帳號的資料開始；也可以取消，讓這台裝置保持原樣。"
+               "兩個帳號的習慣不會再混在一起。還不屬於任何帳號的"
+               "習慣，也可以上傳到你登入的帳號。\n"
+               "• 離線編輯某個習慣時，如果它在另一台裝置上被刪除，刪除仍會生效，但你的編輯會"
+               "保留在「設定 → 找回的編輯」中，可以匯出。\n"
+               "• 在另一個帳號下製作的備份，現在會以新副本的形式恢復，不會在下次同步時消失；"
+               "如果恢復的習慣已被另一台裝置刪除，可以在設定中用「恢復為新副本」找回。\n"
+               "• 需要重新登入時，「今天」頁面會顯示「重新登入以繼續同步」，同步不再無聲地失敗。",
+    "ja": "このバージョンで同期の仕組みを作り直しました。まずバックアップを保存してください："
+          "設定 →「JSON で書き出す」。\n\n"
+          "• 同期は前回から変わった分だけを送るようになり、記録が多くてもずっと速く終わります。\n"
+          "• 別のアカウントの習慣が入っているデバイスでほかのアカウントにログインすると、"
+          "その習慣をどうするかを先に確認します。バックアップを書き出してからそのアカウントの"
+          "データから始めることも、キャンセルしてこのデバイスをそのままにしておくこともできます。"
+          "2つのアカウントの習慣が混ざることはなくなりました。まだどの"
+          "アカウントにも属していない習慣は、ログインしたアカウントにアップロードすることもできます。\n"
+          "• オフラインで編集した習慣が別のデバイスで削除されていた場合、削除は反映されますが、"
+          "編集内容は「設定 → 復旧した編集」に残り、書き出せます。\n"
+          "• 別のアカウントで作ったバックアップは、次の同期で消えずに新しいコピーとして復元"
+          "されます。別のデバイスで削除された習慣を復元した場合は、設定の「新しいコピーとして復元」"
+          "で戻せます。\n"
+          "• 再ログインが必要になると、「今日」の画面に「同期を続けるには再度ログインしてください」"
+          "と表示されます。これまでは同期が何も知らせずに失敗していました。",
+    "ko": "이번 버전에서 동기화를 새로 만들었습니다. 먼저 백업을 저장해 두세요: 설정 → "
+          "‘JSON으로 내보내기’.\n\n"
+          "• 동기화가 이제 지난번 이후 바뀐 내용만 보내므로, 기록이 많아도 훨씬 빠릅니다.\n"
+          "• 한 계정의 습관이 남아 있는 기기에서 다른 계정으로 로그인하면, 그 습관을 어떻게 할지 "
+          "먼저 묻습니다. 백업을 내보낸 뒤 이 계정의 데이터로 시작하거나, 취소하고 이 기기를 그대로 "
+          "둘 수 있습니다. 두 계정의 "
+          "습관이 더 이상 섞이지 않습니다. 아직 어느 계정에도 속하지 않은 습관은 로그인한 계정에 "
+          "업로드할 수도 있습니다.\n"
+          "• 오프라인에서 편집한 습관이 다른 기기에서 삭제되면 삭제가 적용되지만, 편집 내용은 "
+          "‘설정 → 복구된 편집’에 남아 내보낼 수 있습니다.\n"
+          "• 다른 계정에서 만든 백업은 이제 다음 동기화 때 사라지지 않고 새 사본으로 복원됩니다. "
+          "다른 기기에서 삭제된 습관을 복원했다면 설정의 ‘새 사본으로 복원’으로 되살릴 수 "
+          "있습니다.\n"
+          "• 다시 로그인해야 할 때는 ‘오늘’ 화면에 ‘동기화를 계속하려면 다시 "
+          "로그인하세요’가 표시됩니다. 이전에는 동기화가 조용히 실패했습니다.",
+    "es-ES": "La sincronización se ha rehecho en esta versión, así que guarda antes una copia de "
+             "seguridad: Ajustes → “Exportar como JSON”.\n\n"
+             "• La sincronización envía solo lo que ha cambiado desde la última vez, así que es "
+             "mucho más rápida con un historial largo.\n"
+             "• Si inicias sesión con otra cuenta en un dispositivo que guarda los hábitos de "
+             "otra, Stride te pregunta primero qué hacer con ellos: puedes exportar una copia de "
+             "seguridad y después empezar con los datos de esa cuenta, o cancelar y dejar el "
+             "dispositivo como está. Los hábitos de dos cuentas ya no se mezclan. Los "
+             "hábitos que aún no pertenecen a ninguna cuenta también se pueden subir a la cuenta "
+             "con la que inicias sesión.\n"
+             "• Si un hábito se elimina en otro dispositivo mientras lo editas sin conexión, la "
+             "eliminación se mantiene, pero tus cambios se guardan en Ajustes → “Ediciones "
+             "recuperadas”, listos para exportar.\n"
+             "• Una copia de seguridad hecha con otra cuenta se restaura ahora como copias "
+             "nuevas en lugar de desaparecer en la siguiente sincronización, y un hábito restaurado "
+             "que otro dispositivo había eliminado se recupera con “Restaurar como copias "
+             "nuevas” en Ajustes.\n"
+             "• Cuando tengas que volver a iniciar sesión, la pantalla Hoy muestra “Inicia "
+             "sesión de nuevo para seguir sincronizando” en lugar de que la sincronización "
+             "falle en silencio.",
+  },
 }
 
 
@@ -282,7 +380,7 @@ def ensure_version(app_id, platform, version_string):
     r = a.post("/appStoreVersions", {"data": {
         "type": "appStoreVersions",
         "attributes": {"platform": platform, "versionString": version_string,
-                       "releaseType": "AFTER_APPROVAL"},
+                       "releaseType": "MANUAL"},   # see the module docstring
         "relationships": {"app": {"data": {"type": "apps", "id": app_id}}},
     }})
     return r["data"]["id"]
@@ -424,6 +522,58 @@ def main():
         for p in PLATFORMS:
             vid = ensure_version(app_id, p, version_string)
             ensure_localizations(app_id, p, vid, version_string)
+        return 0
+
+    if cmd == "cancel":
+        # Only a submission that holds THIS version is cancelled — never "the first open one"
+        # (the mistake `submit` used to make, see its docstring).
+        not_cancelled = []
+        for p, v in versions(app_id, version_string).items():
+            d = a.get("/reviewSubmissions", params={
+                "filter[app]": app_id, "filter[platform]": p,
+                "filter[state]": "READY_FOR_REVIEW,WAITING_FOR_REVIEW,IN_REVIEW,UNRESOLVED_ISSUES",
+                "limit": 10})
+            hit = [sub for sub in d["data"] if v["id"] in submission_versions(sub["id"])]
+            if not hit:
+                print(f"  [{p}] no open submission holds {version_string} "
+                      f"({v['attributes']['appStoreState']})")
+                continue
+            for sub in hit:
+                a.patch(f"/reviewSubmissions/{sub['id']}", {"data": {
+                    "type": "reviewSubmissions", "id": sub["id"], "attributes": {"canceled": True}}})
+                print(f"  [{p}] cancel requested for submission {sub['id']} "
+                      f"(was {sub['attributes']['state']})")
+        for _ in range(20):                  # cancelling is asynchronous on Apple's side
+            states = {p: v["attributes"]["appStoreState"]
+                      for p, v in versions(app_id, version_string).items()}
+            if not any(st in ("WAITING_FOR_REVIEW", "IN_REVIEW") for st in states.values()):
+                break
+            time.sleep(15)
+        for p, st in states.items():
+            print(f"  [{p}] {version_string} now {st}")
+            if st in ("WAITING_FOR_REVIEW", "IN_REVIEW"):
+                not_cancelled.append(p)
+        if not_cancelled:
+            print(f"STILL IN REVIEW: {', '.join(not_cancelled)}"); return 1
+        return 0
+
+    if cmd == "release":
+        # Only an approved, held version can be released; anything else is reported, not forced.
+        not_released = []
+        for p, v in versions(app_id, version_string).items():
+            state = v["attributes"]["appStoreState"]
+            if state == "READY_FOR_SALE":
+                print(f"  [{p}] already live"); continue
+            if state != "PENDING_DEVELOPER_RELEASE":
+                print(f"  [{p}] {state} — not approved and held, so not released")
+                not_released.append(p); continue
+            a.post("/appStoreVersionReleaseRequests", {"data": {
+                "type": "appStoreVersionReleaseRequests",
+                "relationships": {"appStoreVersion": {"data": {"type": "appStoreVersions", "id": v["id"]}}},
+            }})
+            print(f"  [{p}] release requested")
+        if not_released:
+            print(f"NOT released: {', '.join(not_released)}"); return 1
         return 0
 
     if cmd == "finish":

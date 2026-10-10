@@ -23,11 +23,103 @@ import SwiftData
 /// `yyyy-MM-dd` (see `HabitCalendar`). Optionals that are nil are left out of the file, and are
 /// restored as nil — a nil `updatedAt` means "never edited since the v2 migration", which is not
 /// the same thing as "edited at createdAt" for sync, so it is not filled in.
+///
+/// `accountId` / `accountEmail` (1.3.1) name the account whose data the store held — its sync
+/// owner — when the file was made; both are left out when it had none. They decide whether a
+/// restore may keep the file's ids (`DataBackup.restoreDecision`): a 1.3.0 restore always kept
+/// them, so a backup made under account A, restored and signed into B, was skipped `not_owned`
+/// and then removed from the device by the first full pull (RELEASE-1.3.0.md). Optional fields
+/// with `schemaVersion` still 2: a 1.3.0 restorer decodes the file and ignores them, and every
+/// 1.3.0 backup, which lacks them, is still a v2 file here.
 struct BackupDocument: Codable, Equatable, Sendable {
     var schemaVersion: Int
     var exportedAt: Date
     var groups: [BackupGroup]
     var habits: [BackupHabit]
+    /// `SyncOwner.id`: the server user id, as a string.
+    var accountId: String? = nil
+    /// For the restore screen ("made with a@example.com"); never compared.
+    var accountEmail: String? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion, exportedAt, groups, habits, accountId, accountEmail
+    }
+
+    /// The account the file was made under, or nil: none recorded (every 1.3.0 backup, a store
+    /// that never synced), or an id that is empty.
+    var account: BackupAccount? {
+        guard let id = accountId, !id.isEmpty else { return nil }
+        return BackupAccount(id: id, email: accountEmail ?? "")
+    }
+}
+
+extension BackupDocument {
+    /// The synthesised decoding, except that the two account fields never fail the file.
+    ///
+    /// Nothing in them is data the user would lose, and they only ever narrow what a restore
+    /// offers: an account that cannot be read is treated as "none recorded", which offers new
+    /// copies — the choice that is safe whatever account the file came from. Refusing a whole
+    /// backup over a hand-edited `accountId` would cost the user every habit in it. A number is
+    /// read as its digits (`APIUser.id` is an integer on the server).
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try c.decode(Int.self, forKey: .schemaVersion)
+        exportedAt = try c.decode(Date.self, forKey: .exportedAt)
+        groups = try c.decode([BackupGroup].self, forKey: .groups)
+        habits = try c.decode([BackupHabit].self, forKey: .habits)
+        func lenient(_ key: CodingKeys) -> String? {
+            let text = (try? c.decodeIfPresent(String.self, forKey: key))
+                ?? (try? c.decodeIfPresent(Int64.self, forKey: key)).flatMap { $0.map(String.init) }
+            guard let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty
+            else { return nil }
+            return trimmed
+        }
+        accountId = lenient(.accountId)
+        accountEmail = lenient(.accountEmail)
+    }
+}
+
+/// A server account as a backup records it: `SyncOwner`'s id and email. Its own type because
+/// `SyncOwner` lives in the app target, and this file compiles into StrideTests, the widget and
+/// the rehearsal tool too.
+struct BackupAccount: Equatable, Sendable {
+    var id: String
+    var email: String
+}
+
+/// How a restore identifies the rows it inserts (`DataBackup.restoreDecision`).
+enum RestoreIdentity: Equatable, Sendable {
+    /// The file's own ids; every row carries `restoredAt`.
+    case keepIDs
+    /// Fresh ids for every habit, check-in and group ("Restore as new copies").
+    case newCopies
+}
+
+/// One way to restore: the identity, and the owner the store gets once the restore has saved.
+struct RestorePlan: Equatable, Sendable {
+    var identity: RestoreIdentity
+    /// nil leaves the store without an owner: the next account signed into adopts it.
+    var owner: BackupAccount?
+}
+
+/// Where the restore happens.
+enum RestoreDevice: Equatable, Sendable {
+    case signedIn(BackupAccount)
+    /// `next` is the account the user says this device will use next (the restore screen asks
+    /// when the file names one), or nil when they did not say.
+    case signedOut(next: BackupAccount?)
+}
+
+/// What the restore screen offers.
+struct RestoreDecision: Equatable, Sendable {
+    /// The restore the screen performs on confirm.
+    var plan: RestorePlan
+    /// Keeping the ids instead, when the user may choose it: only for a file with no account
+    /// (a 1.3.0 backup), which may well be this same account's.
+    var keepIDsInstead: RestorePlan?
+
+    /// The screen says "Restore as new copies" rather than "Restore".
+    var offersCopies: Bool { plan.identity == .newCopies }
 }
 
 struct BackupGroup: Codable, Equatable, Sendable {
@@ -151,7 +243,12 @@ enum DataBackup {
     /// check-in on the same day is dropped the same way (newest edit, then larger value) — the
     /// app only ever shows one per day. A check-in id that also appears under an earlier habit
     /// is dropped: on the server it is one row, belonging to one habit.
-    static func snapshot(habits: [Habit], groups: [HabitGroup], exportedAt: Date = Date()) -> BackupDocument {
+    ///
+    /// `account` is the store's sync owner, passed in by the caller rather than read here: the
+    /// owner lives in the app's defaults, and a file must record the account whose ids the rows
+    /// carry — the owner, signed in or not — not whoever happens to be signed in.
+    static func snapshot(habits: [Habit], groups: [HabitGroup], exportedAt: Date = Date(),
+                         account: BackupAccount? = nil) -> BackupDocument {
         let backupGroups = newestPerID(groups.map(backupGroup), id: \.id, edited: { $0.updatedAt ?? $0.createdAt })
             .sorted(by: groupOrder)
 
@@ -171,16 +268,21 @@ enum DataBackup {
             backupHabits[index].records = records
         }
 
+        // An empty id or email is left out, as nil is: the decoder reads "" as "none" anyway.
+        let account = account.flatMap { $0.id.isEmpty ? nil : $0 }
         return BackupDocument(schemaVersion: schemaVersion, exportedAt: exportedAt,
-                              groups: backupGroups, habits: backupHabits)
+                              groups: backupGroups, habits: backupHabits,
+                              accountId: account?.id,
+                              accountEmail: account.flatMap { $0.email.isEmpty ? nil : $0.email })
     }
 
     /// Everything in `context`, as `snapshot` describes.
     @MainActor
-    static func snapshot(of context: ModelContext, exportedAt: Date = Date()) throws -> BackupDocument {
+    static func snapshot(of context: ModelContext, exportedAt: Date = Date(),
+                         account: BackupAccount? = nil) throws -> BackupDocument {
         snapshot(habits: try context.fetch(FetchDescriptor<Habit>()),
                  groups: try context.fetch(FetchDescriptor<HabitGroup>()),
-                 exportedAt: exportedAt)
+                 exportedAt: exportedAt, account: account)
     }
 
     // MARK: Encode / decode
@@ -361,46 +463,139 @@ enum DataBackup {
         )
     }
 
+    // MARK: Restore — which identity the rows come back with
+
+    /// Whether a restore keeps the file's ids or makes new copies, and which account then owns
+    /// the store (DEV-PLAN-1.3.md M2, "Restore into another account, and restores the server
+    /// has tombstoned"; review 2). Pure: the restore screen (phase C) asks it, shows the choice,
+    /// restores with `plan.identity`, and sets the store's owner (`SyncOwnerStore`, in the app)
+    /// to `plan.owner` once the restore has saved.
+    ///
+    /// - The file's account is the signed-in account — or, signed out, the account the user
+    ///   says this device will use next → **keep the ids**, and that account owns the store. The
+    ///   rows are this account's own; new ids would duplicate every habit the account still holds.
+    /// - Anything else — another account, or a file with no account (every 1.3.0 backup) → **new
+    ///   copies**. Kept ids would be answered `not_owned` by another account's server rows, held,
+    ///   and resolvable only by converting them later; copies are that conversion done up front.
+    ///   Signed in, the signed-in account owns the store: the user confirmed the copies into it,
+    ///   and with no owner the gate would block every sync until a sign-in that never comes (the
+    ///   first draft's mistake). Signed out, the store is left without an owner, for the next
+    ///   sign-in to adopt.
+    /// - A file with no account may still be this account's own 1.3.0 backup, so keeping the ids
+    ///   stays available for it (`keepIDsInstead`). If it was in fact another account's, the push
+    ///   answers `not_owned` and the rows are held with the same "Restore as new copies" action
+    ///   (`SyncCopies.reidentify`); held, no full pull deletes them.
+    ///
+    /// Ids compare exactly; the email is only for display and is never compared (an account can
+    /// change its email).
+    static func restoreDecision(for document: BackupDocument, device: RestoreDevice) -> RestoreDecision {
+        restoreDecision(backupAccount: document.account, device: device)
+    }
+
+    static func restoreDecision(backupAccount: BackupAccount?, device: RestoreDevice) -> RestoreDecision {
+        let owner: BackupAccount?     // who owns the store after a restore of either kind
+        let sameAccount: Bool
+        switch device {
+        case .signedIn(let account):
+            owner = account
+            sameAccount = backupAccount?.id == account.id
+        case .signedOut(let next):
+            sameAccount = backupAccount != nil && backupAccount?.id == next?.id
+            // Signed out, only keeping the ids names an owner: the account the user said.
+            owner = next
+        }
+        if sameAccount {
+            return RestoreDecision(plan: RestorePlan(identity: .keepIDs, owner: owner), keepIDsInstead: nil)
+        }
+        let copiesOwner: BackupAccount?
+        if case .signedIn = device { copiesOwner = owner } else { copiesOwner = nil }
+        let copies = RestorePlan(identity: .newCopies, owner: copiesOwner)
+        guard backupAccount == nil else { return RestoreDecision(plan: copies, keepIDsInstead: nil) }
+        return RestoreDecision(plan: copies, keepIDsInstead: RestorePlan(identity: .keepIDs, owner: owner))
+    }
+
+    /// The document with every habit, check-in and group given a fresh id: "Restore as new
+    /// copies". Pure; `restore(_:into:identity:…)` inserts it.
+    ///
+    /// - `habit.groupId` follows its group to the group's new id. A `groupId` naming no group in
+    ///   the file (a group deleted on another device — `validate` restores it as it was) is kept
+    ///   as it is: it names no row the copy could collide with, and the app shows the habit as
+    ///   ungrouped either way.
+    /// - Every check-in stays nested under its own habit, so the record → habit linkage is the
+    ///   file's, one for one.
+    /// - `createdAt` and `updatedAt` are kept: the copy is the same history, and a fresh stamp
+    ///   would let a stale file beat newer edits under last-write-wins.
+    /// - The account fields are dropped: the copies belong to no account until the store's
+    ///   owner uploads them.
+    static func newCopies(of document: BackupDocument) -> BackupDocument {
+        var groupIDs: [UUID: UUID] = [:]
+        var copy = document
+        copy.accountId = nil
+        copy.accountEmail = nil
+        copy.groups = document.groups.map { group in
+            var g = group
+            g.id = UUID()
+            groupIDs[group.id] = g.id
+            return g
+        }
+        copy.habits = document.habits.map { habit in
+            var h = habit
+            h.id = UUID()
+            if let old = habit.groupId, let new = groupIDs[old] { h.groupId = new }
+            h.records = habit.records.map { record in
+                var r = record
+                r.id = UUID()
+                return r
+            }
+            return h
+        }
+        return copy
+    }
+
     // MARK: Restore
 
     /// Inserts the document into `context` — groups, habits, and each habit's check-ins through
     /// its `records` relationship — and saves. Refuses (`storeNotEmpty`, nothing changed) unless
     /// the store has no habit, check-in or group at all: merging into live data has to obey the
-    /// sync rules 1.3.1 introduces, and is M6+ work.
+    /// sync rules 1.3.1 introduces, and is M6+ work. Held rows in a store that is not empty are
+    /// converted by their own operation, `SyncCopies.reidentify`.
     ///
-    /// Ids, `createdAt` and `updatedAt` are the backup's own; nothing is `touch()`ed.
-    /// - New ids would duplicate every habit the moment this device signs back into the account
-    ///   that still holds the originals.
-    /// - `updatedAt = now` would make a stale backup beat newer edits other devices made since:
-    ///   the server resolves conflicts last-write-wins on the client's edit time.
-    /// Nothing needs a fresh stamp to be uploaded: 1.3.0 pushes a full snapshot on every sync,
-    /// and 1.3.1 treats rows the server never acknowledged as dirty.
+    /// `createdAt` and `updatedAt` are the backup's own; nothing is `touch()`ed —
+    /// `updatedAt = now` would make a stale backup beat newer edits other devices made since:
+    /// the server resolves conflicts last-write-wins on the client's edit time. Nothing needs a
+    /// fresh stamp to be uploaded: 1.3.1 treats rows the server never acknowledged
+    /// (`syncedAt == nil`, as every inserted row is) as pending.
     ///
-    /// Queued deletions of the restored ids are withdrawn from `deletionQueue` once the save
-    /// succeeds. The obvious use of a backup is undoing a deletion ("I deleted that habit by
-    /// mistake: erase, restore yesterday's file"), and that deletion is still queued — erase
-    /// leaves the queue alone, and a signed-out device, or the widget's un-check, queues all the
-    /// same. The first sync after signing in would push the tombstone ahead of the restored
-    /// row: the server records the deletion, skips the upsert as `tombstoned`, and that sync's
-    /// full pull removes the restored row again, silently. An explicit restore overrides an
-    /// older queued deletion. Pass nil only where no queue exists (tests).
+    /// **`.keepIDs`** — the file's own ids, for a backup of the account this device syncs as
+    /// (`restoreDecision`); new ids would duplicate every habit that account still holds.
+    /// - Every row gets `restoredAt`. While it is set no pull deletes the row: a full pull that
+    ///   lacks it, a `deleted*Ids` or a cascade holds it `tombstoned` instead, exactly as a push
+    ///   answered `tombstoned` does (`SyncLocalRemoval`, `SyncAnswers`). An id whose deletion
+    ///   already reached the server — the "I deleted it by mistake" restore — is therefore not
+    ///   removed again silently, as 1.3.0's restore was by the first full pull: the sync section
+    ///   offers "Restore as new copies" or "Discard". The first acknowledgement clears it.
+    /// - Queued deletions of the restored ids are withdrawn from `deletionQueue` once the save
+    ///   succeeds. That deletion is still queued — erase leaves the queue alone, and a signed-out
+    ///   device, or the widget's un-check, queues all the same — and the first sync after signing
+    ///   in would push the tombstone ahead of the restored row. An explicit restore overrides an
+    ///   older queued deletion. Pass nil only where no queue exists (tests).
     ///
-    /// Known limit, not fixed here: an id whose deletion ALREADY reached the server (deleted on
-    /// any device that then synced, before or after this backup was made) stays tombstoned
-    /// there. Restored on this device it looks right until the first sync after signing in; the
-    /// server skips it (`skippedReasons: tombstoned`) and that sync is a full pull (signing out
-    /// resets the cursor), which deletes local rows the server does not return — so the
-    /// restored copy disappears again. Reviving it would mean new ids for those rows on a
-    /// `tombstoned` skip, which is the per-row push acknowledgement 1.3.1 builds.
+    /// **`.newCopies`** — `newCopies(of:)`: fresh ids, for a backup of another account, or one
+    /// with no account. `restoredAt` is NOT set — they are new rows no tombstone can name, and
+    /// `restoredAt` would let them outlive a real deletion made later on another device. The
+    /// deletion queue is left alone: a queued deletion names an OLD id, and it still means what it
+    /// meant (withdrawn, the original would survive on the server beside its copy).
     ///
-    /// The caller owns what follows: rescheduling reminders for `reminderEnabled` habits and
-    /// reloading widgets — and not restoring under a sync that is still in flight (a full pull
-    /// landing after the restore removes every restored row the account does not hold).
+    /// The caller owns what follows: setting the store's owner (`RestoreDecision.plan.owner`),
+    /// rescheduling reminders for `reminderEnabled` habits and reloading widgets — and not
+    /// restoring under a sync that is still in flight (`DataExportService.restore` waits).
     @MainActor
     @discardableResult
     static func restore(_ document: BackupDocument, into context: ModelContext,
+                        identity: RestoreIdentity = .keepIDs,
                         withdrawingDeletionsFrom deletionQueue: SyncDeletionQueue?,
-                        limits: Limits = .default) throws -> BackupPreview {
+                        limits: Limits = .default,
+                        now: Date = Date()) throws -> BackupPreview {
         guard document.schemaVersion == schemaVersion else {
             throw document.schemaVersion > schemaVersion
                 ? DataBackupError.newerVersion(document.schemaVersion)
@@ -413,15 +608,19 @@ enum DataBackup {
             throw DataBackupError.storeNotEmpty
         }
 
-        for item in document.groups {
+        let rows = identity == .newCopies ? newCopies(of: document) : document
+        let restoredAt: Date? = identity == .keepIDs ? now : nil
+
+        for item in rows.groups {
             let group = HabitGroup(name: item.name, colorHex: item.colorHex, sortOrder: item.sortOrder)
             group.id = item.id
             group.createdAt = item.createdAt
             group.updatedAt = item.updatedAt
+            group.restoredAt = restoredAt
             context.insert(group)
         }
 
-        for item in document.habits {
+        for item in rows.habits {
             let habit = Habit(name: item.name, emoji: item.emoji, colorHex: item.colorHex)
             habit.id = item.id
             habit.createdAt = item.createdAt
@@ -439,6 +638,7 @@ enum DataBackup {
             habit.timesPerWeek = item.timesPerWeek
             habit.activeDaysMask = item.activeDaysMask
             habit.groupId = item.groupId
+            habit.restoredAt = restoredAt
             context.insert(habit)
 
             habit.records = item.records.compactMap { entry in
@@ -449,6 +649,7 @@ enum DataBackup {
                 // move it a day in any zone west of UTC.
                 record.date = day
                 record.updatedAt = entry.updatedAt
+                record.restoredAt = restoredAt
                 return record
             }
         }
@@ -459,14 +660,15 @@ enum DataBackup {
             context.rollback()
             throw error
         }
+        guard identity == .keepIDs else { return preview(of: rows) }
         // After the save: a restore that failed must not have cancelled a deletion.
         // `acknowledge` removes exactly the ids given, from the app's queues and the widget's.
         deletionQueue?.acknowledge(SyncDeletionQueue.Batch(
-            habits: document.habits.map(\.id.uuidString),
-            entries: document.habits.flatMap { $0.records.map(\.id.uuidString) },
-            groups: document.groups.map(\.id.uuidString)
+            habits: rows.habits.map(\.id.uuidString),
+            entries: rows.habits.flatMap { $0.records.map(\.id.uuidString) },
+            groups: rows.groups.map(\.id.uuidString)
         ))
-        return preview(of: document)
+        return preview(of: rows)
     }
 
     // MARK: Erase

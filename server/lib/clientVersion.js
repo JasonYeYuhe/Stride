@@ -7,9 +7,12 @@
  * `ios/1.3.1(19)`. No shipped build before that sends anything, so a missing header means
  * "one of the <= 1.2.3 snapshot clients" — and so does a header this regex does not accept.
  * That default is deliberate: every contract gated on the version (cursor_expired, row caps,
- * snapshot_required) is something a legacy client has no handler for, so when in doubt the
- * server must behave as it always has. A lenient parse that read "1.3.1-beta" or a spoofed
- * "ios/9.9" as new would hand those clients an error they turn into a dead sync.
+ * snapshot_required, millisecond timestamps on pull) is something a legacy client has no
+ * handler for, so when in doubt the server must behave as it always has. A lenient parse that
+ * read "1.3.1-beta" or a spoofed "ios/9.9" as new would hand those clients an error they turn
+ * into a dead sync, or a timestamp they parse as nil. Every one of those gates is >= 1.3.1:
+ * 1.3.0 sends the header but still pushes full snapshots and has no cursor_expired handler,
+ * so it is treated exactly like the legacy apps.
  *
  * Add a platform to the alternation only when an app for it sends the header.
  */

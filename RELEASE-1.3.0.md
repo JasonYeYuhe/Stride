@@ -536,6 +536,37 @@ green (0 rows rejected). **Resubmitted 2026-09-29**: iOS `ed4cf26e-1103-42ce-9ed
 macOS `f703917a-366a-4475-b885-80c71bdfae1f`, both `WAITING_FOR_REVIEW`, release type still
 `MANUAL`. 1.3.1 (M2) builds from 20.
 
+## Known limitations found after the resubmission (2026-09-29, the 1.3.1 simulator runs)
+
+None of these was worth pulling build 19 again. Each is either in live 1.2.3 as well, or leaves
+the data recoverable, and the 1.3.1 server half or 1.3.1 itself covers it (RELEASE-1.3.1.md).
+- **A same-day re-check can be lost on this device.** Another device unchecks and re-checks a
+  day with no sync in between, which deletes entry X and creates Y for that day. If 1.3.0 (or
+  1.2.3) pulls both in one response, its reconciler deletes X, which stays in `habit.records`
+  (the build-18 ghost), matches Y onto it by day, and the save drops Y. The day shows unchecked
+  here until a full pull, while the server is right. **Covered by the server:** the 1.3.1 server
+  half (`41c8fea`) never sends an app below 1.3.1 that deletion together with its same-day
+  replacement. Verified end to end with this build. Deploy it right after 1.3.0 is released:
+  it helps 1.3.0 and 1.2.3 users with no app update.
+- **A restore of another account's backup made while signed out is lost when you then sign
+  in.** Logging out clears the cursor, so the sign-in sync is a full pull, and a full pull
+  deletes every local row the account lacks, with no message. The backup file still has the
+  rows. 1.3.1 restores another account's backup only as new copies. A restore made while
+  signed in is kept; its rows are refused on every sync, and 1.3.1 later holds them for
+  Restore as New Copies.
+- **The session token is kept in the URL cache.** `URLSession.shared`'s disk cache
+  (`Library/Caches/<bundle>/Cache.db`) stores the `/v1/auth/verify` answer, token included, and
+  pull bodies. This is older than 1.3.0. Once the 1.3.1 server half is deployed, every `/v1`
+  answer is `no-store`, so 1.3.0 stops caching them. 1.3.1 uses its own session with no cache
+  and purges what earlier builds left.
+- **Opening the export share sheet can hang for about 2 seconds** (Sentry STRIDE-APPLE-7,
+  macOS 1.3.0 (19), production, 2026-09-29). The file is written lazily, on demand, when the
+  share sheet asks for it, and ShareKit waits for it on the main thread
+  (`NSSharingServicePicker` → `NSExtensionItem` matching → `NSExtensionURLResult wait:`). On
+  iOS the same lazy write makes the share sheet take 6–7 s to appear (the 1.3.1 simulator runs).
+  The fix is to write the file first and share its URL; it is in DEV-PLAN-1.3.md's backlog. It
+  is not in 1.3.1, which stays a sync release.
+
 ## After submission — external review and the owner's decisions (2026-09-28)
 
 The state and ten decisions above were put to Codex (gpt-6-astra) and Gemini 3.8 Flash

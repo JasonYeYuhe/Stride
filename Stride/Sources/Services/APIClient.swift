@@ -11,20 +11,63 @@ actor APIClient {
     #endif
 
     private let baseURL: URL
-    private let session: URLSession
+    /// Not private: APIClientTests checks that `shared` goes through `defaultSession`.
+    nonisolated let session: URLSession
     private let tokenStore: SessionTokenStore
 
-    /// The defaults are what `shared` has always used. StrideAppTests passes a URLSession whose
-    /// URLProtocol answers instead of a server, and an in-memory token store (see
-    /// `SessionTokenStore` for why never the real Keychain item).
+    /// The defaults are what `shared` uses. StrideAppTests passes a URLSession whose URLProtocol
+    /// answers instead of a server, and an in-memory token store (see `SessionTokenStore` for why
+    /// never the real Keychain item).
     init(
         baseURL: URL = APIClient.defaultBaseURL,
-        session: URLSession = .shared,
+        session: URLSession = APIClient.defaultSession,
         tokenStore: SessionTokenStore = KeychainSessionTokenStore()
     ) {
         self.baseURL = baseURL
         self.session = session
         self.tokenStore = tokenStore
+    }
+
+    // MARK: - Nothing on disk but the Keychain item
+
+    /// The session `shared` talks through: no URL cache, no cookies (E2E S9).
+    ///
+    /// Until 1.3.1 it was `URLSession.shared`, whose disk cache (Library/Caches/<bundle>/Cache.db)
+    /// kept the /v1/auth/verify answer — the live session token, in plain text — every session
+    /// check's answer and every pull's habits, and whose cookie store kept the `stride_session`
+    /// cookie the verify answer sets for the web login and sent it back on every request. The
+    /// token belongs in the Keychain only (`KeychainSessionTokenStore`), and this app
+    /// authenticates with the Bearer header alone: the server reads the header first on every
+    /// route, and the app sends no request that needs the cookie (a stored token is the only way
+    /// it is signed in). Ephemeral, so no credential store is written either.
+    static let defaultSession = URLSession(configuration: sessionConfiguration())
+
+    static func sessionConfiguration() -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        return configuration
+    }
+
+    /// The hosts earlier builds may have left answers and cookies for: this build's API, and the
+    /// production API (a Debug build installed over a store build talks to localhost).
+    static let apiHosts: Set<String> = Set([defaultBaseURL.host, LoginLink.host].compactMap { $0 })
+
+    /// What earlier builds left through `URLSession.shared` (E2E S9): every cached answer, and the
+    /// API's cookies. Run at every launch (StrideApp), off the main thread — cheap once there is
+    /// nothing left, and it also clears what a reinstalled older build wrote since. Nothing else
+    /// in the app uses the shared URL cache or cookie store (no web view, no other URLSession;
+    /// Sentry sends through its own), so all of the cache goes; other hosts' cookies are left.
+    /// CFNetwork vacuums Cache.db as it removes the rows, so the token's bytes do not stay behind
+    /// in free pages.
+    static func purgeStoredHTTPState(cache: URLCache = .shared, cookies: HTTPCookieStorage = .shared,
+                                     hosts: Set<String> = apiHosts) {
+        cache.removeAllCachedResponses()
+        for cookie in cookies.cookies ?? [] where hosts.contains(where: { cookie.isSent(to: $0) }) {
+            cookies.deleteCookie(cookie)
+        }
     }
 
     private let encoder: JSONEncoder = {
@@ -84,32 +127,89 @@ actor APIClient {
         sessionToken = nil
     }
 
-    // MARK: - Sync
+    // MARK: - Sync (the transport of Shared/SyncEngine.swift)
 
-    func pushChanges(_ payload: SyncPushPayload) async throws {
-        let _: OKResponse = try await post("/v1/sync/push", body: payload)
+    /// One sync request's answer, whatever it was. The engine decides from the status, the
+    /// server's code and `Retry-After` (DEV-PLAN-1.3.md M2, "One rule per push answer"), so
+    /// these requests never throw and never read the body into a type: until 1.3.0,
+    /// `pushChanges` decoded `{ok}` and threw on any non-2xx, which lost exactly the status,
+    /// code, limits and `Retry-After` the per-answer rules need.
+    struct SyncExchange: Sendable {
+        enum Failure: Sendable, Equatable {
+            /// Not an HTTP response at all.
+            case invalidResponse
+            /// No answer: offline, a timeout, DNS, TLS. The system's description, for the
+            /// Settings footer, as 1.3.0 showed it.
+            case transport(String)
+        }
+
+        var response: SyncTransportResponse
+        var failure: Failure?
     }
 
-    func pullChanges(since: String? = nil) async throws -> SyncPullResponse {
-        // A query string must not go through appendingPathComponent — it
-        // percent-encodes '?' into %3F, so every incremental pull 404'd and
-        // sync became push-only after the first run.
-        try await get("/v1/sync/pull", query: since.map { [URLQueryItem(name: "since", value: $0)] })
+    /// POST /v1/sync/push with exactly `body` and the run's `token`.
+    ///
+    /// `body` is `SyncPushChunk.body`, the bytes the planner measured against the 1 MB bound, so
+    /// it is sent as it is and never re-encoded here. `token` is the one the sync run captured
+    /// when it started, never the keychain's current one: a later chunk of a run that started
+    /// under account A must not go out on B's session after a switch mid-run (review 2 — until
+    /// 1.3.0 every request read the keychain).
+    func syncPush(body: Data, token: String) async -> SyncExchange {
+        var request = URLRequest(url: baseURL.appendingPathComponent("/v1/sync/push"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        addHeaders(&request, token: token)
+        return await exchange(request)
+    }
+
+    /// GET /v1/sync/pull, `?since=` when `since` is non-nil, with the run's `token`; and
+    /// `deletionsSince=` when that is (a full pull verifying migrated marks, SyncMarksProof).
+    func syncPull(since: String?, deletionsSince: String? = nil, token: String) async -> SyncExchange {
+        let query = [since.map { URLQueryItem(name: "since", value: $0) },
+                     deletionsSince.map { URLQueryItem(name: "deletionsSince", value: $0) }].compactMap { $0 }
+        var request = URLRequest(url: url("/v1/sync/pull", query: query))
+        request.httpMethod = "GET"
+        addHeaders(&request, token: token)
+        return await exchange(request)
+    }
+
+    /// A 401 here does NOT delete the stored token, unlike `perform`: the engine answers it as
+    /// `needsReauth` and "no state is reset" (M2). The token it carried may not even be the
+    /// stored one any more (the run's captured token), so deleting the stored one could sign
+    /// out a session that was never refused.
+    private func exchange(_ request: URLRequest) async -> SyncExchange {
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                return SyncExchange(response: .noAnswer, failure: .invalidResponse)
+            }
+            return SyncExchange(response: SyncTransportResponse(
+                status: http.statusCode, body: data, retryAfter: http.value(forHTTPHeaderField: "Retry-After")))
+        } catch {
+            return SyncExchange(response: .noAnswer, failure: .transport(error.localizedDescription))
+        }
     }
 
     // MARK: - HTTP Helpers
 
     private func get<T: Decodable>(_ path: String, query: [URLQueryItem]? = nil) async throws -> T {
+        var request = URLRequest(url: url(path, query: query))
+        request.httpMethod = "GET"
+        addHeaders(&request, token: sessionToken)
+        return try await perform(request)
+    }
+
+    /// A query string must not go through appendingPathComponent — it percent-encodes '?' into
+    /// %3F, so every incremental pull 404'd and sync became push-only after the first run.
+    private func url(_ path: String, query: [URLQueryItem]?) -> URL {
         var url = baseURL.appendingPathComponent(path)
         if let query, !query.isEmpty {
             var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
             components?.queryItems = query
             if let built = components?.url { url = built }
         }
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        addHeaders(&request)
-        return try await perform(request)
+        return url
     }
 
     private func post<T: Decodable, B: Encodable>(_ path: String, body: B) async throws -> T {
@@ -117,17 +217,19 @@ actor APIClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(body)
-        addHeaders(&request)
+        addHeaders(&request, token: sessionToken)
         return try await perform(request)
     }
 
-    /// Every request goes through `get` or `post`, and both come here — so the client header
-    /// is on every request, the auth routes included, without a list of call sites to keep.
-    private func addHeaders(_ request: inout URLRequest) {
+    /// Every request goes through `get`, `post` or the two sync requests, and all come here — so
+    /// the client header is on every request, the auth routes included, without a list of call
+    /// sites to keep. `token` is the stored session for `get` / `post`, and the sync run's
+    /// captured token for the sync requests.
+    private func addHeaders(_ request: inout URLRequest, token: String?) {
         if let clientHeader = Self.clientHeader {
             request.setValue(clientHeader, forHTTPHeaderField: Self.clientHeaderName)
         }
-        if let token = sessionToken {
+        if let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
     }
@@ -191,11 +293,17 @@ actor APIClient {
             // showing `error` blindly put "rate_limited" in the Settings footer
             // (server/lib/clientVersion.js `errorBody`). A body that is not JSON at all (nginx's
             // 502 page during a deploy) has neither.
-            let body = try? decoder.decode(ErrorResponse.self, from: data)
-            throw APIError.server(statusCode: http.statusCode, code: body?.code,
-                                  message: body?.message ?? body?.error)
+            throw Self.serverError(status: http.statusCode, body: data)
         }
         return try decoder.decode(T.self, from: data)
+    }
+
+    /// A non-2xx answer as `APIError.server`: the machine code, and `message ?? error` as the
+    /// sentence (see `perform`). Also how SyncService words a sync the engine stopped, so the
+    /// Settings footer reads the same whichever path failed.
+    static func serverError(status: Int, body: Data) -> APIError {
+        let parsed = try? JSONDecoder().decode(ErrorResponse.self, from: body)
+        return .server(statusCode: status, code: parsed?.code, message: parsed?.message ?? parsed?.error)
     }
 }
 
@@ -280,4 +388,15 @@ enum APIError: LocalizedError {
 
 // Sync request/response models live in Shared/SyncModels.swift so the reconciliation
 // logic that consumes them (Shared/SyncReconciler.swift) is visible to StrideTests.
+
+private extension HTTPCookie {
+    /// Whether a request to `host` would carry this cookie (RFC 6265's domain match): a host-only
+    /// cookie (`stride-api.colorarchive.me`, what the server's verify answer sets) goes to that
+    /// host alone, a domain cookie (`.colorarchive.me`) to the domain and every host under it.
+    func isSent(to host: String) -> Bool {
+        let host = host.lowercased(), domain = domain.lowercased()
+        guard domain.hasPrefix(".") else { return host == domain }
+        return host == String(domain.dropFirst()) || host.hasSuffix(domain)
+    }
+}
 

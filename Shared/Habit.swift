@@ -38,6 +38,16 @@ final class Habit {
     /// Optional grouping. Stored as the group's UUID; nil = ungrouped.
     var groupId: UUID?
 
+    // MARK: - Delivery state (1.3.1; local only, never on the wire)
+    // See `SyncDeliverable` in SyncDelivery.swift for what each field means and why there are
+    // three of them. All optional or defaulted: a 1.3.0 store opens under this schema by
+    // lightweight migration, every row "never delivered" until the migrated-rows rule runs.
+    var syncedAt: Date?
+    var syncHoldReason: String?
+    var syncHoldStamp: Date?
+    var needsResend: Bool = false
+    var restoredAt: Date?
+
     @Relationship(deleteRule: .cascade) var records: [HabitRecord]
 
     init(name: String, emoji: String = "⭐", colorHex: String = "#34C759") {
@@ -45,14 +55,17 @@ final class Habit {
         self.name = name
         self.emoji = emoji
         self.colorHex = colorHex
-        self.createdAt = Date()
+        // Millisecond-floored, like touch(): createdAt is the stamp of a row never edited
+        // (`stamp = updatedAt ?? createdAt`) and goes on the wire as it is stored.
+        let now = SyncTimestamp.now()
+        self.createdAt = now
         self.isArchived = false
         self.sortOrder = Date().timeIntervalSince1970
         self.reminderEnabled = false
         self.reminderHour = 20
         self.reminderMinute = 0
         self.note = nil
-        self.updatedAt = Date()
+        self.updatedAt = now
         self.kind = HabitKind.binary.rawValue
         self.targetValue = 1
         self.unit = nil
@@ -60,6 +73,11 @@ final class Habit {
         self.timesPerWeek = 7
         self.activeDaysMask = 127
         self.groupId = nil
+        self.syncedAt = nil
+        self.syncHoldReason = nil
+        self.syncHoldStamp = nil
+        self.needsResend = false
+        self.restoredAt = nil
         self.records = []
     }
 
@@ -77,8 +95,14 @@ final class Habit {
 
     /// Stamp `updatedAt = now` after modifying this habit's own fields, so sync
     /// can resolve conflicts in favor of the most recent real edit.
+    ///
+    /// Floored to the whole millisecond (1.3.1): the push sends exactly this number, so the
+    /// server's acknowledgement and this device's own echo compare equal to it. The new stamp
+    /// is also what makes the row pending again and lifts a sync hold — no mutation site has to
+    /// know about delivery state (`SyncDeliverable`) — so it always differs from the previous
+    /// one, even for two edits inside one millisecond (`SyncTimestamp.nextStamp`).
     func touch() {
-        updatedAt = Date()
+        updatedAt = SyncTimestamp.nextStamp(after: stamp)
     }
 
     var color: Color {
@@ -389,16 +413,32 @@ final class HabitRecord {
     /// for count habits it accumulates toward the habit's `targetValue`.
     var value: Double = 1
 
+    // MARK: - Delivery state (1.3.1; local only, never on the wire)
+    // See `SyncDeliverable` in SyncDelivery.swift for what each field means and why there are
+    // three of them. All optional or defaulted: a 1.3.0 store opens under this schema by
+    // lightweight migration, every row "never delivered" until the migrated-rows rule runs.
+    var syncedAt: Date?
+    var syncHoldReason: String?
+    var syncHoldStamp: Date?
+    var needsResend: Bool = false
+    var restoredAt: Date?
+
     init(date: Date = Date(), note: String? = nil, value: Double = 1) {
         self.id = UUID()
         self.date = HabitCalendar.dayKey(for: date)
         self.note = note
-        self.updatedAt = Date()
+        self.updatedAt = SyncTimestamp.now()
         self.value = value
+        self.syncedAt = nil
+        self.syncHoldReason = nil
+        self.syncHoldStamp = nil
+        self.needsResend = false
+        self.restoredAt = nil
     }
 
+    /// Millisecond-floored; see `Habit.touch()`.
     func touch() {
-        updatedAt = Date()
+        updatedAt = SyncTimestamp.nextStamp(after: stamp)
     }
 }
 
@@ -412,21 +452,38 @@ final class HabitGroup {
     var createdAt: Date
     var updatedAt: Date?
 
+    // MARK: - Delivery state (1.3.1; local only, never on the wire)
+    // See `SyncDeliverable` in SyncDelivery.swift for what each field means and why there are
+    // three of them. All optional or defaulted: a 1.3.0 store opens under this schema by
+    // lightweight migration, every row "never delivered" until the migrated-rows rule runs.
+    var syncedAt: Date?
+    var syncHoldReason: String?
+    var syncHoldStamp: Date?
+    var needsResend: Bool = false
+    var restoredAt: Date?
+
     init(name: String, colorHex: String = "#34C759", sortOrder: Double = 0) {
         self.id = UUID()
         self.name = name
         self.colorHex = colorHex
         self.sortOrder = sortOrder
-        self.createdAt = Date()
-        self.updatedAt = Date()
+        let now = SyncTimestamp.now()
+        self.createdAt = now
+        self.updatedAt = now
+        self.syncedAt = nil
+        self.syncHoldReason = nil
+        self.syncHoldStamp = nil
+        self.needsResend = false
+        self.restoredAt = nil
     }
 
     var color: Color {
         Color(hex: colorHex) ?? .green
     }
 
+    /// Millisecond-floored; see `Habit.touch()`.
     func touch() {
-        updatedAt = Date()
+        updatedAt = SyncTimestamp.nextStamp(after: stamp)
     }
 }
 

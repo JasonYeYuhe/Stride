@@ -294,8 +294,6 @@
 "Export as CSV" = "匯出為 CSV";
 "Export as JSON" = "匯出為 JSON";
 "Stride Habits Export" = "Stride 習慣匯出";
-"CSV export of all habits" = "所有習慣的 CSV 匯出";
-"JSON export of all habits" = "所有習慣的 JSON 匯出";
 "Legal" = "法律資訊";
 "%lldd" = "%lld天";
 "Complete a Habit" = "完成一個習慣";
@@ -323,7 +321,6 @@
 "%lld %@" = "%lld %@";
 "%lldw" = "%lld週";
 "Syncing" = "同步中";
-"Last synced %@" = "上次同步：%@";
 "Sync error: %@" = "同步錯誤：%@";
 "Restore %@" = "恢復%@";
 "In progress" = "進行中";
@@ -383,3 +380,108 @@
 "Complete Habit" = "完成習慣";
 "Check Streak" = "查看連續紀錄";
 "List Habits" = "列出習慣";
+
+/* Sync, M2 (1.3.1): the account screen that continues a sign-in on a device holding another
+   account's habits (AccountSwitchView, LoginView). "Start from This Account's Data" is the title-case
+   button, "Start from this account's data?" the confirmation title: two keys on purpose. */
+"This Device's Habits" = "此裝置上的習慣";
+"This device has habits that aren't linked to an account." = "此裝置上有未連結任何帳號的習慣。";
+"Stride can't tell which account these habits came from. Upload them to this account, or start from this account's data instead." = "Stride 無法判斷這些習慣來自哪個帳號。請將它們上傳到此帳號，或改為從此帳號的資料開始。";
+"Stride keeps each account's habits separate. Starting from this account's data removes these habits from this device and downloads this account's habits. Anything already synced stays in the other account." = "Stride 會將每個帳號的習慣分開保存。從此帳號的資料開始會將這些習慣從此裝置上移除，並下載此帳號的習慣。已同步的內容仍保留在另一個帳號中。";
+"Changes that never synced exist only on this device. Export a backup first to keep a copy." = "從未同步的變更只存在於此裝置上。請先匯出備份以保留副本。";
+"Export a Backup" = "匯出備份";
+"Upload These Habits to This Account" = "將這些習慣上傳到此帳號";
+"Start from This Account's Data" = "從此帳號的資料開始";
+"Start from this account's data?" = "要從此帳號的資料開始嗎？";
+"Every habit, check-in and group on this device will be deleted, and this account's habits will be downloaded. Changes that were never synced can't be recovered unless you exported a backup." = "此裝置上的所有習慣、打卡和分組都將被刪除，並下載此帳號的習慣。除非你已匯出備份，否則從未同步的變更將無法找回。";
+
+/* Sync, M2 (1.3.1): Settings > Sync (SyncSectionView). "Recovered edits" are edits made here to
+   rows deleted on another device, kept in a log; ja/zh render them as 復旧した編集 / 找回的编辑 so they
+   never read as "restored" (復元 / 恢复 is Restore). */
+"Sync" = "同步";
+"Choose What Happens to This Device's Habits…" = "選擇如何處理此裝置上的習慣…";
+"Syncing starts once you choose." = "做出選擇後即開始同步。";
+"Sync paused" = "同步已暫停";
+"The server asked devices to wait. Stride will try again automatically." = "伺服器要求裝置稍候。Stride 會自動重試。";
+"Editing a change sends it again." = "編輯某項變更後會重新傳送。";
+"Server error" = "伺服器錯誤";
+"A value the server doesn't accept" = "伺服器不接受的值";
+"Missing information" = "缺少資訊";
+"Its habit isn't on the server yet" = "所屬習慣尚未上傳到伺服器";
+"Too large to upload" = "太大，無法上傳";
+"Restore as New Copies" = "恢復為新副本";
+"Discard…" = "丟棄…";
+"Discard" = "丟棄";
+"Changes made on this device to items that were deleted on another device. Export them to keep a copy." = "你在此裝置上對已在另一部裝置上刪除的項目所做的變更。匯出即可保留一份副本。";
+"Export Recovered Edits" = "匯出找回的編輯";
+"Clear Recovered Edits…" = "清除找回的編輯…";
+"Clear Recovered Edits?" = "要清除找回的編輯嗎？";
+"Clear" = "清除";
+"This is the only copy of these edits. Export them first if you might need them." = "這是這些編輯的唯一副本。如果之後可能需要，請先匯出。";
+"Full Resync…" = "完整重新同步…";
+"Sends everything on this device to your account again." = "將此裝置上的所有內容重新傳送到你的帳號。";
+"Full Resync?" = "要完整重新同步嗎？";
+"Resync Everything" = "全部重新同步";
+"Stride first downloads your account's latest changes, then sends every habit, check-in and group on this device to your account again. Use it when another device is missing something." = "Stride 會先下載你帳號的最新變更，然後將此裝置上的所有習慣、打卡和分組重新傳送到你的帳號。當另一部裝置缺少內容時使用。";
+"Restored as new copies." = "已恢復為新副本。";
+"Discarded." = "已丟棄。";
+"Recovered edits cleared." = "已清除找回的編輯。";
+"Full resync finished." = "完整重新同步已完成。";
+
+/* Sync, M2 (1.3.1): Settings > Export Data, restoring a backup that names an account (or none),
+   and the hand-over step before a restore leaves another account's changes behind
+   (RestoreHandoverView). */
+"Restore as It Was" = "按原樣恢復";
+"This backup is from another account. Its habits will be added to this account as new copies." = "此備份來自另一個帳號。其中的習慣將以新副本加入此帳號。";
+"This backup is from another account (%@). Its habits will be added to this account as new copies." = "此備份來自另一個帳號（%@）。其中的習慣將以新副本加入此帳號。";
+"This backup doesn't say which account it came from. If it's this account's own backup, restore it as it was; otherwise restore it as new copies." = "此備份沒有記錄來自哪個帳號。如果是此帳號自己的備份，請按原樣恢復；否則請恢復為新副本。";
+"This backup doesn't say which account it came from. If you'll sign in to that account on this device, restore it as it was; otherwise restore it as new copies." = "此備份沒有記錄來自哪個帳號。如果你將在此裝置上登入那個帳號，請按原樣恢復；否則請恢復為新副本。";
+"This backup is from a Stride account. If you'll sign in to that account on this device, restore it as it was; otherwise restore it as new copies." = "此備份來自一個 Stride 帳號。如果你將在此裝置上登入那個帳號，請按原樣恢復；否則請恢復為新副本。";
+"This backup is from %@. If you'll sign in to that account on this device, restore it as it was; otherwise restore it as new copies." = "此備份來自 %@。如果你將在此裝置上登入那個帳號，請按原樣恢復；否則請恢復為新副本。";
+"The recovered edits on this device are erased too. Export them first if you might need them." = "此裝置上找回的編輯也會被清除。如果之後可能需要，請先匯出。";
+"Before You Restore" = "恢復之前";
+"This device still holds changes from another account that restoring this backup leaves behind." = "此裝置上仍有另一個帳號的變更，恢復此備份後這些變更將被擱置。";
+"If you restore, the deletions are dropped, and the recovered edits are shown again only when that account uses this device. To send the deletions instead, cancel, sign in to that account and sync first." = "如果恢復，這些刪除將被丟棄，找回的編輯只有在那個帳號使用此裝置時才會再次顯示。若要傳送這些刪除，請取消，登入那個帳號並先同步。";
+"Restore Anyway" = "仍要恢復";
+
+/* Sync, M2 (1.3.1): Today's inline sync status and the reauth row (SyncStatusRow). "Synced %@"
+   takes a RelativeDateTimeFormatter phrase already in the app language ("2 minutes ago", "2分前"). */
+"Sign in again to keep syncing" = "重新登入以繼續同步";
+"Opens sign-in" = "開啟登入畫面";
+"Synced just now" = "剛剛已同步";
+"Synced %@" = "%@已同步";
+
+/* Sync, M2 (1.3.1), phase C review fixes: the account screen shows each address on a line of
+   its own (a sentence around it hyphenated or broke it mid-address); the restore hand-over's
+   footer per what it lists; Delete Account says this device's copy goes too; "Not Syncing" for
+   Data Storage while the account choice waits; Clear / Erase stop when new recovered edits
+   arrived after the confirmation was built. */
+"This device holds another account's habits." = "此裝置上有另一個帳號的習慣。";
+"Habits from" = "習慣所屬帳號";
+"Signed in as" = "目前登入帳號";
+"Cancel signs you out of this account and leaves this device as it is." = "取消會登出此帳號，此裝置保持不變。";
+"If you restore, the deletions are dropped. To send them instead, cancel, sign in to that account and sync first." = "如果恢復，這些刪除將被丟棄。若要傳送這些刪除，請取消，登入那個帳號並先同步。";
+"If you restore, the recovered edits are shown again only when that account uses this device." = "如果恢復，找回的編輯只有在那個帳號使用此裝置時才會再次顯示。";
+"New recovered edits arrived. Export them, then try again." = "新增了找回的編輯。請先匯出，然後重試。";
+"All your habits, records, and account information will be permanently removed from our servers. The habits, check-ins and groups on this device are deleted too; export a backup first if you want to keep a copy." = "你的所有習慣、紀錄和帳號資訊都將從我們的伺服器中永久刪除。此裝置上的習慣、打卡和分組也會被刪除；如需保留副本，請先匯出備份。";
+"Not Syncing" = "未同步";
+
+/* The phase C leftovers (1.3.1): the restore hand-over's caption above the previous owner's
+   address, on a line of its own like the account screen's "Habits from" (no address inside a
+   sentence). */
+"Changes from" = "變更所屬帳號";
+
+/* The store open (1.3.1, upgrade race E2E U123): the widget's line while the app has not yet
+   opened (and migrated) the store, and the full-screen state when the app could not open it at
+   all (its button is "Try Again" above; the Siri replies reuse the title). */
+"Open Stride to see your habits" = "打開 Stride 查看你的習慣";
+"Stride couldn't open your data" = "Stride 無法打開你的資料";
+"Nothing was changed or deleted. Try again in a moment. If it keeps happening, restart your device and open Stride again." = "沒有任何內容被更改或刪除。請稍後再試。如果問題持續發生，請重新啟動裝置後再打開 Stride。";
+
+/* The store's error screen, review round (1.3.1, upgrade race E2E U123): a failure that is not
+   the race, or the race's codes again after "Try Again", adds one of these two lines under the
+   calm one, and a "Contact Support" link to the support page. "%@ %lld" is the error's domain
+   (an untranslated identifier such as NSCocoaErrorDomain) and its number. */
+"Contact Support" = "聯絡支援";
+"Your device may be out of storage. Free up some space, then tap Try Again. (Error %@ %lld)" = "你的裝置儲存空間可能不足。請釋放一些空間，然後點一下「重試」。（錯誤 %@ %lld）";
+"If it still fails and you sync with a Stride account, delete Stride, install it again and sign in: your synced habits come back. Without an account, contact support first — deleting Stride also deletes the habits on this device. (Error %@ %lld)" = "如果仍然無法打開，且你使用 Stride 帳號同步，請刪除 Stride、重新安裝並登入：已同步的習慣會回來。如果沒有帳號，請先聯絡支援——刪除 Stride 也會刪除此裝置上的習慣。（錯誤 %@ %lld）";

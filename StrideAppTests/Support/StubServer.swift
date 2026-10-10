@@ -32,6 +32,9 @@ final class StubServer: @unchecked Sendable {
     struct Response {
         var status: Int
         var body: String
+        /// Beside `Content-Type: application/json` — e.g. `Retry-After`, which the sync engine
+        /// reads when the body carries no `retryAfterSeconds`.
+        var headers: [String: String] = [:]
 
         static func ok(_ json: String) -> Response { Response(status: 200, body: json) }
     }
@@ -136,7 +139,7 @@ final class StubURLProtocol: URLProtocol {
             let response = try server.handle(request)
             let http = HTTPURLResponse(
                 url: request.url!, statusCode: response.status, httpVersion: "HTTP/1.1",
-                headerFields: ["Content-Type": "application/json"]
+                headerFields: ["Content-Type": "application/json"].merging(response.headers) { _, set in set }
             )!
             client?.urlProtocol(self, didReceive: http, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: Data(response.body.utf8))

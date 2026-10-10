@@ -18,6 +18,11 @@ extension WidgetTimelinePlan.Row {
 struct HabitEntry: TimelineEntry {
     let date: Date
     let habits: [HabitSnapshot]
+    /// The store is not the widget's to open yet: the app has not opened it at this schema
+    /// (`StoreSchemaGate` — a fresh install, or an upgrade whose migration only the app may run;
+    /// upgrade race, E2E U123), or the open failed. Drawn as one calm line, never as "No habits
+    /// yet", which would say the user's habits are gone.
+    var isWaitingForApp = false
 
     var completedCount: Int { habits.filter(\.isCompleted).count }
     var totalCount: Int { habits.count }
@@ -27,9 +32,10 @@ struct HabitEntry: TimelineEntry {
         return Double(completedCount) / Double(totalCount)
     }
 
-    init(date: Date, habits: [HabitSnapshot]) {
+    init(date: Date, habits: [HabitSnapshot], isWaitingForApp: Bool = false) {
         self.date = date
         self.habits = habits
+        self.isWaitingForApp = isWaitingForApp
     }
 
     init(_ planned: WidgetTimelinePlan.Entry) {
@@ -38,6 +44,7 @@ struct HabitEntry: TimelineEntry {
 
     /// The one line under the ring: small and large widgets. Each phrase is its own key.
     var statusText: LocalizedStringKey {
+        if isWaitingForApp { return "Open Stride to see your habits" }
         if totalCount == 0 { return "No habits yet" }
         if completedCount == totalCount { return "All done! 🎉" }
         return "\(totalCount - completedCount) remaining"
@@ -68,6 +75,15 @@ struct HabitEntry: TimelineEntry {
     static var empty: HabitEntry {
         HabitEntry(date: .now, habits: [])
     }
+
+    static var waitingForApp: HabitEntry {
+        HabitEntry(date: .now, habits: [], isWaitingForApp: true)
+    }
+
+    /// The VoiceOver summary of a ring or an accessory with no rows to count.
+    var emptySummary: LocalizedStringKey {
+        isWaitingForApp ? "Open Stride to see your habits" : "No habits yet"
+    }
 }
 
 // MARK: - Widget Toggle Intent
@@ -87,7 +103,14 @@ struct ToggleHabitIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        let context = ModelContext(SharedModelContainer.modelContainer)
+        // Runs in the widget extension, so it never opens a store the app has not opened at this
+        // schema (upgrade race, E2E U123): a row left over from before an upgrade writes nothing
+        // until the app has migrated the store; the reload draws the waiting line instead.
+        guard let container = SharedModelContainer.openForExtension() else {
+            WidgetCenter.shared.reloadAllTimelines()
+            return .result()
+        }
+        let context = ModelContext(container)
         let descriptor = FetchDescriptor<Habit>(
             predicate: #Predicate<Habit> { !$0.isArchived }
         )
@@ -116,12 +139,20 @@ struct ToggleHabitIntent: AppIntent {
 // MARK: - Timeline Provider
 
 struct HabitTimelineProvider: TimelineProvider {
-    let modelContainer: ModelContainer
-
     /// How soon to try again when the store could not be read. Before 1.3.0 a failed fetch drew
     /// "No habits yet" with the same `.after(tomorrow)` policy as a good one, so one bad read
     /// blanked the widget until the next day.
     private static let retryAfterFailure: TimeInterval = 15 * 60
+
+    /// How soon to look again while the store is not the widget's to open. Only the fallback: the
+    /// app reloads every timeline as soon as it has opened the store and written the marker.
+    private static let retryWhileWaiting: TimeInterval = 15 * 60
+
+    private enum Read {
+        case plan(WidgetTimelinePlan)
+        case waitingForApp
+        case failed
+    }
 
     func placeholder(in context: Context) -> HabitEntry {
         .placeholder
@@ -130,38 +161,47 @@ struct HabitTimelineProvider: TimelineProvider {
     func getSnapshot(in context: Context, completion: @escaping (HabitEntry) -> Void) {
         if context.isPreview {
             completion(.placeholder)
-        } else {
-            completion(plan(now: .now).flatMap { $0.entries.first.map(HabitEntry.init) } ?? .empty)
+            return
+        }
+        switch read(now: .now) {
+        case .plan(let plan): completion(plan.entries.first.map(HabitEntry.init) ?? .empty)
+        case .waitingForApp: completion(.waitingForApp)
+        case .failed: completion(.empty)
         }
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<HabitEntry>) -> Void) {
         let now = Date()
-        guard let plan = plan(now: now) else {
+        switch read(now: now) {
+        case .plan(let plan):
+            // [now, next local midnight]: the flip to a new day is already in the timeline, so it
+            // no longer waits on WidgetKit granting a reload. See WidgetTimelinePlan.
+            completion(Timeline(entries: plan.entries.map(HabitEntry.init), policy: .after(plan.refreshAfter)))
+        case .waitingForApp:
+            completion(Timeline(entries: [.waitingForApp], policy: .after(now.addingTimeInterval(Self.retryWhileWaiting))))
+        case .failed:
             completion(Timeline(entries: [.empty], policy: .after(now.addingTimeInterval(Self.retryAfterFailure))))
-            return
         }
-        // [now, next local midnight]: the flip to a new day is already in the timeline, so it no
-        // longer waits on WidgetKit granting a reload. See WidgetTimelinePlan.
-        completion(Timeline(entries: plan.entries.map(HabitEntry.init), policy: .after(plan.refreshAfter)))
     }
 
     /// The device's calendar, as `ToggleHabitIntent` uses when it writes (`HabitCheckIn` keys
     /// the day with `Calendar.current`): the widget must roll over at the same midnight the
     /// check-ins do. It deliberately ignores the in-app language picker, like the rest of the
     /// widget.
-    private func plan(now: Date) -> WidgetTimelinePlan? {
-        let context = ModelContext(modelContainer)
+    private func read(now: Date) -> Read {
+        // Opened only once the app has opened the store at this schema (upgrade race, E2E U123).
+        guard let container = SharedModelContainer.openForExtension() else { return .waitingForApp }
+        let context = ModelContext(container)
         do {
             let descriptor = FetchDescriptor<Habit>(
                 predicate: #Predicate<Habit> { !$0.isArchived },
                 sortBy: [SortDescriptor(\Habit.sortOrder)]
             )
             let habits = try context.fetch(descriptor)
-            return WidgetTimelinePlan(now: now, calendar: .current,
-                                      rows: habits.map(WidgetTimelinePlan.RowInput.init))
+            return .plan(WidgetTimelinePlan(now: now, calendar: .current,
+                                            rows: habits.map(WidgetTimelinePlan.RowInput.init)))
         } catch {
-            return nil
+            return .failed
         }
     }
 }
@@ -182,13 +222,16 @@ struct SmallWidgetView: View {
                     .stroke(Color.green, style: StrokeStyle(lineWidth: 8, lineCap: .round))
                     .rotationEffect(.degrees(-90))
 
-                VStack(spacing: 0) {
-                    Text("\(entry.completedCount)")
-                        .font(.title.bold())
-                        .foregroundStyle(.primary)
-                    Text("of \(entry.totalCount)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                // "0 of 0" would read as a count while nothing has been read.
+                if !entry.isWaitingForApp {
+                    VStack(spacing: 0) {
+                        Text("\(entry.completedCount)")
+                            .font(.title.bold())
+                            .foregroundStyle(.primary)
+                        Text("of \(entry.totalCount)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .frame(width: 70, height: 70)
@@ -200,7 +243,9 @@ struct SmallWidgetView: View {
             Text(entry.statusText)
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+                // The waiting line is longer than any count; one line truncated it mid-word.
+                .lineLimit(entry.isWaitingForApp ? 2 : 1)
+                .multilineTextAlignment(.center)
         }
         .containerBackground(.fill.tertiary, for: .widget)
     }
@@ -235,7 +280,7 @@ struct MediumWidgetView: View {
             .accessibilityElement(children: .ignore)
             // Each whole phrase is its own key: a ternary inside the interpolation would
             // collapse to a plain %@ argument and never be translated.
-            .accessibilityLabel(entry.totalCount == 0 ? "No habits yet" : "\(entry.completedCount) of \(entry.totalCount) habits completed, \(Int(entry.progress * 100)) percent")
+            .accessibilityLabel(entry.totalCount == 0 ? entry.emptySummary : "\(entry.completedCount) of \(entry.totalCount) habits completed, \(Int(entry.progress * 100)) percent")
 
             // Right: Interactive habit list
             VStack(alignment: .leading, spacing: 4) {
@@ -252,7 +297,11 @@ struct MediumWidgetView: View {
                         .accessibilityLabel("\(entry.habits.count - 4) more habits")
                 }
 
-                if entry.habits.isEmpty {
+                if entry.isWaitingForApp {
+                    Text("Open Stride to see your habits")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if entry.habits.isEmpty {
                     Text("Tap to add habits")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -292,7 +341,7 @@ struct LargeWidgetView: View {
 
             if entry.habits.isEmpty {
                 Spacer(minLength: 0)
-                Text("Tap to add habits")
+                Text(entry.isWaitingForApp ? "Open Stride to see your habits" : "Tap to add habits")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity)
@@ -328,10 +377,13 @@ struct LargeWidgetView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("Today")
                     .font(.headline)
-                Text(entry.statusText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                // While waiting the body says it; twice would be noise.
+                if !entry.isWaitingForApp {
+                    Text(entry.statusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
 
             Spacer(minLength: 4)
@@ -347,7 +399,7 @@ struct LargeWidgetView: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(entry.totalCount == 0 ? "No habits yet" : "\(entry.completedCount) of \(entry.totalCount) habits completed, \(Int(entry.progress * 100)) percent")
+        .accessibilityLabel(entry.totalCount == 0 ? entry.emptySummary : "\(entry.completedCount) of \(entry.totalCount) habits completed, \(Int(entry.progress * 100)) percent")
     }
 
     private var list: some View {
@@ -528,7 +580,7 @@ struct LockScreenCircularView: View {
                 .font(.system(.body, design: .rounded).bold())
         }
         .gaugeStyle(.accessoryCircular)
-        .accessibilityLabel(entry.totalCount == 0 ? "No habits yet" : "\(entry.completedCount) of \(entry.totalCount) habits completed")
+        .accessibilityLabel(entry.totalCount == 0 ? entry.emptySummary : "\(entry.completedCount) of \(entry.totalCount) habits completed")
         .containerBackground(.fill.tertiary, for: .widget)
     }
 }
@@ -538,7 +590,9 @@ struct LockScreenInlineView: View {
     let entry: HabitEntry
 
     var body: some View {
-        if entry.totalCount == 0 {
+        if entry.isWaitingForApp {
+            Text("Open Stride to see your habits")
+        } else if entry.totalCount == 0 {
             Text("Stride: No habits yet")
         } else if entry.completedCount == entry.totalCount {
             // Spoken form only: the leading emoji reads as its symbol name and "2/3" as
@@ -562,8 +616,16 @@ struct LockScreenRectangularView: View {
                 Text("Stride")
                     .font(.caption.bold())
                 Spacer()
-                Text("\(entry.completedCount)/\(entry.totalCount)")
-                    .font(.caption.bold())
+                if !entry.isWaitingForApp {
+                    Text("\(entry.completedCount)/\(entry.totalCount)")
+                        .font(.caption.bold())
+                }
+            }
+
+            if entry.isWaitingForApp {
+                Text("Open Stride to see your habits")
+                    .font(.caption2)
+                    .lineLimit(2)
             }
 
             let displayHabits = Array(entry.habits.prefix(3))
@@ -584,7 +646,7 @@ struct LockScreenRectangularView: View {
         // Nothing here is interactive, so one summary beats swiping through eight fragments
         // ("Stride", "2 slash 3", then every emoji and name as its own stop).
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(entry.totalCount == 0 ? "No habits yet" : "\(entry.completedCount) of \(entry.totalCount) habits completed")
+        .accessibilityLabel(entry.totalCount == 0 ? entry.emptySummary : "\(entry.completedCount) of \(entry.totalCount) habits completed")
         // .ignore would otherwise drop the habits this accessory lists.
         .accessibilityValue(Text(verbatim: entry.habits.prefix(3).map(\.name).joined(separator: ", ")))
         .containerBackground(.fill.tertiary, for: .widget)
@@ -596,16 +658,14 @@ struct LockScreenRectangularView: View {
 struct StrideWidget: Widget {
     let kind = "StrideWidget"
 
-    private let modelContainer: ModelContainer
-
-    init() {
-        self.modelContainer = SharedModelContainer.modelContainer
-    }
+    // No container here. `init()` opened the store the moment chronod launched the extension —
+    // on the first launch after an upgrade, the same moment the app opened it, and both migrated
+    // it (upgrade race, E2E U123). The provider opens it per reload, through the schema gate.
 
     var body: some WidgetConfiguration {
         StaticConfiguration(
             kind: kind,
-            provider: HabitTimelineProvider(modelContainer: modelContainer)
+            provider: HabitTimelineProvider()
         ) { entry in
             StrideWidgetEntryView(entry: entry)
         }

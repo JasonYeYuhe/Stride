@@ -3,12 +3,26 @@ import SwiftData
 import Foundation
 import WidgetKit
 
+// MARK: - The store
+
+/// The store these intents read and write: the one the app's launch opened. They run in the
+/// app's own process, after `StrideApp.init`, so they never open the store themselves — that
+/// built a container per invocation (see `SharedModelContainer.opened`), and an open here could
+/// migrate the store or, after a failed launch open, reach a different one (upgrade race, E2E
+/// U123). When the launch could not open it, they say so and touch nothing.
+private enum IntentStore {
+    static var container: ModelContainer? { SharedModelContainer.opened }
+
+    static var unavailable: String { String(localized: "Stride couldn't open your data") }
+}
+
 // MARK: - Habit Name Provider
 
 struct HabitNameProvider: DynamicOptionsProvider {
     @MainActor
     func results() async throws -> [String] {
-        let context = ModelContext(SharedModelContainer.modelContainer)
+        guard let container = IntentStore.container else { return [] }
+        let context = ModelContext(container)
         let descriptor = FetchDescriptor<Habit>(
             predicate: #Predicate { !$0.isArchived }
         )
@@ -28,7 +42,8 @@ struct CompleteHabitIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<String> {
-        let context = ModelContext(SharedModelContainer.modelContainer)
+        guard let container = IntentStore.container else { return .result(value: IntentStore.unavailable) }
+        let context = ModelContext(container)
         let searchName = habitName
         let descriptor = FetchDescriptor<Habit>(
             predicate: #Predicate<Habit> { habit in
@@ -73,7 +88,8 @@ struct CheckStreakIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<String> {
-        let context = ModelContext(SharedModelContainer.modelContainer)
+        guard let container = IntentStore.container else { return .result(value: IntentStore.unavailable) }
+        let context = ModelContext(container)
         let searchName = habitName
         let descriptor = FetchDescriptor<Habit>(
             predicate: #Predicate<Habit> { habit in
@@ -102,7 +118,8 @@ struct ListHabitsIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<String> {
-        let context = ModelContext(SharedModelContainer.modelContainer)
+        guard let container = IntentStore.container else { return .result(value: IntentStore.unavailable) }
+        let context = ModelContext(container)
         let descriptor = FetchDescriptor<Habit>(
             predicate: #Predicate { !$0.isArchived }
         )

@@ -317,5 +317,244 @@
 			<string>週連続</string>
 		</dict>
 	</dict>
+	<!-- Sync, M2 (1.3.1): Settings > Sync, the account screen, the restore hand-over and Today's status line. -->
+	<key>%lld deletions not yet synced</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@件の未同期の削除</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld</string>
+		</dict>
+	</dict>
+	<key>%lld recovered edits</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@件の復旧した編集</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld</string>
+		</dict>
+	</dict>
+	<key>%lld changes can't sync</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@件の変更を同期できません</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld</string>
+		</dict>
+	</dict>
+	<key>%lld restored habits were deleted on another device</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>復元した%#@count@件の習慣が別のデバイスで削除されました</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld</string>
+		</dict>
+	</dict>
+	<key>%lld restored items were deleted on another device</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>復元した%#@count@件の項目が別のデバイスで削除されました</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld</string>
+		</dict>
+	</dict>
+	<key>%lld habits belong to another account</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@件の習慣は別のアカウントのものです</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld</string>
+		</dict>
+	</dict>
+	<key>%lld items belong to another account</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@件の項目は別のアカウントのものです</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld</string>
+		</dict>
+	</dict>
+	<key>Restore them as new copies to bring them back to your account, or discard them. Your backup file keeps them either way. (%lld held)</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>新しいコピーとして復元してアカウントに戻すか、破棄してください。どちらの場合もバックアップファイルには残ります。</string>
+		</dict>
+	</dict>
+	<key>They came from another account's data, so this account can't sync them as they are. Restore them as new copies to add them to this account. (%lld held)</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>別のアカウントのデータから来たため、このアカウントではそのまま同期できません。新しいコピーとして復元すると、このアカウントに追加されます。</string>
+		</dict>
+	</dict>
+	<key>Recovered Edits (%lld)</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>復旧した編集 (%#@count@)</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld</string>
+		</dict>
+	</dict>
+	<key>Offline — %lld changes waiting</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>オフライン — %#@count@件の変更が待機中</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld</string>
+		</dict>
+	</dict>
+	<key>%lld changes waiting to sync</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@件の変更が同期待ち</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld</string>
+		</dict>
+	</dict>
+	<key>%lld changes can't sync — see Settings</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@件の変更を同期できません — 設定を確認</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld</string>
+		</dict>
+	</dict>
+	<key>Restore as New Copies (%lld held)</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>新しいコピーとして復元</string>
+		</dict>
+	</dict>
+	<key>Discard These Items? (%lld held)</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>破棄しますか？</string>
+		</dict>
+	</dict>
+	<key>They're removed from this device. Your backup file still has them. (%lld held)</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>このデバイスから削除されます。バックアップファイルには残っています。</string>
+		</dict>
+	</dict>
+	<key>They're removed from this device, and they may not exist anywhere else. Export a backup first if you might want them. (%lld held)</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>このデバイスから削除され、ほかの場所には残っていない可能性があります。必要になりそうなら、先にバックアップを書き出してください。</string>
+		</dict>
+	</dict>
 </dict>
 </plist>

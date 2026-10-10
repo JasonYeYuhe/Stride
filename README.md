@@ -129,6 +129,11 @@ Release and App Store:
   description change.
 - `check_demo_account.sh` — the App Review demo account as a reviewer's device sees it
   (compiles `Shared/`'s sync code, pulls from production); exit 0 before every submission.
+- `sync_rehearsal.sh` — the M2 sync rehearsal: compiles all of `Shared/` with the real sync
+  engine into a tool and runs 1.3.1 devices plus 1.2.3- and 1.3.0-shaped snapshot devices
+  against a local `NODE_ENV=test` copy of `server/` on a throwaway database (never
+  `server/stride.db`, never production); prints a PASS / FAIL / SKIPPED table, exit 0 before
+  every 1.3.x submission.
 - `asc_api.py` — the shared ASC API helper. `setup_iap.py`, `upload_iap_screenshot.py`,
   `appstore_metadata.py`, `update_asc_metadata.py`, `update_screenshots.py`,
   `submit_build.py` — one-off ASC jobs from earlier releases, kept for reference; read one

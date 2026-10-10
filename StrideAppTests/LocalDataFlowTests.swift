@@ -1,5 +1,7 @@
 import XCTest
 import SwiftData
+import CoreTransferable
+import UniformTypeIdentifiers
 @testable import Stride
 
 /// Erase Local Data and Restore from Backup as Settings runs them (DataExportService), against a
@@ -19,9 +21,16 @@ final class LocalDataFlowTests: XCTestCase {
     private var appGroup: ScratchDefaults!
     private var queue: SyncDeletionQueue!
     private var sync: SyncService!
+    private var recovery: ScratchRecoveryLog!
+    /// Where the export-file tests' `StrideExport-*` directories go instead of the host app's tmp.
+    private var exportRoot: URL!
 
-    private let cursorKey = "stride_sync_cursor"
-    private let oldCursor = "2026-09-20T10:00:00.000Z"
+    /// The account the stubbed session belongs to (`{"id":1,...}` below).
+    private let accountID = "1"
+    /// A few days old: inside the engine's cursor lifetime whatever the clock says.
+    private let oldCursor = SyncTimestamp.millisecondString(from: Date().addingTimeInterval(-6 * 86_400))
+    private var cursors: SyncDefaultsCursorStore { SyncDefaultsCursorStore(defaults: local.defaults) }
+    private var owners: SyncOwnerStore { SyncOwnerStore(defaults: local.defaults) }
 
     override func setUp() {
         super.setUp()
@@ -33,14 +42,20 @@ final class LocalDataFlowTests: XCTestCase {
         local = ScratchDefaults("flow.local")
         appGroup = ScratchDefaults("flow.appGroup")
         queue = SyncDeletionQueue(local: local.defaults, shared: appGroup.defaults)
-        sync = SyncService(api: server.makeClient(tokenStore: tokens), defaults: local.defaults,
-                           deletionQueue: queue)
+        recovery = ScratchRecoveryLog()
+        exportRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("StrideAppTests-exports-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: exportRoot, withIntermediateDirectories: true)
     }
 
     override func tearDown() {
         server.stop()
         local.remove()
         appGroup.remove()
+        recovery.remove()
+        recovery = nil
+        try? FileManager.default.removeItem(at: exportRoot)
+        exportRoot = nil
         sync = nil
         queue = nil
         tokens = nil
@@ -50,10 +65,24 @@ final class LocalDataFlowTests: XCTestCase {
         super.tearDown()
     }
 
+    /// The real AuthService and SyncService, wired as the app wires them: sign-out ends the
+    /// sync session, and SyncService asks AuthService who is signed in. Call after seeding the
+    /// token — AuthService checks it when created, as at launch.
+    @discardableResult
     private func makeAuth() -> AuthService {
-        let sync = self.sync!
-        return AuthService(api: server.makeClient(tokenStore: tokens), tokenStore: tokens,
-                           resetSyncState: { sync.resetSyncState() })
+        let auth = AuthService(api: server.makeClient(tokenStore: tokens), tokenStore: tokens,
+                               defaults: local.defaults, onSignOut: { [unowned self] in self.sync.signedOut() })
+        sync = SyncService(api: server.makeClient(tokenStore: tokens), defaults: local.defaults,
+                           deletionQueue: queue, sessions: auth, recoveryLog: recovery.log)
+        return auth
+    }
+
+    /// A 1.3.1 device that has synced as account 1: the session's account remembered (so a
+    /// failed launch check still knows whose token it is), the store owned by it, a cursor.
+    private func seedSyncedDevice() {
+        local.defaults.set(["id": accountID, "email": "me@example.com"], forKey: AuthService.sessionAccountKey)
+        owners.set(SyncOwner(SyncAccount(id: accountID, email: "me@example.com")))
+        cursors.setCursor(oldCursor, for: accountID)
     }
 
     private static let emptyPull = #"""
@@ -79,7 +108,7 @@ final class LocalDataFlowTests: XCTestCase {
     /// account. It must treat the stored token as a session: sync, sign out, clear the cursor.
     func testEraseWithAStoredTokenButNoUserSyncsSignsOutAndClearsTheCursor() async throws {
         tokens.save("sess-current")
-        local.defaults.set(oldCursor, forKey: cursorKey)
+        seedSyncedDevice()
         server.on("GET", "/v1/auth/session") { _ in throw URLError(.timedOut) }
         server.on("POST", "/v1/sync/push", respond: .ok(#"{"ok":true}"#))
         server.on("GET", "/v1/sync/pull", respond: .ok(Self.emptyPull))
@@ -94,7 +123,8 @@ final class LocalDataFlowTests: XCTestCase {
         XCTAssertEqual(outcome, .erased)
         XCTAssertEqual(try habitCount(), 0)
         XCTAssertNil(tokens.read(), "signed out")
-        XCTAssertNil(local.defaults.string(forKey: cursorKey), "the next sign-in does a full pull")
+        XCTAssertNil(cursors.cursor(for: accountID), "the next sign-in does a full pull")
+        XCTAssertNil(owners.owner, "an erased store has no owner: the next account adopts it")
         let paths = server.paths.filter { $0 != "/v1/auth/session" }
         XCTAssertEqual(paths, ["/v1/sync/push", "/v1/sync/pull", "/v1/auth/logout"],
                        "unsynced edits reach the account before this device forgets them")
@@ -104,25 +134,28 @@ final class LocalDataFlowTests: XCTestCase {
     /// The user was promised the account keeps everything.
     func testEraseWithASessionErasesNothingWhenTheSyncFails() async throws {
         tokens.save("sess-current")
-        local.defaults.set(oldCursor, forKey: cursorKey)
+        seedSyncedDevice()
         server.on("GET", "/v1/auth/session") { _ in throw URLError(.notConnectedToInternet) }
         server.on("POST", "/v1/sync/push") { _ in throw URLError(.notConnectedToInternet) }
         try seedStore()
         let auth = makeAuth()
         await auth.waitForSessionRestore()
+        let shared = try DataExportService.writeExportFile(Data("{}".utf8), named: "Stride-Backup.json", in: exportRoot)
 
-        let outcome = await DataExportService.eraseLocalData(in: context, auth: auth, sync: sync)
+        let outcome = await DataExportService.eraseLocalData(in: context, auth: auth, sync: sync, exportRoot: exportRoot)
 
         XCTAssertEqual(outcome, .syncFailed)
         XCTAssertEqual(try habitCount(), 1)
         XCTAssertEqual(tokens.read(), "sess-current")
-        XCTAssertEqual(local.defaults.string(forKey: cursorKey), oldCursor)
+        XCTAssertEqual(cursors.cursor(for: accountID), oldCursor)
+        XCTAssertEqual(server.paths.filter { $0 != "/v1/auth/session" }, ["/v1/sync/push"], "the push was tried")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: shared.path), "nothing erased, no export file removed")
     }
 
     /// Signed out: nothing to sync or sign out of, no request at all — and the cursor goes
     /// anyway, since after an erase no incremental pull from it can be right.
     func testSignedOutEraseTouchesNoServerAndResetsTheCursor() async throws {
-        local.defaults.set(oldCursor, forKey: cursorKey)
+        seedSyncedDevice()
         try seedStore()
         let auth = makeAuth()
 
@@ -131,7 +164,28 @@ final class LocalDataFlowTests: XCTestCase {
         XCTAssertEqual(outcome, .erased)
         XCTAssertEqual(try habitCount(), 0)
         XCTAssertEqual(try context.fetchCount(FetchDescriptor<HabitGroup>()), 0)
-        XCTAssertNil(local.defaults.string(forKey: cursorKey))
+        XCTAssertNil(cursors.cursor(for: accountID))
+        XCTAssertNil(owners.owner)
+        XCTAssertTrue(server.requests.isEmpty)
+    }
+
+    /// A session found gone at launch leaves the device signed out with Today's "Sign in again to
+    /// keep syncing" (`AuthService.sessionExpired`, persisted). Erasing the device leaves nothing
+    /// to keep syncing, so the erase ends the row too (phase C leftovers, the owner's decision 2):
+    /// it used to stay, on an empty device, until a sign-in.
+    func testASignedOutEraseEndsTheSignInAgainRow() async throws {
+        local.defaults.set(true, forKey: AuthService.sessionExpiredKey)
+        try seedStore()
+        let auth = makeAuth()
+        XCTAssertTrue(auth.sessionExpired, "precondition: the row a revoked session left")
+        XCTAssertFalse(auth.hasStoredSession)
+
+        let outcome = await DataExportService.eraseLocalData(in: context, auth: auth, sync: sync)
+
+        XCTAssertEqual(outcome, .erased)
+        XCTAssertFalse(auth.sessionExpired)
+        XCTAssertFalse(local.defaults.bool(forKey: AuthService.sessionExpiredKey), "and not back at the next launch")
+        XCTAssertFalse(makeAuth().sessionExpired)
         XCTAssertTrue(server.requests.isEmpty)
     }
 
@@ -139,6 +193,7 @@ final class LocalDataFlowTests: XCTestCase {
     /// then runs its own sync, and signs out only after that one succeeded.
     func testEraseWaitsForASyncInFlightAndRunsItsOwn() async throws {
         tokens.save("sess-current")
+        seedSyncedDevice()
         server.on("GET", "/v1/auth/session",
                   respond: .ok(#"{"user":{"id":1,"email":"me@example.com","created_at":"2026-09-01 10:00:00"}}"#))
         server.on("POST", "/v1/sync/push", respond: .ok(#"{"ok":true}"#))
@@ -153,8 +208,8 @@ final class LocalDataFlowTests: XCTestCase {
         await auth.waitForSessionRestore()
         XCTAssertTrue(auth.isLoggedIn)
 
-        // (The stub's empty full pulls also clear the seeded habit, which a real server would
-        // return after the push; this test is about the order of requests only.)
+        // (The stub's pulls are incremental and empty — the device has a cursor — so nothing is
+        // deleted by them; this test is about the order of requests only.)
         let inFlight = Task { await sync.sync(context: context) }
         let deadline = ContinuousClock.now + .seconds(5)
         while !server.paths.contains("/v1/sync/push") && ContinuousClock.now < deadline {
@@ -165,10 +220,113 @@ final class LocalDataFlowTests: XCTestCase {
 
         XCTAssertEqual(outcome, .erased)
         let paths = server.paths.filter { $0 != "/v1/auth/session" }
-        XCTAssertEqual(paths, ["/v1/sync/push", "/v1/sync/pull", "/v1/sync/push", "/v1/sync/pull",
-                               "/v1/auth/logout"])
-        XCTAssertNil(local.defaults.string(forKey: cursorKey))
+        // The in-flight sync pushed the seeded rows; erase's own sync then had nothing left to
+        // push (1.3.1 pushes only pending rows) and pulled.
+        XCTAssertEqual(paths, ["/v1/sync/push", "/v1/sync/pull", "/v1/sync/pull", "/v1/auth/logout"])
+        XCTAssertNil(cursors.cursor(for: accountID))
         XCTAssertFalse(auth.isLoggedIn)
+    }
+
+    // MARK: - Export files in tmp (E2E S-DEL)
+
+    /// The `StrideExport-*` directories under `root`, by name.
+    private func exportDirectories(in root: URL) -> Set<String> {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []
+        return Set(names.filter { $0.hasPrefix(DataExportService.exportDirectoryPrefix) })
+    }
+
+    /// Every export ever shared stayed in tmp, a deleted account's backup and recovered edits
+    /// included. The cleanup takes every export directory, and nothing else there.
+    func testRemovingExportFilesTakesEveryExportDirectoryAndNothingElse() throws {
+        _ = try DataExportService.writeExportFile(Data("{}".utf8), named: "Stride-Backup-2026-09-29.json", in: exportRoot)
+        _ = try DataExportService.writeExportFile(Data("[]".utf8), named: "Stride-RecoveredEdits-2026-09-29.json", in: exportRoot)
+        let unrelated = exportRoot.appendingPathComponent("Unrelated", isDirectory: true)
+        try FileManager.default.createDirectory(at: unrelated, withIntermediateDirectories: true)
+        XCTAssertEqual(exportDirectories(in: exportRoot).count, 2, "precondition")
+
+        XCTAssertEqual(DataExportService.removeExportFiles(in: exportRoot), 2)
+
+        XCTAssertEqual(exportDirectories(in: exportRoot), [])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: unrelated.path))
+        XCTAssertEqual(DataExportService.removeExportFiles(in: exportRoot), 0, "nothing left to do")
+    }
+
+    /// Erase Local Data removes them with the data they copy.
+    func testAnEraseRemovesTheExportFiles() async throws {
+        try seedStore()
+        let auth = makeAuth()
+        _ = try DataExportService.writeExportFile(Data("{}".utf8), named: "Stride-Backup.json", in: exportRoot)
+
+        let outcome = await DataExportService.eraseLocalData(in: context, auth: auth, sync: sync, exportRoot: exportRoot)
+
+        XCTAssertEqual(outcome, .erased)
+        XCTAssertEqual(exportDirectories(in: exportRoot), [])
+    }
+
+    /// The share sheet asks an item for its file several times, and each ask wrote a copy: three
+    /// directories for one tap. One item, one file — for the asks that arrive while it is being
+    /// written and just after — and a fresh one when the same item is shared again later.
+    func testOneShareWritesOneExportFile() async throws {
+        let memo = ExportFileMemo()
+        let writes = WriteCounter()
+        let root: URL = exportRoot
+        let write: @Sendable () async throws -> URL = {
+            await writes.bump()
+            try await Task.sleep(for: .milliseconds(50))   // the other asks arrive meanwhile
+            return try DataExportService.writeExportFile(Data("{}".utf8), named: "Stride-Backup.json", in: root)
+        }
+
+        async let first = memo.file(write: write)
+        async let second = memo.file(write: write)
+        async let third = memo.file(write: write)
+        let urls = try await [first, second, third]
+        let justAfter = try await memo.file(write: write)
+
+        XCTAssertEqual(Set(urls + [justAfter]).count, 1)
+        let count = await writes.count
+        XCTAssertEqual(count, 1)
+        XCTAssertEqual(exportDirectories(in: exportRoot).count, 1)
+
+        let later = try await memo.file(now: Date().addingTimeInterval(ExportFileMemo.reuseWindow + 1), write: write)
+        XCTAssertNotEqual(later, urls[0], "a share after the window gets today's data")
+        let afterWindow = await writes.count
+        XCTAssertEqual(afterWindow, 2)
+    }
+
+    /// A write that failed is not handed to the next ask: that one writes again.
+    func testAFailedExportWriteIsNotKept() async throws {
+        let memo = ExportFileMemo()
+        let root: URL = exportRoot
+        do {
+            _ = try await memo.file { throw CocoaError(.fileWriteOutOfSpace) }
+            XCTFail("the write's error is the ask's")
+        } catch {}
+        let url = try await memo.file {
+            try DataExportService.writeExportFile(Data("{}".utf8), named: "Stride-Backup.json", in: root)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    /// The same through the real item and the real transfer path: three asks for one Export as
+    /// JSON, as the share sheet makes them, leave one directory in tmp, holding a backup of the
+    /// store.
+    func testThreeAsksForOneBackupItemWriteOneFile() async throws {
+        guard #available(iOS 18.2, *) else { throw XCTSkip("Transferable.exported(as:) is iOS 18.2+") }
+        try seedStore()
+        let tmp = FileManager.default.temporaryDirectory
+        let before = exportDirectories(in: tmp)
+        let item = BackupJSONFile(container: container, account: nil)
+
+        async let a = item.exported(as: .json)
+        async let b = item.exported(as: .json)
+        async let c = item.exported(as: .json)
+        let exports = try await [a, b, c]
+
+        let made = exportDirectories(in: tmp).subtracting(before)
+        defer { made.forEach { try? FileManager.default.removeItem(at: tmp.appendingPathComponent($0)) } }
+        XCTAssertEqual(made.count, 1)
+        XCTAssertEqual(Set(exports).count, 1, "one file, read three times")
+        XCTAssertEqual(try DataBackup.decode(exports[0]).habits.map(\.name), ["Read"])
     }
 
     // MARK: - Restore
@@ -178,6 +336,8 @@ final class LocalDataFlowTests: XCTestCase {
     /// the restore waits for it instead, and what it restored stays.
     func testRestoreWaitsForASyncInFlight() async throws {
         tokens.save("sess-current")
+        server.on("GET", "/v1/auth/session",
+                  respond: .ok(#"{"user":{"id":1,"email":"me@example.com","created_at":"2026-09-01 10:00:00"}}"#))
         server.on("POST", "/v1/sync/push", respond: .ok(#"{"ok":true}"#))
         let emptyPull = Self.emptyPull
         server.on("GET", "/v1/sync/pull") { _ in
@@ -185,6 +345,7 @@ final class LocalDataFlowTests: XCTestCase {
             return .ok(emptyPull)   // the account holds none of the backup's ids
         }
         let document = try backupOfOneHabit()
+        makeAuth()
 
         let inFlight = Task { await sync.sync(context: context) }
         let deadline = ContinuousClock.now + .seconds(5)
@@ -205,6 +366,7 @@ final class LocalDataFlowTests: XCTestCase {
         let habit = try XCTUnwrap(document.habits.first)
         queue.trackHabit(habit.id.uuidString)
         queue.trackSharedEntry(try XCTUnwrap(habit.records.first).id.uuidString)
+        makeAuth()
 
         try await DataExportService.restore(document, into: context, sync: sync, deletionQueue: queue)
 
@@ -220,4 +382,10 @@ final class LocalDataFlowTests: XCTestCase {
         try source.mainContext.save()
         return try DataBackup.snapshot(of: source.mainContext)
     }
+}
+
+/// How many times an export was written.
+private actor WriteCounter {
+    private(set) var count = 0
+    func bump() { count += 1 }
 }

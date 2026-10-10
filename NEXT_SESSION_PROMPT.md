@@ -1,46 +1,65 @@
 # Stride — 交接 prompt（复制整段发给新会话）
 
-你接手 Stride（iOS/macOS 习惯追踪 App，SwiftUI + SwiftData；Node/Express + SQLite 后端在一台 Azure VM 上）的下一阶段开发。仓库在 `~/Documents/Stride`，当前 `main` 已包含 1.2.3（build 17，2026-09-17 上架）和之后的收尾提交。你全权负责，按下面的顺序做，不要每一步都来问我；只有在动到用户数据、签名/凭据、或者要提交审核时才需要我点头。
+你接手 Stride（iOS/macOS 习惯追踪 App，SwiftUI + SwiftData；Node/Express + SQLite 后端在一台 Azure VM 上）的开发。仓库在 `~/Documents/Stride`。你全权负责，按下面的顺序做，不要每一步都来问我；只有在动到用户数据、签名/凭据、或者要提交审核时才需要我点头。
 
-## 先读什么（按顺序，别跳）
+## 现在的状态（2026-10-10）
 
-1. `DEV-PLAN-1.3.md` —— 下阶段的完整计划：6 个里程碑、每个的具体改动（精确到文件和行号）、验收标准、争议点的裁决、以及两次 Gemini 审查改了什么。**M0 + M1 + M2 是已承诺的范围**，M3–M6 是同等细度的后续。
-2. `DEV-PLAN-1.3-reviews.md` —— Gemini 3.1 Pro 和 3.8 Flash 的原始审查意见（计划里的 Review log 说明了哪些采纳、哪些拒绝及原因）。
-3. `RELEASE-1.2.3.md` —— 上一版发布记录：哪些 bug 只有靠"在生产库副本上演练"和"用真实演示账号跑上线代码"才发现，测试套件全绿也没抓到。这是本项目最重要的方法论。
-4. `AUDIT-2026-09-09.md` —— 31 项缺陷的审计原文，计划里所有"gap"的出处。
-5. `server/DEPLOY.md` —— 部署流程（先 dry-run diff、备份、rsync、重启、验证），以及"先在生产库副本上演练"的做法。
-6. 记忆目录 `~/.claude/projects/-Users-jason-Documents-Stride/memory/`（会自动加载）：基础设施、App Store 状态、签名陷阱、模拟器规范、本地化陷阱都在里面。
+- **1.3.0（build 19）已上架** iOS + macOS（M1），tag `v1.3.0`；PR JasonYeYuhe/Stride#4 已于 2026-10-03 合并进 `main`。
+- **1.3.1 的服务端部分已部署到生产**（2026-09-29 16:25 UTC，服务端代码树 `5dca011`），验收 (7) 已在生产上验证。内容：毫秒级 pull、LWW re-feed、id aliases、`deletionsSince`、对 1.3.1 以下旧 App 扣住"删除+同日替换"、`no-store` 响应头、tombstone 两个新列、365 天清扫下限。
+- **1.3.1（M2，增量推送）build 21 已过审（两个平台）。**
+  - iOS 已由我在 ASC 发布（READY_FOR_SALE，2026-10-10 确认）。Sentry 生产环境 7 天：1.3.1+21 有 8 个会话、5 台设备，0 崩溃。
+  - **macOS 1.3.1 是 PENDING_DEVELOPER_RELEASE**：等我点头再 `release.py release 1.3.1`（或我在 ASC 点发布）。
+  - 第三轮直接测试发现并修复了首启升级竞态：widget 和 App 同时迁移存储，导致 App 退回一个空 store。修复见 `ac1fbec` 和 `7ee5f8f`。用真实 1.2.3/1.3.0 构建原地升级 6 次全部通过。build 20 作废，从未提交。
+  - PR JasonYeYuhe/Stride#6 已合并进 `main`，tag `v1.3.1`。
+  - Codex 没有审到 1.3.1：额度用完，最后一次文件工具超时，我允许跳过。
 
-## 从哪里开始
+## 先读什么（按顺序）
 
-从 **M0**（服务端契约 + CI + 运维基础，不需要 App Review）开始，严格按 `DEV-PLAN-1.3.md` 里 M0 的清单和验收标准做。M0 的每一条都是 M2（增量推送）的前提；服务端改动部署前必须在生产库副本上演练（DEPLOY.md 有步骤，1.2.3 就是这样抓到 NULL `updated_at` 的）。
+1. `RELEASE-1.4.0.md` —— M3 的进度记录（做了什么、审查改了什么、测试结果、还剩什么）。
+2. `DEV-PLAN-1.3.md` —— 计划本体：M3 小节是规格，M2 小节末尾的 progress log 记录了同步设计的每个决定。`RELEASE-1.3.1.md` 是 M2 的完整记录（模拟器端到端的做法、已知限制）。
+3. `RELEASE-1.3.0.md`，尤其是「Known limitations found after the resubmission」。
+4. `server/DEPLOY.md` —— 部署五步：测试 → 主机 diff → 生产库副本演练 → 备份 → rsync + 验证。
+5. 记忆目录 `~/.claude/projects/-Users-jason-Documents-Stride/memory/`（自动加载）。
 
-M0 做完并部署验证后进入 M1（1.3.0）：这是一个**不碰 schema** 的发布，目的是在 M2 改同步引擎之前先把备份/恢复、大号小组件、复数规则、Dynamic Type、提醒权限修复和一键登录发出去，并用它验证新的 CI 和演练脚本。
+## 接下来做什么：M3（1.4.0）
 
-M2（1.3.1，增量推送）单独一个版本，不要和任何功能混在一起。它的设计细节、测试清单和"账号切换会把上一个账号的数据推进下一个账号"这类已知坑都写在计划里，照着做。
+M3 = iPad/Mac 外壳、通知"完成"动作、后台同步，外加积压项"导出先写文件再弹分享面板"。DEV-PLAN-1.3.md 的 M3 小节就是规格。分支 `m3/1.4.0`，从合并后的 `main` 切出。进度记在 `RELEASE-1.4.0.md`。
 
-## 每次提交审核前的固定动作
+1. **不需要 TestFlight，也不需要我做真机检查**（2026-10-07 起所有版本都省略）：由你自己测试。具体是模拟器端到端（`scripts/sim_e2e/`）、用真实旧版构建原地升级、在旧版 App 写出的 store 上跑真实容器迁移测试，以及 Release 构建冒烟。
+2. 审查：Codex（额度够时）+ Gemini（MCP bridge，workspace 只能是一次性副本）。每条都要对照代码核实后再采纳。
+3. 打包前的固定动作：
+   - `scripts/sync_rehearsal.sh` 和 `scripts/check_demo_account.sh` 在要发布的构建上跑绿；
+   - `verify_archive.sh --exported`；
+   - 用 `release.py` 写六种语言的 What's New；
+   - `build-appstore.sh all --upload`；
+   - `release.py prepare <版本>`；
+   - **发布门禁**：`scripts/sim_e2e/upgrade.sh`，从每个在用的旧版本（现在包括 1.3.1）原地升级，带 widget。
+   - **提交（`release.py finish`）必须等我点头。**
+   - 版本是 MANUAL 发布，过审后等我说再 `release.py release`。
 
-- `scripts/check_demo_account.sh`（编译上线的同步代码，用真实演示账号拉取并打印审核员会看到的连续天数/完成率；exit 3 表示演示数据过期需要重新生成）
-- `scripts/sync_rehearsal.sh`（M2 起，双设备模拟收敛）
-- `scripts/a11y_sweep.sh`（M1 起）
-- `scripts/release.py` 六种语言的 What's New；任何商店描述改动必须在同一次提交里用 `scripts/push_metadata.py` 推送（`release.py` 只写 What's New，会把上一版描述原样复制）
-- 打包用 `scripts/build-appstore.sh all --upload`（凭据从 `scripts/.env` 读），附加+提交用 `scripts/release.py finish <version> <build>`（现在没真正提交会返回非 0）
-- 写 `RELEASE-<version>.md`
+## 已知的机器/流程陷阱
 
-## 已知的机器/流程陷阱（都在记忆里，这里只提醒）
-
-- 锁屏时 codesign 可能失败（`errSecInternalComponent`）：先跑 `security show-keychain-info ~/Library/Keychains/login.keychain-db` 和一个 1 秒的 codesign 探测，再开始打包。
-- Xcode 大版本更新后需要重新接受许可（`sudo xcodebuild -license accept`），只有我能做。
-- 模拟器：复用 iPhone 17 Pro；CoreSimulatorService 卡死时 `killall -9 com.apple.CoreSimulator.CoreSimulatorService`。
-- 本地化：`xcodebuild -exportLocalizations` 在 Xcode 27 上输出的 key 是错的；运行时 key 规则 Int→`%lld`、String→`%@`、Double→`%lf`；插值里嵌套三元表达式永远不会被翻译；`String(localized:)` 不跟随 App 内语言选择，界面代码用 `appLocalized`/`appCalendar`。
-- 服务端 `.env` 里 `FROM_EMAIL` 含 `<>`，不要 `source .env`；`seed-demo.js` 自己会加载 dotenv。
-- 用 agy 调 Gemini 审查：`agy --model gemini-3.1-pro-high --print="<prompt>"`（模型 id 已含 effort，不要再传 `--effort`；`--print` 必须是 `--print=...` 的形式，prompt 长时用 Python `subprocess` 传参）。
+- **签名**：锁屏时 codesign 可能失败（`errSecInternalComponent`）。打包前先跑 `security show-keychain-info ~/Library/Keychains/login.keychain-db` 和一个 1 秒的 codesign 探测。
+- **Xcode**：大版本更新后要重新接受许可，这只有我能做。
+- **模拟器**：复用 iPhone 17 Pro / 17 Pro Max，其他项目也在用；用 `mkdir /tmp/lock-iphone-17-pro` 这类锁互斥。CoreSimulatorService 卡死时 `killall -9 com.apple.CoreSimulator.CoreSimulatorService`。未签名（`CODE_SIGNING_ALLOWED=NO`）的构建存不了 Keychain token：会显示"已登录"但从不同步，模拟器端到端要用 ad-hoc 签名（`CODE_SIGN_IDENTITY=-`）。
+- **本地化**：
+  - 运行时 key 规则：Int→`%lld`、String→`%@`、Double→`%lf`。
+  - 复数用 `.stringsdict`，key 带 "(%lld held)" 这类后缀只用来选形式。
+  - 插值里的三元表达式不会被翻译。
+  - 界面代码用 `appLocalized` / `appCalendar`。
+  - `LocalizationSourceScanTests` 认不出 `\(a.b.c)` 这种插值，要先赋给局部变量。
+- **服务端 `.env`**：含 `<>`，不要 `source`。SSH 一律加 `-o IdentityAgent=none`。
+- **审查工具**：
+  - Gemini 用 gemini MCP bridge（`mcp__gemini__ask_gemini`），`workspace` 只能指向一次性副本目录，绝不能指向仓库，因为它会以 `--dangerously-skip-permissions` 运行。
+  - 子 agent 可能因 API 用量上限中途停下：额度恢复后用 SendMessage 让它从原处继续，不要重开。
+- **端到端的做法**：Debug 构建连 `localhost:3002`。起一个 `server/` 的副本（全新 DB、`NODE_ENV=test`、不带 `.env`），直接插入 `magic_link_tokens` 行，在 App 的"I have a login token"输入框粘贴 token 登录。上次的脚本套件在会话临时目录里，没进仓库；RELEASE-1.3.1.md 描述了做法。
 
 ## 需要我做的事（你做不了）
 
-- 把 iCloud Drive `Downloads/` 里的两份 ASC `.p8` 密钥移到 `~/Library/Application Support/CLI-Pulse-Secrets/`。
-- 清掉旧 DigitalOcean 主机 `143.198.85.72` 上残留的 `stride.db`（M0 的 owner action）。
-- App Store Connect 里确认月付/年付是否配置了首购优惠（M0 的 ASC check），决定删优惠还是在 M1 加披露文案。
+- 同意发布 macOS 1.3.1（PENDING_DEVELOPER_RELEASE）。
+- Sentry：建 `stride-server` 项目，把 `SENTRY_DSN` 写进 `/root/stride-server/.env`，加 1 分钟的 uptime 监控（DEPLOY.md 有步骤）。
+- 把 iCloud Drive `Downloads/` 里的两份 ASC `.p8` 移到 `~/Library/Application Support/CLI-Pulse-Secrets/`，再 `chmod 600 ~/private_keys/AuthKey_*.p8`。
+- 可选：给 stride.colorarchive.me 加 DMARC 记录；`ssh-keygen -R 143.198.85.72`（旧 DO 主机已销毁，没有要清的）。
+- ASC 首购优惠：已确认没有配置，无需处理。
 
-做完 M0 给我一个简短的进度汇报（部署验证结果 + CI 截图级别的证据即可），然后直接进 M1。
+先看 `RELEASE-1.4.0.md` 的进度，再接着做。

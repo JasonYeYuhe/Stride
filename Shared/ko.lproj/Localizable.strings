@@ -294,8 +294,6 @@
 "Export as CSV" = "CSV로 내보내기";
 "Export as JSON" = "JSON으로 내보내기";
 "Stride Habits Export" = "Stride 습관 내보내기";
-"CSV export of all habits" = "모든 습관의 CSV 내보내기";
-"JSON export of all habits" = "모든 습관의 JSON 내보내기";
 "Legal" = "법적 고지";
 "%lldd" = "%lld일";
 "Complete a Habit" = "습관 완료하기";
@@ -323,7 +321,6 @@
 "%lld %@" = "%lld %@";
 "%lldw" = "%lld주";
 "Syncing" = "동기화 중";
-"Last synced %@" = "마지막 동기화: %@";
 "Sync error: %@" = "동기화 오류: %@";
 "Restore %@" = "%@ 복원";
 "In progress" = "진행 중";
@@ -383,3 +380,108 @@
 "Complete Habit" = "습관 완료";
 "Check Streak" = "연속 기록 확인";
 "List Habits" = "습관 목록";
+
+/* Sync, M2 (1.3.1): the account screen that continues a sign-in on a device holding another
+   account's habits (AccountSwitchView, LoginView). "Start from This Account's Data" is the title-case
+   button, "Start from this account's data?" the confirmation title: two keys on purpose. */
+"This Device's Habits" = "이 기기의 습관";
+"This device has habits that aren't linked to an account." = "이 기기에는 어떤 계정에도 연결되지 않은 습관이 있습니다.";
+"Stride can't tell which account these habits came from. Upload them to this account, or start from this account's data instead." = "Stride는 이 습관이 어느 계정에서 왔는지 알 수 없습니다. 이 계정에 업로드하거나, 대신 이 계정의 데이터로 시작하세요.";
+"Stride keeps each account's habits separate. Starting from this account's data removes these habits from this device and downloads this account's habits. Anything already synced stays in the other account." = "Stride는 계정마다 습관을 따로 보관합니다. 이 계정의 데이터로 시작하면 이 습관이 이 기기에서 삭제되고 이 계정의 습관이 다운로드됩니다. 이미 동기화된 내용은 다른 계정에 그대로 남습니다.";
+"Changes that never synced exist only on this device. Export a backup first to keep a copy." = "동기화되지 않은 변경 사항은 이 기기에만 있습니다. 사본을 보관하려면 먼저 백업을 내보내세요.";
+"Export a Backup" = "백업 내보내기";
+"Upload These Habits to This Account" = "이 습관을 이 계정에 업로드";
+"Start from This Account's Data" = "이 계정의 데이터로 시작";
+"Start from this account's data?" = "이 계정의 데이터로 시작할까요?";
+"Every habit, check-in and group on this device will be deleted, and this account's habits will be downloaded. Changes that were never synced can't be recovered unless you exported a backup." = "이 기기의 모든 습관, 체크인, 그룹이 삭제되고 이 계정의 습관이 다운로드됩니다. 동기화되지 않은 변경 사항은 백업을 내보내지 않았다면 복구할 수 없습니다.";
+
+/* Sync, M2 (1.3.1): Settings > Sync (SyncSectionView). "Recovered edits" are edits made here to
+   rows deleted on another device, kept in a log; ja/zh render them as 復旧した編集 / 找回的编辑 so they
+   never read as "restored" (復元 / 恢复 is Restore). */
+"Sync" = "동기화";
+"Choose What Happens to This Device's Habits…" = "이 기기의 습관 처리 방법 선택…";
+"Syncing starts once you choose." = "선택하면 동기화가 시작됩니다.";
+"Sync paused" = "동기화 일시 중지됨";
+"The server asked devices to wait. Stride will try again automatically." = "서버에서 기기에 잠시 기다리라고 요청했습니다. Stride가 자동으로 다시 시도합니다.";
+"Editing a change sends it again." = "변경 사항을 편집하면 다시 전송됩니다.";
+"Server error" = "서버 오류";
+"A value the server doesn't accept" = "서버가 허용하지 않는 값";
+"Missing information" = "누락된 정보";
+"Its habit isn't on the server yet" = "해당 습관이 아직 서버에 없음";
+"Too large to upload" = "너무 커서 업로드할 수 없음";
+"Restore as New Copies" = "새 사본으로 복원";
+"Discard…" = "폐기…";
+"Discard" = "폐기";
+"Changes made on this device to items that were deleted on another device. Export them to keep a copy." = "다른 기기에서 삭제된 항목에 이 기기에서 한 변경 사항입니다. 내보내서 사본을 보관하세요.";
+"Export Recovered Edits" = "복구된 편집 내보내기";
+"Clear Recovered Edits…" = "복구된 편집 지우기…";
+"Clear Recovered Edits?" = "복구된 편집을 지울까요?";
+"Clear" = "지우기";
+"This is the only copy of these edits. Export them first if you might need them." = "이 편집의 사본은 이것뿐입니다. 필요할 수 있다면 먼저 내보내세요.";
+"Full Resync…" = "전체 재동기화…";
+"Sends everything on this device to your account again." = "이 기기의 모든 항목을 계정으로 다시 보냅니다.";
+"Full Resync?" = "전체 재동기화할까요?";
+"Resync Everything" = "모두 재동기화";
+"Stride first downloads your account's latest changes, then sends every habit, check-in and group on this device to your account again. Use it when another device is missing something." = "Stride가 먼저 계정의 최신 변경 사항을 다운로드한 다음, 이 기기의 모든 습관, 체크인, 그룹을 계정으로 다시 보냅니다. 다른 기기에 빠진 항목이 있을 때 사용하세요.";
+"Restored as new copies." = "새 사본으로 복원했습니다.";
+"Discarded." = "폐기했습니다.";
+"Recovered edits cleared." = "복구된 편집을 지웠습니다.";
+"Full resync finished." = "전체 재동기화를 마쳤습니다.";
+
+/* Sync, M2 (1.3.1): Settings > Export Data, restoring a backup that names an account (or none),
+   and the hand-over step before a restore leaves another account's changes behind
+   (RestoreHandoverView). */
+"Restore as It Was" = "원래대로 복원";
+"This backup is from another account. Its habits will be added to this account as new copies." = "이 백업은 다른 계정의 것입니다. 습관은 새 사본으로 이 계정에 추가됩니다.";
+"This backup is from another account (%@). Its habits will be added to this account as new copies." = "이 백업은 다른 계정(%@)의 것입니다. 습관은 새 사본으로 이 계정에 추가됩니다.";
+"This backup doesn't say which account it came from. If it's this account's own backup, restore it as it was; otherwise restore it as new copies." = "이 백업에는 어느 계정의 것인지 기록되어 있지 않습니다. 이 계정의 백업이라면 원래대로 복원하고, 아니라면 새 사본으로 복원하세요.";
+"This backup doesn't say which account it came from. If you'll sign in to that account on this device, restore it as it was; otherwise restore it as new copies." = "이 백업에는 어느 계정의 것인지 기록되어 있지 않습니다. 이 기기에서 그 계정에 로그인할 예정이라면 원래대로 복원하고, 아니라면 새 사본으로 복원하세요.";
+"This backup is from a Stride account. If you'll sign in to that account on this device, restore it as it was; otherwise restore it as new copies." = "이 백업은 Stride 계정의 것입니다. 이 기기에서 그 계정에 로그인할 예정이라면 원래대로 복원하고, 아니라면 새 사본으로 복원하세요.";
+"This backup is from %@. If you'll sign in to that account on this device, restore it as it was; otherwise restore it as new copies." = "이 백업은 %@의 것입니다. 이 기기에서 그 계정에 로그인할 예정이라면 원래대로 복원하고, 아니라면 새 사본으로 복원하세요.";
+"The recovered edits on this device are erased too. Export them first if you might need them." = "이 기기의 복구된 편집도 함께 지워집니다. 필요할 수 있다면 먼저 내보내세요.";
+"Before You Restore" = "복원하기 전에";
+"This device still holds changes from another account that restoring this backup leaves behind." = "이 기기에는 아직 다른 계정의 변경 사항이 남아 있습니다. 이 백업을 복원하면 이 변경 사항은 보내지 못한 채 남게 됩니다.";
+"If you restore, the deletions are dropped, and the recovered edits are shown again only when that account uses this device. To send the deletions instead, cancel, sign in to that account and sync first." = "복원하면 삭제는 버려지고, 복구된 편집은 그 계정이 이 기기를 사용할 때만 다시 표시됩니다. 삭제를 전송하려면 취소한 뒤 그 계정에 로그인해 먼저 동기화하세요.";
+"Restore Anyway" = "그래도 복원";
+
+/* Sync, M2 (1.3.1): Today's inline sync status and the reauth row (SyncStatusRow). "Synced %@"
+   takes a RelativeDateTimeFormatter phrase already in the app language ("2 minutes ago", "2分前"). */
+"Sign in again to keep syncing" = "동기화를 계속하려면 다시 로그인하세요";
+"Opens sign-in" = "로그인 화면을 엽니다";
+"Synced just now" = "방금 동기화됨";
+"Synced %@" = "%@ 동기화됨";
+
+/* Sync, M2 (1.3.1), phase C review fixes: the account screen shows each address on a line of
+   its own (a sentence around it hyphenated or broke it mid-address); the restore hand-over's
+   footer per what it lists; Delete Account says this device's copy goes too; "Not Syncing" for
+   Data Storage while the account choice waits; Clear / Erase stop when new recovered edits
+   arrived after the confirmation was built. */
+"This device holds another account's habits." = "이 기기에는 다른 계정의 습관이 있습니다.";
+"Habits from" = "습관 소유 계정";
+"Signed in as" = "로그인한 계정";
+"Cancel signs you out of this account and leaves this device as it is." = "취소하면 이 계정에서 로그아웃되고 이 기기는 그대로 유지됩니다.";
+"If you restore, the deletions are dropped. To send them instead, cancel, sign in to that account and sync first." = "복원하면 삭제는 버려집니다. 삭제를 전송하려면 취소한 뒤 그 계정에 로그인해 먼저 동기화하세요.";
+"If you restore, the recovered edits are shown again only when that account uses this device." = "복원하면 복구된 편집은 그 계정이 이 기기를 사용할 때만 다시 표시됩니다.";
+"New recovered edits arrived. Export them, then try again." = "새로 복구된 편집이 추가되었습니다. 내보낸 뒤 다시 시도하세요.";
+"All your habits, records, and account information will be permanently removed from our servers. The habits, check-ins and groups on this device are deleted too; export a backup first if you want to keep a copy." = "모든 습관, 기록 및 계정 정보가 서버에서 영구적으로 삭제됩니다. 이 기기의 습관, 체크인, 그룹도 삭제됩니다. 사본을 보관하려면 먼저 백업을 내보내세요.";
+"Not Syncing" = "동기화 안 됨";
+
+/* The phase C leftovers (1.3.1): the restore hand-over's caption above the previous owner's
+   address, on a line of its own like the account screen's "Habits from" (no address inside a
+   sentence). */
+"Changes from" = "변경 사항 소유 계정";
+
+/* The store open (1.3.1, upgrade race E2E U123): the widget's line while the app has not yet
+   opened (and migrated) the store, and the full-screen state when the app could not open it at
+   all (its button is "Try Again" above; the Siri replies reuse the title). */
+"Open Stride to see your habits" = "Stride를 열어 습관을 확인하세요";
+"Stride couldn't open your data" = "Stride에서 데이터를 열 수 없습니다";
+"Nothing was changed or deleted. Try again in a moment. If it keeps happening, restart your device and open Stride again." = "변경되거나 삭제된 내용은 없습니다. 잠시 후 다시 시도하세요. 계속 발생하면 기기를 재시동한 후 Stride를 다시 여세요.";
+
+/* The store's error screen, review round (1.3.1, upgrade race E2E U123): a failure that is not
+   the race, or the race's codes again after "Try Again", adds one of these two lines under the
+   calm one, and a "Contact Support" link to the support page. "%@ %lld" is the error's domain
+   (an untranslated identifier such as NSCocoaErrorDomain) and its number. */
+"Contact Support" = "지원팀에 문의";
+"Your device may be out of storage. Free up some space, then tap Try Again. (Error %@ %lld)" = "기기의 저장 공간이 부족할 수 있습니다. 공간을 확보한 후 '다시 시도'를 탭하세요. (오류 %@ %lld)";
+"If it still fails and you sync with a Stride account, delete Stride, install it again and sign in: your synced habits come back. Without an account, contact support first — deleting Stride also deletes the habits on this device. (Error %@ %lld)" = "계속 열리지 않고 Stride 계정으로 동기화하고 있다면 Stride를 삭제하고 다시 설치한 후 로그인하세요. 동기화된 습관이 돌아옵니다. 계정이 없다면 먼저 지원팀에 문의하세요. Stride를 삭제하면 이 기기의 습관도 삭제됩니다. (오류 %@ %lld)";

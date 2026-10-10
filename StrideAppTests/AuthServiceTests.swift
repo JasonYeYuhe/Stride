@@ -8,25 +8,29 @@ final class AuthServiceTests: XCTestCase {
 
     private var server: StubServer!
     private var tokens: InMemoryTokenStore!
-    private var syncResets = 0
+    private var local: ScratchDefaults!
+    private var signOuts = 0
 
     override func setUp() {
         super.setUp()
         server = StubServer()
         tokens = InMemoryTokenStore()
-        syncResets = 0
+        local = ScratchDefaults("auth.local")
+        signOuts = 0
     }
 
     override func tearDown() {
         server.stop()
+        local.remove()
         server = nil
         tokens = nil
+        local = nil
         super.tearDown()
     }
 
     private func makeAuth() -> AuthService {
-        AuthService(api: server.makeClient(tokenStore: tokens), tokenStore: tokens,
-                    resetSyncState: { [unowned self] in self.syncResets += 1 })
+        AuthService(api: server.makeClient(tokenStore: tokens), tokenStore: tokens, defaults: local.defaults,
+                    onSignOut: { [unowned self] in self.signOuts += 1 }, onSignIn: {})
     }
 
     /// The magic-link verify response is the only place the app ever receives a session token;
@@ -49,10 +53,11 @@ final class AuthServiceTests: XCTestCase {
         XCTAssertEqual(server.requests.first?.json?["token"] as? String, "magic-123")
     }
 
-    /// Logout clears the token and the sync state even when the server cannot be reached —
-    /// otherwise an offline logout leaves the next account on this device syncing against the
-    /// previous account's cursor, and the old token still in the Keychain.
-    func testLogoutClearsTokenAndSyncStateEvenWhenTheServerFails() async {
+    /// Logout clears the token and ends the sync session even when the server cannot be reached
+    /// — otherwise an offline logout leaves the old token in the Keychain and a sync in flight
+    /// writing for an account that is gone. (Since 1.3.1 it no longer resets the cursor: the
+    /// owner gate keeps the next account off this device's data, and the same account resumes.)
+    func testLogoutClearsTokenAndEndsTheSyncSessionEvenWhenTheServerFails() async {
         tokens.save("sess-abc")
         server.on("GET", "/v1/auth/session", respond: .ok(#"{"user":{"id":7,"email":"a@example.com","created_at":"2026-09-01 10:00:00"}}"#))
         server.on("POST", "/v1/auth/logout") { _ in throw URLError(.notConnectedToInternet) }
@@ -64,7 +69,49 @@ final class AuthServiceTests: XCTestCase {
 
         XCTAssertNil(tokens.read())
         XCTAssertFalse(auth.isLoggedIn)
-        XCTAssertEqual(syncResets, 1)
+        XCTAssertEqual(signOuts, 1)
+        XCTAssertNil(auth.currentSyncSession())
+        XCTAssertNil(local.defaults.dictionary(forKey: AuthService.sessionAccountKey), "the account is forgotten with the token")
+    }
+
+    // MARK: - The sync session
+
+    /// The session's account outlives a launch whose session check fails offline: the token is
+    /// still that account's, and a sync must know whose it is (it runs only as the store's
+    /// owner). Without this, Erase Local Data's pre-erase sync could not run until a check
+    /// succeeded.
+    func testTheSessionsAccountIsKnownAfterAnOfflineLaunch() async {
+        server.on("POST", "/v1/auth/verify", respond: .ok(Self.verifyOK))
+        let first = makeAuth()
+        _ = await first.verifyToken("magic-123")
+        XCTAssertEqual(first.currentSyncSession(),
+                       SyncSession(token: "sess-from-link", account: SyncAccount(id: "7", email: "a@example.com")))
+
+        // Relaunch, offline.
+        server.on("GET", "/v1/auth/session") { _ in throw URLError(.notConnectedToInternet) }
+        let relaunched = makeAuth()
+        let session = await relaunched.resolveSyncSession()
+
+        XCTAssertFalse(relaunched.isLoggedIn, "no user loaded")
+        XCTAssertEqual(session?.account.id, "7")
+        XCTAssertEqual(session?.token, "sess-from-link")
+    }
+
+    /// A stored token whose account was never named here (a 1.3.0 session, first 1.3.1 launch,
+    /// check failed): resolving asks the server once more, and an error leaves it unknown — no
+    /// session, so no sync, rather than a guess.
+    func testAnUnnamedTokenIsResolvedByTheServerOrNotAtAll() async {
+        tokens.save("sess-130")
+        server.on("GET", "/v1/auth/session") { _ in throw URLError(.timedOut) }
+        let auth = makeAuth()
+        await auth.waitForSessionRestore()
+
+        let offline = await auth.resolveSyncSession()
+        XCTAssertNil(offline)
+
+        server.on("GET", "/v1/auth/session", respond: .ok(#"{"user":{"id":9,"email":"c@example.com","created_at":"2026-09-01 10:00:00"}}"#))
+        let online = await auth.resolveSyncSession()
+        XCTAssertEqual(online, SyncSession(token: "sess-130", account: SyncAccount(id: "9", email: "c@example.com")))
     }
 
     // MARK: - One-tap sign-in (the universal link)
