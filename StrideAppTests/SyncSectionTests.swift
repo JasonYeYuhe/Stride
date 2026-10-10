@@ -635,6 +635,59 @@ final class SyncSectionTests: XCTestCase {
         XCTAssertFalse(server.paths.contains("/v1/auth/logout"))
     }
 
+    /// An Export Recovered Edits still being written holds Clear, Erase and Delete Account's
+    /// recheck (W4 review). The file reads the log off the main actor, after the tap's turn, so a
+    /// clear meanwhile could empty it first — and its share, landing under a confirmation or a
+    /// closed sheet, was dropped. Their buttons are disabled while it writes
+    /// (`SyncService.isWritingExport`); this is the service's own refusal, for an export tapped
+    /// while an erase or a recheck was already waiting on a sync. Once written, the file holds
+    /// every line, and each goes through.
+    func testAnExportStillBeingWrittenHoldsClearEraseAndDeleteAccount() async throws {
+        tokens.delete()
+        sessions.session = nil
+        let auth = AuthService(api: server.makeClient(tokenStore: tokens), tokenStore: tokens,
+                               defaults: local.defaults, onSignOut: { [unowned self] in self.sync.signedOut() })
+        owners.set(SyncOwner(SyncSession.accountA.account))
+        let root = scratchExportRoot()
+        try appendRecoveredEdit(for: owner)
+        context.insert(Habit(name: "Local"))
+        try context.save()
+        sync.refreshRecoveredEdits()
+        let step = DeleteAccountStep(email: "a@example.com", erasesDevice: true, hasLocalData: true,
+                                     recoveredEdits: sync.recoveredEdits)
+        XCTAssertFalse(sync.hasRecoveredEditsNotExported(), "nothing exported, nothing in flight")
+
+        let write = Task { @MainActor in try await self.exportRecoveredEdits(into: root) }
+        var tries = 0
+        while !sync.isWritingExport, tries < 20 {
+            await Task.yield()
+            tries += 1
+        }
+        // Its last step is on the main actor, so it cannot finish before this test suspends.
+        XCTAssertTrue(sync.isWritingExport, "the write has started")
+
+        XCTAssertTrue(sync.hasRecoveredEditsNotExported())
+        XCTAssertFalse(try actions.clearRecoveredEdits(expectedTotal: 1), "Clear, as confirmed")
+        let rechecked = await step.recheck(sync: sync, context: context)
+        XCTAssertEqual(rechecked?.recoveredEditsChanged, true, "Delete My Account, as the step showed")
+        let erase = await DataExportService.eraseLocalData(in: context, clearingRecoveredEdits: true,
+                                                           recoveredEditTotalShown: 1, auth: auth, sync: sync,
+                                                           exportRoot: root)
+        XCTAssertEqual(erase, .recoveredEditsChanged, "Erase, as confirmed")
+        XCTAssertTrue(sync.isWritingExport, "all three answered while the file was being written")
+        XCTAssertEqual(try recovery.log.lineCount(accountID: owner), 1)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<Habit>()), 1)
+
+        let written = try await write.value
+        XCTAssertEqual(written.recoveredEditsTotal, 1, "the file holds the line")
+        XCTAssertFalse(sync.isWritingExport)
+        XCTAssertFalse(sync.hasRecoveredEditsNotExported())
+        let goAhead = await step.recheck(sync: sync, context: context)
+        XCTAssertNil(goAhead)
+        XCTAssertTrue(try actions.clearRecoveredEdits(expectedTotal: 1))
+        XCTAssertEqual(try recovery.log.lineCount(accountID: owner), 0)
+    }
+
     // MARK: - The F4 guards at the recovery log's cap
 
     // Review recovery-backup-1: once the log is at its 5 MB cap, an append drops the oldest line

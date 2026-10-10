@@ -27,6 +27,10 @@ import UIKit
 ///   What's New told users to do with Export as JSON.
 ///
 /// A write that fails says so under the button, in one line, and leaves no file behind.
+///
+/// While it writes, the screen is not frozen as 1.3.x's was, so the buttons that erase what the
+/// file copies wait on it instead (`SyncService.isWritingExport`): a share is dropped when its
+/// button's sheet has closed or a confirmation is up by the time the file is ready.
 struct ExportShareButton<Label: View>: View {
     let file: ExportFile
     let sync: SyncService

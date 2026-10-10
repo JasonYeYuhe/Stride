@@ -55,22 +55,27 @@ enum DataExportService {
     /// the recovered edits through `SyncService.writeRecoveredEditsFile`, which remembers the
     /// total the file holds for Clear and Erase. The one call `ExportShareButton` makes, so the
     /// hosted tests run exactly what a tap runs. `root` is tmp; tests pass their own directory.
+    ///
+    /// Counted in `SyncService.exportWrites` from the tap to the written file: the buttons that
+    /// erase what an export copies are disabled meanwhile (`SyncService.isWritingExport`).
     @MainActor
     static func write(_ file: ExportFile, container: ModelContainer, sync: SyncService? = nil,
                       in root: URL = FileManager.default.temporaryDirectory) async throws -> WrittenExport {
         let sync = sync ?? .shared   // see `restore` for the optionals
-        switch file {
-        case .backup(let account):
-            return try await writeBackupFile(container: container, account: account, in: root)
-        case .ownerBackup:
-            // The owner as the tap finds it, read in the same main-actor turn as the snapshot:
-            // the descriptor, built at render, can be older than a sync that settled the owner.
-            let owner = sync.storeOwner.map { BackupAccount(id: $0.id, email: $0.email) }
-            return try await writeBackupFile(container: container, account: owner, in: root)
-        case .csv:
-            return try await writeCSVFile(container: container, in: root)
-        case .recoveredEdits(let accountID):
-            return try await sync.writeRecoveredEditsFile(accountID: accountID, in: root)
+        return try await sync.countingExportWrite {
+            switch file {
+            case .backup(let account):
+                return try await writeBackupFile(container: container, account: account, in: root)
+            case .ownerBackup:
+                // The owner as the tap finds it, read in the same main-actor turn as the snapshot:
+                // the descriptor, built at render, can be older than a sync that settled the owner.
+                let owner = sync.storeOwner.map { BackupAccount(id: $0.id, email: $0.email) }
+                return try await writeBackupFile(container: container, account: owner, in: root)
+            case .csv:
+                return try await writeCSVFile(container: container, in: root)
+            case .recoveredEdits(let accountID):
+                return try await sync.writeRecoveredEditsFile(accountID: accountID, in: root)
+            }
         }
     }
 
@@ -194,16 +199,31 @@ enum DataExportService {
     /// existed at the erase is past it, so it takes all of that, and an export made after the
     /// erase gets its own window. On a Mac, where launches can be weeks apart, a deleted account's
     /// export does not linger; the launch sweep still covers an iOS app suspended meanwhile.
-    static func removeExportFilesAfterErase(in root: URL = FileManager.default.temporaryDirectory) {
+    ///
+    /// Returns the deferred sweep, for the hosted tests: with `deferredExportSweepDelay`
+    /// shortened, they await it to see the erase's own call schedule it (W4 review: a test that
+    /// scheduled one itself passed with this line gone).
+    @discardableResult
+    static func removeExportFilesAfterErase(in root: URL = FileManager.default.temporaryDirectory) -> Task<Int, Never> {
         removeExportFiles(in: root, olderThan: exportGracePeriod)
-        scheduleDeferredExportSweep(in: root)
+        return scheduleDeferredExportSweep(in: root)
     }
 
-    /// The deferred half of `removeExportFilesAfterErase`, off the main actor. `after`: tests
-    /// shorten the wait; the sweep's rule stays the grace period.
+    #if DEBUG
+    /// How long after an erase its deferred sweep runs: just past `exportGracePeriod`, so
+    /// everything that existed at the erase has left the window by then. Settable in DEBUG only,
+    /// for the hosted tests, which shorten it to see the sweep an erase schedules run
+    /// (ExportTests, LocalDataFlowTests); the sweep's rule stays the grace period.
+    static var deferredExportSweepDelay: Duration = .seconds(exportGracePeriod + 5)
+    #else
+    static let deferredExportSweepDelay: Duration = .seconds(exportGracePeriod + 5)
+    #endif
+
+    /// The deferred half of `removeExportFilesAfterErase`, off the main actor: after `delay`,
+    /// every export directory older than the grace period.
     @discardableResult
     static func scheduleDeferredExportSweep(in root: URL = FileManager.default.temporaryDirectory,
-                                            after delay: Duration = .seconds(exportGracePeriod + 5)) -> Task<Int, Never> {
+                                            after delay: Duration = deferredExportSweepDelay) -> Task<Int, Never> {
         Task.detached(priority: .utility) {
             do { try await Task.sleep(for: delay) } catch { return 0 }
             return removeExportFiles(in: root, olderThan: exportGracePeriod)
@@ -426,7 +446,12 @@ enum DataExportService {
         } catch {
             return .saveFailed
         }
-        sync.resetSyncState(clearingRecoveryLog: clearingRecoveredEdits)
+        // Asked again at the clear (W4 review): an Export Recovered Edits tapped while this
+        // waited on the pre-erase sync or the sign-out's request may still be writing, and it
+        // reads the log after this turn. Those lines are kept, as a log nobody could count is,
+        // rather than cleared from under the export the user has just asked for.
+        let clearing = clearingRecoveredEdits && !sync.hasRecoveredEditsNotExported()
+        sync.resetSyncState(clearingRecoveryLog: clearing)
         removeExportFilesAfterErase(in: exportRoot)
         return .erased
     }

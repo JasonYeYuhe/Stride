@@ -295,19 +295,59 @@ final class ExportTests: XCTestCase {
         XCTAssertEqual(exportDirectories(), [])
     }
 
-    /// The deferred sweep after an erase takes what the erase spared once it is past the window
-    /// (here: backdated, as ten minutes later), and spares an export made after the erase.
-    func testTheDeferredSweepTakesWhatTheEraseSpared() async throws {
+    /// The deferred sweep the erase itself schedules (`removeExportFilesAfterErase`, which every
+    /// erase calls; LocalDataFlowTests runs it through Erase Local Data) takes what the erase
+    /// spared once it is past the window (here: backdated, as ten minutes later), and spares an
+    /// export made after the erase. Awaited from the erase's own call, with its delay shortened:
+    /// a sweep this test scheduled itself passed with the erase scheduling nothing (W4 review).
+    func testTheEraseSchedulesADeferredSweepOfWhatItSpared() async throws {
+        let delay = DataExportService.deferredExportSweepDelay
+        DataExportService.deferredExportSweepDelay = .milliseconds(500)
+        addTeardownBlock { DataExportService.deferredExportSweepDelay = delay }
         let spared = try DataExportService.writeExportFile(Data("{}".utf8), named: "Stride-Backup.json", in: root)
-        DataExportService.removeExportFilesAfterErase(in: root)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: spared.path), "the erase spared it")
 
+        let sweep = DataExportService.removeExportFilesAfterErase(in: root)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: spared.path), "the erase spared it")
         try backdate(spared, by: DataExportService.exportGracePeriod + 5)   // ten minutes on
         let afterTheErase = try DataExportService.writeExportFile(Data("{}".utf8), named: "Stride-Backup.json", in: root)
-        let removed = await DataExportService.scheduleDeferredExportSweep(in: root, after: .zero).value
+        let removed = await sweep.value
 
         XCTAssertEqual(removed, 1)
         XCTAssertEqual(exportDirectories(), [afterTheErase.deletingLastPathComponent().lastPathComponent])
+    }
+
+    // MARK: - A write in flight (W4 review)
+
+    /// From the tap to the written file, an export is counted (`SyncService.isWritingExport`),
+    /// which holds the buttons that erase what it copies: 1.3.x's share sheet froze the screen
+    /// until the file existed, write-first does not. Written or failed, it is counted no more.
+    func testAWriteIsCountedUntilItsFileIsWritten() async throws {
+        try seedStore()
+        XCTAssertFalse(sync.isWritingExport)
+
+        let write = Task { @MainActor in
+            try await DataExportService.write(.ownerBackup, container: self.container, sync: self.sync, in: self.root)
+        }
+        await yieldUntilWriting()
+        XCTAssertTrue(sync.isWritingExport, "the snapshot is taken, the file is being written")
+        _ = try await write.value
+        XCTAssertFalse(sync.isWritingExport)
+
+        let blocked = root.appendingPathComponent("not-a-directory")
+        try Data("x".utf8).write(to: blocked)
+        _ = try? await DataExportService.write(.csv, container: container, sync: sync, in: blocked)
+        XCTAssertFalse(sync.isWritingExport, "a failed write is not counted either")
+    }
+
+    /// Lets a write started in a Task run to its first suspension. Its file is then written off
+    /// the main actor, and it cannot finish — its last step is on the main actor — before this
+    /// test suspends again.
+    private func yieldUntilWriting() async {
+        var tries = 0
+        while !sync.isWritingExport, tries < 20 {
+            await Task.yield()
+            tries += 1
+        }
     }
 }
 

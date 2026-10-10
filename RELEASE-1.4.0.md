@@ -403,6 +403,22 @@ downgraded, 3 refuted. Everything below is the revised design. The adopted findi
     without exporting stays the user's choice, which both confirmations put to them. Delete
     Account's `recheck` is bound the same way: after one refusal its rebuilt step carried the new
     total, and the final button tapped again deleted the line the export never held.
+- **As built (W4 review): nothing erases what an export is still writing.** 1.3.x's share sheet
+  froze the screen until the file existed; write-first leaves it live for the ~0.5–2 s of the
+  write, and Export → Delete My Account (or Clear, Erase, Start, Restore Anyway, Discard) ran the
+  erase first, then dropped the share under the closed sheet or the confirmation.
+  - `SyncService.exportWrites` counts every `DataExportService.write` from the tap to the written
+    file. While it is above 0, Erase Local Data…, Clear Recovered Edits…, Discard…, Delete My
+    Account, Restore Anyway and the account screen's choices (Start, Upload, Cancel: each closes
+    the screen) are disabled.
+  - A recovered-edits write still in flight for the owner counts as not exported
+    (`hasRecoveredEditsNotExported`), so Clear, Erase and Delete Account's recheck refuse through
+    the same path: an export tapped while an erase or a recheck was already waiting on a sync.
+    Erase also asks again at the clear, after the sign-out's request, and keeps the log rather
+    than clear it from under such an export.
+  - The deferred sweep's delay is a DEBUG-settable `deferredExportSweepDelay`, and
+    `removeExportFilesAfterErase` returns its task: the hosted tests await the sweep the erase
+    itself scheduled.
 - **Removed:** `ExportFileMemo` and the three lazy Transferables, together with their tests in the
   same commit. They are replaced by writer tests: one call → one file that decodes, the conflict
   owner recorded, the recovered-edits account id, and a failed write leaves nothing.

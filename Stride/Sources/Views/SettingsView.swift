@@ -571,7 +571,9 @@ struct SettingsView: View {
                                 }
                             }
                         }
-                        .disabled(isErasing || sync.isSyncing)
+                        // Not while an export is still being written either: it is the copy of
+                        // what this erases, shared only once written (`SyncService.isWritingExport`).
+                        .disabled(isErasing || sync.isSyncing || sync.isWritingExport)
                     } footer: {
                         if let eraseError {
                             inlineError(eraseError)
@@ -1336,7 +1338,8 @@ struct DeleteAccountStep: Identifiable, Equatable {
     /// `SyncService.hasRecoveredEditsNotExported`): after one refusal the rebuilt step's total is
     /// the new one, and the final button tapped again "as shown" deleted the line the export
     /// before it never held. Once Export Recovered Edits has written this owner's file, the
-    /// deletion waits until the file holds everything the log does.
+    /// deletion waits until the file holds everything the log does; while one is still being
+    /// written (tapped as this waited out a sync), it waits for that file too.
     @MainActor
     func recheck(sync: SyncService, context: ModelContext) async -> DeleteAccountStep? {
         guard erasesDevice else { return nil }
@@ -1383,6 +1386,8 @@ struct DeleteAccountView: View {
     let sync: SyncService
     let onDelete: () -> Void
     let onCancel: () -> Void
+
+    private var isDeleteDisabled: Bool { sync.isSyncing || sync.isWritingExport }
 
     var body: some View {
         NavigationStack {
@@ -1439,11 +1444,13 @@ struct DeleteAccountView: View {
                             // Red icon as well as title, as the Sync section's destructive rows.
                             // Dimmed by hand while disabled: an explicit style overrides the system's.
                             Label("Delete My Account", systemImage: "person.crop.circle.badge.minus")
-                                .foregroundStyle(.red.opacity(sync.isSyncing ? 0.4 : 1))
+                                .foregroundStyle(.red.opacity(isDeleteDisabled ? 0.4 : 1))
                         }
                         // As the Erase row: a sync running now may be archiving a line this step
                         // never offered (`DeleteAccountStep.recheck` checks again on the tap).
-                        .disabled(sync.isSyncing)
+                        // And an export above still being written would be dropped when this
+                        // closes the sheet, its data deleted (`SyncService.isWritingExport`).
+                        .disabled(isDeleteDisabled)
                         .sweepAnchor("deleteConfirm")
                     }
                 }

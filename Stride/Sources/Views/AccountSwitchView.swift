@@ -93,7 +93,7 @@ struct AccountSwitchView: View {
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { Task { await cancel() } }
-                    .disabled(working != nil)
+                    .disabled(choicesDisabled)
             }
         }
         .interactiveDismissDisabled()
@@ -221,6 +221,11 @@ struct AccountSwitchView: View {
         }
     }
 
+    /// A choice is running, or an export above is still being written: every choice closes this
+    /// screen, which drops a share whose file is not written yet — and Start erases what that file
+    /// copies (`SyncService.isWritingExport`). The exports wait only on a choice.
+    private var choicesDisabled: Bool { working != nil || sync.isWritingExport }
+
     private var choiceButtons: some View {
         VStack(alignment: .leading, spacing: 10) {
             if conflict.isOwnerUnknown {
@@ -231,7 +236,7 @@ struct AccountSwitchView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.green)
-                .disabled(working != nil)
+                .disabled(choicesDisabled)
                 .accessibilityLabel(Text("Upload These Habits to This Account"))
                 .accessibilityValue(working == .upload ? Text("In progress") : Text(verbatim: ""))
             }
@@ -246,7 +251,7 @@ struct AccountSwitchView: View {
             // it exactly like "Export a Backup", the one irreversible choice on the screen looking
             // like the safe one (E2E S5).
             .tint(.red)
-            .disabled(working != nil)
+            .disabled(choicesDisabled)
             .accessibilityLabel(Text("Start from This Account's Data"))
             .accessibilityValue(working == .start ? Text("In progress") : Text(verbatim: ""))
         }

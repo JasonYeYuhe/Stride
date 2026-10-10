@@ -251,9 +251,13 @@ final class LocalDataFlowTests: XCTestCase {
 
     /// Erase Local Data removes them with the data they copy — all but the exports of the last
     /// ten minutes (1.4.0, RELEASE-1.4.0.md D6): a share of the backup just made of this data can
-    /// still be loading, and that file is the one copy of it. The deferred sweep takes those
-    /// later (ExportTests).
+    /// still be loading, and that file is the one copy of it. The sweep the erase schedules takes
+    /// those once they are past the window, and spares an export made after the erase (here with
+    /// its delay shortened, and the spared one backdated as ten minutes on).
     func testAnEraseRemovesTheExportFilesButTheLastTenMinutes() async throws {
+        let delay = DataExportService.deferredExportSweepDelay
+        DataExportService.deferredExportSweepDelay = .milliseconds(500)
+        addTeardownBlock { DataExportService.deferredExportSweepDelay = delay }
         try seedStore()
         let auth = makeAuth()
         let old = try DataExportService.writeExportFile(Data("{}".utf8), named: "Stride-Backup.json", in: exportRoot)
@@ -267,6 +271,18 @@ final class LocalDataFlowTests: XCTestCase {
         XCTAssertEqual(outcome, .erased)
         XCTAssertEqual(exportDirectories(in: exportRoot), [fresh.deletingLastPathComponent().lastPathComponent])
         XCTAssertTrue(FileManager.default.fileExists(atPath: fresh.path), "a share of it may still be loading")
+
+        // Ten minutes on, and an export made since the erase.
+        let tenMinutesOn = Date().addingTimeInterval(-(DataExportService.exportGracePeriod + 5))
+        try FileManager.default.setAttributes([.creationDate: tenMinutesOn, .modificationDate: tenMinutesOn],
+                                              ofItemAtPath: fresh.deletingLastPathComponent().path)
+        let afterTheErase = try DataExportService.writeExportFile(Data("{}".utf8), named: "Stride-Backup.json", in: exportRoot)
+        let deadline = ContinuousClock.now + .seconds(10)
+        while FileManager.default.fileExists(atPath: fresh.deletingLastPathComponent().path), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertEqual(exportDirectories(in: exportRoot), [afterTheErase.deletingLastPathComponent().lastPathComponent],
+                       "the erase's own deferred sweep took what it spared, and only that")
     }
 
     // MARK: - Restore

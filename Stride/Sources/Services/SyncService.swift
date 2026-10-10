@@ -480,12 +480,15 @@ final class SyncService {
     /// share sheet reliably says the receiver has the file (design review), and the file exists.
     func writeRecoveredEditsFile(accountID: String?,
                                  in root: URL = FileManager.default.temporaryDirectory) async throws -> WrittenExport {
+        let key = Self.exportKey(accountID)
         let clears = recoveredEditsClears
+        recoveredEditsWrites[key, default: 0] += 1
+        defer { recoveredEditsWrites[key, default: 1] -= 1 }
         let written = try await DataExportService.writeRecoveredEditsFile(log: recoveryLog, accountID: accountID, in: root)
         // A clear while the file was written: its total counts lines that are gone, and lines
         // archived after the clear would hide under it — so it is not remembered.
         if clears == recoveredEditsClears, let total = written.recoveredEditsTotal {
-            exportedRecoveredEditTotals[Self.exportKey(accountID)] = total
+            exportedRecoveredEditTotals[key] = total
         }
         return written
     }
@@ -496,23 +499,62 @@ final class SyncService {
     /// clearing — the count on screen refreshes after every sync, so a confirmation "as shown"
     /// could take a line archived between the export and the tap, never exported.
     ///
+    /// True as well while an export of that log is still being written (W4 review): the file is
+    /// read off the main actor, under the log's flock, so a clear now could land before that read
+    /// and leave the export the user just asked for without the lines it was for — and nothing
+    /// is remembered yet to compare with. The buttons that clear are disabled meanwhile
+    /// (`isWritingExport`); this is what holds for an export tapped while an erase is already
+    /// waiting on its sync, or Delete Account's recheck on one.
+    ///
     /// False when nothing was exported for this owner since the log was last cleared: clearing
     /// without exporting stays the user's choice, which the confirmations put to them ("Export
     /// them first if you might need them"). False for a log that cannot be read: there is no
     /// total to compare, and Clear's own guard keeps such a log.
     func hasRecoveredEditsNotExported() -> Bool {
         let owner = owners.owner?.id
+        if isWritingRecoveredEdits(of: owner) { return true }
         guard let exported = exportedRecoveredEditTotals[Self.exportKey(owner)],
               let now = try? recoveryLog.summary(accountID: owner) else { return false }
         return now.archivedTotal > exported
+    }
+
+    /// Export files being written right now, any kind, from any screen or window
+    /// (`DataExportService.write`, counted by `countingExportWrite`).
+    ///
+    /// 1.3.x needed no such count: its share sheet held the main thread until the file existed,
+    /// so nothing else on the screen could be tapped first. Write-first frees the screen while
+    /// the file is written (W4 review). Export as JSON in Delete Account, then Delete My Account a
+    /// second later, deleted the account before the file was ready; the sheet then closed under
+    /// the button, its share was dropped (`ExportSharePresenter.present`), and the only copy of
+    /// the erased data sat in tmp until the deferred sweep took it. Export, then Clear
+    /// Recovered Edits…, dropped the share under the confirmation the same way. So the buttons
+    /// that erase what an export copies are disabled while this is above 0 — Erase Local Data…,
+    /// Clear Recovered Edits…, Discard…, Delete My Account, Start from This Account's Data and
+    /// its sibling choices, Restore Anyway — and the share comes up before any of them can run.
+    private(set) var exportWrites = 0
+
+    var isWritingExport: Bool { exportWrites > 0 }
+
+    /// Runs one export write counted in `exportWrites`, whether it succeeds or throws.
+    func countingExportWrite<Written>(_ write: () async throws -> Written) async rethrows -> Written {
+        exportWrites += 1
+        defer { exportWrites -= 1 }
+        return try await write()
     }
 
     /// The total each owner's last export held (`writeRecoveredEditsFile`), for this session:
     /// the guard is against a sync landing between an export and a confirmation, which happen in
     /// one sitting. Keyed by `exportKey`.
     @ObservationIgnored private var exportedRecoveredEditTotals: [String: Int] = [:]
+    /// Recovered-edits writes in flight per owner (`writeRecoveredEditsFile`), keyed by
+    /// `exportKey`.
+    @ObservationIgnored private var recoveredEditsWrites: [String: Int] = [:]
     /// Moves on every clear of a recovery log this service makes (`forgetRecoveredEditsExport`).
     @ObservationIgnored private var recoveredEditsClears = 0
+
+    private func isWritingRecoveredEdits(of accountID: String?) -> Bool {
+        recoveredEditsWrites[Self.exportKey(accountID), default: 0] > 0
+    }
 
     private static func exportKey(_ accountID: String?) -> String {
         accountID.map { "account:" + $0 } ?? "no-account"
@@ -540,11 +582,13 @@ final class SyncService {
     ///
     /// Also false when the log holds more than this owner's last export did
     /// (`hasRecoveredEditsNotExported`): `expectedTotal` is taken when the dialog opens, from a
-    /// count that may already include a line archived after the export.
+    /// count that may already include a line archived after the export. And while an export of
+    /// it is still being written, which reads the log after this turn.
     @discardableResult
     func clearRecoveredEdits(expectedTotal: Int? = nil) throws -> Bool {
         defer { refreshRecoveredEdits() }
         let owner = owners.owner?.id
+        if isWritingRecoveredEdits(of: owner) { return false }
         let exported = exportedRecoveredEditTotals[Self.exportKey(owner)]
         if expectedTotal != nil || exported != nil {
             guard let now = try? recoveryLog.summary(accountID: owner) else { return false }
