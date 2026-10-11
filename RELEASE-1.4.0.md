@@ -910,21 +910,32 @@ design are below. Each was checked by that workstream's reviewer.
   - dSYMs: `build/dsyms/1.4.0-22/` and Sentry.
 - [x] `release.py prepare 1.4.0`: **iOS** record PREPARE_FOR_SUBMISSION, What's New ×6, MANUAL.
   iOS build 22 VALID.
-- [ ] **macOS 1.4.0 record: ASC refuses to create it** ("cannot create a new version in the current
+- [x] ~~**macOS 1.4.0 record: ASC refuses to create it** ("cannot create a new version in the current
   state") while macOS 1.3.1 is PENDING_DEVELOPER_RELEASE. Needs macOS 1.3.1 released first (owner's
-  go), then `release.py prepare 1.4.0` again.
+  go), then `release.py prepare 1.4.0` again.~~ **Owner released macOS 1.3.1 on 2026-10-11** (`release.py
+  release 1.3.1 --platform MAC_OS`, both platforms now READY_FOR_SALE). The macOS 1.4.0 record was
+  then created (`prepare --platform MAC_OS`), with What's New ×6, MANUAL, held for the Mac pass.
 - [ ] Mac UI pass with the variant (computer use was declined on 2026-10-11). It is the only
   unverified area: menus, ⌘0, the Settings window, the Dock badge, the Restore and Export panels,
   and Mac banner actions.
-- [ ] Store screenshots (D8, owner-approved ASC writes). Proposed sets in
+- [x] Store screenshots (D8). **The owner approved; uploaded 2026-10-11** with `store_screenshots.py`
+  (iOS 1.4.0, en-US only): APP_IPHONE_67 (1320×2868), APP_IPHONE_65 (resized 1284×2778),
+  APP_IPAD_PRO_3GEN_129 (2064×2752) and APP_IPAD_PRO_129 (resized 2048×2732), each Today /
+  Statistics / Settings, all COMPLETE on read-back. The April mocks are gone. The three Apple Watch
+  sets stay; they are never shown without a watch app. Earlier plan: Proposed sets in
   `build/store-screenshots/1.4.0/`:
   - `iphone69/` (1320×2868) and `ipad13/` (2064×2752): Today, Statistics, Settings, from the 1.4.0
     Debug `-demo` build;
   - they replace April's mocks, whose third slide claims "Unlimited habits, widgets, smart
     reminders" for Pro;
   - Mac set pending the Mac pass.
-- [ ] `push_metadata.py 1.4.0` (descriptions: the reminder-action line) in the same submission.
-- [ ] `release.py finish 1.4.0 22` (owner's go). Then `release` after approval (owner's go).
+- [x] `push_metadata.py 1.4.0`: both records (descriptions: the reminder-action line).
+- [x] **iOS submitted 2026-10-11** on the owner's go: `release.py finish 1.4.0 22 --platform IOS`
+  (the new `--platform` option), review submission `09cc9faa-a676-4fe6-b3fe-ea66acfac3eb`,
+  WAITING_FOR_REVIEW, MANUAL. CI was green on the uploaded tree `4617d1b`.
+- [ ] macOS: `release.py finish 1.4.0 22 --platform MAC_OS` once the Mac pass is clean (owner:
+  "Mac after a Mac pass").
+- [ ] After approval: `release.py release 1.4.0` (owner's go).
 
 ## Progress log
 

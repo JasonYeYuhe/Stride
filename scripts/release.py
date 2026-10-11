@@ -6,6 +6,7 @@
     scripts/release.py release 1.2.1     # after approval + the device check: go live
     scripts/release.py cancel  1.2.1     # pull a version out of review (e.g. to swap its build)
     scripts/release.py show    1.2.1     # report state without changing anything
+    scripts/release.py finish  1.4.0 22 --platform IOS   # one platform only (prepare/finish/release)
 
 Versions are created with releaseType MANUAL: an approved version waits in
 PENDING_DEVELOPER_RELEASE until `release` is run. It used to be AFTER_APPROVAL, so an
@@ -546,9 +547,20 @@ def submit(app_id, platform, version_id):
 
 
 def main():
-    cmd = sys.argv[1] if len(sys.argv) > 1 else "show"
-    version_string = sys.argv[2] if len(sys.argv) > 2 else None
-    build_number = sys.argv[3] if len(sys.argv) > 3 else None
+    global PLATFORMS
+    args = sys.argv[1:]
+    # `--platform IOS|MAC_OS` limits prepare/finish/release to one platform. Added for 1.4.0,
+    # whose iOS half was submitted while the Mac half still waited on its own UI pass: finish
+    # used to submit every platform that had a version record.
+    if "--platform" in args:
+        i = args.index("--platform")
+        if i + 1 >= len(args) or args[i + 1] not in PLATFORMS:
+            print(f"--platform takes one of {PLATFORMS}"); return 1
+        PLATFORMS = [args[i + 1]]
+        del args[i:i + 2]
+    cmd = args[0] if len(args) > 0 else "show"
+    version_string = args[1] if len(args) > 1 else None
+    build_number = args[2] if len(args) > 2 else None
     if not version_string:
         print(__doc__); return 1
     app_id = a.find_app()
@@ -605,6 +617,8 @@ def main():
         # Only an approved, held version can be released; anything else is reported, not forced.
         not_released = []
         for p, v in versions(app_id, version_string).items():
+            if p not in PLATFORMS:
+                continue
             state = v["attributes"]["appStoreState"]
             if state == "READY_FOR_SALE":
                 print(f"  [{p}] already live"); continue
