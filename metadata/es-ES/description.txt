@@ -12,7 +12,7 @@ Tampoco todos los hábitos son diarios. Elige entre todos los días, un número 
 
 RACHAS QUE TE IMPULSAN
 
-Stride cuenta tus rachas automáticamente. Los días que un hábito no toca son de descanso y no rompen la racha, y si te has propuesto un número de veces por semana, esa racha cuenta semanas en lugar de días. ¿Se te ha escapado un día? Retomas el ritmo y a seguir. Tu mejor racha queda guardada junto a la actual, y puedes compartir cualquiera como imagen.
+Stride cuenta tus rachas automáticamente. Los días que un hábito no toca son de descanso y no rompen la racha, y si te has propuesto un número de veces por semana, esa racha cuenta semanas en lugar de días. Tu mejor racha queda guardada junto a la actual, y puedes compartir cualquiera como imagen.
 
 ESTADÍSTICAS Y MAPA DE CALOR
 
@@ -20,11 +20,11 @@ Sigue tu progreso con estadísticas detalladas y un mapa de calor de tus última
 
 WIDGETS PARA LA PANTALLA DE INICIO Y LA DE BLOQUEO (iPhone y iPad)
 
-Widgets para tenerlo todo a la vista: pequeño, mediano y grande en la pantalla de inicio (extragrande en iPad), y circular, en línea y rectangular en la de bloqueo. Mira de un vistazo cuántos hábitos llevas hoy y, desde los widgets mediano y grande, márcalos sin abrir la app.
+Widgets pequeño, mediano y grande en la pantalla de inicio (extragrande en iPad), y circular, en línea y rectangular en la de bloqueo. Mira de un vistazo cuántos hábitos llevas hoy y, desde los widgets mediano y grande, márcalos sin abrir la app.
 
 RECORDATORIOS PARA CADA HÁBITO
 
-Cada hábito puede tener su propio recordatorio, a la hora que tú elijas: meditar a las 7:00, diario a las 21:00.
+Cada hábito puede tener su propio recordatorio, a la hora que tú elijas: meditar a las 7:00, diario a las 21:00. Desde la notificación puedes marcarlo como hecho o posponerlo.
 
 SINCRONIZACIÓN ENTRE DISPOSITIVOS
 

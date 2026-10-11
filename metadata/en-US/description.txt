@@ -24,7 +24,7 @@ Widgets in every size: small, medium, and large on the Home Screen (and extra la
 
 REMINDERS FOR EVERY HABIT
 
-Give every habit its own reminder, at exactly the time you want it. Morning meditation at 7 AM, evening journal at 9 PM — Stride nudges you at the right moment, so the habit sticks.
+Give every habit its own reminder, at exactly the time you want it. Morning meditation at 7 AM, evening journal at 9 PM — Stride nudges you at the right moment, so the habit sticks. Mark it done or snooze it from the notification.
 
 SYNC ACROSS YOUR DEVICES
 
@@ -47,8 +47,6 @@ Your habit data is yours. Stride keeps it on your device unless you sign in to s
 START TODAY
 
 You don’t need a Monday, a new year, or a fresh start. You need today. Download Stride and check off one habit.
-
-iPhone, iPad, and Mac.
 
 PURCHASE & SUBSCRIPTION INFORMATION
 
