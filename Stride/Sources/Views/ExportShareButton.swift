@@ -5,6 +5,8 @@ import os.log
 #if os(iOS)
 import LinkPresentation
 import UIKit
+#else
+import AppKit
 #endif
 
 /// An Export button that writes the file first and shares it after (1.4.0, RELEASE-1.4.0.md D6).
@@ -105,8 +107,16 @@ struct ExportShareButton<Label: View>: View {
                 if let file = savePanelFile { DataExportService.removeUnsharedExport(at: file) }
                 releaseSavePanelFile()
             }
+            .background(ExportButtonWindowProbe(presence: presence))
             .onAppear { presence.isOnScreen = true }
-            .onDisappear { presence.isOnScreen = false }
+            .onDisappear {
+                presence.isOnScreen = false
+                // A button that goes (its sheet closed, its window closed) keeps no hold: nothing
+                // can answer a panel it offered any more, and a hold only a panel answer releases
+                // would keep the file from every erase sweep for the life of the process. Released,
+                // not deleted — a panel that did come up may still be finishing its move.
+                releaseSavePanelFile()
+            }
             #endif
 
             if failed {
@@ -146,6 +156,18 @@ struct ExportShareButton<Label: View>: View {
             guard presence.isOnScreen else {
                 DataExportService.removeUnsharedExport(at: written.url)
                 Self.logger.info("Export save panel dropped: its button is no longer on screen")
+                return
+            }
+            // A sheet on the button's own window (an alert such as Delete Account?, another Export's
+            // save panel, a confirmation dialog) leaves no room for this panel: it would never come
+            // up, neither `fileMover` callback would run, and the hold below would never be released
+            // (final review, minor). Dropped and deleted, as the menu Export drops a pass a sheet is
+            // in the way of (ContentView). The button's own window, not the key window: the button
+            // can itself live in a sheet, whose window is then the one that matters.
+            if presence.windowShowsSheet {
+                DataExportService.removeUnsharedExport(at: written.url)
+                Self.logger.info("Export save panel dropped: a sheet is in the way")
+                NSSound.beep()
                 return
             }
             releaseSavePanelFile()
@@ -196,6 +218,30 @@ struct RecoveredEditsExportButton: View {
 @MainActor
 final class ExportButtonPresence {
     var isOnScreen = false
+    /// A view in the button's window, so the write's task can ask that window, when the file is
+    /// ready, whether a sheet is already attached. Weak: the window owns it.
+    weak var probeView: NSView?
+
+    var windowShowsSheet: Bool {
+        guard let window = probeView?.window else { return false }
+        return window.attachedSheet != nil
+    }
+}
+
+/// A zero-size view whose only job is to be in the Export button's window
+/// (`ExportButtonPresence.windowShowsSheet`).
+struct ExportButtonWindowProbe: NSViewRepresentable {
+    let presence: ExportButtonPresence
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        presence.probeView = view
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        presence.probeView = view
+    }
 }
 
 #endif
