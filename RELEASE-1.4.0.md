@@ -890,6 +890,42 @@ design are below. Each was checked by that workstream's reviewer.
   - Known, not fixed: with up to three scroll views on screen at regular width, tapping the status
     bar probably no longer scrolls to the top on iPad. SwiftUI has no public API for this.
 
+## Submission checklist (1.4.0, build 22)
+
+- [x] Gates on the final tree:
+  - StrideTests 540 (en, ja/JP);
+  - hosted suite green;
+  - `sync_rehearsal.sh` 81/0/1;
+  - `check_demo_account.sh` exit 0;
+  - kit selftest;
+  - drift clean;
+  - upgrade gates from 1.3.1, 1.3.0 and 1.2.3 PASS (widget, `--reminders`).
+- [x] Archived, verified and uploaded on both platforms (`build-appstore.sh all --upload`,
+  2026-10-11 14:46 JST, tree `4617d1b`). Each archive and export:
+  - is 1.4.0 (22), Distribution-signed, with no `get-task-allow`;
+  - has its privacy manifests;
+  - **macOS:** the signed app carries `files.user-selected.read-write` (now asserted by
+    `verify_archive.sh`).
+  - iOS: `UIBackgroundModes`/`BGTaskSchedulerPermittedIdentifiers` (product checks).
+  - dSYMs: `build/dsyms/1.4.0-22/` and Sentry.
+- [x] `release.py prepare 1.4.0`: **iOS** record PREPARE_FOR_SUBMISSION, What's New ×6, MANUAL.
+  iOS build 22 VALID.
+- [ ] **macOS 1.4.0 record: ASC refuses to create it** ("cannot create a new version in the current
+  state") while macOS 1.3.1 is PENDING_DEVELOPER_RELEASE. Needs macOS 1.3.1 released first (owner's
+  go), then `release.py prepare 1.4.0` again.
+- [ ] Mac UI pass with the variant (computer use was declined on 2026-10-11). It is the only
+  unverified area: menus, ⌘0, the Settings window, the Dock badge, the Restore and Export panels,
+  and Mac banner actions.
+- [ ] Store screenshots (D8, owner-approved ASC writes). Proposed sets in
+  `build/store-screenshots/1.4.0/`:
+  - `iphone69/` (1320×2868) and `ipad13/` (2064×2752): Today, Statistics, Settings, from the 1.4.0
+    Debug `-demo` build;
+  - they replace April's mocks, whose third slide claims "Unlimited habits, widgets, smart
+    reminders" for Pro;
+  - Mac set pending the Mac pass.
+- [ ] `push_metadata.py 1.4.0` (descriptions: the reminder-action line) in the same submission.
+- [ ] `release.py finish 1.4.0 22` (owner's go). Then `release` after approval (owner's go).
+
 ## Progress log
 
 - 2026-10-10: branch cut; codebase map; Mac Restore sandbox bug verified; design written, reviewed
