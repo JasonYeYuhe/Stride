@@ -82,7 +82,7 @@ struct SyncRecoveryLine: Codable, Equatable, Sendable {
     }
 }
 
-/// What "Export as JSON" hands the ShareLink: the log as one JSON document.
+/// What "Export Recovered Edits" writes: the log as one JSON document.
 ///
 /// Its version key is `recoveryLogVersion`, deliberately NOT `schemaVersion`: a user who picks
 /// this file in Restore would otherwise be told it is a 1.2.3 export (`DataBackup.decode` reads
@@ -340,13 +340,32 @@ final class SyncRecoveryLog: Sendable {
     /// Recovered edits → Export as JSON. Name the file with
     /// `DataExportService.fileName("Stride-RecoveredEdits", extension: "json")`.
     func exportData(accountID: String?, exportedAt: Date = Date()) throws -> Data {
+        try export(accountID: accountID, exportedAt: exportedAt).data
+    }
+
+    /// One export and what it holds.
+    struct Export: Sendable {
+        var data: Data
+        /// `Summary.archivedTotal` of the lines in `data`: lines + dropped, from the same read.
+        var archivedTotal: Int
+    }
+
+    /// `exportData`, with the total it holds (1.4.0, RELEASE-1.4.0.md D6: Clear and Erase are
+    /// bound to what was exported). Both come from ONE `read`, under one shared flock, so the
+    /// total is exactly the file's — a `summary` taken next to it could already count a line an
+    /// append landed in between, and Clear would then take that line as exported.
+    func export(accountID: String?, exportedAt: Date = Date()) throws -> Export {
         let contents = try read(accountID: accountID)
         let document = SyncRecoveryExport(recoveryLogVersion: SyncRecoveryExport.version, exportedAt: exportedAt,
                                           accountId: accountID, dropped: contents.dropped,
                                           unreadable: contents.unreadable, items: contents.lines)
         let encoder = Self.encoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        do { return try encoder.encode(document) } catch { throw SyncRecoveryLogError.encodingFailed }
+        do {
+            return Export(data: try encoder.encode(document), archivedTotal: contents.lines.count + contents.dropped)
+        } catch {
+            throw SyncRecoveryLogError.encodingFailed
+        }
     }
 
     /// Decodes what `exportData` wrote (tests, support tooling, M6's merge-import).

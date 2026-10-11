@@ -33,7 +33,27 @@
 #                               clean with a 1.3.0+ build, then `reset` to the 1.2.3 build. Up to
 #                               3 rounds.
 #   version <udid>              the INSTALLED app's version, "1.3.0 (19)"
-#   launch <udid>               cold launch (--terminate-running-process); prints the pid
+#   launch <udid> [-- <arg>…]   cold launch (--terminate-running-process); prints the pid. What
+#                               follows `--` goes to the app as its arguments (`-- -tab 2`, a
+#                               DEBUG launch argument), which also land in UserDefaults' argument
+#                               domain for that launch only. Nothing after <udid> but `-- …`.
+#   notify <udid> <habitId|-> <binary|count|none> [day]
+#                               a `simctl push` shaped like a 1.4.0 habit reminder (D4): aps.alert,
+#                               aps.category stride.habit.binary | stride.habit.count (none: no
+#                               category, a 1.3.x-shaped banner), aps.thread-id and top-level
+#                               "habitId" (`-`: none), top-level "day" (a snooze's yyyy-MM-dd) when
+#                               given. Neither is validated: malformed and lower-case ids are
+#                               router cases too. The payload is written under $ROOT/push/ and
+#                               printed. The banner shows only once notifications are allowed (the
+#                               app's own prompt; simctl cannot grant it), and only while Stride is
+#                               not frontmost (the app has no willPresent): HOME first.
+#   reminders <udid> [destdir]  the system's notification stores for the app, read from scratch
+#                               copies (into <destdir> when given): <device data>/Library/
+#                               UserNotifications/<dir>/{Pending,Delivered}Notifications.plist and
+#                               Categories.plist, <dir> from Library.plist. Prints
+#                               request/delivered/category lines (notifications.py's header).
+#                               D7's "exactly 3 pending weekday triggers" and upgrade.sh
+#                               --reminders read this.
 #   terminate <udid>            stop the app (no error when it is not running)
 #   shot <udid> <png>           screenshot of the device
 #   container <udid>            the DATA container path (it changes on every in-place install:
@@ -52,7 +72,7 @@
 source "$(dirname "$0")/lib.sh"
 
 CMD="${1:-}"
-[[ -n "$CMD" && -n "${2:-}" ]] || die "usage: app.sh install|reset|clean|version|launch|terminate|shot|container|group|prefs|store|exports|running <udid> …"
+[[ -n "$CMD" && -n "${2:-}" ]] || die "usage: app.sh install|reset|clean|version|launch|notify|reminders|terminate|shot|container|group|prefs|store|exports|running <udid> …"
 UDID="$(resolve_udid "$2")"
 shift 2
 
@@ -105,9 +125,83 @@ do_reset() {
   do_install "$app"
 }
 
+# do_launch [app argument…]: stdout is the pid only (upgrade.sh reads it); the arguments go to stderr.
 do_launch() {
   ensure_booted
-  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" | sed -n 's/^.*: *\([0-9][0-9]*\)$/\1/p'
+  [[ $# -eq 0 ]] || note "launch arguments: $*"
+  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" "$@" | sed -n 's/^.*: *\([0-9][0-9]*\)$/\1/p'
+}
+
+# do_notify <habitId|-> <binary|count|none> [day]: the payload is built by python's json module,
+# not by string pasting, because the router cases put arbitrary text in habitId and day.
+do_notify() {
+  local habit="$1" kind="$2" day="${3:-}" category="" file
+  case "$kind" in
+    binary) category="stride.habit.binary" ;;
+    count) category="stride.habit.count" ;;
+    none) ;;
+    *) die "notify: the kind is binary | count | none (got '$kind')" ;;
+  esac
+  [[ -n "$habit" ]] || die "notify: give a habit id, or - for none"
+  ensure_booted
+  installed_app >/dev/null
+  mkdir -p "$ROOT/push"
+  file="$ROOT/push/$(date -u +%Y%m%dT%H%M%SZ)-$$-$kind.json"
+  /usr/bin/python3 -I -c '
+import json, sys
+habit, category, day = sys.argv[1:4]
+aps = {"alert": {"title": "Stride E2E push",
+                 "body": "category %s, habitId %s%s" % (category or "none", habit,
+                                                        ", day " + day if day else "")},
+       "sound": "default"}
+payload = {"aps": aps}
+if category:
+    aps["category"] = category
+if habit != "-":
+    payload["habitId"] = habit
+    aps["thread-id"] = habit
+if day:
+    payload["day"] = day
+print(json.dumps(payload, indent=2, sort_keys=True))
+' "$habit" "$category" "$day" >"$file" || die "could not write the payload $file"
+  xcrun simctl push "$UDID" "$BUNDLE_ID" "$file" >&2 || die "simctl push failed (payload $file)"
+  echo "pushed $file:"
+  cat "$file"
+}
+
+# do_reminders [destdir]: copy the app's notification stores out of the device and decode them.
+do_reminders() {
+  local dest="${1:-}" scratch="" un dir f
+  un="$(device_data_dir "$UDID")/Library/UserNotifications"
+  dir="$(notifications_py appdir "$un" "$BUNDLE_ID")"
+  [[ -n "$dir" ]] || die "no UserNotifications store for $BUNDLE_ID on $UDID yet: nothing was scheduled or registered (allow notifications in the app, turn a reminder on)"
+  if [[ -z "$dest" ]]; then
+    scratch="$ROOT/scratch/reminders.$$"
+    rm_under_root "$scratch"
+    dest="$scratch"
+  fi
+  mkdir -p "$dest"
+  # A copy left in <destdir> by an earlier read must not stand in for a store that is gone now.
+  for f in PendingNotifications.plist DeliveredNotifications.plist Categories.plist; do
+    rm -f "$dest/$f"
+    if [[ -f "$dir/$f" ]]; then cp -p "$dir/$f" "$dest/"; fi
+  done
+  printf 'source\t%s\n' "$dir"
+  if [[ -f "$dest/PendingNotifications.plist" ]]; then
+    notifications_py requests "$dest/PendingNotifications.plist" || die "could not decode $dest/PendingNotifications.plist"
+  else
+    printf 'decoded-requests\tnone\n'
+  fi
+  if [[ -f "$dest/DeliveredNotifications.plist" ]]; then
+    notifications_py requests "$dest/DeliveredNotifications.plist" | sed $'s/^request\t/delivered\t/; s/^decoded-requests/decoded-delivered/' \
+      || die "could not decode $dest/DeliveredNotifications.plist"
+  fi
+  if [[ -f "$dest/Categories.plist" ]]; then
+    notifications_py categories "$dest/Categories.plist" || die "could not decode $dest/Categories.plist"
+  else
+    printf 'decoded-categories\tnone\n'
+  fi
+  if [[ -n "$scratch" ]]; then rm_under_root "$scratch"; fi
 }
 
 data_container() { xcrun simctl get_app_container "$UDID" "$BUNDLE_ID" data 2>/dev/null || die "the app is not installed on $UDID"; }
@@ -171,7 +265,16 @@ case "$CMD" in
     ensure_booted
     app_version "$(installed_app)" ;;
   launch)
-    warn_lock; do_launch ;;
+    if [[ $# -gt 0 ]]; then
+      [[ "$1" == "--" ]] || die "usage: app.sh launch <udid> [-- <app argument>…] (the app's arguments follow --; got '$1')"
+      shift
+    fi
+    warn_lock; do_launch "$@" ;;
+  notify)
+    [[ $# -ge 2 && $# -le 3 ]] || die "usage: app.sh notify <udid> <habitId|-> <binary|count|none> [day]"
+    warn_lock; do_notify "$@" ;;
+  reminders)
+    do_reminders "${1:-}" ;;
   terminate)
     do_terminate; echo "terminated (if it was running)" ;;
   running)

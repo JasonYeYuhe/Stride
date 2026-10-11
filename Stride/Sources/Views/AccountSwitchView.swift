@@ -93,7 +93,7 @@ struct AccountSwitchView: View {
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { Task { await cancel() } }
-                    .disabled(working != nil)
+                    .disabled(choicesDisabled)
             }
         }
         .interactiveDismissDisabled()
@@ -194,12 +194,11 @@ struct AccountSwitchView: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
+    /// Written on the tap, then shared (ExportShareButton). The store is frozen while this screen
+    /// is up — no sync runs until the choice — so what is written is what Start would erase.
     private var exportButtons: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ShareLink(
-                item: sync.backupFile(for: conflict, container: modelContext.container),
-                preview: SharePreview(DataExportService.fileName("Stride-Backup", extension: "json"))
-            ) {
+            ExportShareButton(sync.backupFile(for: conflict), sync: sync) {
                 Label("Export a Backup", systemImage: "square.and.arrow.up")
                     .frame(maxWidth: .infinity)
             }
@@ -212,10 +211,7 @@ struct AccountSwitchView: View {
             // `if let` first: before `.task` has counted, `holdings` is nil, and `nil != 0` offered
             // the button on the first frame only to remove it a moment later.
             if let holdings, holdings.recoveredEdits != 0 {
-                ShareLink(
-                    item: sync.recoveredEditsFile(for: conflict),
-                    preview: SharePreview(DataExportService.fileName("Stride-RecoveredEdits", extension: "json"))
-                ) {
+                ExportShareButton(sync.recoveredEditsFile(for: conflict), sync: sync) {
                     Label("Export Recovered Edits", systemImage: "square.and.arrow.up.on.square")
                         .frame(maxWidth: .infinity)
                 }
@@ -224,6 +220,11 @@ struct AccountSwitchView: View {
             }
         }
     }
+
+    /// A choice is running, or an export above is still being written: every choice closes this
+    /// screen, which drops a share whose file is not written yet — and Start erases what that file
+    /// copies (`SyncService.isWritingExport`). The exports wait only on a choice.
+    private var choicesDisabled: Bool { working != nil || sync.isWritingExport }
 
     private var choiceButtons: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -235,7 +236,7 @@ struct AccountSwitchView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.green)
-                .disabled(working != nil)
+                .disabled(choicesDisabled)
                 .accessibilityLabel(Text("Upload These Habits to This Account"))
                 .accessibilityValue(working == .upload ? Text("In progress") : Text(verbatim: ""))
             }
@@ -250,7 +251,7 @@ struct AccountSwitchView: View {
             // it exactly like "Export a Backup", the one irreversible choice on the screen looking
             // like the safe one (E2E S5).
             .tint(.red)
-            .disabled(working != nil)
+            .disabled(choicesDisabled)
             .accessibilityLabel(Text("Start from This Account's Data"))
             .accessibilityValue(working == .start ? Text("In progress") : Text(verbatim: ""))
         }
@@ -370,6 +371,11 @@ struct AccountChoiceRequest: Identifiable {
 /// A one-tap link with no LoginView open (Mail → the app on Today, or the Mac's main window)
 /// continues in a sheet StrideApp presents from `request`. LoginView counts itself in
 /// `loginFlowsOpen` so StrideApp knows which case it is.
+///
+/// Since 1.4.0 the Mac's File → Sync Now ⌘R also asks here, for the choice that blocked its sync —
+/// what Settings' own Sync Now row presents in its own sheet (RELEASE-1.4.0.md D3). The menu has
+/// no window of its own, so it brings the main window forward, or opens it, first
+/// (`MainWindows.bringForward`).
 @MainActor
 @Observable
 final class AccountChoiceRouter {
@@ -421,14 +427,21 @@ struct AccountChoiceSheet: View {
 /// from this account's data, account deletion): per-habit reminders of habits that are gone, the
 /// badge, the widgets — as Erase Local Data does in Settings — and the export files in tmp, which
 /// hold copies of what was erased (E2E S-DEL: after Delete Account the deleted account's backup
-/// and recovered edits were still there). Every export those flows offered was shared before
-/// the button that erased the store could be tapped.
+/// and recovered edits were still there).
+///
+/// Not every export at once, though (1.4.0, RELEASE-1.4.0.md D6). 1.3.x swept them all on the
+/// premise that every export these flows offered was shared before the button that erased the
+/// store could be tapped. A receiver does get its own copy of the file when it loads it
+/// (`ExportSharePresenter.itemProvider`), but a Mac service or an iOS AirDrop can load after the
+/// sheet has gone, while Start or Delete My Account are already tappable — and that export is the
+/// copy of exactly what is being erased. So the exports of the last ten minutes stay, and one
+/// deferred sweep takes them (`DataExportService.removeExportFilesAfterErase`).
 @MainActor
 enum AccountDataRefresh {
     static func afterLocalChange(in container: ModelContainer) {
         NotificationService.shared.rescheduleAllHabitReminders(modelContainer: container)
         NotificationService.shared.updateBadge(modelContainer: container)
         WidgetCenter.shared.reloadAllTimelines()
-        DataExportService.removeExportFiles()
+        DataExportService.removeExportFilesAfterErase()
     }
 }

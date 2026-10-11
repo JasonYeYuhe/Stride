@@ -11,10 +11,15 @@ struct TodayView: View {
     @Query(sort: \HabitGroup.sortOrder)
     private var groups: [HabitGroup]
 
+    /// The day shown, its anchor and the title live in the window's shell (RELEASE-1.4.0.md D2):
+    /// at regular width and on the Mac this view is kept alive while hidden, or may not exist yet,
+    /// and a size-class crossing rebuilds it — so it can neither own the day nor be the one that
+    /// re-anchors it (`ShellState.reanchor`, called by ContentView).
+    @Bindable var shell: ShellState
+    /// False while the shell keeps this tab hidden; its toolbar item is withdrawn then.
+    @Environment(\.shellTabIsActive) private var isActive
+    @Environment(\.shellUsesRegularLayout) private var regularLayout
     @State private var showingAddHabit = false
-    @State private var selectedDate = Date()
-    /// The day it was "today" when `selectedDate` was last checked; see `TodaySelection`.
-    @State private var selectionAnchor = Date()
     @Environment(\.scenePhase) private var scenePhase
     @State private var collapsedGroups: Set<UUID> = []
     /// Pending and held counts for the sync line, read from the store when it changes — not on
@@ -26,6 +31,20 @@ struct TodayView: View {
     @State private var signInAgain = SignInAgainFlow()
     private var auth = AuthService.shared
     private var sync = SyncService.shared
+    #if DEBUG
+    /// Counts this view's creations for the hosted shell tests (`ShellTabLifetime`).
+    @StateObject private var lifetime: ShellTabLifetime
+    #endif
+
+    init(shell: ShellState) {
+        self.shell = shell
+        #if DEBUG
+        _lifetime = StateObject(wrappedValue: ShellTabLifetime(.today, shell: shell))
+        #endif
+    }
+
+    /// The day the screen shows and checks in to.
+    private var selectedDate: Date { shell.todayDate }
 
     /// Habits split into ordered sections by group; falls back to a single flat
     /// section when the user has no groups.
@@ -42,30 +61,21 @@ struct TodayView: View {
         return sections
     }
 
-    private var dateTitle: String {
-        if Calendar.current.isDateInToday(selectedDate) {
-            return appLocalized("Today")
-        } else if Calendar.current.isDateInYesterday(selectedDate) {
-            return appLocalized("Yesterday")
-        } else {
-            let formatter = DateFormatter()
-            formatter.dateStyle = .medium
-            return formatter.string(from: selectedDate)
-        }
-    }
-
     private var completedCount: Int {
         habits.filter { $0.isCompletedOn(selectedDate) }.count
     }
 
     var body: some View {
+        #if DEBUG
+        let _ = lifetime
+        #endif
         todayContent
     }
 
     private var todayContent: some View {
         ScrollView {
             VStack(spacing: 20) {
-                WeekStripView(selectedDate: $selectedDate)
+                WeekStripView(selectedDate: $shell.todayDate)
                     .padding(.horizontal)
 
                 // The sync line sits under the progress card (M2, "Sync status where the user
@@ -116,18 +126,24 @@ struct TodayView: View {
                 }
             }
             .padding(.vertical)
+            .shellReadableWidth(regularLayout)
         }
         .background(Color.appBackground)
-        .navigationTitle(dateTitle)
+        // No title of its own: the shell sets it from its own state (ContentView.title).
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    showingAddHabit = true
-                } label: {
-                    Image(systemName: "plus.circle.fill")
-                        .font(.title2)
+            // Gated inside the builder, not around the view: at regular width and on the Mac
+            // every kept tab's toolbar lands in the one navigation bar, and only the place that
+            // shows may contribute (D2).
+            if isActive {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showingAddHabit = true
+                    } label: {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.title2)
+                    }
+                    .accessibilityLabel("New Habit")
                 }
-                .accessibilityLabel("New Habit")
             }
         }
         .sheet(isPresented: $showingAddHabit) {
@@ -141,11 +157,10 @@ struct TodayView: View {
         }) {
             LoginView(prefilledEmail: signInAgain.loginEmail)
         }
-        // Coming back to the app the next morning, and midnight passing while it is open.
+        // Coming back to the app: the widget saves check-ins and queues deletions in its own
+        // process. (Re-anchoring the day is the shell's, above the size-class branch.)
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
-                reanchorSelection()
-                // The widget saves check-ins and queues deletions in its own process.
                 refreshSyncCounts()
             }
         }
@@ -162,9 +177,6 @@ struct TodayView: View {
             if !syncing { refreshSyncCounts() }
         }
         .onChange(of: auth.isLoggedIn) { _, _ in refreshSyncCounts() }
-        .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged).receive(on: DispatchQueue.main)) { _ in
-            reanchorSelection()
-        }
     }
 
     /// Reads the store only while signed in: signed out, Today shows no sync line, and a store of
@@ -177,12 +189,6 @@ struct TodayView: View {
         if let counts = try? SyncStatusCounts.read(in: modelContext, deletions: SyncDeletionQueue.live.pending()) {
             syncCounts = counts
         }
-    }
-
-    private func reanchorSelection() {
-        let now = Date()
-        selectedDate = TodaySelection.reanchored(selected: selectedDate, shownOn: selectionAnchor, now: now)
-        selectionAnchor = now
     }
 
     private func isCollapsed(_ group: HabitGroup?) -> Bool {
@@ -684,8 +690,23 @@ struct HabitRowView: View {
             print("Failed to save habit completion: \(error)")
             #endif
         }
-        WidgetCenter.shared.reloadAllTimelines()
-        NotificationService.shared.updateBadge(modelContainer: modelContext.container)
+        refresh(checkedIn: result.deletedRecordID == nil)
+    }
+
+    /// After a save: the widgets and the badge, always. A check-in goes through `CheckInEffects`
+    /// (RELEASE-1.4.0.md D4), which also ends the habit's snooze and withdraws its banners, but
+    /// only for a day those can be asking for (`CheckInEffects.endsReminders`): `date` is the week
+    /// strip's, and a backfill of Wednesday at 20:30 on Thursday must leave Thursday's snooze and
+    /// banner alone. Taking a check-in back (an un-check, a unit removed) leaves them too, since
+    /// they still ask for something not done.
+    private func refresh(checkedIn: Bool) {
+        if checkedIn {
+            CheckInEffects.afterCheckIn(habitID: habit.id, container: modelContext.container,
+                                        endsReminders: CheckInEffects.endsReminders(checkingIn: date))
+        } else {
+            WidgetCenter.shared.reloadAllTimelines()
+            NotificationService.shared.updateBadge(modelContainer: modelContext.container)
+        }
     }
 
     // MARK: - Count habit logging
@@ -710,7 +731,7 @@ struct HabitRowView: View {
         #if os(iOS)
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         #endif
-        saveAndRefresh()
+        saveAndRefresh(checkedIn: true)
     }
 
     private func decrementCount() {
@@ -722,17 +743,17 @@ struct HabitRowView: View {
             record.value -= 1
             record.touch()
         }
-        saveAndRefresh()
+        saveAndRefresh(checkedIn: false)
     }
 
     private func resetCount() {
         guard let record = habit.record(on: date) else { return }
         SyncService.shared.trackDeletedEntry(record.id.uuidString)
         modelContext.delete(record)
-        saveAndRefresh()
+        saveAndRefresh(checkedIn: false)
     }
 
-    private func saveAndRefresh() {
+    private func saveAndRefresh(checkedIn: Bool) {
         do {
             try modelContext.save()
         } catch {
@@ -740,8 +761,7 @@ struct HabitRowView: View {
             print("Failed to save count update: \(error)")
             #endif
         }
-        WidgetCenter.shared.reloadAllTimelines()
-        NotificationService.shared.updateBadge(modelContainer: modelContext.container)
+        refresh(checkedIn: checkedIn)
     }
 }
 

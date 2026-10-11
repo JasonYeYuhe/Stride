@@ -42,7 +42,13 @@ when called without arguments, and every script's header comment is its full ref
   shut-down one.
 - **Hold the device lock** while you use a device: `lock.sh acquire pro <label>`. If someone else
   holds it, poll every 60 s for up to 40 min (`--wait`), then report BLOCKED. Release only your
-  own lock.
+  own lock. `scripts/a11y_sweep.sh` takes the same `/tmp/lock-<device>` from 1.4.0; to run it
+  inside your own hold, pass `STRIDE_SIM_LOCK_LABEL=<label>`.
+- **The hosted tests are not run on the kit's devices.** From 1.4.0 `run_hosted_tests.sh` uses
+  "iPhone 17" under `/tmp/lock-iphone-17`. A hosted run installs an unsigned build over the kit's:
+  its launch removes every pending `stride.habit.reminder.*` request on the device and spends the
+  data container's once-per-install flags. If one ever lands on `pro`/`promax`, `app.sh reset`
+  the device; a plain reinstall keeps the spent flags.
 - If **CoreSimulator wedges**, run `killall -9 com.apple.CoreSimulator.CoreSimulatorService`.
 - The kit never edits app or server code, and never pushes.
 
@@ -59,8 +65,11 @@ $ROOT/
   builds/<label>/build.log
   worktrees/<label>/            a detached worktree of a ref, only while it builds
   upgrades/<label>/             one upgrade.sh run: report.txt, before/ and after/ store copies,
-                                devicelog.txt, prefs, first-launch.png, requests.txt
-  scratch/                      upgrade.sh's throwaway store copies, removed after each read
+                                devicelog.txt, prefs, first-launch.png, requests.txt; with
+                                --reminders also reminders-{before,after}/ (the notification
+                                stores) and reminders-{before,after,check}.txt
+  push/                         every app.sh notify payload (<UTC time>-<pid>-<kind>.json)
+  scratch/                      upgrade.sh's and app.sh reminders' throwaway copies, removed after each read
   selftest.<pid>/               selftest.sh's fake device and stubs, removed when it ends
 ```
 
@@ -163,12 +172,65 @@ simulators are shared.
 
 ```
 upgrade.sh <udid> <old app> <new app> [--wait <s>] [--server <name>] [--label <name>] [--relaunch]
+           [--reminders <daily habit id>,<Mon/Wed/Fri habit id>]
 upgrade.sh check-log <device log>       the device-log check alone, on a saved log
-upgrade.sh check-gate <device log>      the store-gate order alone, on a saved log
+upgrade.sh check-gate <device log> [<marker before>]
+                                        the store-gate order alone, on a saved log
 upgrade.sh check-dir <dir>              the default.store check alone, on a directory
 upgrade.sh counts <store dir | file>    row counts + model checksum of a saved store
 upgrade.sh prefs <plist | listing>      its stride_delivery_* entries
+upgrade.sh check-reminders <listing | dir> <daily id>,<M/W/F id>
+                                        the after-upgrade reminder check alone, on an
+                                        `app.sh reminders` listing or a directory of the plists
 ```
+
+### Reminder habits (`--reminders`, from 1.4.0)
+
+1.4.0 changes what a reminder is (RELEASE-1.4.0.md D4): a specific-days habit gets one weekly
+trigger per day, `stride.habit.reminder.<id>.<w>` (w = 1 Sun … 7 Sat), instead of 1.3.x's single
+daily `stride.habit.reminder.<id>`, which a daily habit keeps; requests carry the category
+`stride.habit.binary` or `stride.habit.count`, both registered at launch. The first 1.4.0 launch
+after the upgrade converts what 1.3.x left. `--reminders` checks that conversion against the
+system's own store, not an app log line:
+
+- **Where it is read.** `<device data>/Library/UserNotifications/<dir>/PendingNotifications.plist`
+  and `Categories.plist`; `Library.plist` beside them maps the bundle id to `<dir>`. The device
+  data directory is simctl's `dataPath`. Scratch copies only, decoded by `notifications.py`
+  (python3 plistlib; NSKeyedArchiver). `app.sh reminders <udid> [destdir]` prints the same
+  listing for any run.
+- **Before the install** (part of the starting point): both habits' bare ids are pending. Anything
+  else exits 1.
+- **After the first launch**, re-read up to `STRIDE_E2E_REMINDER_TRIES` times (10), every
+  `STRIDE_E2E_REMINDER_PAUSE` s (3), because the daemon writes the file after the app's removes
+  and adds. PASS needs all of:
+  - the Mon/Wed/Fri habit has exactly `.2`, `.4` and `.6`, and no bare id;
+  - the daily habit keeps exactly its bare id;
+  - both categories are registered in `Categories.plist`;
+  - when the records show categories at all, those four requests carry one of the two.
+- **The record format was inferred, not observed.** No simulator here had ever held a pending
+  request when this was written: the request records' keys (`AppNotificationIdentifier`,
+  `SBSPushStoreNotificationCategoryKey`) come from the iOS 26.5 runtime's UserNotificationsCore
+  strings; `Library.plist` and `Categories.plist` were observed. When no record decodes, the
+  listing says `decoded-requests strings` and the ids come from the archive's strings, which
+  still decide the id checks; request categories are then a NOTE. Check the first real run's
+  `reminders-after.txt` against `plutil -p reminders-after/PendingNotifications.plist`.
+
+**The starting point**, on the OLD build, after `app.sh reset <dev> <old app>` (the uninstall
+removes the notification permission with the app):
+
+1. Allow notifications. `simctl privacy` cannot grant them, so: in the app, turn on a habit's
+   reminder, and answer the system prompt **Allow** with the iOS Simulator MCP
+   (`mcp__Claude_Code_iOS_Simulator__control`, screenshot, then tap). An in-place install keeps
+   the permission.
+2. Create two habits with reminders on: one daily, and one on specific days **Mon, Wed and Fri**.
+   Sign in and sync as usual (the gate's scenario).
+3. Read their ids: `sql.sh <server> "SELECT id, name FROM habits"` after the sync, or the two
+   `stride.habit.reminder.<id>` lines of `app.sh reminders <dev>`.
+4. `app.sh reminders <dev>` shows both bare ids pending. Then run
+   `upgrade.sh <dev> <old> <new> --server <name> --relaunch --reminders <daily id>,<M/W/F id>`.
+
+A run without `--reminders` reads no notification store, so devices without reminder habits (every
+gate run before 1.4.0) work as before.
 
 **Starting point:** `<udid>` runs `<old app>` (the same version and build) over a store it has
 synced, with no `default.store` in either container. `app.sh reset` gives that: an uninstall
@@ -177,7 +239,10 @@ removes the containers. `upgrade.sh` refuses any other starting point (exit 1).
 **What it does:**
 
 1. Terminates the app. Copies `Stride.store` (with `-wal` and `-shm`) to `before/` and prints its
-   sha1, row counts and model checksum. Saves the prefs.
+   sha1, row counts and model checksum. Saves the app's prefs (`prefs-before.txt`) and the App
+   Group's (`group-prefs-before.txt`): what the OLD build already did — the store gate's marker
+   and the delivery migration's done flag, both written by 1.3.1+ — so the checks below can tell
+   it from the new build's work.
 2. Runs `xcrun simctl install <new app>` **in place**: no uninstall, so the containers stay. It
    checks the store files are byte-identical after the install. A change there means something
    opened the store before the app did.
@@ -212,6 +277,14 @@ removes the containers. `upgrade.sh` refuses any other starting point (exit 1).
      away before the app's open (with the reasons, e.g. `2 waitForApp(noMarker)`), or a NOTE that
      the gate was not exercised (no widget placed), and whether the widget opened afterwards. A
      log with no gate line at all is a build before the gate, and passes this check.
+     - **From a build with the gate (1.3.1+)** the marker is already there before the install
+       (`group-prefs-before.txt`), and the gate lets the widget in at once when the store is at
+       its schema: "Store opened in the extension at schema N" before the app's open, with N the
+       old marker, is a NOTE, not a fail — no migration was pending for it to race. It still
+       fails if the model checksum then changed (the app migrated a store the widget had open),
+       and if the checksum could not be read on either side: unknown is not unchanged (second
+       fix pass). Until the 2026-10-11 fix pass every upgrade from v1.3.1 with a widget was a
+       false FAIL (`upgrades/e1-131to140-widget`).
    - **The marker:** `stride_store_schema_version` in the App Group prefs
      (`group-prefs-after.txt`). Missing in a build with the gate fails: the widget would wait
      forever.
@@ -219,7 +292,13 @@ removes the containers. `upgrade.sh` refuses any other starting point (exit 1).
      mark: stamped at least 5 minutes before `stride_last_sync_time`. When there are any, the run
      fails unless the marks wait in the prefs (`stride_delivery_marks_unproven`) or the first full
      pull asked `?deletionsSince=` (the marks' proof ran and cleared them). Neither is U123's
-     signature: the migration ran on another store.
+     signature: the migration ran on another store. When `prefs-before.txt` already has
+     `stride_delivery_migration_v1_done` (1.3.1+ ran it on its own first launch), this launch runs
+     no migration and marks nothing: a NOTE, not a fail — as long as none of the old build's marks
+     still waited there. When `stride_delivery_marks_unproven` or `…_unverified` was there too (a
+     1.3.1 device upgraded from 1.3.0 that never made the full pull), the mark must still wait in
+     `prefs-after.txt`, or the first full pull must have asked `?deletionsSince=`; otherwise the
+     run fails: the marks were lost, and the next full pull can archive rows deleted elsewhere.
    - **Recovered edits:** the lines of the data container's
      `Library/Application Support/SyncRecoveryLog/*.jsonl`. Any new line fails: the gate's
      scenario edits nothing on the upgraded device, so a recovered edit is a row pushed back that
@@ -230,10 +309,13 @@ removes the containers. `upgrade.sh` refuses any other starting point (exit 1).
 
 **Exit codes:**
 
-- **0 PASS:** no fallback, no widget open before the app's, the marker written (in a build with
-  the gate), the qualifying rows marked, no recovered edit.
+- **0 PASS:** no fallback, no widget open before the app's (or only at the old build's own
+  marker, the model unchanged), the marker written (in a build with the gate), the qualifying rows
+  marked (or the migration already the old build's), no recovered edit.
 - **3 FAIL:** a failed open in the log, any `default.store`, the app not running after the wait,
   a widget open before the app's, no marker, qualifying rows left unmarked, or a recovered edit.
+  The verdict says "did not open Stride.store" only for an actual failed open (a fallback or the
+  error screen); the other fails are named as signs of the upgrade race.
 - **1:** the run could not be made.
 
 Everything lands in `$ROOT/upgrades/<label>/` (default `<UTC time>-<pro|promax>`), with
@@ -468,7 +550,11 @@ app.sh reset <udid> <app>          terminate, uninstall, install (see the Keycha
 app.sh clean <udid> <server> <app> [--revoke]
                                    reset + cold launch + read the launch session check (below)
 app.sh version <udid>              the INSTALLED app's version, e.g. "1.3.0 (19)"
-app.sh launch <udid>               cold launch (--terminate-running-process); prints the pid
+app.sh launch <udid> [-- <arg>…]   cold launch (--terminate-running-process) with these app
+                                   arguments; prints the pid
+app.sh notify <udid> <habitId|-> <binary|count|none> [day]
+                                   a simctl push shaped like a 1.4.0 habit reminder (below)
+app.sh reminders <udid> [destdir]  the system's notification stores for the app, decoded (below)
 app.sh terminate <udid>
 app.sh running <udid>              exit 0 when the app is running
 app.sh shot <udid> <png>           screenshot
@@ -501,6 +587,66 @@ so silence is the "no token" answer.
   `require_running` makes sure the kit's server is the one on 3002. A token that remained would
   show as "Signed in" in Settings at the next step.
 
+**Launch arguments** (1.4.0). Everything after `--` goes to the app, and into UserDefaults'
+argument domain for that launch only: `app.sh launch pro -- -tab 1`, or D7's DEBUG
+background-handler argument. stdout stays the pid alone (upgrade.sh reads it); the arguments are
+echoed on stderr. Arguments without `--` are refused.
+
+**`notify`: the notification actions without waiting for a reminder** (RELEASE-1.4.0.md D7, the
+router matrix). It writes a payload under `$ROOT/push/` and runs
+`xcrun simctl push <udid> yyh.stride.habittracker <file>`:
+
+```json
+{
+  "aps": {
+    "alert": {"body": "category stride.habit.binary, habitId <id>, day 2026-10-10", "title": "Stride E2E push"},
+    "category": "stride.habit.binary",
+    "sound": "default",
+    "thread-id": "<id>"
+  },
+  "day": "2026-10-10",
+  "habitId": "<id>"
+}
+```
+
+- `binary` / `count` set `aps.category` to `stride.habit.binary` / `stride.habit.count`, which
+  gives the banner Mark Done / Add 1 and Snooze 1 Hour. `none` sets no category: a 1.3.x-shaped
+  banner with no buttons.
+- `-` leaves out `habitId` (and `thread-id`), as a 1.3.x request has none.
+- `day` is top-level, as on a snooze (`yyyy-MM-dd`, the day the reminder was for).
+- Neither the id nor the day is validated: malformed and lower-case ids are router cases too.
+- The banner appears only once notifications are allowed (the starting point under "Reminder
+  habits") and only while Stride is not frontmost, since the app has no `willPresent`: press HOME
+  first. To reach its actions (observed 2026-10-11, iOS 26.5, the iOS Simulator MCP):
+  - **On the lock screen:** swipe the banner LEFT, then tap **View**: Mark Done / Add 1 and
+    Snooze 1 Hour appear. A long-press does not work: the MCP's `tap` with a duration and
+    `touch_path` holds of 1.2–2 s both showed no action menu.
+  - **On the home screen:** pull the banner DOWN; it expands with its actions. A `simctl push`
+    banner uses the default Temporary style and can vanish before a screenshot: pull it down right
+    after the push and it stays.
+- A push proves the router and the action handler, not the scheduling. D7 keeps one real fire: two
+  reminders two minutes ahead, the app terminated and the device locked.
+
+**`reminders`: what the system holds.** It copies `PendingNotifications.plist`,
+`DeliveredNotifications.plist` and `Categories.plist` of the app's
+`<device data>/Library/UserNotifications/<dir>/` into `<destdir>` (or a scratch directory), and
+prints one tab-separated line per fact:
+
+```
+source              <the directory read>
+decoded-requests    records | strings | none
+request             <id>  <category | - | ?>  <trigger, e.g. weekday=2 hour=20 minute=0 repeats>
+decoded-delivered   records | strings
+delivered           <id>  <category>  <trigger>
+decoded-categories  records | strings | none
+category            <id>  <action ids>
+```
+
+D7's "exactly 3 pending weekday triggers" for a Mon/Wed/Fri habit is three `request` lines
+`stride.habit.reminder.<id>.2/.4/.6` and no bare `stride.habit.reminder.<id>`. Delivered banners
+withdrawn by a check-in disappear from the `delivered` lines. `notifications.py`'s header has
+the archive format and what was inferred rather than observed.
+
 ### selftest.sh: the kit's own checks, offline
 
 ```
@@ -509,7 +655,8 @@ selftest.sh [--keep]
 
 It runs `app.sh` and `upgrade.sh` for real against a fake device: plain directories under
 `$ROOT/selftest.<pid>/`, with `xcrun`, `lsof` and `ps` stubbed on `PATH`. The `xcrun` stub refuses
-any call it does not know, so no simulator, server, port or lock is touched. It takes about 12 s.
+any call it does not know, so no simulator, server, port or lock is touched. It takes under a
+minute (102 cases since the 2026-10-11 fix pass).
 
 It covers:
 
@@ -524,7 +671,22 @@ It covers:
   never opened, a build before the gate, no widget request), and runs that pass with the gate, the
   marker, the marks and a quiet relaunch, or fail on a missing marker, a widget open first,
   unmarked rows, or recovered edits on the relaunch;
-- `app.sh store`'s warning about an app-group `default.store`.
+- an upgrade from 1.3.1 (fix pass): `check-gate` with the old marker (a note at the same schema, a
+  fail at another), a run that passes with the widget first at the old marker and the migration
+  already done, one that fails when the store was migrated after all, and the verdict's "did not
+  open Stride.store" only for a real failed open; since the second fix pass also a widget-first
+  run whose checksum cannot be read (fails), and the old build's waiting marks kept (passes),
+  lost (fails) and proved by a `?deletionsSince=` pull (passes);
+- `app.sh store`'s warning about an app-group `default.store`;
+- 1.4.0: `app.sh launch -- <args>` (the stub records the app's arguments; arguments without `--`
+  are refused); `app.sh notify` for each kind, with and without a day, a lower-case id, an unknown
+  kind, and a not-installed app (the stub's `push` records every payload and refuses one without
+  `aps.category`, or with the wrong one, unless the case means `none`); `app.sh reminders` through
+  `Library.plist` and by the directory scan, and with no store yet; `check-reminders` on seven
+  fixture stores (NSKeyedArchiver archives built by the selftest: the conversion, none, a bare id
+  left, a daily habit given weekdays, no categories, an unregistered category, unknown record
+  keys); and `upgrade.sh --reminders` runs that pass, fail, or are refused at the starting point,
+  plus a run without the flag that reads no store.
 
 Run it after any change to the kit. `SELFTEST_KIT=<dir>` runs the same cases against another copy
 of the kit. The kit at `aa8d8fd` fails 15 of them, the cases these fixes are for, and the kit at

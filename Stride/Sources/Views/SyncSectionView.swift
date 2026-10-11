@@ -317,16 +317,21 @@ struct SyncSectionView: View {
         .disabled(busyReason != nil || sync.isSyncing)
         .accessibilityValue(busy ? Text("Processing...") : Text(verbatim: ""))
 
+        // Not while an export is being written either: "Export a backup first" is what the
+        // confirmation asks, that backup is shared only once written, and one written under this
+        // dialog was dropped (`SyncService.isWritingExport`).
+        let discardDisabled = busyReason != nil || sync.isSyncing || sync.isWritingExport
         Button(role: .destructive) {
             actionError = nil
             discardReason = group.reason
         } label: {
             // Red icon as well as title: the role colours the title only, and a green (tint)
-            // trash can beside a red "Discard…" split the destructive cue.
+            // trash can beside a red "Discard…" split the destructive cue. Dimmed by hand while
+            // disabled, as Delete My Account: an explicit style overrides the system's.
             Label("Discard…", systemImage: "trash")
-                .foregroundStyle(.red)
+                .foregroundStyle(.red.opacity(discardDisabled ? 0.4 : 1))
         }
-        .disabled(busyReason != nil || sync.isSyncing)
+        .disabled(discardDisabled)
         // Each dialog hangs on the button that opens it (on iPad it points at it), never on the
         // Section: a modifier on a Section is applied to every row in it.
         .confirmationDialog(
@@ -388,7 +393,7 @@ struct SyncSectionView: View {
         .accessibilityElement(children: .combine)
         .sweepAnchor("syncRecovered")
 
-        RecoveredEditsShareLink(sync: sync)
+        RecoveredEditsExportButton(sync: sync)
 
         Button(role: .destructive) {
             actionError = nil
@@ -397,8 +402,12 @@ struct SyncSectionView: View {
             showingClearConfirm = true
         } label: {
             Label("Clear Recovered Edits…", systemImage: "trash")
-                .foregroundStyle(.red)
+                .foregroundStyle(.red.opacity(sync.isWritingExport ? 0.4 : 1))
         }
+        // Not while the export above is being written: a write that finished under this dialog
+        // dropped its share, and Clear then took the lines it was for (`SyncService.isWritingExport`;
+        // `clearRecoveredEdits` refuses such a clear too).
+        .disabled(sync.isWritingExport)
         .confirmationDialog("Clear Recovered Edits?", isPresented: $showingClearConfirm, titleVisibility: .visible) {
             Button("Clear", role: .destructive) { clearRecoveredEdits(expectedTotal: clearExpectedTotal) }
             Button("Cancel", role: .cancel) {}
@@ -526,23 +535,6 @@ struct SyncSectionView: View {
         let message = appLocalized("Unable to save changes. Please try again.")
         actionError = message
         AccessibilityNotification.Announcement(message).post()
-    }
-}
-
-/// "Export Recovered Edits": the owner's recovery log as a `.json` file
-/// (`RecoveredEditsJSONFile`, written only when a destination is picked). Shared by the sync
-/// section, Erase Local Data (offered before the erase, which hides the lines until that account
-/// owns the store again) and the restore hand-over.
-struct RecoveredEditsShareLink: View {
-    let sync: SyncService
-
-    var body: some View {
-        ShareLink(
-            item: sync.recoveredEditsFile,
-            preview: SharePreview(DataExportService.fileName("Stride-RecoveredEdits", extension: "json"))
-        ) {
-            Label("Export Recovered Edits", systemImage: "square.and.arrow.up")
-        }
     }
 }
 

@@ -271,8 +271,9 @@ enum SyncBlockReason: Equatable {
     case alreadyRunning
     case signedOut
     case ownerUnsettled
-    /// An automatic run inside the owner's backoff window (`SyncBackoffStore`): the server said
-    /// to wait, or the last runs failed. Nothing was sent. A manual run is never blocked by it.
+    /// An automatic or background run inside the owner's backoff window (`SyncBackoffStore`): the
+    /// server said to wait, or the last runs failed. Nothing was sent. A manual run is never
+    /// blocked by it.
     case backingOff(SyncBackoffState)
 }
 
@@ -401,12 +402,13 @@ final class SyncEngine {
     ///   removes delivered-but-absent rows (archived) before anything is pushed.
     /// - Chunks go in sequence and the run stops at the first one that fails; later chunks do not
     ///   run, and the retry resumes there (the acknowledged ones are no longer pending).
-    /// - An `.automatic` run waits out the owner's backoff window (`.blocked(.backingOff)`, no
-    ///   request); a `.manual` one goes at once ("Sync Now retries at once"). Either way the
-    ///   outcome is written to the backoff under the owner the run was BOUND to: a run that ends
-    ///   after a switch to another account must not leave its failure (or its success) on that
-    ///   account, which is why this is here and not in the wrapper, which only knows who is
-    ///   signed in by the time the run returns.
+    /// - An `.automatic` or `.background` run waits out the owner's backoff window
+    ///   (`.blocked(.backingOff)`, no request); a `.manual` one goes at once ("Sync Now retries at
+    ///   once"). Either way the outcome is written to the backoff — with the trigger, which decides
+    ///   whether a run that got no answer counts (`SyncBackoffTrigger.recordsNoAnswer`) — under the
+    ///   owner the run was BOUND to: a run that ends after a switch to another account must not
+    ///   leave its failure (or its success) on that account, which is why this is here and not in
+    ///   the wrapper, which only knows who is signed in by the time the run returns.
     func run(in context: ModelContext, options: SyncRunOptions = [],
              trigger: SyncBackoffTrigger = .manual) async -> SyncRunOutcome {
         guard !isRunning else { return .blocked(.alreadyRunning) }
@@ -433,9 +435,10 @@ final class SyncEngine {
             context.rollback()
             outcome = .stopped(.localFailure(String(describing: error)), run.summary)
         }
-        // Success resets; a back-off stop adds a failure; anything else (a reauth, a sign-out
-        // mid-run, a local failure) leaves the window as it was (`SyncBackoffStore.record`).
-        backoff?.record(outcome, for: binding.ownerID)
+        // Success resets; a back-off stop adds a failure (not a background run's no-answer);
+        // anything else (a reauth, a sign-out mid-run, a local failure) leaves the window as it
+        // was (`SyncBackoffStore.record`).
+        backoff?.record(outcome, for: binding.ownerID, trigger: trigger)
         return outcome
     }
 

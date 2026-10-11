@@ -38,7 +38,7 @@ struct RestoreHandoverView: View {
 
                     if offersExport {
                         Section {
-                            RecoveredEditsShareLink(sync: sync)
+                            RecoveredEditsExportButton(sync: sync)
                                 .sweepAnchor("handoverExport")
                         }
                     }
@@ -48,10 +48,14 @@ struct RestoreHandoverView: View {
                             onRestore()
                         } label: {
                             // Red icon as well as title, as the Sync section's destructive rows
-                            // (phase C review, UI-6): the role colours the title only.
+                            // (phase C review, UI-6): the role colours the title only. Dimmed by
+                            // hand while disabled, as Delete My Account.
                             Label("Restore Anyway", systemImage: "clock.arrow.circlepath")
-                                .foregroundStyle(.red)
+                                .foregroundStyle(.red.opacity(sync.isWritingExport ? 0.4 : 1))
                         }
+                        // Not while the export above is being written: this closes the sheet
+                        // under it, and its share was dropped (`SyncService.isWritingExport`).
+                        .disabled(sync.isWritingExport)
                         .sweepAnchor("handoverRestore")
                     }
                 }

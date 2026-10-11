@@ -343,6 +343,50 @@ WHATS_NEW_BY_VERSION = {
              "sesión de nuevo para seguir sincronizando” en lugar de que la sincronización "
              "falle en silencio.",
   },
+  "1.4.0": {
+    "en-US": "• Reminders now have buttons: Mark Done (Add 1 on a count habit) and Snooze 1 Hour, right on the lock screen or in Notification Center.\n"
+             "• Reminders for a habit on specific days now arrive only on those days.\n"
+             "• On iPhone and iPad, a check-in from a reminder or a widget can now sync in the background, so your other devices see it sooner.\n"
+             "• On iPad, the sidebar keeps your place: moving between Today and Statistics no longer resets the day you picked or the habit you were looking at.\n"
+             "• On Mac, Settings is now under Stride → Settings… (⌘,). The menu bar has New Habit, Sync Now, Export and Weekly Review, with keyboard shortcuts. If Stride’s notifications are allowed, the Dock icon shows how many habits are left today; you can turn this off in System Settings → Notifications → Stride. Restore from Backup now opens its file window, and Export saves the file where you choose.\n"
+             "• Exporting a backup opens right away.\n"
+             "• The Statistics heatmap now shows every day under its own weekday, and on iPad and Mac it fills its card.",
+    "zh-Hans": "• 提醒现在带有按钮：「标记为完成」（计数习惯为「加 1」）和「1 小时后再提醒」，在锁定屏幕或通知中心即可直接操作。\n"
+               "• 只在特定日期进行的习惯，现在只在这些日期提醒。\n"
+               "• 在 iPhone 和 iPad 上，通过提醒或小组件完成的打卡现在可以在后台同步，你的其他设备能更快看到。\n"
+               "• 在 iPad 上，侧边栏会记住你的位置：在「今天」和「统计」之间切换时，不再重置你选中的日期和正在查看的习惯。\n"
+               "• 在 Mac 上，设置现在位于 Stride → 设置…（⌘,）。菜单栏提供「新习惯」「立即同步」「导出」和「每周回顾」，并配有键盘快捷键。如果允许 Stride 发送通知，程序坞图标会显示今天还剩几个习惯；可以在系统设置 → 通知 → Stride 中关闭。「从备份恢复」现在会打开文件窗口，「导出」会把文件保存到你选择的位置。\n"
+               "• 导出备份时会立即打开。\n"
+               "• 「统计」中的热力图现在会把每一天显示在对应的星期下面，在 iPad 和 Mac 上还会铺满整张卡片。",
+    "zh-Hant": "• 提醒現在帶有按鈕：「標記為完成」（計數習慣為「加 1」）和「1 小時後再提醒」，在鎖定畫面或通知中心即可直接操作。\n"
+               "• 只在特定日期進行的習慣，現在只在這些日期提醒。\n"
+               "• 在 iPhone 和 iPad 上，透過提醒或小工具完成的打卡現在可以在背景同步，你的其他裝置能更快看到。\n"
+               "• 在 iPad 上，側邊欄會記住你的位置：在「今天」和「統計」之間切換時，不再重設你選取的日期和正在查看的習慣。\n"
+               "• 在 Mac 上，設定現在位於 Stride → 設定…（⌘,）。選單列提供「新習慣」「立即同步」「匯出」和「每週回顧」，並配有鍵盤快速鍵。如果允許 Stride 傳送通知，Dock 圖像會顯示今天還剩幾個習慣；可以在系統設定 → 通知 → Stride 中關閉。「從備份恢復」現在會開啟檔案視窗，「匯出」會把檔案儲存到你選擇的位置。\n"
+               "• 匯出備份時會立即開啟。\n"
+               "• 「統計」中的熱度圖現在會把每一天顯示在對應的星期下方，在 iPad 和 Mac 上還會填滿整張卡片。",
+    "ja": "• リマインダーにボタンが付きました。「完了にする」（カウント型の習慣は「1つ追加」）と「1時間後に再通知」を、ロック画面や通知センターから直接使えます。\n"
+          "• 特定の曜日だけ行う習慣のリマインダーは、その曜日にだけ届くようになりました。\n"
+          "• iPhone と iPad では、リマインダーやウィジェットからのチェックインがバックグラウンドで同期されるようになり、ほかのデバイスにも早く反映されます。\n"
+          "• iPad では、サイドバーが表示中の位置を覚えています。「今日」と「統計」を行き来しても、選んだ日や見ていた習慣がリセットされなくなりました。\n"
+          "• Mac では、設定は Stride → 設定…（⌘,）に移りました。メニューバーに「新しい習慣」「今すぐ同期」「書き出し」「週間レビュー」が加わり、キーボードショートカットも使えます。Stride の通知を許可している場合は、今日の残りの習慣の数が Dock アイコンに表示されます。システム設定 → 通知 → Stride でオフにできます。「バックアップから復元」がファイルを選ぶウインドウを開くようになり、書き出したファイルは好きな場所に保存できます。\n"
+          "• バックアップの書き出しがすぐに開くようになりました。\n"
+          "• 「統計」のヒートマップで、すべての日が正しい曜日の下に表示されるようになりました。iPad と Mac ではカードいっぱいに表示されます。",
+    "ko": "• 이제 알림에 버튼이 있습니다. ‘완료로 표시’(횟수 습관은 ‘1 추가’)와 ‘1시간 후 다시 알림’을 잠금 화면이나 알림 센터에서 바로 사용할 수 있습니다.\n"
+          "• 특정 요일에만 하는 습관의 알림은 이제 그 요일에만 옵니다.\n"
+          "• iPhone과 iPad에서는 알림이나 위젯으로 체크인한 기록이 백그라운드에서 동기화될 수 있어, 다른 기기에서도 더 빨리 보입니다.\n"
+          "• iPad에서는 사이드바가 보던 위치를 기억합니다. ‘오늘’과 ‘통계’를 오가도 선택한 날짜와 보던 습관이 초기화되지 않습니다.\n"
+          "• Mac에서는 설정이 Stride → 설정…(⌘,)으로 옮겨졌습니다. 메뉴 막대에 ‘새로운 습관’, ‘지금 동기화’, ‘내보내기’, ‘주간 리뷰’가 키보드 단축키와 함께 추가되었습니다. Stride의 알림을 허용하면 Dock 아이콘에 오늘 남은 습관 수가 표시되며, 시스템 설정 → 알림 → Stride에서 끌 수 있습니다. ‘백업에서 복원’이 이제 파일 창을 열고, 내보내기는 원하는 위치에 파일을 저장합니다.\n"
+          "• 백업 내보내기가 바로 열립니다.\n"
+          "• ‘통계’의 히트맵에서 이제 모든 날짜가 해당 요일 아래에 표시되며, iPad와 Mac에서는 카드를 가득 채웁니다.",
+    "es-ES": "• Los recordatorios tienen ahora botones: «Marcar como hecho» («Sumar 1» en un hábito con recuento) y «Posponer 1 hora», directamente en la pantalla bloqueada o en el centro de notificaciones.\n"
+             "• Los recordatorios de un hábito de días concretos llegan ahora solo esos días.\n"
+             "• En el iPhone y el iPad, lo que marcas desde un recordatorio o un widget puede sincronizarse en segundo plano, así tus otros dispositivos lo ven antes.\n"
+             "• En el iPad, la barra lateral recuerda dónde estabas: al pasar de Hoy a Estadísticas ya no se pierden el día elegido ni el hábito que mirabas.\n"
+             "• En el Mac, los ajustes están ahora en Stride → Ajustes… (⌘,). La barra de menús tiene Nuevo hábito, Sincronizar ahora, Exportar y Resumen semanal, con atajos de teclado. Si las notificaciones de Stride están permitidas, el icono del Dock muestra cuántos hábitos te quedan hoy; puedes desactivarlo en Ajustes del Sistema → Notificaciones → Stride. «Restaurar desde copia de seguridad» abre ya su ventana de archivos, y Exportar guarda el archivo donde elijas.\n"
+             "• Exportar una copia de seguridad se abre al instante.\n"
+             "• El mapa de calor de Estadísticas muestra ahora cada día bajo su día de la semana y, en el iPad y el Mac, ocupa toda la tarjeta.",
+  },
 }
 
 

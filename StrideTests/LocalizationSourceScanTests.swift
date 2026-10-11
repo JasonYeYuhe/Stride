@@ -47,6 +47,10 @@ final class LocalizationSourceScanTests: XCTestCase {
         "ContentUnavailableView", "help", "navigationSubtitle", "prompt:",
         // App Intents: `AppShortcut(… shortTitle: "…")` is a LocalizedStringResource.
         "shortTitle:",
+        // The Mac's menu bar (1.4.0, RELEASE-1.4.0.md D3). `CommandMenu("…")` takes a
+        // LocalizedStringKey; `CommandGroup(` takes a placement, so it yields a key only if a
+        // future one is ever titled. Their items' titles are `appLocalized`, matched below.
+        "CommandMenu", "CommandGroup",
         // Plain-String paths: the in-app-language helper and Foundation.
         "appLocalized", "String\\(localized:", "@Parameter\\(title:",
         // Labelled arguments of this app's own views whose stored property is a
@@ -156,6 +160,12 @@ final class LocalizationSourceScanTests: XCTestCase {
                        ["Search templates", "Add", "Sort", "List Habits"])
         // `NavigationLink(` / `ShareLink(` are their own names, not a `Link(` match inside them.
         XCTAssertEqual(Self.keys(in: #"NavigationLink("Stats") { x } ShareLink(item: url)"#), ["Stats"])
+        // Menu bar commands: a CommandMenu's title, and the in-app-language titles of the items
+        // in a CommandGroup, whose own first argument is a placement.
+        XCTAssertEqual(Self.keys(in: #"CommandMenu("Habits") { } CommandGroup(replacing: .newItem) { Button(appLocalized("New Habit")) { } }"#),
+                       ["Habits", "New Habit"])
+        XCTAssertEqual(Self.keys(in: #"CommandGroup(after: .newItem) { Item(.syncNow, title: appLocalized("Sync Now")) }"#),
+                       ["Sync Now"])
         // The 1.2.3 class that no catalog entry can fix: the words are a %@ argument.
         let nested = Self.scan(#"Text("\(habit.name), \(done ? "completed" : "not completed")")"#, file: "inline")
         XCTAssertEqual(nested.first?.nestedLiterals, [#""completed""#, #""not completed""#])

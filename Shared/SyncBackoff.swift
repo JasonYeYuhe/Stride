@@ -125,13 +125,50 @@ struct SyncBackoffState: Equatable, Sendable {
 }
 
 /// What starts a sync run, as far as the backoff is concerned. The app's `SyncService.Trigger`
-/// maps onto it (`.userInitiated` → `.manual`, `.automatic` → `.automatic`).
+/// maps onto it (`.userInitiated` → `.manual`, `.automatic` → `.automatic`, `.background` →
+/// `.background`).
+///
+/// Ask `waitsOutWindow` and `recordsNoAnswer`, never `== .automatic` (RELEASE-1.4.0.md D5). Every
+/// check here used to be `trigger == .automatic`, and in SyncService `self == .automatic ?
+/// .automatic : .manual`: a third case would have compiled without a warning and been treated as
+/// Sync Now — past a paused server's window on every background refresh and every lock-screen
+/// action, every failure recorded (design review, "background-trigger-silent-default"). Both
+/// properties are exhaustive switches, so the next case cannot slip through either.
 enum SyncBackoffTrigger: Equatable, Sendable {
-    /// Launch, foreground, the post-edit sync, M3's background refresh: waits out the window.
+    /// Launch and foreground: waits out the window.
     case automatic
-    /// Sync Now, pull-to-refresh, a sign-in, Erase's pre-erase sync, Full resync: "Sync Now
-    /// retries at once", whatever the window. A user who asked must never be told "later".
+    /// Sync Now, a sign-in, Erase's pre-erase sync, Full resync: "Sync Now retries at once",
+    /// whatever the window. A user who asked must never be told "later".
     case manual
+    /// 1.4.0's background runs: the BGAppRefreshTask, and the sync after a notification action.
+    /// Waits out the window like `.automatic`, but a run that got no answer leaves no trace (see
+    /// `recordsNoAnswer`).
+    case background
+
+    /// Whether a run must wait while the owner's window is open (`SyncBackoffStore.decision`).
+    var waitsOutWindow: Bool {
+        switch self {
+        case .automatic, .background: return true
+        case .manual: return false
+        }
+    }
+
+    /// Whether a run that got no HTTP answer at all (`SyncBackoffReason.offline`: offline, a
+    /// timeout, DNS, TLS — and a cancellation, which APIClient reports the same way) is recorded.
+    ///
+    /// Not for `.background`. Such a run is cut short by iOS as often as by the network: the
+    /// refresh's ~30 s ran out and the task was cancelled, or the action fired on a lock screen in
+    /// a tunnel. Recorded, it would open a minute's window that turns away the foreground sync the
+    /// user starts by opening the app — the one sync that would deliver the check-in — and
+    /// SyncService would show the system's "cancelled" under Settings. A background run that never
+    /// reached the server says nothing about the server. A real answer still counts for every trigger: a 429,
+    /// a 5xx and the pause switch are recorded and respected (D5).
+    var recordsNoAnswer: Bool {
+        switch self {
+        case .background: return false
+        case .automatic, .manual: return true
+        }
+    }
 }
 
 enum SyncBackoffDecision: Equatable, Sendable {
@@ -177,14 +214,14 @@ struct SyncBackoffStore {
         return Self.decode(entry)
     }
 
-    /// May a run of this kind start now for this owner? Manual always may. Automatic may unless
-    /// the owner's window is still open.
+    /// May a run of this kind start now for this owner? Manual always may. Automatic and
+    /// background may unless the owner's window is still open (`waitsOutWindow`).
     ///
     /// Asked with the store's OWNER (the only account a run can serve), before the run: a
     /// device signed into an account that is not the owner is blocked by the owner gate
     /// anyway, and an owner that has never failed has no entry.
     func decision(for trigger: SyncBackoffTrigger, ownerID: String) -> SyncBackoffDecision {
-        guard trigger == .automatic, let state = state(for: ownerID), state.isWaiting(at: now()) else {
+        guard trigger.waitsOutWindow, let state = state(for: ownerID), state.isWaiting(at: now()) else {
             return .go
         }
         return .wait(state)
@@ -201,17 +238,24 @@ struct SyncBackoffStore {
     /// write its failure under that account). Returns the state it leaves.
     ///
     /// - `synced` → the state is cleared: "success resets".
-    /// - `stopped(.backOff)` → one more failure.
+    /// - `stopped(.backOff)` → one more failure — except a run with no HTTP answer on a trigger
+    ///   that does not record one (`recordsNoAnswer`: `.background`), which leaves the state as it
+    ///   was, whatever it was.
     /// - Anything else changes nothing. A reauth, an upgrade-required, a local save failure, a
     ///   run ended by a sign-out, a blocked run: none of these is the server asking for less
     ///   traffic, and none is fixed by waiting — the reauth row, the 426 and the next sync
     ///   handle them. In particular a `bindingChanged` stop says nothing about the server.
+    ///
+    /// `trigger` has no default on purpose: every caller states what started the run.
     @discardableResult
-    func record(_ outcome: SyncRunOutcome, for ownerID: String) -> SyncBackoffState? {
+    func record(_ outcome: SyncRunOutcome, for ownerID: String, trigger: SyncBackoffTrigger) -> SyncBackoffState? {
         switch outcome {
         case .synced:
             recordSuccess(for: ownerID)
             return nil
+        case .stopped(.backOff(let kind, let answer), _)
+            where !trigger.recordsNoAnswer && SyncBackoffReason(kind, answer: answer) == .offline:
+            return state(for: ownerID)
         case .stopped(.backOff(let kind, let answer), _):
             return recordFailure(kind, answer: answer, for: ownerID)
         case .stopped, .blocked:

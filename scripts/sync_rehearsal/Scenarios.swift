@@ -1240,6 +1240,19 @@ struct Scenarios {
                         && blocked && a.transport.since(mark).isEmpty && habit.isPending,
                      "\(describe(paused)); backoff \(state.map { "\($0.reason.rawValue) \(Int($0.delay)) s" } ?? "none"); then \(describe(waiting))")
 
+        // 1.4.0's `.background` trigger (RELEASE-1.4.0.md D5): the refresh task and the sync after
+        // a notification action skip a no-answer, never the server's own answer. During the pause
+        // it must wait like a launch does — not go past it like Sync Now, which is what a third
+        // trigger fell into wherever the code asked `== .automatic`.
+        let backgroundMark = a.transport.mark()
+        let background = await a.sync(trigger: .background)
+        var backgroundBlocked = false
+        if case .blocked(.backingOff) = background { backgroundBlocked = true }
+        report.check("…a background sync (refresh task, notification action) waits out the pause too, sends nothing, and leaves the window as it was",
+                     backgroundBlocked && a.transport.since(backgroundMark).isEmpty
+                        && a.backoff.state(for: account.owner) == state,
+                     "\(describe(background)); \(describe(a.transport.since(backgroundMark)))")
+
         try FileManager.default.removeItem(at: pauseFile)
         let resumed = await a.sync(trigger: .manual)
         report.check("…the pause lifted, Sync Now lands the edit and clears the window",

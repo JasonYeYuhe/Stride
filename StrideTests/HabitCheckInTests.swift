@@ -287,4 +287,121 @@ final class HabitCheckInTests: XCTestCase {
         XCTAssertEqual(try widgetTap(), .init(deletedRecordID: nil, isCompleted: true, loggedValue: 1))
         XCTAssertEqual(try storedToday(habit).count, 1)
     }
+
+    // MARK: - A reminder's Mark Done / Add 1 (1.4.0, RELEASE-1.4.0.md D4)
+
+    /// Mark Done on an unchecked yes/no habit checks the day.
+    func testFromReminderChecksAnUncheckedBinaryHabit() throws {
+        let habit = Habit(name: "Meditate")
+        context.insert(habit)
+        try context.save()
+
+        let result = try XCTUnwrap(HabitCheckIn.fromReminder(habit, on: today, in: context))
+        try context.save()
+
+        XCTAssertEqual(result, .init(deletedRecordID: nil, isCompleted: true, loggedValue: 1))
+        XCTAssertEqual(try storedToday(habit).count, 1)
+    }
+
+    /// Mark Done on a day already checked — in the app, the widget or another device before the
+    /// banner was tapped — changes nothing: no second record, and above all no un-check.
+    func testFromReminderOnACheckedBinaryHabitChangesNothing() throws {
+        let habit = Habit(name: "Meditate")
+        context.insert(habit)
+        habit.records.append(HabitRecord(date: today))
+        try context.save()
+        let recordID = try XCTUnwrap(habit.record(on: today)).id
+
+        XCTAssertNil(HabitCheckIn.fromReminder(habit, on: today, in: context))
+        try context.save()
+
+        XCTAssertEqual(try storedToday(habit).map(\.id), [recordID])
+    }
+
+    /// Add 1 on "Drink Water" at 3 of 8: 4 of 8, the same record.
+    func testFromReminderAddsOneToACountHabit() throws {
+        let habit = try countHabit(target: 8, logged: 3)
+        let recordID = try XCTUnwrap(habit.record(on: today)).id
+
+        let result = try XCTUnwrap(HabitCheckIn.fromReminder(habit, on: today, in: context))
+        try context.save()
+
+        XCTAssertEqual(result, .init(deletedRecordID: nil, isCompleted: false, loggedValue: 4))
+        XCTAssertEqual(try storedToday(habit).map(\.id), [recordID])
+        XCTAssertEqual(try storedToday(habit).first?.value, 4)
+    }
+
+    /// The button says "Add 1", so it adds one past the target too — unlike Siri's "complete",
+    /// which stops at the target. And an empty day starts at one.
+    func testFromReminderAddsPastTheTargetAndStartsAnEmptyDay() throws {
+        let full = try countHabit(target: 8, logged: 8)
+        XCTAssertEqual(HabitCheckIn.fromReminder(full, on: today, in: context)?.loggedValue, 9)
+        let empty = try countHabit(target: 8, logged: nil)
+        XCTAssertEqual(HabitCheckIn.fromReminder(empty, on: today, in: context),
+                       .init(deletedRecordID: nil, isCompleted: false, loggedValue: 1))
+    }
+
+    /// The design review's data-loss case ("stale-category-addone-untoggles-binary"): a count
+    /// habit at 3 units is edited to yes/no — it now reads as done — and its old banner still
+    /// offers "Add 1". The write follows the CURRENT kind, so the day is left exactly as it is: no
+    /// deletion, no tombstone, the units kept. Through `tap`, as a router carrying the button's kind
+    /// would have done, the record and its units were deleted on every device.
+    func testAStaleAddOneOnAHabitThatBecameYesNoDeletesNothing() throws {
+        let habit = try countHabit(target: 8, logged: 3)
+        let recordID = try XCTUnwrap(habit.record(on: today)).id
+        habit.habitKind = .binary
+        try context.save()
+
+        XCTAssertNil(HabitCheckIn.fromReminder(habit, on: today, in: context))
+        try context.save()
+
+        let stored = try storedToday(habit)
+        XCTAssertEqual(stored.map(\.id), [recordID])
+        XCTAssertEqual(stored.first?.value, 3)
+    }
+
+    /// The other way round: a stale "Mark Done" on a habit that became a count habit adds one unit.
+    func testAStaleMarkDoneOnAHabitThatBecameCountAddsOne() throws {
+        let habit = Habit(name: "Read")
+        context.insert(habit)
+        habit.records.append(HabitRecord(date: today))
+        habit.habitKind = .count
+        habit.targetValue = 3
+        try context.save()
+
+        XCTAssertEqual(HabitCheckIn.fromReminder(habit, on: today, in: context)?.loggedValue, 2)
+    }
+
+    /// An archived habit's reminders were removed when it was archived; a banner left behind writes
+    /// nothing.
+    func testFromReminderOnAnArchivedHabitWritesNothing() throws {
+        let habit = Habit(name: "Meditate")
+        habit.isArchived = true
+        context.insert(habit)
+        try context.save()
+
+        XCTAssertNil(HabitCheckIn.fromReminder(habit, on: today, in: context))
+        XCTAssertFalse(context.hasChanges)
+        XCTAssertEqual(try storedToday(habit).count, 0)
+    }
+
+    /// End to end with the resolver: the default 20:00 reminder in New York, delivered at exactly
+    /// 2026-07-16T00:00:00Z, checks the 15th and leaves the 16th empty — the review's blocker.
+    func testTheTwentyHundredEasternReminderChecksItsOwnDay() throws {
+        var newYork = Calendar(identifier: .gregorian)
+        newYork.timeZone = TimeZone(identifier: "America/New_York")!
+        let delivered = HabitCalendar.utc.date(from: DateComponents(year: 2026, month: 7, day: 16))!
+        let fifteenth = HabitCalendar.utc.date(from: DateComponents(year: 2026, month: 7, day: 15))!
+        let habit = Habit(name: "Meditate")
+        context.insert(habit)
+
+        let day = ReminderDay.resolve(userInfo: [:], deliveredAt: delivered, respondedAt: delivered.addingTimeInterval(30),
+                                      calendar: newYork)
+        XCTAssertEqual(day, fifteenth)
+        XCTAssertNotNil(HabitCheckIn.fromReminder(habit, on: day, in: context))
+        try context.save()
+
+        XCTAssertEqual(habit.records.map(\.date), [fifteenth])
+        XCTAssertNil(habit.record(on: delivered), "tomorrow untouched")
+    }
 }
