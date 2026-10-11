@@ -256,7 +256,10 @@ final class LocalDataFlowTests: XCTestCase {
     /// its delay shortened, and the spared one backdated as ten minutes on).
     func testAnEraseRemovesTheExportFilesButTheLastTenMinutes() async throws {
         let delay = DataExportService.deferredExportSweepDelay
-        DataExportService.deferredExportSweepDelay = .milliseconds(500)
+        // Long enough that the backdating below lands before the deferred sweep runs. 500 ms raced
+        // it on a loaded CI runner (run on 4b197f0): the sweep came first, found the folder still
+        // inside the grace window and spared it for good. The wait below allows 10 s.
+        DataExportService.deferredExportSweepDelay = .seconds(3)
         addTeardownBlock { DataExportService.deferredExportSweepDelay = delay }
         try seedStore()
         let auth = makeAuth()
