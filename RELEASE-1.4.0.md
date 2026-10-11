@@ -931,3 +931,57 @@ design are below. Each was checked by that workstream's reviewer.
     no longer excuses a widget-first open on an unread checksum, and no longer passes when an old
     build's waiting marks are lost (D7). Each fix has a "second fix pass" note above. Each new
     hosted test was checked by mutation, and the kit's new cases were run on the old script.
+- 2026-10-11: **verification.**
+  - **Whole-branch review** (three lenses, Gemini and Codex, every serious claim checked by a
+    skeptic) in parallel with the **simulator E2E** (iPhone kit, iPad Pro 13").
+  - **Blocker, found by both:** every reminder action aborted the app once its write had saved.
+    The async `didReceive` was nonisolated, so the ObjC bridge called UIKit's completion off the
+    main thread and UIKit asserted. The review confirmed it by disassembling UIKitCore; the E2E
+    collected 9 crash logs in 9 responses.
+  - **Major:** an action's own background sync in a scene-less launch reloaded nothing, so a
+    stale widget tap could delete a check-in pulled from another device.
+  - Also: four minor themes (Settings' recheck sync bypassing backoff, Mac export cancel and
+    holds, a share from a hidden kept-alive tab, the iPad share header) and the kit's false FAIL
+    for a 1.3.1 source.
+  - All fixed in `83816d2` and `4b197f0`. The fix pass's own review found six minors, fixed and
+    mutation-checked; a final review found one Mac minor, fixed in `68ad577`.
+  - Gates on `4b197f0`: StrideTests 540 (en, ja/JP); hosted 248; kit selftest 110; drift clean.
+- 2026-10-11: **E2E re-run after the fixes (iPhone 17 Pro):**
+  - Mark Done, Add 1, Snooze and the default tap with the app **suspended**: same pid, no crash
+    log, each write on today's key and pushed.
+  - Mark Done with the app terminated and the device locked: the same.
+  - A check-in pulled by a scene-less action now shows on the widget without opening the app.
+  - **Upgrade gates PASS from all three live versions with a widget placed and `--reminders`:**
+    1.3.1 (21), 1.3.0 (19) and 1.2.3 (17) → 1.4.0 (22).
+    - The store is byte-identical through the install, with no 134110 and no fallback.
+    - The widget is turned away until the app's open.
+    - 141 rows are marked and the first full pull asks `?deletionsSince=`.
+    - The daily reminder keeps its bare id; Mon/Wed/Fri becomes exactly `.2 .4 .6`.
+    - Both categories are registered.
+
+    The kit's 1.3.0 and 1.2.3 builds had to be rebuilt first: macOS purged `$TMPDIR` during the
+    low-disk episode.
+- 2026-10-11: **iPad Pro 13" (simulator):**
+  - the sidebar is a real list with a selection highlight;
+  - keep-alive holds the picked day, the Stats habit and the scroll position;
+  - one inline title and one toolbar action per tab;
+  - content is capped at 680 pt (648 pt cards, centred), and Settings is not;
+  - heatmap cells are 41 pt, filling the card, and each day sits under its weekday letter;
+  - export popovers anchor at a List row and inside a sheet;
+  - hidden tabs take no taps;
+  - tapping the status bar still scrolls to the top;
+  - the a11y sweep is re-baselined (23 captures).
+
+  Landscape was not run: the Simulator MCP has no rotate.
+- 2026-10-11: **Mac.** `scripts/mac_variant/build.sh` built and preflighted the variant: variant
+  id, ad-hoc signature, no App Group or developer keys, sandboxed, and the new
+  `files.user-selected.read-write` present. Launched in the background:
+  - its store was created only under `~/Library/Containers/yyh.stride.habittracker.mactest/`;
+  - the real `group.yyh.stride.habittracker/Stride.store` was unchanged (same mtime and listing);
+  - it was stopped by pid.
+
+  **The computer-use pass was declined by the owner**, so the Mac-only UI is verified by build and
+  review only: menus and shortcuts, ⌘0, the Settings window, the Dock badge, the Restore and
+  Export panels, and banner actions on the Mac. The panel entitlement itself is proven (the probe
+  apps and preflight).
+
