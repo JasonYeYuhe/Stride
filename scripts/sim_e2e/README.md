@@ -281,9 +281,10 @@ removes the containers. `upgrade.sh` refuses any other starting point (exit 1).
        (`group-prefs-before.txt`), and the gate lets the widget in at once when the store is at
        its schema: "Store opened in the extension at schema N" before the app's open, with N the
        old marker, is a NOTE, not a fail — no migration was pending for it to race. It still
-       fails if the model checksum then changed (the app migrated a store the widget had open).
-       Until the 2026-10-11 fix pass every upgrade from v1.3.1 with a widget was a false FAIL
-       (`upgrades/e1-131to140-widget`).
+       fails if the model checksum then changed (the app migrated a store the widget had open),
+       and if the checksum could not be read on either side: unknown is not unchanged (second
+       fix pass). Until the 2026-10-11 fix pass every upgrade from v1.3.1 with a widget was a
+       false FAIL (`upgrades/e1-131to140-widget`).
    - **The marker:** `stride_store_schema_version` in the App Group prefs
      (`group-prefs-after.txt`). Missing in a build with the gate fails: the widget would wait
      forever.
@@ -293,7 +294,11 @@ removes the containers. `upgrade.sh` refuses any other starting point (exit 1).
      pull asked `?deletionsSince=` (the marks' proof ran and cleared them). Neither is U123's
      signature: the migration ran on another store. When `prefs-before.txt` already has
      `stride_delivery_migration_v1_done` (1.3.1+ ran it on its own first launch), this launch runs
-     no migration and marks nothing: a NOTE, not a fail.
+     no migration and marks nothing: a NOTE, not a fail — as long as none of the old build's marks
+     still waited there. When `stride_delivery_marks_unproven` or `…_unverified` was there too (a
+     1.3.1 device upgraded from 1.3.0 that never made the full pull), the mark must still wait in
+     `prefs-after.txt`, or the first full pull must have asked `?deletionsSince=`; otherwise the
+     run fails: the marks were lost, and the next full pull can archive rows deleted elsewhere.
    - **Recovered edits:** the lines of the data container's
      `Library/Application Support/SyncRecoveryLog/*.jsonl`. Any new line fails: the gate's
      scenario edits nothing on the upgraded device, so a recovered edit is a row pushed back that
@@ -669,7 +674,9 @@ It covers:
 - an upgrade from 1.3.1 (fix pass): `check-gate` with the old marker (a note at the same schema, a
   fail at another), a run that passes with the widget first at the old marker and the migration
   already done, one that fails when the store was migrated after all, and the verdict's "did not
-  open Stride.store" only for a real failed open;
+  open Stride.store" only for a real failed open; since the second fix pass also a widget-first
+  run whose checksum cannot be read (fails), and the old build's waiting marks kept (passes),
+  lost (fails) and proved by a `?deletionsSince=` pull (passes);
 - `app.sh store`'s warning about an app-group `default.store`;
 - 1.4.0: `app.sh launch -- <args>` (the stub records the app's arguments; arguments without `--`
   are refused); `app.sh notify` for each kind, with and without a day, a lower-case id, an unknown

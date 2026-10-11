@@ -36,6 +36,9 @@ import UIKit
 struct ExportShareButton<Label: View>: View {
     let file: ExportFile
     let sync: SyncService
+    /// Where the file is written: tmp, the directory every sweep covers. A hosted test passes its
+    /// own, as it does to `DataExportService.write`.
+    let root: URL
     let label: () -> Label
 
     @Environment(\.modelContext) private var modelContext
@@ -58,9 +61,11 @@ struct ExportShareButton<Label: View>: View {
     @State private var presence = ExportButtonPresence()
     #endif
 
-    init(_ file: ExportFile, sync: SyncService, @ViewBuilder label: @escaping () -> Label) {
+    init(_ file: ExportFile, sync: SyncService, in root: URL = FileManager.default.temporaryDirectory,
+         @ViewBuilder label: @escaping () -> Label) {
         self.file = file
         self.sync = sync
+        self.root = root
         self.label = label
     }
 
@@ -115,6 +120,7 @@ struct ExportShareButton<Label: View>: View {
         failed = false
         isWriting = true
         let container = modelContext.container
+        let root = root
         #if os(macOS)
         let presence = presence
         #endif
@@ -122,7 +128,7 @@ struct ExportShareButton<Label: View>: View {
             defer { isWriting = false }
             let written: WrittenExport
             do {
-                written = try await DataExportService.write(file, container: container, sync: sync)
+                written = try await DataExportService.write(file, container: container, sync: sync, in: root)
             } catch {
                 showFailure()
                 return
@@ -211,10 +217,13 @@ final class ExportShareAnchor {
 
 /// An empty view behind the button that hands its UIView, and whether its tab is shown, to
 /// `anchor`. `isShown` is a property, not an environment read here, so a change of tab is a
-/// change of input and always reaches `updateUIView`.
+/// change of input and always reaches `updateUIView`. It has no default, so every use must say
+/// where it comes from: with one (`true`), `ExportShareAnchorView(anchor:)` compiled, and a button
+/// built that way would put a hidden tab's share over the tab that shows (verification, second
+/// fix pass; ExportTests hosts the real button under a hidden tab).
 struct ExportShareAnchorView: UIViewRepresentable {
     let anchor: ExportShareAnchor
-    var isShown = true
+    let isShown: Bool
 
     func makeUIView(context: Context) -> UIView {
         let view = UIView()

@@ -294,8 +294,17 @@ struct ContentView: View {
         // with another window in front. Cleared, so this pass's panel is a fresh false → true and
         // is not lost behind a binding that already reads true. Not deleted: that rests on the
         // argument above, and a file deleted under a panel that is up after all would fail the
-        // user's Save; the sweeps take it.
-        if exportPanelFile != nil { exportPanelFile = nil }
+        // user's Save; the sweeps take it. So its hold is released here too
+        // (`offerToExportPanel(nil)`), which leaves the file and gives the sweeps their grace
+        // period back. Until the second fix pass only this pass's next offer released it: a pass
+        // that then ended without one — cancelled, beeped away by a sheet, failed, or a request
+        // that is not an export — left the file held for the life of the process, so Erase,
+        // Delete Account and Start never swept that full backup (verification, minor). A panel's
+        // own close never reaches this branch: its binding clears the file before the request.
+        if exportPanelFile != nil {
+            exportPanelFile = nil
+            offerToExportPanel(nil)
+        }
         guard case .export(let export) = shell.request else { return }
         let written = try? await DataExportService.write(export.file, container: modelContext.container)
         guard !Task.isCancelled else {

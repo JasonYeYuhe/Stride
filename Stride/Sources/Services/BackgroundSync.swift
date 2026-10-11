@@ -204,26 +204,42 @@ enum BackgroundSync {
                     WidgetCenter.shared.reloadAllTimelines()
                     NotificationService.shared.refreshAfterDataChange(modelContainer: container)
                 },
-                afterSync: { container in
-                    let notifications = NotificationService.shared
-                    // Every reminder is replaced whole (D4), and the prune — awaited, the process
-                    // may be suspended right after — removes what no habit wants any more. Only
-                    // while the app is not active: a habit sheet can be saving then, and a prune
-                    // computed meanwhile finds the sheet's own reminder, added a moment later,
-                    // missing from its keep set and removes it (`scheduleAllHabitReminders`). A
-                    // refresh runs in the background, but a reminder's action can be answered with
-                    // Stride frontmost (an older banner from Notification Center) — and the user
-                    // can bring Stride forward during either run. The launch pass prunes later.
-                    if UIApplication.shared.applicationState == .active {
-                        notifications.scheduleAllHabitReminders(modelContainer: container)
-                    } else {
-                        await notifications.rescheduleAllHabitRemindersAndWait(modelContainer: container)
-                    }
-                    // The badge, awaited: the refresh pass sets it fire-and-forget.
-                    await notifications.updateBadgeAndWait(modelContainer: container)
-                },
+                afterSync: liveAfterSync(applicationState: { UIApplication.shared.applicationState }),
                 sessionStored: { AuthService.shared.hasStoredSession },
                 submitter: .live)
+        }
+
+        /// `live`'s `afterSync` over `applicationState`, which a hosted test hands its own (the
+        /// host app is frontmost while tests run).
+        ///
+        /// Every reminder is replaced whole (D4), and the prune — awaited, the process may be
+        /// suspended right after — removes what no habit wants any more. **Only while the app is
+        /// in the background**, asked before the reschedule and again once the center has listed
+        /// what is pending, right before anything is removed
+        /// (`rescheduleAllHabitRemindersAndWait`'s `mayPrune`). In any other state a habit sheet
+        /// can be saving, and a prune whose keep set was computed before the sheet's save finds
+        /// the sheet's own reminder, added a moment later, missing from it and removes it
+        /// (`scheduleAllHabitReminders`): that habit's reminder would not fire until the next cold
+        /// launch. The first fix pass skipped the prune only while `.active`, and read the state
+        /// once, before the wait. Neither held (verification, second fix pass): an older banner
+        /// answered from Notification Center pulled down over a frontmost Stride — the very case
+        /// that check was for — leaves the app `.inactive`, with the sheet still under it; and the
+        /// user can bring Stride forward while the center answers. Skipped, the reminders are
+        /// still replaced, and the next launch's pass prunes.
+        static func liveAfterSync(applicationState: @escaping @MainActor () -> UIApplication.State)
+            -> @MainActor (ModelContainer) async -> Void {
+            { container in
+                let notifications = NotificationService.shared
+                let inBackground: @MainActor () -> Bool = { applicationState() == .background }
+                if inBackground() {
+                    await notifications.rescheduleAllHabitRemindersAndWait(modelContainer: container,
+                                                                           mayPrune: inBackground)
+                } else {
+                    notifications.scheduleAllHabitReminders(modelContainer: container)
+                }
+                // The badge, awaited: the refresh pass sets it fire-and-forget.
+                await notifications.updateBadgeAndWait(modelContainer: container)
+            }
         }
     }
 

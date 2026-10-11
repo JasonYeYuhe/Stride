@@ -49,12 +49,16 @@
 #          the install (group-prefs-before.txt) already hold the marker: a widget open BEFORE the
 #          app's, at that same schema, is what the gate allows (the store is at the widget's
 #          schema; nothing is pending to race), so it is a NOTE — unless the app then migrated
-#          the store after all (the model checksum changed), which still fails;
+#          the store after all (the model checksum changed), which still fails, as does a
+#          checksum that could not be read on either side (unknown is not unchanged);
 #        - the delivery marks: when the old store had rows 5+ min older than the old app's last
 #          sync (SyncDeliveryMigration.margin), the migration must have marked them — marks still
 #          waiting in the prefs, or a first full pull with ?deletionsSince= in the server log.
 #          From an old build that already ran it (stride_delivery_migration_v1_done in
-#          prefs-before.txt: 1.3.1+), this launch runs nothing and marks nothing: a NOTE;
+#          prefs-before.txt: 1.3.1+), this launch runs nothing and marks nothing: a NOTE — when no
+#          mark of the old build's still waited. When one did (stride_delivery_marks_unproven or
+#          …_unverified in prefs-before.txt), it must still wait after the launch, or the first
+#          full pull must have asked ?deletionsSince=; else the run fails (the marks were lost);
 #        - recovered edits: lines in the data container's SyncRecoveryLog. The gate's scenario
 #          makes no edit on the upgraded device, so any line is a row pushed back that was deleted
 #          elsewhere — the U123 relaunch's 17.
@@ -77,8 +81,8 @@
 #      has the starting point (notification permission is granted on the OLD build, by hand).
 # Everything lands in $ROOT/upgrades/<label>/ (default <UTC time>-<pro|promax>), report.txt
 # included. Exit 0 PASS; 3 FAIL (a failed open in the log, any default.store, the app not running
-# after the wait, a widget open before the app's, no marker, unmarked rows, recovered edits,
-# reminders not converted); 1 the run could not be made. Never uninstalls, never opens the
+# after the wait, a widget open before the app's, no marker, unmarked rows or the old build's
+# waiting marks lost, recovered edits, reminders not converted); 1 the run could not be made. Never uninstalls, never opens the
 # device's store with sqlite3 (it reads scratch copies), never removes anything on the device.
 #
 # The check-* commands need no simulator. Each prints what it found; check-log and check-dir exit
@@ -270,6 +274,17 @@ store_counts() {
   echo "rows:${out}  syncedAt set:${synced:- (no ZSYNCEDAT column: a pre-1.3.1 model)}  model=$ck"
 }
 
+# The model checksum out of a store_counts line; nothing when it could not be read (the "?" of a
+# failed Z_METADATA/writefile/plutil read, or "no store at …"). Callers must treat nothing as
+# unknown, never as equal to another unknown.
+model_checksum() {
+  local ck
+  [[ "$1" == *"  model="* ]] || return 0
+  ck="${1##*  model=}"
+  [[ -n "$ck" && "$ck" != "?" ]] && echo "$ck"
+  return 0
+}
+
 # A directory, or a .store file: the store file in it.
 store_file() {
   if [[ -d "$1" ]]; then echo "$1/Stride.store"; else echo "$1"; fi
@@ -316,6 +331,19 @@ delivery_prefs() {
      && ! grep -q '"stride_delivery_marks_unproven"' <<<"$found"; then
     echo "  (done, and no marks wait for the proof: either the first sync already proved them, or the migration stamped no row — see \"delivery marks\" below)"
   fi
+}
+
+# The delivery marks still waiting in a prefs plist or `plutil -p` listing, by key
+# (stride_delivery_marks_unproven: for the proof; …_unverified: for the absence pass after it),
+# space-separated; nothing when none waits (SyncMarksProof removes each key when it is settled).
+waiting_marks() {
+  local src="$1" listing k found=""
+  [[ -f "$src" ]] || return 0
+  if plutil -lint -s "$src" >/dev/null 2>&1; then listing="$(plutil -p "$src")"; else listing="$(cat "$src")"; fi
+  for k in stride_delivery_marks_unproven stride_delivery_marks_unverified; do
+    if grep -Eq "^ *\"$k\" => (1|true)\$" <<<"$listing"; then found="${found:+$found }$k"; fi
+  done
+  echo "$found"
 }
 
 # ── Reminders (--reminders) ─────────────────────────────────────────────────────────────────
@@ -527,7 +555,8 @@ copy_store() {
 
 run() {
   local installed grp grp2 data t0 mark="" log="" pid fail="" ck_before ck_after last_sync="" qualify edits_before edits marker mark2
-  local try rem_ok marker_before="" migrated_before=0 gate_text marks_text
+  local try rem_ok marker_before="" migrated_before=0 gate_text marks_text model_before model_after
+  local waiting_before="" waiting_after
   echo "upgrade.sh: $OLD_V → $NEW_V on $DEV ($UDID), evidence in $OUT"
 
   section "starting point"
@@ -556,6 +585,8 @@ run() {
   # checks below can tell the new build's work from the old one's.
   if grep -Eq '"stride_delivery_migration_v1_done" => (1|true)' "$OUT/prefs-before.txt" 2>/dev/null; then
     migrated_before=1
+    waiting_before="$(waiting_marks "$OUT/prefs-before.txt")"
+    [[ -z "$waiting_before" ]] || echo "the old build's delivery marks still wait for their proof: $waiting_before"
   fi
   if "$APP_SH" prefs "$UDID" group >"$OUT/group-prefs-before.txt" 2>&1; then
     marker_before="$(sed -n 's/^ *"stride_store_schema_version" => \([0-9][0-9]*\)$/\1/p' "$OUT/group-prefs-before.txt")"
@@ -650,7 +681,17 @@ run() {
   ck_after="$(store_counts "$OUT/after/Stride.store")"
   echo "before: $ck_before"
   echo "after:  $ck_after"
-  if [[ "${ck_before##*model=}" == "${ck_after##*model=}" ]]; then
+  model_before="$(model_checksum "$ck_before")"
+  model_after="$(model_checksum "$ck_after")"
+  if [[ -z "$model_before" || -z "$model_after" ]]; then
+    # Unread is not unchanged: "?" == "?" used to read as "unchanged", and an excused widget-first
+    # open then passed on nothing (second fix pass).
+    echo "model checksum: COULD NOT BE READ (before: ${model_before:-?}, after: ${model_after:-?}) — whether the new app migrated Stride.store is unknown"
+    if [[ $GATE_EXCUSED -eq 1 ]]; then
+      echo "  — and the widget had opened it before the app: nothing rules out a migration it raced"
+      fail="$fail; the widget opened the store before the app had, and the model checksum could not be read to rule out a migration (the U123 race window)"
+    fi
+  elif [[ "$model_before" == "$model_after" ]]; then
     echo "model checksum unchanged: the new app did not migrate Stride.store (right only when the release changes no model)"
   else
     echo "model checksum changed: Stride.store was migrated"
@@ -675,8 +716,24 @@ run() {
   fi
 
   section "delivery marks"
-  if [[ $migrated_before -eq 1 ]]; then
-    echo "NOTE: the old build had already run the delivery migration (stride_delivery_migration_v1_done in prefs-before.txt): this launch runs none and marks nothing; the $qualify row(s) older than its last sync were the old build's to mark, and a synced 1.3.1 store has proved them"
+  if [[ $migrated_before -eq 1 && -n "$waiting_before" ]]; then
+    # The old build ran the migration, but its marks still waited for their proof or for the
+    # absence pass after it (a 1.3.1 device upgraded from 1.2.x/1.3.0 that never made the full
+    # pull). Nothing proves them but that pull, so the new build must keep them waiting or ask
+    # ?deletionsSince= itself; lost, the next full pull can archive rows deleted elsewhere — U123's
+    # data loss, which the NOTE below used to pass on (second fix pass).
+    waiting_after="$(waiting_marks "$OUT/prefs-after.txt")"
+    if [[ -n "$waiting_after" ]]; then
+      echo "the old build's marks still wait (prefs-before.txt: $waiting_before; prefs-after.txt: $waiting_after)"
+    elif [[ -s "$OUT/requests.txt" ]] && grep -Eq 'GET /v1/sync/pull\?([^ ]*&)?deletionsSince=' "$OUT/requests.txt"; then
+      echo "the old build's marks waited ($waiting_before), and the first full pull asked ?deletionsSince= (their proof ran)"
+    else
+      echo "UNPROVEN MARKS LOST: the old build's marks waited ($waiting_before in prefs-before.txt), yet none waits now and no pull asked ?deletionsSince= — the next full pull can archive rows deleted elsewhere (U123)"
+      [[ -n "$SERVER" ]] || echo "  (no --server: a proof that ran could not be seen; rerun with --server <name>)"
+      fail="$fail; the old build's unproven delivery marks were lost (none waits, and no pull asked ?deletionsSince=)"
+    fi
+  elif [[ $migrated_before -eq 1 ]]; then
+    echo "NOTE: the old build had already run the delivery migration (stride_delivery_migration_v1_done in prefs-before.txt) and no mark of its waits (no stride_delivery_marks_unproven or _unverified there): this launch runs none and marks nothing; the $qualify row(s) older than its last sync were the old build's to mark, and its marks were proved"
   elif [[ "$qualify" == "?" ]]; then
     echo "NOTE: could not count the rows the migration must mark (no last sync in the old prefs, or a store without stamps)"
   elif [[ "$qualify" -eq 0 ]]; then
@@ -764,8 +821,8 @@ run() {
         echo "The first launch after the upgrade did not open Stride.store: an App Store update would show the user an empty app (the fallback, then a whole-store push on the next launch, E2E U123) or the store error screen, not their habits." ;;
     esac
     case "$fail" in
-      *"before the app had"*|*"marked none"*|*"recovered edit"*)
-        echo "A sign of the upgrade race (E2E U123), whether or not the store opened: a widget open that could race the app's migration, rows the delivery migration left unmarked (the next full pull can archive rows deleted elsewhere), or rows pushed back that were deleted elsewhere." ;;
+      *"before the app had"*|*"marked none"*|*"marks were lost"*|*"recovered edit"*)
+        echo "A sign of the upgrade race (E2E U123), whether or not the store opened: a widget open that could race the app's migration, rows the delivery migration left unmarked or marks the old build left waiting that were lost (the next full pull can archive rows deleted elsewhere), or rows pushed back that were deleted elsewhere." ;;
     esac
     case "$fail" in
       *"reminders were not converted"*)
@@ -778,6 +835,7 @@ run() {
   [[ $GATE_EXCUSED -eq 1 ]] && gate_text="the widget opened only at the schema the old build had marked (no migration to race)"
   marks_text="no unmarked rows"
   [[ $migrated_before -eq 1 ]] && marks_text="the delivery migration already the old build's"
+  [[ -n "$waiting_before" ]] && marks_text="$marks_text, its waiting marks kept or proved"
   echo "PASS: $OLD_V → $NEW_V on $DEV: the first launch opened Stride.store; no failed open in the device log, no default.store, $gate_text, $marks_text, no recovered edits${REM_DAILY:+; the reminders converted (.2 .4 .6 for the M/W/F habit, the daily bare id kept, both categories registered)}. Evidence: $OUT"
 }
 

@@ -434,8 +434,8 @@ final class NotificationActionHandlerTests: XCTestCase {
     /// cursor (each run pushes first, then pulls), and installed as `shared` — with a
     /// NotificationService over a recording center installed beside it, so the shipping
     /// environment's after-sync work reaches neither the host app's sync state nor its
-    /// notification store. All of it undone at teardown.
-    private func installStubbedSync(_ role: String) -> (server: StubServer, sync: SyncService) {
+    /// notification store. All of it undone at teardown. `center` is that NotificationService's.
+    private func installStubbedSync(_ role: String) -> (server: StubServer, sync: SyncService, center: RecordingCenter) {
         let server = StubServer()
         let local = ScratchDefaults("\(role).local")
         let appGroup = ScratchDefaults("\(role).appGroup")
@@ -446,7 +446,8 @@ final class NotificationActionHandlerTests: XCTestCase {
                                deletionQueue: SyncDeletionQueue(local: local.defaults, shared: appGroup.defaults),
                                sessions: FakeSyncSessions(.accountA), recoveryLog: recovery.log)
         SyncService.testOverride = sync
-        NotificationService.testOverride = NotificationService(center: RecordingCenter(), defaults: notifications.defaults)
+        let center = RecordingCenter()
+        NotificationService.testOverride = NotificationService(center: center, defaults: notifications.defaults)
         addTeardownBlock { @MainActor in
             SyncService.testOverride = nil
             NotificationService.testOverride = nil
@@ -460,7 +461,7 @@ final class NotificationActionHandlerTests: XCTestCase {
         SyncOwnerStore(defaults: local.defaults).set(SyncOwner(owner))
         SyncDefaultsCursorStore(defaults: local.defaults)
             .setCursor(SyncTimestamp.millisecondString(from: Date().addingTimeInterval(-86_400)), for: owner.id)
-        return (server, sync)
+        return (server, sync, center)
     }
 
     /// An action saved while a sync is already running is still pushed in seconds: that run planned
@@ -469,15 +470,24 @@ final class NotificationActionHandlerTests: XCTestCase {
     /// the real SyncService over a stub server, installed as `shared` for the test. On iOS the
     /// shipping sync is the refresh's run (`BackgroundSync.run`, `.live`): its after-sync work goes
     /// to the test's NotificationService, and its widget reload to the host's own timelines.
+    ///
+    /// That after-sync work is asserted too, on the test's center, and it pins the live wiring
+    /// (verification, second fix pass): `testAnActionsSyncReloadsTheWidgetsAfterWhatItPulled`
+    /// builds its sync through `sync(through:)` itself, so it passed with `Environment.live` back
+    /// on W2's plain closure, whose pull nothing followed. Only `BackgroundSync.Environment.live`
+    /// reaches this center here: the handler's own effects are the recording ones.
     func testAnActionDuringASyncIsPushedByARunOfItsOwn() async throws {
-        let (server, sync) = installStubbedSync("action.sync")
+        let (server, sync, center) = installStubbedSync("action.sync")
         server.on("POST", "/v1/sync/push", respond: .ok(SyncStubBodies.pushOK))
-        let pull = SyncStubBodies.pull()
+        // Never in this store: they arrive by the pull.
+        let fromTheMac = [Habit(name: "Meditate"), Habit(name: "Stretch")]
+        let pull = SyncStubBodies.pull(habits: fromTheMac.map { SyncStubBodies.habit($0) })
         server.on("GET", "/v1/sync/pull") { _ in
             Thread.sleep(forTimeInterval: 0.5)
             return .ok(pull)
         }
         let read = Habit(name: "Read")
+        read.reminderEnabled = true
         container.mainContext.insert(read)
         try container.mainContext.save()
 
@@ -490,7 +500,8 @@ final class NotificationActionHandlerTests: XCTestCase {
 
         let shipping = NotificationActionHandler.Environment.live.sync
         let synced = expectation(description: "the action's own sync")
-        let outcome = await makeHandler(container, sync: { container in
+        // The device's own zone, as the badge's count reads "today" in it.
+        let outcome = await makeHandler(container, zone: TimeZone.current.identifier, sync: { container in
             await shipping(container)
             synced.fulfill()
         }).perform(route: .checkIn(habitID: read.id, day: nil), delivered: Date(), responded: Date())
@@ -505,6 +516,12 @@ final class NotificationActionHandlerTests: XCTestCase {
         XCTAssertEqual(pushes.count, 2, "the in-flight run's push, then the action's own")
         let entries = (pushes.last?.json?["entries"] as? [[String: Any]])?.compactMap { $0["id"] as? String }
         XCTAssertEqual(entries, [record.id.uuidString])
+        // The run's after-sync work, over the store as the pulls left it: Read's reminder replaced,
+        // and the badge counting the two pulled habits as the ones left today (Read is done; before
+        // the pull the count was 0). `contains`: the host app's window observer recounts the host's
+        // own store on any didSave, this test's included, through the same `shared`.
+        XCTAssertNotNil(center.pending["stride.habit.reminder." + read.id.uuidString], "the reminders were rescheduled")
+        XCTAssertTrue(center.badgeCounts.contains(2), "the badge was counted after the pull: \(center.badgeCounts)")
     }
 
     /// The verification's major. A lock-screen Mark Done launches a terminated Stride with no
@@ -515,7 +532,7 @@ final class NotificationActionHandlerTests: XCTestCase {
     /// the widgets reload (with the refresh pass) AFTER the pull has been saved, then the
     /// reminders and badge — besides the reload of the action's own effects, which came before.
     func testAnActionsSyncReloadsTheWidgetsAfterWhatItPulled() async throws {
-        let (server, sync) = installStubbedSync("action.pull")
+        let (server, sync, _) = installStubbedSync("action.pull")
         let fromTheMac = Habit(name: "Meditate")   // never in this store: it arrives by the pull
         server.on("POST", "/v1/sync/push", respond: .ok(SyncStubBodies.pushOK))
         server.on("GET", "/v1/sync/pull", respond: .ok(SyncStubBodies.pull(habits: [SyncStubBodies.habit(fromTheMac)])))

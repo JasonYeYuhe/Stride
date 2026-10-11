@@ -334,11 +334,18 @@ downgraded, 3 refuted. Everything below is the revised design. The adopted findi
   the Mac had checked off deleted that check-in on every device (and a pulled un-check was
   re-checked). 1.3.x never changed the store without a window. `run` already waits out a sync in
   flight and syncs `.background`, and after it come the widgets, `refreshAfterDataChange`, the
-  reminders and the badge (D5 below). The orphan prune is skipped while the app is active: an
-  older banner answered from Notification Center over a frontmost Stride can meet a habit sheet
-  that is saving. The Mac keeps the plain sync: its process-wide triggers see the pull's save.
-  Hosted test: a Mark Done whose sync pulls another device's habit records the widgets' reload
-  after the pull was saved, then the reminders and badge.
+  reminders and the badge (D5 below). The orphan prune runs only while the app is in the
+  background (D5, "second fix pass"): an older banner answered from Notification Center over a
+  frontmost Stride can meet a habit sheet that is saving. The Mac keeps the plain sync: its
+  process-wide triggers see the pull's save. Hosted test: a Mark Done whose sync pulls another
+  device's habit records the widgets' reload after the pull was saved, then the reminders and
+  badge.
+
+  As built (second fix pass; verification, minor): that test built its sync through
+  `sync(through:)` itself, so it passed with `Environment.live` back on W2's plain closure. The
+  hosted test of an action during a sync, which runs `Environment.live`, now also asserts the
+  run's after-sync work on its recording center: the habit's reminder replaced, and the badge
+  counted over the pulled habits. Checked by mutation: with the plain closure back, it fails.
 - **Delivered-banner hygiene.** At launch, foreground and `NSCalendarDayChanged`, banners delivered
   before today are withdrawn. A check-in in the app, the intent or the handler withdraws that
   habit's banners.
@@ -390,6 +397,19 @@ downgraded, 3 refuted. Everything below is the revised design. The adopted findi
     callers (the refresh, and on iOS a reminder action's sync, D4). Hosted tests: a run cancelled
     right after its pull still reloads, over a store with the pulled habit in it, and awaits
     nothing.
+  - As built (second fix pass; verification, minor): "not active" did not cover the case it was
+    for. Notification Center pulled down over a frontmost Stride leaves the app `.inactive`, with
+    a habit sheet still under it, so a Mark Done on an older banner there still pruned. And the
+    state was read once, before a prune that waits for the center's pending list, so the user
+    could bring Stride forward and save a sheet in between, and the prune removed the sheet's new
+    reminder, missing from a keep set computed earlier. The prune now runs only while the app is
+    in the **background**. The state is read before the reschedule and again once the center has
+    answered, in the same main-actor turn as the removal
+    (`rescheduleAllHabitRemindersAndWait(mayPrune:)`). In any other state the reminders are still
+    replaced, and the next launch's pass prunes. Hosted test, over the shipping after-sync work
+    with an injected state (`Environment.liveAfterSync`): `.active` and `.inactive` keep the
+    orphan, `.background` prunes it, and background-then-inactive during the center's answer
+    keeps it. Checked by mutation: the first fix pass's single `== .active` read fails it.
 - **Submitting.** One entry point, `BackgroundRefresh.schedule(reason:)`, with an injected
   submitter.
   - It runs in a detached task: the iOS 27 async `submit` must not run on the main thread, and
@@ -480,6 +500,13 @@ downgraded, 3 refuted. Everything below is the revised design. The adopted findi
       `ExportSharePresenter.present` drops the share, logged like the other drops, when the tab
       is hidden. Hosted tests: the presenter's drop, and the anchor following the environment
       both ways.
+    - As built (second fix pass; verification, minor): the anchor test hosted a probe view that
+      repeated the button's wiring, and `ExportShareAnchorView.isShown` defaulted to true, so the
+      button's `isShown: isTabShown` could be dropped with no compile error and no failing test.
+      The default is gone. The hosted test now hosts `ExportShareButton` itself (written into the
+      test's directory through a new `in root:` parameter, tmp by default), taps it through its
+      accessibility action, and checks shown → sheet, hidden → nothing, shown → sheet. Checked by
+      mutation: the button wired to `isShown: true` fails it.
 - **STRIDE-APPLE-7 and the iOS 6–7 s delay** go away: nothing is lazy.
 - **Cleanup.**
   - The erase paths (Erase, Start from this account's data, account deletion) sweep only export
@@ -499,6 +526,13 @@ downgraded, 3 refuted. Everything below is the revised design. The adopted findi
     `ExportShareButton`, and `removeExportFiles` skips what it holds. The panel's answer releases
     it, and its Cancel deletes the file. Hosted test: the erase's sweep, the deferred one and the
     launch's spare a held file; released, it is swept.
+  - As built (second fix pass; verification, minor): the menu Export's pass that clears the file
+    of a panel that never came up now releases that file's hold too (without deleting it). Only
+    the pass's next offer used to release it, so a pass that ended without one (cancelled, beeped
+    away by a sheet, failed, or a request that is not an export) left a full backup held for the
+    life of the Mac process, and Erase, Delete Account and Start never swept it. A panel's own
+    close never reaches that branch: its binding clears the file before the request changes.
+    Mac-only view code with no test host: on D7's Mac pass.
 - **Recovered edits: Clear and Erase are bound to what was exported.**
   - The last exported total per owner is remembered.
   - If Clear or Erase is confirmed while the current total is above it, the existing "New
@@ -606,6 +640,20 @@ and habitId) and launch arguments, with matching selftest stub cases.
     Migration already done before the install is a NOTE too. The verdict says "did not open
     Stride.store" only for an actual failed open. New selftest cases cover these (102 in all);
     against the old `upgrade.sh`, 8 of them fail.
+  - As built (second fix pass; verification, minor): two ways that excuse passed on nothing.
+    - The excused widget-first open rested on the model checksum alone, and `"?" == "?"` read as
+      "unchanged" when `Z_METADATA`, `writefile` or `plutil` could not be read on either side.
+      An unread checksum is now unknown. With an excused widget-first open, the run fails ("the
+      model checksum could not be read to rule out a migration"). The first fix pass's own
+      selftest case had passed this way: its store fixture had no `Z_METADATA`. It now has one.
+    - "Migration already done" passed even when the old build's marks still waited
+      (`stride_delivery_marks_unproven` or `…_unverified` in `prefs-before.txt`, a 1.3.1 device
+      upgraded from 1.3.0 that never made the full pull). The NOTE now needs no waiting mark.
+      With one, the marks must still wait after the launch, or the first full pull must have
+      asked `?deletionsSince=`. Otherwise the run fails: the marks were lost, and the next full
+      pull can archive rows deleted elsewhere.
+    - Selftest: 110 cases (8 new): an unread checksum, waiting marks kept, lost and proved. Against
+      the first fix pass's `upgrade.sh`, 7 of the 8 fail; the eighth is a positive check.
   - The banner recipe (README): on the lock screen, swipe the banner left and tap View; on the
     home screen, pull it down. A long-press through the iOS Simulator MCP reveals nothing.
 - **iPad Pro 13-inch (M5)**, unsigned Debug, under its lock:
@@ -876,3 +924,10 @@ design are below. Each was checked by that workstream's reviewer.
     from v1.3.1 (D7). All fixed in one pass, each with an "As built (fix pass)" note above. The
     new hosted tests were checked by mutation: the delegate without `@MainActor`, and the reload
     behind the cancellation guard, each fail them. The kit's new cases fail on the old script.
+  - A second fix pass on the first pass's review (six minors). The prune runs in the background
+    only, and checks again before it removes anything (D5). The action's live wiring and the
+    Export button's tab wiring are now pinned by tests on the shipping code, not copies (D4, D6).
+    The menu Export no longer holds a stale file for the life of the process (D6). `upgrade.sh`
+    no longer excuses a widget-first open on an unread checksum, and no longer passes when an old
+    build's waiting marks are lost (D7). Each fix has a "second fix pass" note above. Each new
+    hosted test was checked by mutation, and the kit's new cases were run on the old script.

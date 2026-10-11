@@ -306,37 +306,88 @@ final class ExportTests: XCTestCase {
         try await waitUntil { screen.presentedViewController == nil }
     }
 
-    /// Where the anchor learns it: `\.shellTabIsActive`, read by the button and handed to its
-    /// anchor view, follows the shell's selection (`shellTab(isActive:)`); the anchor follows it,
-    /// both ways, through SwiftUI's own updates.
-    func testTheAnchorFollowsWhetherItsTabIsShown() async throws {
-        struct Probe: View {
-            let anchor: ExportShareAnchor
-            @Environment(\.shellTabIsActive) private var isShown
+    /// The real button, not a copy of its wiring: `ExportShareButton` hosted under
+    /// `\.shellTabIsActive` as the shell sets it (`shellTab(isActive:)`), tapped through its
+    /// accessibility action (`AccessibilityAutomation`, as ShellTests), its file written, and then
+    /// whether a share comes up — shown, the sheet; hidden, none; shown again, the sheet. The first
+    /// fix pass pinned a probe view that repeated the button's one line,
+    /// `ExportShareAnchorView(anchor: anchor, isShown: isTabShown)`, and the anchor view's
+    /// `isShown` defaulted to true: that line could lose its argument with no compile error and no
+    /// failing test (verification, second fix pass). The default is gone, and this hosts the
+    /// button itself; its files go to the test's own directory (`in: root`).
+    ///
+    /// Shown first: the first share sheet of a process can take longer to come up than the hidden
+    /// step watches for one. A button wired to `isShown: true` got past a hidden FIRST step that
+    /// way in the mutation check, and was caught by a later one.
+    func testTheButtonOfAHiddenTabPresentsNoShare() async throws {
+        let automation = try XCTUnwrap(AccessibilityAutomation.enable(), "the accessibility runtime's automation switch")
+        addTeardownBlock { @MainActor in AccessibilityAutomation.restore(automation) }
+        try seedStore()
+        struct Host: View {
+            let tab: ExportProbeTab
+            let sync: SyncService
+            let root: URL
             var body: some View {
-                Color.clear.frame(width: 100, height: 44)
-                    .background(ExportShareAnchorView(anchor: anchor, isShown: isShown))
+                ExportShareButton(.csv, sync: sync, in: root) { Text(verbatim: "Export probe") }
+                    .padding(40)
+                    .environment(\.shellTabIsActive, tab.isActive)
             }
         }
-        struct Shell: View {
-            let tab: ExportProbeTab
-            let anchor: ExportShareAnchor
-            var body: some View { Probe(anchor: anchor).environment(\.shellTabIsActive, tab.isActive) }
-        }
         let tab = ExportProbeTab()
-        let anchor = ExportShareAnchor()
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let window = UIWindow(windowScene: scene)
-        window.rootViewController = UIHostingController(rootView: Shell(tab: tab, anchor: anchor))
+        let screen = UIHostingController(rootView: Host(tab: tab, sync: sync, root: root).modelContainer(container))
+        window.rootViewController = screen
         window.makeKeyAndVisible()
         hostedWindow = window
 
-        try await waitUntil { anchor.view?.window != nil && anchor.isShown }
+        /// Taps the button once it can be tapped (it is disabled while it writes), and waits for
+        /// its file: the share is decided right after, in the same main-actor turn.
+        func export(writing count: Int) async throws {
+            var button: NSObject?
+            try await waitUntil {
+                button = self.element(labeled: "Export probe", in: window)
+                return button.map { !$0.accessibilityTraits.contains(.notEnabled) } ?? false
+            }
+            XCTAssertEqual(button?.accessibilityActivate(), true, "the button's tap")
+            try await waitUntil { self.exportDirectories().count == count }
+        }
+
+        /// The sheet the export put up, then closed again.
+        func dismissTheSheet() async throws {
+            try await waitUntil { screen.presentedViewController is UIActivityViewController }
+            let sheet = try XCTUnwrap(screen.presentedViewController)
+            try await waitUntil { !sheet.isBeingPresented }
+            screen.dismiss(animated: false)
+            try await waitUntil { screen.presentedViewController == nil }
+        }
+
+        try await export(writing: 1)
+        try await dismissTheSheet()
+
         tab.isActive = false
-        try await waitUntil { !anchor.isShown }
-        XCTAssertNotNil(anchor.view?.window, "hidden, the anchor is still in the window — why the flag is needed")
+        try await export(writing: 2)
+        try await Task.sleep(for: .seconds(1))
+        XCTAssertNil(screen.presentedViewController, "hidden: written, and nothing comes up over the tab that shows")
+
         tab.isActive = true
-        try await waitUntil { anchor.isShown }
+        try await export(writing: 3)
+        try await dismissTheSheet()
+    }
+
+    /// The first accessibility element under `root` labelled `label`.
+    private func element(labeled label: String, in root: NSObject) -> NSObject? {
+        if root.isAccessibilityElement, root.accessibilityLabel == label { return root }
+        var children: [NSObject] = (root.accessibilityElements as? [NSObject]) ?? []
+        let count = root.accessibilityElementCount()
+        if children.isEmpty, count != NSNotFound, count > 0 {
+            children = (0..<count).compactMap { root.accessibilityElement(at: $0) as? NSObject }
+        }
+        if let view = root as? UIView { children += view.subviews }
+        for child in children {
+            if let found = element(labeled: label, in: child) { return found }
+        }
+        return nil
     }
 
     /// The share sheet's header (verification, iPad E2E: a blank placeholder with no name, on the
@@ -500,7 +551,7 @@ final class ExportTests: XCTestCase {
     }
 }
 
-/// The shell's selection as `testTheAnchorFollowsWhetherItsTabIsShown` flips it (`@Observable`
+/// The shell's selection as `testTheButtonOfAHiddenTabPresentsNoShare` flips it (`@Observable`
 /// cannot be on a type local to a function).
 @Observable
 private final class ExportProbeTab {

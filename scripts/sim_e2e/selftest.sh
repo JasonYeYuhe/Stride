@@ -30,9 +30,11 @@ cat >"$T/bin/xcrun" <<'STUB'
 # line per launch: the app's arguments), pushes/<n>.json (every simctl push payload),
 # launches = one action per launch: silent | session:<line suffix> | crash | fallback |
 # gate | gate-nomarker | gate-nomarks | gate-proved | widget-first | edits |
-# gate131 | gate131-migrated (a 1.3.1 → 1.4.0 upgrade: the old build already wrote the marker and
-# ran the delivery migration, so the widget opens first at the store's own schema and nothing is
-# marked; -migrated also swaps the store for one with another model checksum) |
+# gate131 | gate131-migrated | gate131-marks-lost | gate131-marks-proved (a 1.3.1 → 1.4.0
+# upgrade: the old build already wrote the marker and ran the delivery migration, so the widget
+# opens first at the store's own schema and nothing is marked; -migrated also swaps the store for
+# one with another model checksum; -marks-lost settles the old build's waiting marks with no
+# proof, -marks-proved with the proving pull's ?deletionsSince= in the server log) |
 # un:<fixture> (the notification stores become $FAKE_UN_FIXTURES/<fixture>)).
 # push checks its payload like a reminder: aps.alert always; aps.category present, and equal to
 # stride.habit.$FAKE_PUSH_KIND when that is binary or count; absent when it is none (exit 97).
@@ -123,7 +125,7 @@ LOG
           [[ -f "$G" ]] || plutil -create xml1 "$G"
           plutil -replace stride_store_schema_version -integer 1 "$G"
         fi ;;
-      gate131|gate131-migrated)
+      gate131|gate131-migrated|gate131-marks-lost|gate131-marks-proved)
         # The real 1.3.1 → 1.4.0 log (E2E 2026-10-11, upgrades/e1-131to140-widget): the marker was
         # already 1, so the widget is let in before the app's open; no new marks.
         echo "2026-10-11 02:25:44.141 Df StrideWidgetExtension[7:8] [yyh.stride.habittracker:ModelContainer] Store opened in the extension at schema 1" >>"$F/device.log"
@@ -132,7 +134,16 @@ LOG
         G="$F/group/Library/Preferences/group.yyh.stride.habittracker.plist"
         [[ -f "$G" ]] || plutil -create xml1 "$G"
         plutil -replace stride_store_schema_version -integer 1 "$G"
-        if [[ "$action" == gate131-migrated ]]; then cp "$FAKE_EMPTY_STORE" "$F/group/Stride.store"; fi ;;
+        if [[ "$action" == gate131-migrated ]]; then cp "$FAKE_EMPTY_STORE" "$F/group/Stride.store"; fi
+        case "$action" in
+          gate131-marks-lost|gate131-marks-proved)
+            P="$F/data/Library/Preferences/yyh.stride.habittracker.plist"
+            plutil -remove stride_delivery_marks_unproven "$P" 2>/dev/null || true
+            plutil -remove stride_delivery_marks_unverified "$P" 2>/dev/null || true ;;
+        esac
+        if [[ "$action" == gate131-marks-proved ]]; then
+          echo "E2E 2026-10-11T00:00:01.000Z GET /v1/sync/pull?deletionsSince=2026-10-06T17:05:20.882Z 200 client=ios/1.4.0(22) user=1 pull: full out=habits:2,entries:3,groups:0,deletions:1 withheld=0 deletionsSince=1" >>"$FAKE_SERVER_LOG"
+        fi ;;
       edits)
         # Rows pushed back and answered tombstoned: the U123 relaunch's Recovered Edits.
         mkdir -p "$F/data/Library/Application Support/SyncRecoveryLog"
@@ -211,12 +222,24 @@ make_store "$T/fixtures/empty.store" NEWMODEL= 0 0 synced
   INSERT INTO ZHABIT VALUES (1, 800000000, 700000000), (2, NULL, 700000000);
   INSERT INTO ZHABITRECORD VALUES (1, 800000000, 800000000), (2, NULL, 800000000), (3, 800000000, 800000000),
     (4, $(( $(date -j -u -f '%Y-%m-%dT%H:%M:%S' 2026-10-06T17:05:20 +%s) - 978307200 )), 800000000);"
+# The same rows with a model checksum, as a real store always has one (Z_METADATA): the 1.3.1
+# upgrades' excused widget-first open rests on comparing it. stamped.store has none, so its
+# checksum reads "?" — the unreadable case.
+cp "$T/fixtures/stamped.store" "$T/fixtures/stamped131.store"
+plutil -create xml1 "$T/fixtures/meta131.plist"
+plutil -insert NSStoreModelVersionChecksumKey -string MODEL131= "$T/fixtures/meta131.plist"
+"$SQLITE" "$T/fixtures/stamped131.store" "CREATE TABLE Z_METADATA (Z_VERSION INTEGER PRIMARY KEY, Z_UUID VARCHAR(255), Z_PLIST BLOB);
+  INSERT INTO Z_METADATA VALUES (1, 'selftest', readfile('$T/fixtures/meta131.plist'));"
 
 plutil -create xml1 "$T/fixtures/prefs.plist"
 plutil -insert stride_last_sync_time -string 2026-10-06T17:06:20Z "$T/fixtures/prefs.plist"
 plutil -insert stride_sync_cursor -string 2026-10-06T17:05:20.882Z "$T/fixtures/prefs.plist"
 cp "$T/fixtures/prefs.plist" "$T/fixtures/prefs-done.plist"
 plutil -insert stride_delivery_migration_v1_done -bool YES "$T/fixtures/prefs-done.plist"
+# A 1.3.1 device upgraded from 1.3.0 whose marks still wait for the proving full pull.
+cp "$T/fixtures/prefs-done.plist" "$T/fixtures/prefs-done-waiting.plist"
+plutil -insert stride_delivery_marks_unproven -bool YES "$T/fixtures/prefs-done-waiting.plist"
+plutil -insert stride_delivery_marks_unverified -bool YES "$T/fixtures/prefs-done-waiting.plist"
 
 # The notification stores (1.4.0, upgrade.sh --reminders), as NSKeyedArchiver archives shaped like
 # the simulator's (notifications.py's header: Library.plist and Categories.plist as observed, the
@@ -525,10 +548,12 @@ expect "upgrade: a fallback FAIL does" 0 "" grep -q "did not open Stride.store" 
 # From 1.3.1 (fix pass; E2E 2026-10-11, upgrades/e1-131to140-widget): the old build wrote the
 # marker and ran the delivery migration, the model is unchanged. The widget opening first at that
 # schema and no marks are notes, not the U123 signatures they were reported as.
-export PREFS_FIXTURE="$T/fixtures/prefs-done.plist" GROUP_MARKER=1
+export PREFS_FIXTURE="$T/fixtures/prefs-done.plist" GROUP_MARKER=1 STORE_FIXTURE="$T/fixtures/stamped131.store"
 device "$OLD131" gate131
 expect "upgrade from 1.3.1: widget first at the old marker, migration already done: PASS" 0 "^PASS: .*the widget opened only at the schema the old build had marked.*delivery migration already the old build's" \
   "$KIT/upgrade.sh" pro "$OLD131" "$NEW140" --wait 0 --server st --label from131
+expect "upgrade from 1.3.1: excused on a checksum read on both sides" 0 "model checksum unchanged" \
+  cat "$T/root/upgrades/from131/report.txt"
 expect "upgrade from 1.3.1: the marker before the install is read" 0 "App Group marker before the install: stride_store_schema_version = 1" \
   cat "$T/root/upgrades/from131/report.txt"
 expect "upgrade from 1.3.1: the delivery marks are a note" 0 "NOTE: the old build had already run the delivery migration" \
@@ -538,6 +563,29 @@ expect "upgrade from 1.3.1: the group prefs were saved before the install" 0 "st
 device "$OLD131" gate131-migrated
 expect "upgrade from 1.3.1: widget first, then the app migrated the store after all: FAIL" 3 "^FAIL: .*which then migrated it" \
   "$KIT/upgrade.sh" pro "$OLD131" "$NEW140" --wait 0 --label from131-migrated
+# Second fix pass: "?" == "?" read as "unchanged", and an excused widget-first open passed on a
+# checksum nobody could read.
+STORE_FIXTURE="$T/fixtures/stamped.store" device "$OLD131" gate131
+expect "upgrade from 1.3.1: widget first and the checksum unreadable: FAIL, not excused" 3 "^FAIL: .*model checksum could not be read to rule out a migration" \
+  "$KIT/upgrade.sh" pro "$OLD131" "$NEW140" --wait 0 --server st --label from131-unread
+expect "  … and the report says so, not 'unchanged'" 0 "model checksum: COULD NOT BE READ" \
+  cat "$T/root/upgrades/from131-unread/report.txt"
+# Second fix pass: the old build's marks still waited for their proof (a 1.3.1 device upgraded
+# from 1.3.0 that never made the full pull). Kept or proved passes; lost fails.
+export PREFS_FIXTURE="$T/fixtures/prefs-done-waiting.plist"
+device "$OLD131" gate131
+expect "upgrade from 1.3.1: the old build's waiting marks still wait: PASS" 0 "^PASS: .*its waiting marks kept or proved" \
+  "$KIT/upgrade.sh" pro "$OLD131" "$NEW140" --wait 0 --server st --label from131-waiting
+expect "  … both keys, before and after" 0 "still wait \(prefs-before.txt: stride_delivery_marks_unproven stride_delivery_marks_unverified; prefs-after.txt: stride_delivery_marks_unproven stride_delivery_marks_unverified\)" \
+  cat "$T/root/upgrades/from131-waiting/report.txt"
+device "$OLD131" gate131-marks-lost
+expect "upgrade from 1.3.1: the old build's waiting marks lost, no ?deletionsSince=: FAIL" 3 "^FAIL: .*unproven delivery marks were lost" \
+  "$KIT/upgrade.sh" pro "$OLD131" "$NEW140" --wait 0 --server st --label from131-marks-lost
+expect "  … with the U123 sentence" 0 "marks the old build left waiting that were lost" \
+  cat "$T/root/upgrades/from131-marks-lost/report.txt"
+device "$OLD131" gate131-marks-proved
+expect "upgrade from 1.3.1: the old build's waiting marks proved by the first full pull: PASS" 0 "their proof ran" \
+  "$KIT/upgrade.sh" pro "$OLD131" "$NEW140" --wait 0 --server st --label from131-marks-proved
 unset PREFS_FIXTURE GROUP_MARKER
 unset STORE_FIXTURE
 

@@ -1,6 +1,7 @@
 import XCTest
 import SwiftData
 import BackgroundTasks
+import UIKit
 @testable import Stride
 
 /// Background sync (RELEASE-1.4.0.md D5) as far as anything can check it short of a device: iOS
@@ -561,6 +562,74 @@ final class BackgroundSyncTests: XCTestCase {
         XCTAssertFalse(ran)
         XCTAssertEqual(seen.refreshes, [true], "one reload, over the store with the pulled habit in it")
         XCTAssertEqual(seen.afterSyncs, 0, "nothing awaited once the task is completed")
+    }
+
+    // MARK: - The reminders' prune after a run
+
+    /// What `applicationState` answers, one read at a time; the last answer repeats.
+    @MainActor
+    private final class States {
+        private var answers: [UIApplication.State]
+        private(set) var reads = 0
+        init(_ answers: [UIApplication.State]) { self.answers = answers }
+        func next() -> UIApplication.State {
+            reads += 1
+            return answers.count > 1 ? answers.removeFirst() : answers[0]
+        }
+    }
+
+    /// The shipping after-sync work (`Environment.liveAfterSync`) over `states`, with
+    /// `NotificationService.shared` on a recording center that holds an orphan — the reminder of a
+    /// habit deleted elsewhere — and answers the pending list later, from another queue, as the
+    /// real center does.
+    private func runLiveAfterSync(_ states: States, orphan: String) async -> RecordingCenter {
+        let center = RecordingCenter()
+        center.seed(orphan)
+        center.answersPendingLater = true
+        let notifications = ScratchDefaults("background.notifications")
+        NotificationService.testOverride = NotificationService(center: center, defaults: notifications.defaults)
+        await BackgroundSync.Environment.liveAfterSync(applicationState: { states.next() })(container)
+        NotificationService.testOverride = nil
+        notifications.remove()
+        return center
+    }
+
+    /// The verification's second fix pass. A run's prune of orphaned reminders goes only while
+    /// the app is in the BACKGROUND, asked again once the center has answered: in any other state
+    /// a habit sheet can be saving, and a prune whose keep set predates the sheet's save removes
+    /// the sheet's new reminder. The first fix pass skipped it only while `.active`, so Mark Done
+    /// on an older banner from Notification Center pulled down over a frontmost Stride
+    /// (`.inactive`) still pruned; and it read the state once, before the center's answer. In
+    /// every state the reminders are replaced and the badge is counted — `contains`, not the whole
+    /// list: the host app's window observer recounts the host's own store on any didSave, this
+    /// test's included, through the same `NotificationService.shared`.
+    func testTheRunsPruneGoesOnlyWhileTheAppIsInTheBackground() async throws {
+        let read = try insertHabit("Read")
+        read.reminderEnabled = true
+        try context.save()
+        let reminder = "stride.habit.reminder." + read.id.uuidString
+        let orphan = "stride.habit.reminder." + UUID().uuidString
+
+        for state in [UIApplication.State.active, .inactive] {
+            let center = await runLiveAfterSync(States([state]), orphan: orphan)
+            XCTAssertEqual(Set(center.pending.keys), [reminder, orphan], "\(state.rawValue): replaced, not pruned")
+            XCTAssertFalse(center.removed.contains(orphan))
+            XCTAssertTrue(center.badgeCounts.contains(1), "\(state.rawValue): the badge, counted")
+        }
+
+        let background = States([.background])
+        var center = await runLiveAfterSync(background, orphan: orphan)
+        XCTAssertEqual(Set(center.pending.keys), [reminder], "in the background the orphan is pruned")
+        XCTAssertTrue(center.removed.contains(orphan))
+        XCTAssertEqual(background.reads, 2, "asked before the reschedule and again before the removal")
+        XCTAssertTrue(center.badgeCounts.contains(1))
+
+        // Stride came forward while the center was answering: the keep set is already stale.
+        let cameForward = States([.background, .inactive])
+        center = await runLiveAfterSync(cameForward, orphan: orphan)
+        XCTAssertEqual(Set(center.pending.keys), [reminder, orphan], "nothing removed once the app is in front")
+        XCTAssertFalse(center.removed.contains(orphan))
+        XCTAssertEqual(cameForward.reads, 2)
     }
 
     // MARK: - The session after a background launch

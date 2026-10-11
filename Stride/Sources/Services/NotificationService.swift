@@ -441,30 +441,51 @@ final class NotificationService {
     func rescheduleAllHabitReminders(modelContainer: ModelContainer) {
         // Don't prune on a failed fetch: an empty "keep" set would delete every reminder.
         guard let plan = scheduleAllHabitReminders(modelContainer: modelContainer) else { return }
-        pruneOrphans(keeping: plan.keep) {}
+        pruneOrphans(keeping: plan.keep)
     }
 
-    /// `rescheduleAllHabitReminders`, returning once the prune has run: for the background refresh
-    /// (BackgroundSync), whose process can be suspended as soon as its task is completed, taking a
-    /// prune still waiting on the center's answer with it.
-    func rescheduleAllHabitRemindersAndWait(modelContainer: ModelContainer) async {
+    /// `rescheduleAllHabitReminders`, returning once the prune has run: for a background run
+    /// (BackgroundSync — the refresh, and on iOS a reminder action's sync), whose process can be
+    /// suspended as soon as its task is completed, taking a prune still waiting on the center's
+    /// answer with it.
+    ///
+    /// `mayPrune` is asked once the center has answered, right before anything is removed, and in
+    /// the same main-actor turn as the removal: no habit sheet's save (main actor) can come between
+    /// the answer and the remove. BackgroundSync passes "the app is still in the background". The
+    /// keep set was computed before the center was asked, so a sheet that saved while it answered
+    /// added a reminder the keep set lacks, and the prune would remove it — the same race
+    /// `scheduleAllHabitReminders` documents for the launch pass (verification, second fix pass:
+    /// the state was read once, before the wait). False: nothing is removed; the next launch's pass
+    /// prunes.
+    func rescheduleAllHabitRemindersAndWait(modelContainer: ModelContainer,
+                                            mayPrune: @MainActor () -> Bool = { true }) async {
         guard let plan = scheduleAllHabitReminders(modelContainer: modelContainer) else { return }
-        let keep = plan.keep
-        await withCheckedContinuation { (finished: CheckedContinuation<Void, Never>) in
-            pruneOrphans(keeping: keep) { finished.resume() }
+        let center = self.center
+        // Identifiers only: the answer crosses from the center's queue back to the main actor.
+        let pending: [String] = await withCheckedContinuation { answered in
+            center.getPendingNotificationRequests { requests in
+                answered.resume(returning: requests.map(\.identifier))
+            }
+        }
+        guard mayPrune() else {
+            Self.logger.notice("reminder prune skipped: the app came forward while the center answered")
+            return
+        }
+        let orphans = ReminderPlan.prune(pending, keep: plan.keep)
+        if !orphans.isEmpty {
+            center.removePendingNotificationRequests(withIdentifiers: orphans)
         }
     }
 
-    /// Removes every pending habit request the planner did not keep, then calls `done` — from the
-    /// center's callback, off the main actor.
-    private func pruneOrphans(keeping keep: Set<String>, then done: @escaping @Sendable () -> Void) {
+    /// Removes every pending habit request the planner did not keep — from the center's callback,
+    /// off the main actor. The launch pass's: nothing waits for it.
+    private func pruneOrphans(keeping keep: Set<String>) {
         let center = self.center
         center.getPendingNotificationRequests { requests in
             let orphans = ReminderPlan.prune(requests.map(\.identifier), keep: keep)
             if !orphans.isEmpty {
                 center.removePendingNotificationRequests(withIdentifiers: orphans)
             }
-            done()
         }
     }
 
