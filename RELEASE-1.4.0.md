@@ -915,9 +915,11 @@ design are below. Each was checked by that workstream's reviewer.
   go), then `release.py prepare 1.4.0` again.~~ **Owner released macOS 1.3.1 on 2026-10-11** (`release.py
   release 1.3.1 --platform MAC_OS`, both platforms now READY_FOR_SALE). The macOS 1.4.0 record was
   then created (`prepare --platform MAC_OS`), with What's New ×6, MANUAL, held for the Mac pass.
-- [ ] Mac UI pass with the variant (computer use was declined on 2026-10-11). It is the only
-  unverified area: menus, ⌘0, the Settings window, the Dock badge, the Restore and Export panels,
-  and Mac banner actions.
+- [ ] ~~Mac UI pass with the variant~~ **Not run.** Computer use was declined on 2026-10-11 and
+  again on 2026-10-14 (third request, after the variant had been rebuilt and preflighted). The owner
+  then said to release the Mac version ("mac版本也发布"), so macOS shipped on build, review and
+  entitlement evidence, plus a read-only readiness workflow (below). Menus, ⌘0, the Settings window,
+  the Dock badge, the Restore and Export panels, and Mac banner actions remain unrun on a Mac.
 - [x] Store screenshots (D8). **The owner approved; uploaded 2026-10-11** with `store_screenshots.py`
   (iOS 1.4.0, en-US only): APP_IPHONE_67 (1320×2868), APP_IPHONE_65 (resized 1284×2778),
   APP_IPAD_PRO_3GEN_129 (2064×2752) and APP_IPAD_PRO_129 (resized 2048×2732), each Today /
@@ -933,9 +935,67 @@ design are below. Each was checked by that workstream's reviewer.
 - [x] **iOS submitted 2026-10-11** on the owner's go: `release.py finish 1.4.0 22 --platform IOS`
   (the new `--platform` option), review submission `09cc9faa-a676-4fe6-b3fe-ea66acfac3eb`,
   WAITING_FOR_REVIEW, MANUAL. CI was green on the uploaded tree `4617d1b`.
-- [ ] macOS: `release.py finish 1.4.0 22 --platform MAC_OS` once the Mac pass is clean (owner:
-  "Mac after a Mac pass").
-- [ ] After approval: `release.py release 1.4.0` (owner's go).
+- [x] **iOS 1.4.0 live** (READY_FOR_SALE by 2026-10-14).
+- [x] **macOS submitted 2026-10-14 01:01 JST** on the owner's go: `release.py finish 1.4.0 22
+  --platform MAC_OS`, review submission `e785e2d9-0dbe-496d-838c-35ae7d4959f2`, WAITING_FOR_REVIEW,
+  MANUAL. Before it:
+  - a read-only readiness workflow (3 agents: ASC record, archive, Mac-only diff since v1.3.1)
+    found no blocker and no major. Build 22 for MAC_OS is VALID and is the local archive (same
+    distribution id). Since 4617d1b only docs and `release.py` changed. Metadata, URLs, IAPs and
+    the demo account are in order;
+  - the Mac review notes were corrected (the only ASC write besides the submission). They had
+    sent the reviewer to a Settings sidebar row 1.4.0 removed. Now: Stride > Settings… (⌘,) →
+    Account → Sign In → I have a login token → Log In, plus Pro = Habit Groups, Advanced
+    Analytics, Weekly Review. The demo account fields were left alone;
+  - screenshots: APP_DESKTOP keeps 1.3.1's four captures (real app, no false claim, but they show
+    the removed Settings row and the toolbar "New Habit"). Replacing them needs the owner's go and
+    a hands-on variant run.
+- [ ] After macOS approval: `release.py release 1.4.0 --platform MAC_OS` (MANUAL; the owner said
+  to release the Mac version on 2026-10-14). Then merge PR JasonYeYuhe/Stride#7 and tag v1.4.0 (as #6 and v1.3.1 were, after
+  approval on both platforms).
+
+### Follow-ups for 1.4.1 (readiness review, 2026-10-14; none blocks 1.4.0)
+
+- Dock badge: nothing refreshes it right after notification permission is first granted
+  (`SettingsView.handleReminderToggle`, `NotificationService.ensureReminderPermission`); it waits for
+  the next save, activation or midnight. Call `updateBadge(modelContainer:)` after a grant.
+- `Stride/PrivacyInfo.xcprivacy`: add FileTimestamp C617.1 (`DataExportService` reads
+  `.creationDateKey`, new in 1.4.0) and SystemBootTime 35F9.1 (`systemUptime` in
+  `SharedModelContainer`).
+- Menu Export checks `NSApp.keyWindow` for a sheet (`MenuCommandPress.keyWindowShowsSheet`), not its
+  own window as `ExportShareButton` does since 68ad577; a dropped panel can leave
+  `shell.request == .export(...)`, so the next ⇧⌘E does nothing. Use a window probe and clear the
+  request.
+- Export file names are date-only (`Stride-Backup-yyyy-MM-dd.json`); a second same-day export to the
+  same folder through `.fileMover` is untested.
+- `release.py cancel` ignores `--platform`.
+- Mac store screenshots: capture 1.4.x from the variant at 2880×1800 (README) once a hands-on run is
+  possible.
+- Run this Mac UI checklist on the variant (never the real-id app) the next time computer use is
+  allowed or the owner clicks through. Riskiest first:
+  1. Settings → Export as JSON / CSV: a panel opens on the Settings window, not in
+     `…mactest/Data/tmp`; the file lands where chosen; Cancel leaves no file in `Data/tmp`.
+  2. ⇧⌘E on the main window: one panel; ⇧⌘E again while it is up beeps; after Cancel, ⇧⌘E opens
+     a new panel.
+  3. Erase Local Data → Restore from Backup…: an open panel (.json only); Cancel, then Export still
+     opens its panel; restore the step-1 file and the habits come back.
+  4. Same-day second export to the same folder: Replace prompt or a distinct name, not "Couldn't
+     create the file".
+  5. Mark Done / Add 1 / Snooze on a Mac banner with Stride in the background, then with it quit:
+     no crash, one main window, the check-in recorded, the badge drops.
+  6. ⌘1/⌘2 keep the picked day and Stats chip; hidden tabs take no input; one toolbar per tab.
+  7. Menus right after launch: File (New Habit ⌘N, Sync Now ⌘R, Export Backup… ⇧⌘E, Export as
+     CSV…), View (Today ⌘1, Statistics ⌘2, Weekly Review ⇧⌘R), Window → Stride ⌘0; with Settings
+     key, window commands are disabled and ⌘0 stays enabled; no File → New Window.
+  8. In the Add Habit sheet ⌘1/⌘2/⇧⌘E/⇧⌘R/⌘N beep; after Cancel ⌘N works without a click.
+  9. ⇧⌘R before Statistics was ever opened: paywall (free) or review (Pro); Esc closes; reopens.
+  10. Sidebar: empty-area click and ⌘-click keep the selection.
+  11. Close the main window with Settings open; ⌘0 opens exactly one; ⌘M then ⌘0 restores it;
+      with no windows the Dock icon reopens one.
+  12. Dock badge after allowing notifications (switch apps once, see the badge follow-up); it
+      tracks check-ins within ~2 s, also with the main window closed.
+  13. ⌘, opens a window titled Settings (≥460×520); the paywall sheet from it fits and closes.
+
 
 ## Progress log
 
@@ -1031,4 +1091,11 @@ design are below. Each was checked by that workstream's reviewer.
   review only: menus and shortcuts, ⌘0, the Settings window, the Dock badge, the Restore and
   Export panels, and banner actions on the Mac. The panel entitlement itself is proven (the probe
   apps and preflight).
-
+- 2026-10-14: **macOS submitted.** iOS 1.4.0 was already live. The variant had been purged with
+  `$TMPDIR` again (and this session's scratchpad was emptied), so it was rebuilt into the scratchpad
+  and preflighted; launched by path, its store opened only in its own container and the real
+  group container listing was byte-for-byte unchanged; stopped by pid (an AppleScript quit returned
+  -128). Computer use was requested a third time and declined. A read-only readiness workflow
+  checked the ASC record, the archive and the Mac-only diff (no blocker, no major; follow-ups
+  listed above). The Mac review notes were corrected, then `release.py finish 1.4.0 22 --platform
+  MAC_OS` → WAITING_FOR_REVIEW (`e785e2d9…`).

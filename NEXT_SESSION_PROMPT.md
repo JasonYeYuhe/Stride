@@ -2,14 +2,15 @@
 
 你接手 Stride（iOS/macOS 习惯追踪 App，SwiftUI + SwiftData；Node/Express + SQLite 后端在一台 Azure VM 上）的开发。仓库在 `~/Documents/Stride`。你全权负责，按下面的顺序做，不要每一步都来问我；只有在动到用户数据、签名/凭据、或者要提交审核时才需要我点头。
 
-## 现在的状态（2026-10-11）
+## 现在的状态（2026-10-14）
 
-- **1.3.1 两个平台都已上架**（iOS 由我发布；macOS 于 2026-10-11 由你点头后发布）。PR #6 已合并，tag `v1.3.1`。
 - **1.4.0（M3，build 22）**，分支 `m3/1.4.0`，草稿 PR JasonYeYuhe/Stride#7，完整记录在 `RELEASE-1.4.0.md`：
-  - **iOS 1.4.0 已于 2026-10-11 提交审核**（提交 `09cc9faa…`，WAITING_FOR_REVIEW，MANUAL）。新的商店截图已上传（iPhone 6.9/6.5、iPad 13/12.9，换掉了 4 月的假 Pro 宣传图），描述已推送。
-  - **macOS 1.4.0 的版本记录已建好，但未提交**：Mac 专属界面（菜单、⌘0、设置窗口、Dock 角标、恢复/导出面板）只经过编译和审查，没实际跑过。computer use 申请两次都被拒，按你的选择要先做 Mac 界面检查再提交（`scripts/mac_variant/` 的隔离测试版，绝不碰本机真实的 Stride 数据）。
-  - 验证：StrideTests 540（en/ja）、hosted 248+、sync_rehearsal 81/0/1、模拟器端到端（锁屏动作、后台同步、导出、iPad 外壳），以及从 1.2.3/1.3.0/1.3.1 原地升级全部 PASS。
-  - 发现并修复：通知动作回调不在主线程导致闪退（blocker），以及无场景同步后小组件不刷新。
+  - **iOS 1.4.0 已上架**（READY_FOR_SALE）。新的商店截图（iPhone 6.9/6.5、iPad 13/12.9）和描述都已推送。
+  - **macOS 1.4.0 已于 2026-10-14 提交审核**（提交 `e785e2d9…`，WAITING_FOR_REVIEW，MANUAL）。我说了"mac版本也发布"，所以**过审后直接 `release.py release 1.4.0 --platform MAC_OS`**，不用再问。然后合并 PR #7、打 tag `v1.4.0`（照 1.3.1 的先例：两个平台都过审后再合并和打 tag；Mac 若被拒要改代码，build 23 会来自新的提交）。
+  - Mac 专属界面（菜单、⌘0、设置窗口、Dock 角标、恢复/导出面板、Mac 横幅动作）**始终没有实际跑过**：computer use 三次都被拒。提交前跑了一个只读的就绪检查（ASC 记录、归档、v1.3.1 以来的 Mac 改动），没有 blocker 或 major；Mac 的审核备注已改成 Stride > Settings…（⌘,）→ Account → Sign In。
+  - 1.4.1 要跟进的小问题和 13 条 Mac 界面检查清单：`RELEASE-1.4.0.md` 的「Follow-ups for 1.4.1」。
+  - Mac 商店截图仍是 1.3.1 的（侧栏里还有已移除的 Settings 行），更换需要我点头，并且要先实际跑一遍测试版。
+- **1.3.1 两个平台都已上架**，PR #6 已合并，tag `v1.3.1`。
 - **磁盘**：2026-10-11 曾满到 100%。见记忆 `feedback_disk_space`：每个会话只用一个 derived data 目录；trash 不释放空间；`$TMPDIR` 会被系统清理。
 
 ## 先读什么（按顺序）
@@ -55,10 +56,10 @@ M3 = iPad/Mac 外壳、通知"完成"动作、后台同步，外加积压项"导
 
 ## 需要我做的事（你做不了）
 
-- Mac 界面检查：允许 computer use 操作测试版 `yyh.stride.habittracker.mactest`，或者自己按 `scripts/mac_variant/README.md` 的清单点一遍。
+- Mac 界面检查（1.4.0 已提交，现在是补做）：允许 computer use 操作测试版 `yyh.stride.habittracker.mactest`，或者自己按 `RELEASE-1.4.0.md` 里的 13 条清单点一遍。
 - Sentry：建 `stride-server` 项目，把 `SENTRY_DSN` 写进 `/root/stride-server/.env`，加 1 分钟的 uptime 监控（DEPLOY.md 有步骤）。
 - 把 iCloud Drive `Downloads/` 里的两份 ASC `.p8` 移到 `~/Library/Application Support/CLI-Pulse-Secrets/`，再 `chmod 600 ~/private_keys/AuthKey_*.p8`。
 - 可选：给 stride.colorarchive.me 加 DMARC 记录；`ssh-keygen -R 143.198.85.72`（旧 DO 主机已销毁，没有要清的）。
 - ASC 首购优惠：已确认没有配置，无需处理。
 
-先看 `RELEASE-1.4.0.md` 末尾的「Submission checklist」，再接着做：等 iOS 审核结果，做 Mac 界面检查后提交 macOS，过审后等我说再 `release.py release 1.4.0`，然后合并 PR #7、打 tag `v1.4.0`，再进入 M4。
+先看 `RELEASE-1.4.0.md` 末尾的「Submission checklist」和「Follow-ups for 1.4.1」，再接着做：查 macOS 审核结果，过审后 `release.py release 1.4.0 --platform MAC_OS`，合并 PR #7，打 tag `v1.4.0`，然后进入 M4（`DEV-PLAN-1.3.md` 的 M4 小节，1.4.1），并把 1.4.1 跟进项并进去。
