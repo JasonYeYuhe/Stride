@@ -30,9 +30,10 @@ when called without arguments, and every script's header comment is its full ref
 - **Port 3002 is the kit's alone.** `start-server.sh` refuses when anything it did not start
   listens there, and never kills it. Stop and report instead. Only one kit server runs at a time.
   Always stop yours at the end (`stop-server.sh`).
-- **One root.** All state lives under `$STRIDE_E2E_ROOT` (default `${TMPDIR}stride-sim-e2e`,
-  resolved, e.g. `/private/var/folders/…/T/stride-sim-e2e`): server copies, databases, logs,
-  DerivedData and worktrees. The kit refuses a root under `~/Documents`, which is iCloud-synced,
+- **One root.** All state lives under `$STRIDE_E2E_ROOT` (default
+  `~/Library/Caches/Stride-build/sim-e2e`, persistent): server copies, databases, logs,
+  DerivedData and worktrees. Until 1.4.1 the default was `${TMPDIR}stride-sim-e2e`, which macOS
+  purges when the disk runs low (on 2026-10-11 that took the kit's builds; 2.7 GB were rebuilt). The kit refuses a root under `~/Documents`, which is iCloud-synced,
   and its only recursive delete refuses any path outside the root. Every DB script refuses a
   database that is not under `$ROOT/servers/`.
 - **Two simulators only:** iPhone 17 Pro `F5510EA3-65E5-45D2-8E64-C599625E0873` (alias `pro`) and
@@ -349,8 +350,14 @@ The build command is:
 ```
 xcodebuild build -project <src>/Stride.xcodeproj -scheme Stride -sdk iphonesimulator -configuration Debug \
   -derivedDataPath $ROOT/builds/<label>/dd -destination 'generic/platform=iOS Simulator' \
+  -clonedSourcePackagesDirPath <shared> -disableAutomaticPackageResolution \
   CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual PROVISIONING_PROFILE_SPECIFIER=
 ```
+
+`<shared>` is the Swift package checkout keyed by the built tree's own `Package.resolved`
+(`scripts/ci/build_cache.sh`, README "Building locally"); `-disableAutomaticPackageResolution` is
+left out, and packages resolve into the derived data as before, only when that resolve fails.
+Two builds of one label wait for each other.
 
 The build is then checked, and no path is printed unless both checks pass:
 
@@ -828,6 +835,7 @@ Then read `log.sh <name> since <mark>`.
 - `lock.sh release <device> <label>`.
 - `build.sh clean-worktrees` if a build failed half-way and left a worktree.
 
-The built apps under `$ROOT/builds` are reused by later runs. They are build output in TMPDIR,
-not repo files. `$ROOT/upgrades/<label>/` is the evidence of an `upgrade.sh` run. Copy what a doc
+The built apps under `$ROOT/builds` are reused by later runs: leave `builds/current` in place
+(it rebuilds incrementally). The per-tag builds of an upgrade gate (`builds/v1.3.0`, …) can be
+trashed when that release ships. `$ROOT/upgrades/<label>/` is the evidence of an `upgrade.sh` run. Copy what a doc
 cites into the repo before the root goes.

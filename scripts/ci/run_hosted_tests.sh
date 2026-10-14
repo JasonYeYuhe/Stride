@@ -35,9 +35,20 @@
 #     GitHub image with Xcode 27, so this CI coverage lasts only as long as that image does;
 #   - scripts/ship.sh, before anything is archived — the gate that does not depend on it.
 #
+# Derived data and packages. Every device used to build into one Stride-hosted-tests, so hosted
+# runs on two devices at once, each holding only its own device lock, shared one build.db (found
+# 2026-10-14). The default is now one directory per device, and runs on one device are already
+# serialized by its lock. On top of that the build takes the derived data's own lock
+# (build_lock_path in scripts/ci/build_cache.sh), so even one STRIDE_HOSTED_DERIVED_DATA given to
+# runs on two devices builds one at a time. Swift packages come from the shared checkout
+# (spm_cache_args, same file), not from a copy inside each derived data.
+#
 # Environment:
-#   STRIDE_HOSTED_DERIVED_DATA   derived data to build into (default: a persistent one under
-#                                ~/Library/Developer/Xcode/DerivedData, so a rerun is incremental)
+#   STRIDE_HOSTED_DERIVED_DATA   derived data to build into (default: a persistent one per
+#                                device under ~/Library/Developer/Xcode/DerivedData, so a rerun is
+#                                incremental: Stride-hosted-tests for "iPhone 17", the name it
+#                                always had, and Stride-hosted-tests-<device slug> for any other)
+#   STRIDE_SPM_DIR               the shared Swift package checkout (scripts/ci/build_cache.sh)
 #   STRIDE_HOSTED_ALL=1          run the Stride scheme's whole test action (StrideTests too,
 #                                on iOS) instead of only StrideAppTests
 #   STRIDE_SIM_LOCK_ROOT, STRIDE_SIM_LOCK_LABEL, STRIDE_SIM_LOCK_WAIT
@@ -48,7 +59,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=sim_lock.sh
 source "$SCRIPT_DIR/sim_lock.sh"
-DERIVED="${STRIDE_HOSTED_DERIVED_DATA:-$HOME/Library/Developer/Xcode/DerivedData/Stride-hosted-tests}"
+# shellcheck source=build_cache.sh
+source "$SCRIPT_DIR/build_cache.sh"
 WANT="${1:-}"
 [[ $# -gt 0 ]] && shift
 
@@ -92,6 +104,16 @@ if [[ -z "$UDID" ]]; then
 fi
 NAME="$(xcrun simctl list devices available | grep -F "$UDID" | sed -E 's/^ *(.*) \([0-9A-F-]{36}\).*/\1/' | head -1)"
 
+# One derived data per device (header). "iPhone 17" keeps the original directory and its warm build.
+SLUG="$(sim_lock_slug "$NAME")"
+DERIVED_DEFAULT="$HOME/Library/Developer/Xcode/DerivedData/Stride-hosted-tests"
+[[ "$SLUG" == "iphone-17" ]] || DERIVED_DEFAULT="$DERIVED_DEFAULT-$SLUG"
+DERIVED="${STRIDE_HOSTED_DERIVED_DATA:-$DERIVED_DEFAULT}"
+
+# The shared package checkout, resolved here if it is not yet: before the device lock, since it
+# does not touch the simulator.
+spm_cache_args "$PROJECT_DIR" "$@" || exit 1
+
 # The device lock (header), before the build: `xcodebuild test` boots the device, installs and
 # launches the host the moment its build ends, so there is no later point to take it at.
 if [[ "${CI:-}" == "true" ]]; then
@@ -101,6 +123,13 @@ else
     sim_lock_take "${STRIDE_SIM_LOCK_ROOT:-/tmp}/lock-$(sim_lock_slug "$NAME")" run_hosted_tests || LOCK_RC=$?
     [[ $LOCK_RC -eq 0 ]] || exit "$LOCK_RC"
     trap sim_lock_release EXIT
+fi
+# The derived data's own lock (header), after the device lock and released with it on exit.
+DD_LOCK=""
+if [[ "${CI:-}" != "true" ]]; then
+    build_lock_take "$(build_lock_path "$DERIVED")" "run_hosted_tests $NAME" || exit 2
+    DD_LOCK="$(build_lock_path "$DERIVED")"
+    trap '[[ -n "$DD_LOCK" ]] && build_lock_release "$DD_LOCK"; sim_lock_release' EXIT
 fi
 
 ONLY=(-only-testing:StrideAppTests)
@@ -112,6 +141,7 @@ LOG="$RUN_DIR/xcodebuild.log"
 
 echo "==> Hosted tests on $NAME ($UDID)"
 echo "    derived data: $DERIVED"
+echo "    packages: ${SPM_ARGS[1]:-resolved into the derived data}"
 echo "    log: $LOG"
 
 # -collect-test-diagnostics never: on a failure xcodebuild otherwise gathers a sysdiagnose
@@ -129,6 +159,7 @@ xcodebuild test \
     -resultBundlePath "$RESULT" \
     -collect-test-diagnostics never \
     "${ONLY[@]+"${ONLY[@]}"}" \
+    "${SPM_ARGS[@]+"${SPM_ARGS[@]}"}" \
     CODE_SIGNING_ALLOWED=NO \
     "$@" \
     > "$LOG" 2>&1

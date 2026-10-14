@@ -92,7 +92,14 @@
 #     them.
 #
 # Environment:
-#   STRIDE_A11Y_DERIVED_DATA  derived data for the build (default build/a11y/DerivedData)
+#   STRIDE_A11Y_DERIVED_DATA  derived data for the build (default
+#                             ~/Library/Caches/Stride-build/a11y-dd, persistent and shared by every
+#                             checkout; until 1.4.1 it was build/a11y/DerivedData, inside iCloud).
+#                             Builds into it take its lock (build_lock_path in
+#                             scripts/ci/build_cache.sh), so an iPhone and an iPad sweep started
+#                             together build one after the other; Swift packages come from the
+#                             shared checkout (spm_cache_args, same file).
+#   STRIDE_SPM_DIR            the shared Swift package checkout (scripts/ci/build_cache.sh)
 #   STRIDE_A11Y_SETTLE        seconds to wait after each launch before capturing (default 4)
 #   STRIDE_SIM_LOCK_ROOT      directory for the per-device mutex `lock-<device-slug>` (default
 #                             /tmp, the root every project and scripts/sim_e2e/lock.sh use; it
@@ -113,6 +120,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=ci/sim_lock.sh
 source "$SCRIPT_DIR/ci/sim_lock.sh"
+# shellcheck source=ci/build_cache.sh
+source "$SCRIPT_DIR/ci/build_cache.sh"
 
 SIZE="accessibility-extra-extra-extra-large"
 OUT=""
@@ -179,7 +188,11 @@ NAME="$(xcrun simctl list devices available | grep -F "$UDID" | sed -E 's/^ *(.*
 
 # ---- build (outside the lock: it does not touch the simulator) ----------------------------
 if [[ -z "$APP" ]]; then
-    DERIVED="${STRIDE_A11Y_DERIVED_DATA:-$PROJECT_DIR/build/a11y/DerivedData}"
+    DERIVED="${STRIDE_A11Y_DERIVED_DATA:-$HOME/Library/Caches/Stride-build/a11y-dd}"
+    spm_cache_args "$PROJECT_DIR" "${XCB_ARGS[@]+"${XCB_ARGS[@]}"}" || exit 1
+    DD_LOCK="$(build_lock_path "$DERIVED")"
+    build_lock_take "$DD_LOCK" "a11y_sweep.sh build" || exit 1
+    trap 'build_lock_release "$DD_LOCK"' EXIT
     LOG="$(mktemp "${TMPDIR:-/tmp}/stride-a11y-build.XXXXXX")"
     echo "==> Building Stride (Debug) into $DERIVED"
     # CODE_SIGNING_ALLOWED=NO: a simulator runs unsigned apps, and the sweep must not depend on
@@ -192,13 +205,22 @@ if [[ -z "$APP" ]]; then
         -derivedDataPath "$DERIVED" \
         ARCHS="$(uname -m)" ONLY_ACTIVE_ARCH=YES \
         CODE_SIGNING_ALLOWED=NO \
+        "${SPM_ARGS[@]+"${SPM_ARGS[@]}"}" \
         "${XCB_ARGS[@]+"${XCB_ARGS[@]}"}" > "$LOG" 2>&1; then
         grep -E "error:" "$LOG" | head -20 | sed 's/^/    /' || true
         echo "✗ Build failed. Full log: $LOG"
         exit 1
     fi
     rm -f "$LOG"
-    APP="$DERIVED/Build/Products/Debug-iphonesimulator/Stride.app"
+    # A private copy, taken while the lock is held: the derived data is shared by every
+    # checkout, and the install happens only after the simulator's lock and a boot, by which
+    # time another checkout's sweep may have rebuilt the app there. The lock is released before
+    # the simulator's lock is taken, so a sweep never holds one while waiting for the other.
+    APP_COPY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/stride-a11y-app.XXXXXX")"
+    ditto "$DERIVED/Build/Products/Debug-iphonesimulator/Stride.app" "$APP_COPY_DIR/Stride.app"
+    build_lock_release "$DD_LOCK"
+    trap 'rm -rf "$APP_COPY_DIR"' EXIT
+    APP="$APP_COPY_DIR/Stride.app"
 fi
 [[ -d "$APP" ]] || { echo "✗ No app at $APP"; exit 1; }
 BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
@@ -209,8 +231,9 @@ LOCK_RC=0
 sim_lock_take "$LOCK" a11y_sweep || LOCK_RC=$?
 [[ $LOCK_RC -eq 0 ]] || exit "$LOCK_RC"
 # Until restore() below takes over: a signal during the next lines must not strand the lock.
-trap sim_lock_release EXIT
+trap 'sim_lock_release; [[ -n "${APP_COPY_DIR:-}" ]] && rm -rf "$APP_COPY_DIR"' EXIT
 
+APP_COPY_DIR="${APP_COPY_DIR:-}"
 WAS_BOOTED=0
 PREV_SIZE=""
 PREV_LOOK=""
@@ -228,6 +251,7 @@ restore() {
     [[ $WAS_BOOTED -eq 0 ]] && xcrun simctl shutdown "$UDID" >/dev/null 2>&1 || true
     # Only a lock this run took (never the caller's STRIDE_SIM_LOCK_LABEL hold).
     sim_lock_release
+    [[ -n "$APP_COPY_DIR" ]] && rm -rf "$APP_COPY_DIR"
     exit $status
 }
 trap restore EXIT

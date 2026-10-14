@@ -58,10 +58,15 @@ scripts/mac_variant/build.sh --entitlements-only   # just generate and check the
 scripts/mac_variant/build.sh --preflight [<app>]   # re-check a built variant before launching it
 ```
 
-Everything goes under `$STRIDE_MAC_VARIANT_ROOT` (default `${TMPDIR}stride-mac-variant`; a root
-under `~/Documents` is refused): the entitlements, `DerivedData/`, `build.log`,
-`build-settings.txt`. The app is `<root>/DerivedData/Build/Products/Debug/Stride.app`. Extra
-arguments go to xcodebuild.
+Everything goes under `$STRIDE_MAC_VARIANT_ROOT` (default
+`~/Library/Caches/Stride-build/mac-variant`, persistent so a rebuild is incremental; a root under
+`~/Documents` is refused): the entitlements, `DerivedData/`, `build.log`, `build-settings.txt`.
+The app is `<root>/DerivedData/Build/Products/Debug/Stride.app`. Extra arguments go to
+xcodebuild. Swift packages come from the shared checkout (`scripts/ci/build_cache.sh`), and two
+builds into one root wait for each other. A build that must outlive the next one, such as the old
+version of the Mac in-place upgrade gate, gets its own root
+(`STRIDE_MAC_VARIANT_ROOT=~/Library/Caches/Stride-build/mac-variant-1.4.0`). The default was
+`${TMPDIR}stride-mac-variant` until 1.4.1; macOS purges `$TMPDIR` on low disk.
 
 **Preflight** (after every build, and on `--preflight`); a failure means do not launch:
 
@@ -117,7 +122,7 @@ has no widgets). `scripts/store_screenshots.py` uploads them.
 ## Cleaning up
 
 - Quit the variant (⌘Q, or `osascript -e 'tell application id "yyh.stride.habittracker.mactest" to quit'`).
-- `/usr/bin/trash "$STRIDE_MAC_VARIANT_ROOT"` (or `${TMPDIR}stride-mac-variant`) when the build is no
-  longer needed.
+- Leave the default root in place: the next build reuses it. Trash a root of its own (an
+  upgrade gate's old version) when that release ships.
 - The variant's data lives in `~/Library/Containers/yyh.stride.habittracker.mactest/`. It is test
   data, but leave it to the owner to remove: macOS protects other apps' containers.

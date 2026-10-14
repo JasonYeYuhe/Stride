@@ -771,8 +771,10 @@ about 2 agent-days from branch cut to iOS submission (2026-10-10 to 2026-10-11, 
 8. **Pro copy drift** across 5 sites × 6 locales, plus the ASC IAP copy. The W9 grep gate and
    read-back catch it.
 9. **Disk is 94 % full** (59 GiB free). Use one derived-data directory per session. The gate
-   builds for 1.4.0, 1.3.1, 1.3.0 and 1.2.3 and the variants live outside `$TMPDIR`, and are
-   trashed at wrap-up.
+   builds for 1.4.0, 1.3.1, 1.3.0 and 1.2.3 and the variants live outside `$TMPDIR`. The
+   per-tag gate builds and the 1.4.0 variant root are trashed when 1.4.1 ships; the persistent
+   roots (shared SourcePackages, `sim-e2e`, `mac-variant`, `a11y-dd`; README "Building
+   locally") stay.
 10. **Week anchors disagree.** Weekly logic is Monday-based (Habit.swift:216-223), while heatmap
     rows follow the region (HeatmapLayout.swift:37-41). This predates M4 and is left alone; the
     copy names no weekday.

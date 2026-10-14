@@ -80,7 +80,8 @@ project is not exactly what `project.yml` generates.
 - **`run_hosted_tests.sh`** uses an existing simulator ("iPhone 17", else the first
   iPhone) and never creates or erases one; it fails unless more than zero tests ran and none
   failed, counted from the xcresult (`xcodebuild` can exit 0 having run nothing).
-  `STRIDE_HOSTED_DERIVED_DATA` moves its derived data. Hosted tests launch the real app, so
+  Its derived data is one per simulator (README "Building locally");
+  `STRIDE_HOSTED_DERIVED_DATA` moves it. Hosted tests launch the real app, so
   anything the app does at launch happens in them too — which is why they stay off the E2E
   kit's iPhone 17 Pro (the launch removes that device's pending reminders). Outside CI it holds
   `/tmp/lock-iphone-17` for the run: someone else's lock is waited on for up to 40 min, then it
@@ -102,6 +103,46 @@ project is not exactly what `project.yml` generates.
   manifest, the app's manifest, bundle id, versions, display name, Sentry);
   **`--exported <dir> <ios|macos>`** checks what is actually uploaded: signed by Apple
   Distribution, no `get-task-allow`, associated domains matching the entitlements file.
+
+## Building locally: where build output goes
+
+Trashing a build root frees nothing (the Trash is on the same volume) and makes the next build
+cold. So the scripts build into persistent roots and rebuild them incrementally, never under
+`~/Documents` (iCloud) and never under `$TMPDIR` (macOS purges it on low disk, which forced cold
+rebuilds on 2026-10-11 and 10-14).
+
+| Root | Written by | Notes |
+|---|---|---|
+| `~/Library/Caches/Stride-build/SourcePackages-<hash>` | every script below | Swift packages (sentry-cocoa, ~1.9 GB), shared; keyed by `Package.resolved` |
+| `~/Library/Developer/Xcode/DerivedData/Stride-hosted-tests`, `…-<device>` | `run_hosted_tests.sh` | one per simulator; the plain name is "iPhone 17" |
+| `~/Library/Developer/Xcode/DerivedData/Stride-prepush` | pre-push hook | `build_ios_generic.sh` |
+| `~/Library/Caches/Stride-build/sim-e2e` | `scripts/sim_e2e` (`$STRIDE_E2E_ROOT`) | `builds/current` stays; per-tag gate builds go when the release ships |
+| `~/Library/Caches/Stride-build/mac-variant` | `mac_variant/build.sh` | an upgrade gate's old version gets its own root |
+| `~/Library/Caches/Stride-build/a11y-dd` | `a11y_sweep.sh` | shared by every checkout |
+
+These are not session leftovers: leave them at a session's wrap-up.
+
+- **Packages.** `scripts/ci/build_cache.sh` (`spm_cache_args`) resolves once per package set
+  (`Package.resolved` plus the project's package references) into the shared checkout, under a
+  lock, with `-onlyUsePackageVersionsFromResolvedFile` as CI does. Builds then pass
+  `-clonedSourcePackagesDirPath <it> -disableAutomaticPackageResolution`. They still rewrite its
+  `workspace-state.json`, under SwiftPM's own lock files in `$TMPDIR`, which is what lets several
+  build from it at once. CI passes its own flags; `STRIDE_SPM_DIR=off` turns it off. If the
+  resolve fails (no network, or a `Package.resolved` that no longer satisfies the project), the
+  build resolves into its own derived data as before.
+- **One derived data per checkout that builds at the same moment**, not one per agent, step or
+  round. Agents that run one after another reuse the same one. Only worktree-isolated agents that
+  build in parallel get their own, and they still take packages from the shared checkout.
+- **A workflow that calls `xcodebuild` itself** resolves once before fanning out (any script
+  above does it, or `bash -c 'source scripts/ci/build_cache.sh && spm_cache_args "$PWD"'`). Each
+  agent then runs `source scripts/ci/build_cache.sh && spm_cache_args "$PWD"` in the shell that
+  builds (warm, that is one sha256) and passes `"${SPM_ARGS[@]+"${SPM_ARGS[@]}"}"`: a bare
+  `"${SPM_ARGS[@]}"` of an empty array is an error under bash 3.2's `set -u`.
+- **Locks.** Each script above takes its derived data's lock (`build_lock_path`) around its
+  build, so two runs never share a `build.db` at once; on a signal it stops its own xcodebuild
+  before letting go. Hosted runs also hold the device's `/tmp/lock-<device>`. `a11y_sweep.sh`
+  copies the app out of its shared derived data before it lets go, and installs the copy.
+- Release archives (`build-appstore.sh`) stay cold by design and are not covered here.
 
 ## Server
 

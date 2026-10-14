@@ -53,20 +53,27 @@
 #
 # Environment:
 #   STRIDE_MAC_VARIANT_ROOT   everything this writes: entitlements, derived data, build log
-#                             (default ${TMPDIR}stride-mac-variant; refused under ~/Documents,
-#                             which is iCloud-synced). Trash it when done.
-# Anything else on the command line goes to xcodebuild (e.g. -clonedSourcePackagesDirPath).
+#                             (default ~/Library/Caches/Stride-build/mac-variant, persistent, so a
+#                             rebuild is incremental; refused under ~/Documents, which is
+#                             iCloud-synced). Not $TMPDIR, the default until 1.4.1: macOS purges it
+#                             on low disk. Give a build that must outlive the next one (the old
+#                             version of an in-place upgrade gate) its own root.
+#   STRIDE_SPM_DIR            the shared Swift package checkout (scripts/ci/build_cache.sh)
+# Anything else on the command line goes to xcodebuild. Swift packages come from the shared
+# checkout unless those args name -clonedSourcePackagesDirPath. Two builds into one root wait for
+# each other (the root's lock, build_lock_path in scripts/ci/build_cache.sh).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# shellcheck source=../ci/build_cache.sh
+source "$SCRIPT_DIR/../ci/build_cache.sh"
 VARIANT_ID="yyh.stride.habittracker.mactest"
 REAL_ID="yyh.stride.habittracker"
 SHIPPING_ENTITLEMENTS="$PROJECT_DIR/StrideMac/StrideMac.entitlements"
 PLISTBUDDY=/usr/libexec/PlistBuddy
 
-_tmp="${TMPDIR:-/tmp/}"
-ROOT="${STRIDE_MAC_VARIANT_ROOT:-${_tmp%/}/stride-mac-variant}"
+ROOT="${STRIDE_MAC_VARIANT_ROOT:-$HOME/Library/Caches/Stride-build/mac-variant}"
 case "$ROOT" in
     /*) ;;
     *) echo "✗ STRIDE_MAC_VARIANT_ROOT must be an absolute path (got $ROOT)"; exit 2 ;;
@@ -204,7 +211,14 @@ fi
 echo "==> STRIDE_MAC_VARIANT code paths:"
 grep -rlE '#(if|elseif).*\bSTRIDE_MAC_VARIANT\b' "$PROJECT_DIR/Shared" "$PROJECT_DIR/Stride/Sources" | sed "s#^$PROJECT_DIR/#    #"
 
+# One build per root at a time: the entitlements file and the derived data are shared.
+mkdir -p "$ROOT"
+ROOT_LOCK="$(build_lock_path "$ROOT")"
+build_lock_take "$ROOT_LOCK" "mac_variant/build.sh" || exit 1
+trap 'build_lock_release "$ROOT_LOCK"' EXIT
+
 generate_entitlements
+spm_cache_args "$PROJECT_DIR" "${XCB_ARGS[@]+"${XCB_ARGS[@]}"}" || exit 1
 
 # The overrides, passed to -showBuildSettings and to the build alike. On the command line they
 # apply to every target the scheme builds (StrideMac and its Swift packages); a package ignores
@@ -219,8 +233,8 @@ OVERRIDES=(
     "CODE_SIGN_ENTITLEMENTS=$ENTITLEMENTS"
 )
 XCB=(-project "$PROJECT_DIR/Stride.xcodeproj" -scheme StrideMac -configuration Debug
-     -destination 'platform=macOS' -derivedDataPath "$DERIVED")
-mkdir -p "$ROOT"
+     -destination 'platform=macOS' -derivedDataPath "$DERIVED"
+     "${SPM_ARGS[@]+"${SPM_ARGS[@]}"}")
 LOG="$ROOT/build.log"
 
 # ---- 2. what xcodebuild will actually use, checked before building ------------------------
