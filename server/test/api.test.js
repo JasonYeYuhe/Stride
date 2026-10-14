@@ -9680,7 +9680,7 @@ describe("Sentry end to end: a real magic-link failure reaches a (local, fake) S
       body: JSON.stringify({ email: EMAIL }),
     });
     assert.equal(res.status, 500);
-    assert.deepEqual(await res.json(), { error: "Failed to send login link" });
+    assert.equal((await res.json()).code, "login_email_unavailable"); // the whole body: the Resend describe below
 
     const isEvent = (e) => e.text.split("\n").some((l) => /^\{"type":"event"/.test(l));
     const deadline = Date.now() + 15000;
@@ -9840,9 +9840,14 @@ describe("Magic link: a failed Resend send is a 500, not {ok:true} (email.js)", 
 
   it("Resend answers 422 → request-link answers 500, and the log names the Resend error, not the address", async () => {
     reply = { status: 422, body: { name: "validation_error", message: "The stride.colorarchive.me domain is not verified." } };
-    const r = await m0.req("POST", "/v1/auth/request-link", { base: `http://localhost:${PORT2}`, body: { email: EMAIL } });
+    // As 1.3.0, which sends X-Stride-Client and prints `error` verbatim: the sentence must be in
+    // `error` whatever the header says (errorBody would have put the code there). 1.3.1 prints
+    // `message`; an app that knows `code` shows its own text. (Production, 2026-10-12: every
+    // sign-in failed this way, and the app said only "Failed to send login link".)
+    const r = await m0.req("POST", "/v1/auth/request-link", { base: `http://localhost:${PORT2}`, body: { email: EMAIL }, client: m0.V130 });
     assert.equal(r.status, 500);
-    assert.deepEqual(r.json, { error: "Failed to send login link" });
+    const sentence = "Stride couldn't send the login email right now. This is a problem on our side, not with your email address. Please try again later.";
+    assert.deepEqual(r.json, { error: sentence, code: "login_email_unavailable", message: sentence });
     await m0.sleep(200);
     assert.match(stderr, /Resend validation_error: The stride\.colorarchive\.me domain is not verified\./);
     assert.ok(!stderr.includes(EMAIL), "the recipient's address must not be logged");

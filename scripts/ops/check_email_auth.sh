@@ -9,8 +9,10 @@
 # (same organisational domain, colorarchive.me).
 #
 # This reads public DNS only. It cannot prove a message passes — for that, open a received
-# magic-link email and read its Authentication-Results header. Run it after any DNS change
-# at Namecheap and before a release that touches sign-in.
+# magic-link email and read its Authentication-Results header. Nor can it see Resend: on
+# 2026-10-12 everything here passed while the Resend account behind RESEND_API_KEY had no
+# such domain and refused every send. server/DEPLOY.md, "The Resend side", has that check.
+# Run it after any DNS change at Namecheap and before a release that touches sign-in.
 #
 # Exit 0: everything required is present (WARN lines are advice). Exit 1: a FAIL.
 set -uo pipefail
