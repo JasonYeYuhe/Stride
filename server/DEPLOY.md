@@ -434,6 +434,7 @@ handler — so every gate below is ≥ 1.3.1, and 1.3.0 is treated exactly like 
 | 409 | `snapshot_required` | header ≥ 1.3.1 | Support asked this account to re-upload everything ([below](#per-account-re-upload)). One-shot. |
 | 409 | `cursor_expired` | header ≥ 1.3.1 | Pull `since` older than 355 days (365 − 10 grace). The app does a full pull. |
 | 413 | — | everyone | Body over 5 MB. |
+| 426 | `client_update_required` | in practice apps ≤ 1.2.2 and 1.1 (no header) | A legacy-shaped push ([below](#legacy-shaped-pushes)): an entry with no `updatedAt` or a habit with no `kind`. Refused whole; nothing in it is written. |
 | 429 | `rate_limited` | everyone | Over 60 sync requests/min for the account, or over 100 per 15 min from one IP without a session; `Retry-After`. |
 | 503 | `sync_paused` | everyone | The [pause switch](#pausing-sync) is on; `Retry-After`. |
 
@@ -452,6 +453,43 @@ would lose on that device to its own local :18.300. Pushed stamps are stored the
 whatever their precision (`…:18Z` becomes `…:18.000Z`), so the edit-time comparison — a string
 comparison — stays chronological across old and new apps. An older app's edit is only as
 precise as its string: 1.2.3's :18.900 is stored as :18.000 and loses to 1.3.1's :18.400.
+
+<a id="legacy-shaped-pushes"></a>**Legacy-shaped pushes (426, from 2026-10-15).** Apps ≤ 1.2.2 send entries with no
+`updatedAt`, and 1.1 sends habits with no `kind`. Accepted, such an entry was stamped "now", won
+every comparison, and each full snapshot from that device reverted the notes and values other
+devices had written to the days it holds (a 1.1 habit also reset kind, target, unit, schedule and
+group). So a push is refused with `426 client_update_required` when any row with an id is one of:
+an entry whose `updatedAt` (either casing) is absent or `null` — or, without a valid header, does
+not parse — or a habit with no `kind` key. The check runs before anything is written: habits,
+entries, groups and all three deletion lists are left as they were. Without a header the sentence
+("This version of Stride can no longer sync. Update Stride from the App Store…") is in `error`,
+which those apps print in the Settings footer; every one of them pushes before it pulls inside one
+`do`/`catch`, so a refused push never reaches the full-pull reconciliation that deletes local
+rows. Every app from 1.2.3 on always sends
+both fields (a stamp from 1.3.0+ that does not parse — only a hand-edited backup has one — keeps
+the old "now" stamp instead of a refusal no update could clear). An empty, groups-only or
+deletions-only push says nothing about the app and is answered as before; a 1.2.x device with
+habits and no check-ins yet is accepted until its first check-in. One thing the device does lose:
+those apps take their deletion queue out before pushing, so a deletion queued on one is not sent
+again (the server keeps the row). Counted as `legacy_push_refused` per push and
+`habit_without_kind` per habit, and logged as `[sync] push user=<id> refused legacy-shaped push:
+<n> entries without updatedAt, <m> habits without kind`, with `legacyRefused=entries:<n>,habits:<m>`
+on the request line.
+
+**Notes on a day held under two ids.** Entries conflict on (habit, day), so two devices that
+checked a day before either pulled the other's hold one row under two ids. Two rules keep the note
+(RELEASE-1.4.1.md, Data safety 2):
+- A push from the id the row does **not** hold with a `NULL` note keeps the stored note — that
+  device has none, it did not clear one; the value is still last-writer-wins. From the id the row
+  holds, `NULL` clears the note (the owner removed it), and a non-`NULL` note from either id is an
+  edit: the newer one wins.
+- When the newer row without a note landed first, the older noted row loses the guard and would
+  change nothing; instead its note is copied onto the stored row (only into a `NULL` note, only
+  from a non-`NULL` one), the row's edit stamp moves one millisecond past the stored one, and it
+  re-feeds. The millisecond is what stops a 1.2.3 / 1.3.0 device, which pushes its whole store
+  before it pulls, from re-sending the no-note row at the stored stamp and clearing the note with
+  the stored id's `NULL`; one millisecond older, that echo changes nothing and its pull takes the
+  merged row. The value stays the newer edit's.
 
 **The LWW re-feed.** A push that loses to a stored edit is still `applied`. When the stored
 edit is strictly newer *and* the values differ (as an app would hold them), the push moves
@@ -848,7 +886,8 @@ cd /root/stride-server && sudo node ops/usage-report.js [--days N] [--db path]
 
 Active accounts by client version over 7 / 28 / 56 days, the legacy (no header) and < 1.3.1
 cohorts, and counter totals by UTC day: `snake_fallback.*` (the snake_case shim),
-`habit_without_kind`, `mount.*` (hits on the legacy `/sync`, `/auth`, `/habits` mounts),
+`habit_without_kind`, `legacy_push_refused` (pushes refused 426 for their shape — the ≤ 1.2.2 / 1.1
+devices still trying to sync), `mount.*` (hits on the legacy `/sync`, `/auth`, `/habits` mounts),
 `client.*`, and `lww_refeed.*` (the LWW re-feed — not a shim counter; it should stay small, and
 one that climbs every day is a device that cannot hold the winner). It opens the database read-only and runs no migrations, so it is safe on the live
 host or on a copy. The process flushes its counters hourly and on SIGTERM, so the report
