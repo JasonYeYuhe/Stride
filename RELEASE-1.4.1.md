@@ -38,6 +38,92 @@ App ID `6761262334`, bundle `yyh.stride.habittracker`. **Plan dated 2026-10-14; 
   - Kit and variant builds were purged along with `$TMPDIR`.
   - Suites: StrideTests 540 (en, ja/JP, 2 known skips), hosted 248, rehearsal 81/0/1.
 
+## Decisions of 2026-10-15 (owner, after a Codex + Gemini consult)
+
+The owner took every recommendation ("全部按推荐的做"). The consult and its fact-check are under
+"Plan review", below. Where this list and older text disagree, this list wins.
+
+1. **A now,** in refined steps:
+   - **0. Dry run (done 2026-10-15):** `FROM_EMAIL` set on the command line only, one send
+     through `email.js` to `delivered@resend.dev`. Answer: `sent`.
+   - **1–3.** Back up `.env`, set `FROM_EMAIL=Stride <stride@colorarchive.org>`,
+     `pm2 restart --update-env`.
+   - **4.** Send through `email.js` to the sink again, and make one `request-link` to the
+     owner's plus-address (item 4).
+   - **5.** The owner checks `dkim=pass`.
+
+   Steps 1–4 each still need a go.
+2. **B before 1.4.1's submission.**
+   - The owner opened a separate Resend account on 2026-10-15.
+   - They add `stride.colorarchive.me` in region us-east-1, which matches the existing
+     `send.stride` MX. Then only the DKIM TXT changes at Namecheap.
+   - When the domain is Verified, the owner runs `scripts/ops/set_resend_key.sh` themselves.
+     It takes hidden key input, swaps the key and FROM back to `hello@stride.colorarchive.me`,
+     test-sends, and rolls back on a failed send. An agent never handles the key.
+3. **4c69e79f commits its own work.** That session committed twice and opened
+   JasonYeYuhe/Stride#8. It also fixed the DEPLOY.md diagnostics to exit 1 on failure. This
+   session runs A and the server deploy, with a go per step.
+4. **Production test identity.**
+   - Every production sign-in test uses one plus-address, `<owner>+stride-smoke@gmail.com`. It
+     lands in the same inbox but is a separate account; `auth.js` only trims and lowercases.
+   - Never use the owner's primary address or the demo account.
+   - Before any `delete-account`, `GET /v1/auth/session` with the same token, and delete only
+     if `user.email` is exactly that address.
+   - Why: `delete-account` hard-deletes the account's habits, entries, groups, sessions and
+     tombstones.
+5. **O5 = (1′), payload-shape refusal,** in JasonYeYuhe/Stride#9.
+   - A push with any entry lacking `updatedAt` (≤1.2.2) or any habit lacking `kind` (1.1) is
+     answered 426 `client_update_required`, with the sentence in `error`, before anything is
+     written.
+   - Verified from tagged sources:
+     - 1.1 and 1.2.0–1.2.2 push before pull in one do/catch, and a non-2xx, non-401 answer
+       throws before the pull, so a refused device never runs the destructive first-full-pull
+       reconciliation;
+     - v1.2.3+ always send both fields.
+   - It also closes what (2) left open: 1.1 resetting count/schedule habits on every sync, and
+     legacy deletions, including the 1.2.2 widget's count wipe.
+6. **The server half of Data safety 2 ships early,** in #9, not W8:
+   - the note-keeping CASE;
+   - a push-order merge: a newer different-id NULL-note row arrives first, then the older
+     noted row; the note merges onto the stored row, its stamp moves +1 ms, and it re-feeds.
+
+   Order: deployed after A, with #8, once both are in `main` (a trial merge is clean; the
+   merged server suite passes 516/516), by DEPLOY.md's 5 steps, with a go.
+7. **Same-day duplicates merge on write (D4).**
+   - On a day with more than one live record, each setter keeps the record D2 reads: the
+     largest value, then the newest stamp.
+   - It moves any other non-empty note onto that record, or returns `.needsConfirmation` when
+     two differ.
+   - It deletes the others and returns all their ids for tombstones.
+   - `tap` acts on the same kept record.
+   - Tests: [2,8] → `setValue(3)` leaves one record of 3 and one tombstone, in both orders; a
+     yes/no day with two records → `setChecked(false)` leaves none and two tombstones.
+8. **Editing a habit's target or schedule re-scores its whole history** (no schema change in
+   1.4.1).
+   - Edit mode's Goal and Frequency footers say so: "Changes apply to your whole history,
+     including streaks and strength." That is 1 key × 5 catalogs, in W4.
+   - One StatsMathTests/HabitScoreTests case pins it.
+9. **Sentry is not a prerequisite for A.** The owner sets up `stride-server`, the DSN and
+   uptime when convenient.
+10. **O1–O12 at their defaults.**
+11. **The owner adds the persistent build roots to the global "Never trash" list** (snippet
+    given 2026-10-15).
+
+Plan-text consequences, applied below:
+- **Rate limit.** `request-link` allows 3 per 15 min per IP, and the Mac, the simulator and curl
+  share one. So P1, gate 11 and the checklist send to the sink through `email.js`, and make at
+  most one `request-link` per sitting. A 429 means wait for the reset, not that the outage is
+  back.
+- **History's draft lives only in view `@State`.** `HabitEntryCommit` runs the setter and
+  `save()` back to back on the main actor, with no `await` between them. D4 step 1 prefers the
+  commit's own undo to `context.rollback()`. Optional, in W4: undo `AddHabitView.updateHabit`'s
+  field changes on a failed save, and the `try?` saves in `createGroup` and
+  HabitTemplatesView.swift:166.
+- **Accepted residuals** (row-level last-writer-wins, no wire change in 1.4.1):
+  - a same-id stale count edit drops a note the device never pulled;
+  - legacy deletions apply without a stamp (delete wins), as every client's do;
+  - 1.4.0 installs keep deleting noted check-ins after 1.4.1 ships.
+
 ## Phase 0 — before and alongside M4 code
 
 **[owner]** = needs the owner's go for that action. Writes that need one:
@@ -312,7 +398,10 @@ Placement rules are 1.4.0's (RELEASE-1.4.0.md:56-74). `Shared/` holds pure value
     deleted id. It never writes a value-0 record or a note-only yes/no record.
   - Deleting a record with a non-empty note returns `.needsConfirmation` instead. The caller asks
     "Remove the check-in and its note?" and only then deletes (D7).
-  - On a day with duplicate records it acts on `liveRecord`'s first match.
+  - On a day with duplicate records it first merges the day (2026-10-15 decision 7): it keeps
+    the record D2 reads (largest value, then newest stamp), moves another record's non-empty
+    note onto it (or returns `.needsConfirmation` when two notes differ), deletes the rest and
+    returns all their ids for tombstones. `tap` acts on the same kept record.
 - Every UI write passes the target state the user saw (`setChecked(!shown)`, `setValue(n)`). No UI
   path calls `tap`; the widget and Siri keep their own semantics. Today's row check and count state
   is derived from the habit, not from StatsCache. Only streak and rate text may come from the cache.
@@ -615,7 +704,7 @@ about 2 agent-days from branch cut to iOS submission (2026-10-10 to 2026-10-11, 
 | **W5** subscription and Settings | D12. **Follow-up:** badge after the permission grant (SettingsView.swift:1033 → `updateBadge`; NotificationService.swift:217, :685). Delete-habit tombstone order | StoreService.swift, Shared/PurchaseOutcome.swift, SettingsView.swift, NotificationService.swift | PurchaseOutcomeTests (incl. "entitled, status unavailable → active, never lapsed"); hosted SKTestSession: buy, expire → lapsed, lifetime, unverified, billing retry, grace period, `refundTransaction`, Lifetime bought during an active subscription | M, alongside, from W0 |
 | **W6** templates | D15 templates: kind, target, unit; the error replaces `try?`; `onAdded`. Never edits AddHabitView.swift | HabitTemplatesView.swift | Hosted template tests | S, alongside |
 | **W7** export, privacy, scripts | **Follow-ups:** same-day export names (DataExportService.swift:46, :493 → `yyyy-MM-dd-HHmmss`). C617.1 and 35F9.1 in Stride/PrivacyInfo.xcprivacy:98-103, and 35F9.1 in StrideWidget/PrivacyInfo.xcprivacy:25-29: the widget compiles SharedModelContainer.swift:402 (project.yml:169-180); verify_archive.sh asserts both. `release.py cancel --platform` (:583-614). ship.sh refuses to run (stale: :16-17, :100). A Release configuration for the Mac variant (gate 12, P1 step 6) | DataExportService.swift, both PrivacyInfo.xcprivacy, scripts/verify_archive.sh, scripts/release.py, scripts/ship.sh, scripts/mac_variant/build.sh | Export-name test; verify_archive on a Debug archive | S, alongside |
-| **W8** server and demo | D13 scripts; Data safety 2's upsert and O5 server changes. Edits to files the magic-link PR touches (api.test.js, DEPLOY.md, check_email_auth.sh) wait until it lands: the stale tombstone comments (demo-topup.js:38-40, DEPLOY.md:713-714), check_email_auth.sh's apex parse | server/seed-demo.js, server/ops/demo-topup.js, server/ops/demo-add-habits.js, server/routes/sync.js, server/test/api.test.js, server/test/demo-scripts.test.js | Node tests: the top-up weekday rule; add-only keeps sessions; a second run adds nothing; no entry dated after the LA day; the upsert keeps a stored note; the legacy push per O5. A production-copy rehearsal | S + **[owner]** deploy |
+| **W8** server and demo | D13 scripts. (Data safety 2's upsert and O5's refusal shipped early in #9, decisions 5–6; W8 only re-runs their tests.) Optional: the server refuses `delete-account` for the demo account, matching SettingsView.swift:697. Edits to files the magic-link PR touches (api.test.js, DEPLOY.md, check_email_auth.sh) wait until it lands: the stale tombstone comments (demo-topup.js:38-40, DEPLOY.md:713-714), check_email_auth.sh's apex parse | server/seed-demo.js, server/ops/demo-topup.js, server/ops/demo-add-habits.js, server/routes/sync.js, server/test/api.test.js, server/test/demo-scripts.test.js | Node tests: the top-up weekday rule; add-only keeps sessions; a second run adds nothing; no entry dated after the LA day. A production-copy rehearsal | S + **[owner]** deploy |
 | **W9** release | What's New ×6 (release.py, after W7; no sign-in sentence), metadata ×6, review notes, DEV-PLAN backlog edits, the Pro-claim grep and ASC IAP read-back, the ASC screenshot dry run after `prepare`, full gates, screenshot uploads | metadata/, scripts/release.py, DEV-PLAN-1.3.md, this file | Gates below | M |
 
 **Critical path:** W0 → W1 → W2 → W3/W4 → P3b and gate 10 → W9. W5–W8 run alongside.
@@ -686,7 +775,7 @@ about 2 agent-days from branch cut to iOS submission (2026-10-10 to 2026-10-11, 
        - the 13-item list.
 
        Results go to the progress log.
-11. **Magic link live:** on submission day, production `request-link` returns 200 and the mail
+11. **Magic link live** (sink sends through `email.js`, at most one `request-link` per sitting, to the plus-address of decision 4): on submission day, production `request-link` returns 200 and the mail
     arrives.
 12. **Release-build smoke,** before `finish`:
     - iOS: a Release-configuration simulator build, which talks to production (APIClient.swift:10).
@@ -778,11 +867,13 @@ about 2 agent-days from branch cut to iOS submission (2026-10-10 to 2026-10-11, 
 10. **Week anchors disagree.** Weekly logic is Monday-based (Habit.swift:216-223), while heatmap
     rows follow the region (HeatmapLayout.swift:37-41). This predates M4 and is left alone; the
     copy names no weekday.
-11. **Legacy ≤1.2.2 snapshot clients revert edits.** Once A lets them sync, each of their syncs
+11. **Legacy ≤1.2.2 snapshot clients revert edits.** (Closed by #9's refusal once it is deployed, decision 5; until then A's window is open, with zero synced users today.) Once A lets them sync, each of their syncs
     reverts note and value edits made elsewhere on the days they hold (sync.js:779-782,
     :509-519). Mitigation: O5, by default (2).
 
 ## Owner decisions
+
+**2026-10-15: all taken at their defaults except O4 and O5, decided as above.**
 
 Defaults are proposals. O4, O5, O6 and O12 involve production or ASC writes, and each still needs a
 go per action.
@@ -792,8 +883,8 @@ go per action.
 | O1 | Strength for an unfinished today: 0, or hold yesterday's score until today is complete? | Hold, with the same rule for every kind (D9) |
 | O2 | Notes on unchecked yes/no days? | No; only on days with a record (D7) |
 | O3 | Rate start with backdated records: earliest record, or keep `createdAt`? | Earliest record (D8) |
-| O4 | Magic link: A now and B later? Who runs A, and who commits 4c69e79f's work? | A as the next session's first go, run by session 4c69e79f, with this session verifying; B before 1.4.1 ships or explicitly deferred; that session commits twice and opens a PR into main |
-| O5 | Legacy ≤1.2.2 clients once A lets them sync: (1) a floor or refusal, deployed before A; (2) a missing entry `updatedAt` counts as oldest; (3) accept. Decided before A | (2), in W8's deploy or sooner. The 426 floor (≥ 1.3.1) stays in M6 |
+| O4 | **Decided 2026-10-15** (decisions 1–3). Magic link: A now and B later? Who runs A, and who commits 4c69e79f's work? | A as the next session's first go, run by session 4c69e79f, with this session verifying; B before 1.4.1 ships or explicitly deferred; that session commits twice and opens a PR into main |
+| O5 | **Decided 2026-10-15: (1′), payload-shape refusal, #9** (decision 5). Legacy ≤1.2.2 clients once A lets them sync: (1) a floor or refusal, deployed before A; (2) a missing entry `updatedAt` counts as oldest; (3) accept. Decided before A | (2), in W8's deploy or sooner. The 426 floor (≥ 1.3.1) stays in M6 |
 | O6 | Demo account: add-only, or a full 90-day re-seed? | Add-only, while no review is open |
 | O7 | Free Strength tile: replace Total, or add a 5th tile? | Replace Total |
 | O8 | Screenshots: free tier, or a DEBUG `-demoPro`? Which iOS slides? | Free tier; every slide whose screen W3 or W5 changes (Statistics, Settings), on both platforms (P3b) |
@@ -819,6 +910,17 @@ go per action.
 
 - 2026-10-14: Plan drafted from four read-only mappers (spec, client, server, ops) at 376e69b. The
   strength numbers were recomputed independently.
+- 2026-10-15:
+  - Codex (gpt-6-astra, read-only) and Gemini 3.8 Flash High (agy) were consulted on the open
+    decisions, and every claim was fact-checked against the code by 8 read-only agents. The
+    owner took all the recommendations; see "Decisions of 2026-10-15".
+  - A's dry run passed.
+  - #8 (magic-link fix, by 4c69e79f) and #9 (legacy refusal + notes) are open; the trial merge
+    is clean and the merged suite passes 516/516.
+  - `scripts/ops/set_resend_key.sh` was added for B.
+  - Shared SourcePackages and persistent build roots landed (63e5689, README "Building
+    locally").
+  - Mac 1.4.0 is still WAITING_FOR_REVIEW.
 - 2026-10-14: Plan reviewed (below) and revised. Next: P1 (the owner's go on A, and O5), then P3a
   with P4, then W0.
 
@@ -903,6 +1005,21 @@ go per action.
   tile is free, and there is no isPro bypass by design.
 - Gemini sequencing, "gate 1 doesn't name the localization tests": both suites are in StrideTests,
   which gate 1 runs in full. The known skips are not localization tests.
+
+**Consult of 2026-10-15 (Codex + Gemini on the open decisions), fact-checked:**
+
+| Source | Claim | Verdict | Outcome |
+|---|---|---|---|
+| Gemini | `request-link` rate limit (3/15 min/IP) stalls verification | partly | Plan text: sink sends through `email.js`, one `request-link` per sitting |
+| Gemini | `note = excluded.note` wipes notes for multi-device users | partly: only when the writing device lacks the note | #9: the CASE plus the push-order merge; residuals accepted |
+| Gemini | A sync rollback discards typed drafts | false: drafts are view `@State` | Rejected; the D4/D6 sentence above |
+| Codex | D2 reads the max duplicate, D4 writes the first | true | Decision 7 |
+| Codex | O5 (2) leaves legacy holes (deletions, 1.1 habits, widget) | partly: 1.1 is real; delete-wins is system-wide | Decision 5, (1′) |
+| Codex | The DEPLOY diagnostics exit 0 on failure | true | Fixed in #8 |
+| Codex | P1 step 6 / gate 12 would delete the owner's real account | true | Decision 4 |
+| Codex | Editing target/schedule re-scores all history | partly: no data loss | Decision 8 |
+| Codex | B before 1.4.1 (Gemini: defer) | — | Decision 2: B before 1.4.1 |
+| Gemini | Sentry DSN before A | — | Decision 9: not a prerequisite |
 
 **How overlapping findings were merged:**
 - D5: Gemini's single behaviour is the default. Claude's cell-size gating applies only if the owner
