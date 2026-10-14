@@ -4,38 +4,35 @@
 
 ## 现在的状态（2026-10-14）
 
-- **1.4.0（M3，build 22）**，分支 `m3/1.4.0`，草稿 PR JasonYeYuhe/Stride#7，完整记录在 `RELEASE-1.4.0.md`：
-  - **iOS 1.4.0 已上架**（READY_FOR_SALE）。新的商店截图（iPhone 6.9/6.5、iPad 13/12.9）和描述都已推送。
-  - **macOS 1.4.0 已于 2026-10-14 提交审核**（提交 `e785e2d9…`，WAITING_FOR_REVIEW，MANUAL）。我说了"mac版本也发布"，所以**过审后直接 `release.py release 1.4.0 --platform MAC_OS`**，不用再问。然后合并 PR #7、打 tag `v1.4.0`（照 1.3.1 的先例：两个平台都过审后再合并和打 tag；Mac 若被拒要改代码，build 23 会来自新的提交）。
-  - Mac 专属界面（菜单、⌘0、设置窗口、Dock 角标、恢复/导出面板、Mac 横幅动作）**始终没有实际跑过**：computer use 三次都被拒。提交前跑了一个只读的就绪检查（ASC 记录、归档、v1.3.1 以来的 Mac 改动），没有 blocker 或 major；Mac 的审核备注已改成 Stride > Settings…（⌘,）→ Account → Sign In。
-  - 1.4.1 要跟进的小问题和 13 条 Mac 界面检查清单：`RELEASE-1.4.0.md` 的「Follow-ups for 1.4.1」。
-  - Mac 商店截图仍是 1.3.1 的（侧栏里还有已移除的 Settings 行），更换需要我点头，并且要先实际跑一遍测试版。
-- **1.3.1 两个平台都已上架**，PR #6 已合并，tag `v1.3.1`。
-- **磁盘**：2026-10-11 曾满到 100%。见记忆 `feedback_disk_space`：每个会话只用一个 derived data 目录；trash 不释放空间；`$TMPDIR` 会被系统清理。
+- **1.4.0（M3，build 22）**：iOS 已上架。macOS 于 2026-10-14 提交审核（`e785e2d9…`，WAITING_FOR_REVIEW，MANUAL）。PR JasonYeYuhe/Stride#7 还是草稿，等 Mac 过审。完整记录在 `RELEASE-1.4.0.md`。
+- **下一阶段 = M4（1.4.1）**：分支 `m4/1.4.1`（从 m3 的 376e69b 切出），计划在 **`RELEASE-1.4.1.md`**。这份计划已由四个只读 agent 对照代码写成，再经 Gemini 3.8 Flash（agy，两个视角）和两个 Claude 对抗视角审查，41 条采纳、10 条驳回，记录在文末「Plan review」。（Gemini 3.1 Pro 在 agy 里没有，没用上。）
+- **线上事故（最高优先级）**：magic-link 登录邮件可能从来没发出去过。原因是 Stride 的 `RESEND_API_KEY` 用的是 ColorArchive 的 key，Resend 里只验证了 colorarchive.org，所以 `request-link` 返回 500。详见记忆 `project_magic_link_outage`。修复不需要发版，见计划 P1。另一个会话（4c69e79f）在 worktree `.claude/worktrees/infallible-agnesi-84254a` 有**未提交**的修复，**绝不要碰那个 worktree**。
+- **1.3.1** 两个平台都已上架，PR #6 已合并，tag `v1.3.1`。
+- **磁盘**：曾满到 100%。见记忆 `feedback_disk_space`：每个会话只用一个 derived data 目录；trash 不释放空间；`$TMPDIR` 和会话 scratchpad 会被清掉。
 
 ## 先读什么（按顺序）
 
-1. `RELEASE-1.4.0.md` —— M3 的进度记录（做了什么、审查改了什么、测试结果、还剩什么）。
-2. `DEV-PLAN-1.3.md` —— 计划本体：M3 小节是规格，M2 小节末尾的 progress log 记录了同步设计的每个决定。`RELEASE-1.3.1.md` 是 M2 的完整记录（模拟器端到端的做法、已知限制）。
+1. **`RELEASE-1.4.1.md`** —— M4 的计划：Phase 0（P1–P4）、规格修正、D1–D15、W0–W9、12 道发布门禁、提交清单、O1–O12 待我决定的事。
+   `RELEASE-1.4.0.md` —— M3 的完整记录，包括「Follow-ups for 1.4.1」和 13 条 Mac 界面清单。
+2. `DEV-PLAN-1.3.md` —— 计划本体：M4 小节是规格（计划里的「Spec corrections」改了其中 23 处），M2 小节末尾的 progress log 记录了同步设计的每个决定。`RELEASE-1.3.1.md` 是 M2 的完整记录（模拟器端到端的做法、已知限制）。
 3. `RELEASE-1.3.0.md`，尤其是「Known limitations found after the resubmission」。
 4. `server/DEPLOY.md` —— 部署五步：测试 → 主机 diff → 生产库副本演练 → 备份 → rsync + 验证。
 5. 记忆目录 `~/.claude/projects/-Users-jason-Documents-Stride/memory/`（自动加载）。
 
-## 接下来做什么：M3（1.4.0）
+## 接下来做什么：Phase 0，然后 M4（1.4.1）
 
-M3 = iPad/Mac 外壳、通知"完成"动作、后台同步，外加积压项"导出先写文件再弹分享面板"。DEV-PLAN-1.3.md 的 M3 小节就是规格。分支 `m3/1.4.0`，从合并后的 `main` 切出。进度记在 `RELEASE-1.4.0.md`。
+按 `RELEASE-1.4.1.md` 的顺序做。开头几步：
 
-1. **不需要 TestFlight，也不需要我做真机检查**（2026-10-07 起所有版本都省略）：由你自己测试。具体是模拟器端到端（`scripts/sim_e2e/`）、用真实旧版构建原地升级、在旧版 App 写出的 store 上跑真实容器迁移测试，以及 Release 构建冒烟。
-2. 审查：Codex（额度够时）+ Gemini（MCP bridge，workspace 只能是一次性副本）。每条都要对照代码核实后再采纳。
-3. 打包前的固定动作：
-   - `scripts/sync_rehearsal.sh` 和 `scripts/check_demo_account.sh` 在要发布的构建上跑绿；
-   - `verify_archive.sh --exported`；
-   - 用 `release.py` 写六种语言的 What's New；
-   - `build-appstore.sh all --upload`；
-   - `release.py prepare <版本>`；
-   - **发布门禁**：`scripts/sim_e2e/upgrade.sh`，从每个在用的旧版本（现在包括 1.3.1）原地升级，带 widget。
-   - **提交（`release.py finish`）必须等我点头。**
-   - 版本是 MANUAL 发布，过审后等我说再 `release.py release`。
+1. **P1 magic-link（第一件事）**：先问我两件事：选项 A（只改 `FROM_EMAIL=Stride <stride@colorarchive.org>`）的 go，以及 O5（≤1.2.2 旧客户端缺 `updatedAt` 的处理，默认选 (2)）。再确认会话 4c69e79f 还在不在：在的话，由它提交、开 PR、改 `.env`、部署，你只做验证；不在的话，按计划里的 fallback 走，仍要我点头。生产环境的每一步都要我点头。
+2. **P2 Mac 1.4.0**：`release.py show 1.4.0`。如果是 PENDING_DEVELOPER_RELEASE，直接 `release.py release 1.4.0 --platform MAC_OS`（我已经同意）。然后按顺序：在 m3 上勾选文档、等 CI 绿、`gh pr ready 7`、`gh pr merge 7 --merge`（merge commit，不要 squash），最后打 tag `v1.4.0`。
+3. **P3a + P4，和我一起做**：Mac 商店截图预演，加上 13 条 Mac 界面清单。先让我删掉 `build/Debug/Stride.app`（那是真实 bundle id 的旧 Debug 包）。测试版只用路径或 `open -b yyh.stride.habittracker.mactest` 启动，构建放在 `~/Library/Caches/Stride-build/mac-variant`。截图最终要上传到 Mac 1.4.1 的版本记录（P3b，在 W3 和 W5 之后）。
+4. **O1–O12**：一次性列给我，每条带默认值，我回一行就行。
+5. **W0 → W1 → W2 → W3/W4**，W5–W8 并行，最后 W9。每个工作流有独占的文件，测试写在计划里。W9 之前做一次全分支审查：Gemini（agy，一次性副本）加 Claude 对抗视角。
+
+不变的规矩：
+- 不用 TestFlight，也不用我做真机检查，由你自己测（模拟器端到端、从每个在用的旧版原地升级、Release 冒烟）。
+- ASC 写操作（上传、prepare、push_metadata、截图、finish、release）和生产部署，每一步都要我点头。
+- 版本是 MANUAL 发布。iOS 先提交；Mac 要等门禁 10（实际操作一遍 Mac 界面）通过后才提交。
 
 ## 已知的机器/流程陷阱
 
@@ -50,16 +47,17 @@ M3 = iPad/Mac 外壳、通知"完成"动作、后台同步，外加积压项"导
   - `LocalizationSourceScanTests` 认不出 `\(a.b.c)` 这种插值，要先赋给局部变量。
 - **服务端 `.env`**：含 `<>`，不要 `source`。SSH 一律加 `-o IdentityAgent=none`。
 - **审查工具**：
-  - Gemini 用 gemini MCP bridge（`mcp__gemini__ask_gemini`），`workspace` 只能指向一次性副本目录，绝不能指向仓库，因为它会以 `--dangerously-skip-permissions` 运行。
+  - Gemini 用 gemini MCP bridge（`mcp__gemini__ask_gemini`，底层是 agy）。`workspace` 只能指向一次性副本（`git archive HEAD | tar -x -C <scratchpad>/gemini-ws`），绝不能指向仓库，因为它会以 `--dangerously-skip-permissions` 运行。先跑 `agy models` 看有哪些模型：2026-10-14 只有 Gemini 3.8 Flash，没有 3.1 Pro。
   - 子 agent 可能因 API 用量上限中途停下：额度恢复后用 SendMessage 让它从原处继续，不要重开。
 - **端到端的做法**：Debug 构建连 `localhost:3002`。起一个 `server/` 的副本（全新 DB、`NODE_ENV=test`、不带 `.env`），直接插入 `magic_link_tokens` 行，在 App 的"I have a login token"输入框粘贴 token 登录。上次的脚本套件在会话临时目录里，没进仓库；RELEASE-1.3.1.md 描述了做法。
 
 ## 需要我做的事（你做不了）
 
-- Mac 界面检查（1.4.0 已提交，现在是补做）：允许 computer use 操作测试版 `yyh.stride.habittracker.mactest`，或者自己按 `RELEASE-1.4.0.md` 里的 13 条清单点一遍。
+- P1 的 go（选项 A、O5），以及 B（给 Stride 单独建 Resend team/key，在 Namecheap 加 DKIM）。
+- Mac 环节：删掉 `build/Debug/Stride.app`；允许 computer use 只操作 `yyh.stride.habittracker.mactest`；给宿主 App 开 Screen Recording（截完收回）；挑截图。
 - Sentry：建 `stride-server` 项目，把 `SENTRY_DSN` 写进 `/root/stride-server/.env`，加 1 分钟的 uptime 监控（DEPLOY.md 有步骤）。
 - 把 iCloud Drive `Downloads/` 里的两份 ASC `.p8` 移到 `~/Library/Application Support/CLI-Pulse-Secrets/`，再 `chmod 600 ~/private_keys/AuthKey_*.p8`。
 - 可选：给 stride.colorarchive.me 加 DMARC 记录；`ssh-keygen -R 143.198.85.72`（旧 DO 主机已销毁，没有要清的）。
 - ASC 首购优惠：已确认没有配置，无需处理。
 
-先看 `RELEASE-1.4.0.md` 末尾的「Submission checklist」和「Follow-ups for 1.4.1」，再接着做：查 macOS 审核结果，过审后 `release.py release 1.4.0 --platform MAC_OS`，合并 PR #7，打 tag `v1.4.0`，然后进入 M4（`DEV-PLAN-1.3.md` 的 M4 小节，1.4.1），并把 1.4.1 跟进项并进去。
+先读 `RELEASE-1.4.1.md`，从 Phase 0 的 P1 开始。
