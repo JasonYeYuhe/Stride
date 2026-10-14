@@ -115,9 +115,52 @@ In the variant, after the checks above:
 ## Store screenshots
 
 The Mac App Store slot (`APP_DESKTOP`) takes only exact 16:10 sizes: 1280×800, 1440×900,
-2560×1600 or 2880×1800. Capture the variant's window (`screencapture -o -l <window id>`) sized to
-one of them, into a fresh `build/store-screenshots/<version>/mac/`, with no widget slide (the Mac
-has no widgets). `scripts/store_screenshots.py` uploads them.
+2560×1600 or 2880×1800. Capture the variant's window sized to one of them, into a fresh
+`build/store-screenshots/<version>/mac/`, with no widget slide (the Mac has no widgets).
+`scripts/store_screenshots.py` uploads them.
+
+**Size the window** with the DEBUG launch flag `-windowSize <W>x<H>` (RELEASE-1.4.1.md W0;
+`LaunchWindowSize` in StrideApp.swift). It sets the main window's frame, title bar included, in
+points, once per process, so a 1440×900 frame on a 2x display (the owner's 4K display at 2x) is
+the 2880×1800 the slot takes. It exists only in DEBUG builds, which the variant always is, and
+iOS ignores it. `--args` reach only a new process, so quit a running variant first:
+
+```bash
+osascript -e 'if application id "yyh.stride.habittracker.mactest" is running then tell application id "yyh.stride.habittracker.mactest" to quit'
+open -b yyh.stride.habittracker.mactest --args -windowSize 1440x900   # by bundle id, never -a Stride
+```
+
+**Capture** with `capture.sh`. It launches, activates and quits nothing. It finds the variant by
+bundle id and its window by that process's PID, never by the name "Stride".
+
+```bash
+scripts/mac_variant/capture.sh --list                     # what it would capture; no capture
+scripts/mac_variant/capture.sh build/store-screenshots/1.4.1/mac/01-today.png
+scripts/mac_variant/capture.sh --size 2560x1600 <out.png> # another APP_DESKTOP size
+scripts/mac_variant/capture.sh --window-id <id> <out.png> # not the largest window (see --list)
+scripts/mac_variant/capture.sh --force <out.png>          # replace an existing file
+```
+
+Before it captures, it checks:
+
+- exactly one variant instance is running;
+- nothing runs as the real `yyh.stride.habittracker`;
+- the variant is the frontmost app, so the window has active chrome.
+
+Then it runs `screencapture -x -o -l <window id>`, where `-o` drops the shadow so the image is the
+window's frame exactly. It keeps the capture only if:
+
+- the image is not blank (nearly all transparent, or one colour);
+- it is exactly 2880×1800 px (`sips`), or the `--size` given.
+
+A rejected capture stays in a temp directory, whose path is printed. Exit status: 0 captured,
+1 failed or blank, 2 usage, 3 not running or no on-screen window, 4 refused, 5 wrong size.
+
+**Screen Recording.** A blank or failed capture almost always means the app running the script
+(Terminal, iTerm or the Claude app) has no Screen Recording permission. `capture.sh` prints how
+to grant it: System Settings → Privacy & Security → Screen & System Audio Recording, then
+relaunch that app. The owner grants it for the sitting and revokes it afterwards
+(RELEASE-1.4.1.md P3b).
 
 ## Cleaning up
 

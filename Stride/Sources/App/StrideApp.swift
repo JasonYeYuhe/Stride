@@ -137,6 +137,10 @@ struct StrideApp: App {
         WindowGroup(id: MainWindows.id) {
             mainWindowContent
                 .countsAsMainWindow()
+                #if DEBUG
+                // `-windowSize <W>x<H>`: the store-screenshot frame (LaunchWindowSize, below).
+                .background(LaunchWindowSize.Applier())
+                #endif
         }
         .windowStyle(.titleBar)
         .defaultSize(width: 900, height: 650)
@@ -437,6 +441,79 @@ extension StrideApp {
         ]
     }
 }
+
+#if DEBUG
+/// `-windowSize <W>x<H>` (e.g. `-windowSize 1440x900`): the main window's FRAME, title bar
+/// included, in points — DEBUG builds on the Mac only (RELEASE-1.4.1.md W0, P3b). It is what
+/// `screencapture -o -l <window id>` captures, so at @2x a 1440x900 frame is exactly the
+/// 2880×1800 the Mac App Store's APP_DESKTOP slot takes; scripts/mac_variant/capture.sh asserts
+/// that size. `.defaultSize` (900×650) is only a first-launch default that a restored frame
+/// overrides, and it sizes the content rather than the frame, so the frame is set on the
+/// NSWindow itself, once per process, on the first main window: a window ⌘0 opens later keeps
+/// its own size. Centred on that window's screen; a frame larger than the screen's visible area
+/// is set anyway and macOS may shrink it, which capture.sh's size check then reports.
+///
+/// Compiled out of Release, so no shipping build reads the flag (the variant is always Debug:
+/// mac_variant/build.sh); iOS has no such code at all. A missing or malformed value changes
+/// nothing. AppKit
+/// also reads `-windowSize 1440x900` as a `windowSize` argument-domain default, which nothing
+/// uses.
+enum LaunchWindowSize {
+    /// The requested frame size, or nil.
+    static let requested: CGSize? = parse(CommandLine.arguments)
+
+    /// `<W>x<H>`, whole points, each 200…10000.
+    static func parse(_ arguments: [String]) -> CGSize? {
+        guard let flag = arguments.firstIndex(of: "-windowSize") else { return nil }
+        let valueIndex = arguments.index(after: flag)
+        guard valueIndex < arguments.endIndex else {
+            print("[LaunchWindowSize] -windowSize needs a value such as 1440x900; ignored")
+            return nil
+        }
+        let parts = arguments[valueIndex].lowercased().split(separator: "x", omittingEmptySubsequences: false)
+        guard parts.count == 2, let width = Int(parts[0]), let height = Int(parts[1]),
+              (200...10_000).contains(width), (200...10_000).contains(height) else {
+            print("[LaunchWindowSize] -windowSize \(arguments[valueIndex]) is not <W>x<H>; ignored")
+            return nil
+        }
+        return CGSize(width: width, height: height)
+    }
+
+    /// Once per process.
+    @MainActor private static var applied = false
+
+    @MainActor fileprivate static func apply(to window: NSWindow) {
+        guard let size = requested, !applied else { return }
+        applied = true
+        // After SwiftUI has finished placing the new window (its default size, or a restored
+        // frame), so this frame is the last word.
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                let visible = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
+                let origin = NSPoint(x: (visible.midX - size.width / 2).rounded(),
+                                     y: (visible.midY - size.height / 2).rounded())
+                window.setFrame(NSRect(origin: origin, size: size), display: true)
+                print("[LaunchWindowSize] main window frame \(Int(window.frame.width))x\(Int(window.frame.height)) pt, backing scale \(window.backingScaleFactor)")
+            }
+        }
+    }
+
+    /// An empty view that hands its window to `apply` (as MenuCommands' MainWindowReader does).
+    struct Applier: NSViewRepresentable {
+        func makeNSView(context: Context) -> NSView { WindowSizingView() }
+        func updateNSView(_ view: NSView, context: Context) {}
+
+        private final class WindowSizingView: NSView {
+            override func viewDidMoveToWindow() {
+                super.viewDidMoveToWindow()
+                if let window { LaunchWindowSize.apply(to: window) }
+            }
+
+            override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        }
+    }
+}
+#endif
 #endif
 
 extension Notification.Name {

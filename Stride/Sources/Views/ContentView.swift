@@ -252,6 +252,8 @@ struct ContentView: View {
             case .review: WeeklyReviewView()
             case .paywall: ProPaywallView()
             }
+        case .history(let habitID, let day):
+            HabitHistoryView(habitID: habitID, day: day)
         case .export:
             EmptyView()
         }

@@ -501,3 +501,82 @@
 /* 1.4.0 (M3). Under an Export button when writing the export file failed (e.g. no disk space); on
    the Mac, also the title of an alert after File → Export Backup… / Export as CSV… failed. */
 "Couldn't create the file. Try again." = "無法建立檔案，請再試一次。";
+
+/* ============================================================
+   1.4.1 (M4)
+   ============================================================ */
+
+/* History (D5, D6): the sheet that shows a habit's past days in a month grid, where any day can
+   be checked, unchecked or annotated. "Edit history" is the button on a habit's Statistics card
+   and the heatmap's VoiceOver action; "Opens History" is a VoiceOver hint. In "%@, %@ of %@" the
+   arguments are the spoken date, the amount logged and the daily target. */
+"Edit history" = "編輯歷史紀錄";
+"Opens History" = "開啟歷史紀錄";
+"History" = "歷史紀錄";
+"Previous Month" = "上個月";
+"Next Month" = "下個月";
+"Completed" = "已完成";
+"Amount" = "數值";
+"%@, %@ of %@" = "%@，已記錄 %@，目標 %@";
+"%@, rest day" = "%@，休息日";
+"Has a note" = "有備註";
+
+/* Notes (D7): a note can be added only to a day that has a check-in, and new input stops at 500
+   characters. "Description" is the habit's own optional text in the habit editor. A check-in with
+   a note is never removed without asking; "Combine" merges two different notes left on one day
+   by two devices. */
+"Check in to add a note." = "打卡後即可新增備註。";
+"Notes can be up to 500 characters." = "備註最多可輸入 500 個字元。";
+"Description" = "描述";
+"e.g., Right after breakfast" = "例如：早餐後馬上做";
+"Remove the check-in and its note?" = "要移除打卡及其備註嗎？";
+"Remove" = "移除";
+"This day has more than one note. Combine them into one?" = "這一天有多則備註。要合併為一則嗎？";
+"Combine" = "合併";
+
+/* Strength (D9, D10): a 0-100 score of how established a habit is. It rises with every check-in
+   and recovers after a miss. "Strength" is also a narrow tile label on the free Statistics card.
+   The Pro cards show its change over 30 and 90 days and the habit's five longest streaks, the one
+   still going marked "Current". */
+"Strength" = "習慣強度";
+"Strength grows with every check-in and recovers after a miss; it counts a rolling 7 days, the streak counts calendar weeks." = "習慣強度隨每次打卡上升，錯過後也會恢復；它按滾動的最近 7 天計算，而連續紀錄按日曆週計算。";
+"Strength grows with every check-in and recovers after a miss." = "習慣強度隨每次打卡上升，錯過後也會恢復。";
+"30-Day Change" = "30日變化";
+"90-Day Change" = "90日變化";
+"Your Top 5 Streaks" = "連續紀錄前 5 名";
+"Current" = "目前";
+"No streaks yet" = "還沒有連續紀錄";
+
+/* Pro claims (D11): what Advanced Analytics contains, in the locked card on Statistics and on the
+   paywall (it replaces "8-week trends, insights & weekly review", left in place), and the
+   paywall's subtitle for Weekly Review. "Your top 5 streaks", never "your best streaks": the free
+   card keeps its Best Streak tile. */
+"Insights, the 8-week trend, the strength chart and your top 5 streaks" = "洞察、8 週趨勢、習慣強度圖表和連續紀錄前 5 名";
+"A look back at how your week went" = "回顧你這一週的表現";
+
+/* Subscription status in Settings (D12), on iOS and in the Mac Settings window. "Plan" is the row
+   whose value is Monthly, Yearly or Lifetime; each %@ is a date. "Manage Subscription" opens
+   Apple's subscription settings. "A subscription still renews" warns a Lifetime owner who is
+   still paying for a subscription. */
+"Plan" = "方案";
+"Renews on %@" = "將於 %@ 續訂";
+"Expires on %@" = "將於 %@ 到期";
+"Manage Subscription" = "管理訂閱";
+"Payment problem — update your payment method" = "付款出現問題 — 請更新付款方式";
+"A subscription still renews" = "仍有訂閱在自動續訂";
+"Pro ended on %@" = "Pro 已於 %@ 結束";
+"Resubscribe" = "重新訂閱";
+
+/* Template units (D15): stored as a new habit's unit when it is added from a template, then shown
+   after any number ("3/8 glasses"), so one form that reads after 1 and after 8. They match the
+   unit hint "Unit (e.g. glasses, min, km)". */
+"glasses" = "杯";
+"min" = "分鐘";
+"steps" = "步";
+"words" = "字";
+"hours" = "小時";
+"km" = "公里";
+
+/* Editing a habit (2026-10-15 decision 8): under the Goal and Frequency settings in edit mode only.
+   A new target or schedule re-scores every past day. */
+"Changes apply to your whole history, including streaks and strength." = "變更將套用到你的全部歷史紀錄，包括連續紀錄和習慣強度。";

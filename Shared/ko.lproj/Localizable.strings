@@ -501,3 +501,82 @@
 /* 1.4.0 (M3). Under an Export button when writing the export file failed (e.g. no disk space); on
    the Mac, also the title of an alert after File → Export Backup… / Export as CSV… failed. */
 "Couldn't create the file. Try again." = "파일을 만들 수 없습니다. 다시 시도하세요.";
+
+/* ============================================================
+   1.4.1 (M4)
+   ============================================================ */
+
+/* History (D5, D6): the sheet that shows a habit's past days in a month grid, where any day can
+   be checked, unchecked or annotated. "Edit history" is the button on a habit's Statistics card
+   and the heatmap's VoiceOver action; "Opens History" is a VoiceOver hint. In "%@, %@ of %@" the
+   arguments are the spoken date, the amount logged and the daily target. */
+"Edit history" = "기록 편집";
+"Opens History" = "기록 화면을 엽니다";
+"History" = "기록";
+"Previous Month" = "이전 달";
+"Next Month" = "다음 달";
+"Completed" = "완료됨";
+"Amount" = "수치";
+"%@, %@ of %@" = "%@, %@(목표 %@)";
+"%@, rest day" = "%@, 휴식일";
+"Has a note" = "메모 있음";
+
+/* Notes (D7): a note can be added only to a day that has a check-in, and new input stops at 500
+   characters. "Description" is the habit's own optional text in the habit editor. A check-in with
+   a note is never removed without asking; "Combine" merges two different notes left on one day
+   by two devices. */
+"Check in to add a note." = "체크인하면 메모를 추가할 수 있습니다.";
+"Notes can be up to 500 characters." = "메모는 최대 500자까지 입력할 수 있습니다.";
+"Description" = "설명";
+"e.g., Right after breakfast" = "예: 아침 식사 직후";
+"Remove the check-in and its note?" = "체크인과 메모를 제거할까요?";
+"Remove" = "제거";
+"This day has more than one note. Combine them into one?" = "이 날에 메모가 두 개 이상 있습니다. 하나로 합칠까요?";
+"Combine" = "합치기";
+
+/* Strength (D9, D10): a 0-100 score of how established a habit is. It rises with every check-in
+   and recovers after a miss. "Strength" is also a narrow tile label on the free Statistics card.
+   The Pro cards show its change over 30 and 90 days and the habit's five longest streaks, the one
+   still going marked "Current". */
+"Strength" = "습관 강도";
+"Strength grows with every check-in and recovers after a miss; it counts a rolling 7 days, the streak counts calendar weeks." = "습관 강도는 체크인할 때마다 오르고, 놓친 뒤에도 회복됩니다. 강도는 최근 7일을 기준으로 계산하고, 연속 기록은 달력 기준 주 단위로 셉니다.";
+"Strength grows with every check-in and recovers after a miss." = "습관 강도는 체크인할 때마다 오르고, 놓친 뒤에도 회복됩니다.";
+"30-Day Change" = "30일 변화";
+"90-Day Change" = "90일 변화";
+"Your Top 5 Streaks" = "연속 기록 상위 5개";
+"Current" = "진행 중";
+"No streaks yet" = "아직 연속 기록이 없습니다";
+
+/* Pro claims (D11): what Advanced Analytics contains, in the locked card on Statistics and on the
+   paywall (it replaces "8-week trends, insights & weekly review", left in place), and the
+   paywall's subtitle for Weekly Review. "Your top 5 streaks", never "your best streaks": the free
+   card keeps its Best Streak tile. */
+"Insights, the 8-week trend, the strength chart and your top 5 streaks" = "인사이트, 8주 추세, 습관 강도 차트 및 연속 기록 상위 5개";
+"A look back at how your week went" = "한 주가 어땠는지 돌아보기";
+
+/* Subscription status in Settings (D12), on iOS and in the Mac Settings window. "Plan" is the row
+   whose value is Monthly, Yearly or Lifetime; each %@ is a date. "Manage Subscription" opens
+   Apple's subscription settings. "A subscription still renews" warns a Lifetime owner who is
+   still paying for a subscription. */
+"Plan" = "플랜";
+"Renews on %@" = "%@에 자동 갱신";
+"Expires on %@" = "%@에 만료 예정";
+"Manage Subscription" = "구독 관리";
+"Payment problem — update your payment method" = "결제 문제 — 결제 수단을 업데이트하세요";
+"A subscription still renews" = "구독이 아직 자동 갱신 중입니다";
+"Pro ended on %@" = "Pro가 %@에 종료되었습니다";
+"Resubscribe" = "다시 구독";
+
+/* Template units (D15): stored as a new habit's unit when it is added from a template, then shown
+   after any number ("3/8 glasses"), so one form that reads after 1 and after 8. They match the
+   unit hint "Unit (e.g. glasses, min, km)". */
+"glasses" = "잔";
+"min" = "분";
+"steps" = "걸음";
+"words" = "단어";
+"hours" = "시간";
+"km" = "km";
+
+/* Editing a habit (2026-10-15 decision 8): under the Goal and Frequency settings in edit mode only.
+   A new target or schedule re-scores every past day. */
+"Changes apply to your whole history, including streaks and strength." = "변경 사항은 연속 기록과 습관 강도를 포함한 전체 기록에 적용됩니다.";

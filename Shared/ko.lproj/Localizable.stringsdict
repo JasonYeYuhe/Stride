@@ -556,5 +556,37 @@
 			<string>이 기기에서 제거되며 다른 곳에는 없을 수도 있습니다. 필요할 수 있다면 먼저 백업을 내보내세요.</string>
 		</dict>
 	</dict>
+	<!-- 1.4.1 (M4). The heatmap's VoiceOver summary (D5): completed days of the 84 shown, then
+	     the current streak in days, or in weeks for a times-per-week habit. One plural variable
+	     per entry: en follows the day total (its streak words are the same for 1 and 2), es
+	     follows the streak (the total is always 84). -->
+	<key>%lld of %lld days completed, %lld day streak</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%2$lld일 중 %1$lld일 완료, %3$#@streak@일 연속</string>
+		<key>streak</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld</string>
+		</dict>
+	</dict>
+	<key>%lld of %lld days completed, %lld week streak</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%2$lld일 중 %1$lld일 완료, %3$#@streak@주 연속</string>
+		<key>streak</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld</string>
+		</dict>
+	</dict>
 </dict>
 </plist>
