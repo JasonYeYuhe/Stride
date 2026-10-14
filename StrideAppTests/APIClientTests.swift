@@ -152,6 +152,32 @@ final class APIClientTests: XCTestCase {
         }
     }
 
+    /// A login email Stride could not send — the server's `login_email_unavailable`, or a 5xx
+    /// with no code (nginx's 502 page while the server is down) — reads as Stride's problem, in
+    /// this build's language. In production on 2026-10-12 every sign-in failed with the
+    /// server's English "Failed to send login link" and nothing else. A bad address, the
+    /// 3-per-15-minutes limit and being offline still read as before.
+    @MainActor
+    func testALoginEmailStrideCouldNotSendIsSaidToBeStridesProblem() {
+        let ours = appLocalized("Stride couldn't send the login email right now. This is a problem on our side, not with your email address. Your habits are safe on this device. Please try again later.")
+        let fromServer = APIError.server(statusCode: 500, code: "login_email_unavailable",
+                                         message: "Stride couldn't send the login email right now.")
+        let fromNginx = APIError.server(statusCode: 502, code: nil, message: nil)
+        for error in [fromServer, fromNginx] {
+            XCTAssertTrue(APIError.isLoginEmailUnavailable(error), "\(error)")
+            XCTAssertEqual(APIError.loginLinkMessage(for: error), ours, "\(error)")
+        }
+
+        let badAddress = APIError.server(statusCode: 400, code: nil, message: "Invalid email")
+        let tooMany = APIError.server(statusCode: 429, code: nil, message: "Too many login attempts, please try again later")
+        let offline = URLError(.notConnectedToInternet)
+        for error in [badAddress, tooMany, offline] as [Error] {
+            XCTAssertFalse(APIError.isLoginEmailUnavailable(error), "\(error)")
+            XCTAssertEqual(APIError.loginLinkMessage(for: error), APIError.displayMessage(for: error), "\(error)")
+        }
+        XCTAssertEqual(APIError.loginLinkMessage(for: badAddress), "Invalid email")
+    }
+
     // MARK: - Nothing on disk but the Keychain item (E2E S9)
 
     /// `URLSession.shared` kept the /v1/auth/verify answer — the live session token — and every

@@ -197,17 +197,27 @@ final class AuthService {
         }
     }
 
-    func requestMagicLink(email: String) async -> Bool {
+    enum MagicLinkRequestOutcome: Equatable {
+        case sent
+        /// Not sent; `error` says why (the address, the connection, too many attempts).
+        case failed
+        /// Not sent because Stride could not send it (`APIError.isLoginEmailUnavailable`) —
+        /// nothing the user did or can fix; `error` says so, and the login sheet adds Contact
+        /// Support.
+        case emailUnavailable
+    }
+
+    func requestMagicLink(email: String) async -> MagicLinkRequestOutcome {
         isLoading = true
         error = nil
         do {
             try await api.requestMagicLink(email: email)
             isLoading = false
-            return true
+            return .sent
         } catch {
-            self.error = APIError.displayMessage(for: error)
+            self.error = APIError.loginLinkMessage(for: error)
             isLoading = false
-            return false
+            return APIError.isLoginEmailUnavailable(error) ? .emailUnavailable : .failed
         }
     }
 
