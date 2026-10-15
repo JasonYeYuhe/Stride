@@ -210,7 +210,7 @@ final class NotificationService {
     /// the status was still `.notDetermined` and never delivered — and nothing said so.
     ///
     /// When the prompt is answered "Allow", every reminder-on habit already in `container` is
-    /// scheduled at that moment. The launch pass (`rescheduleAllHabitReminders`) ran while the
+    /// scheduled at that moment, and the badge is set (`permissionGranted`). The launch pass (`rescheduleAllHabitReminders`) ran while the
     /// status was undecided and scheduled nothing that could fire, so without this the habits
     /// that came by sync or restore, or were saved before the grant, stayed silent until the
     /// next cold launch — on iOS, possibly days — and only the habit being saved worked.
@@ -218,7 +218,7 @@ final class NotificationService {
         switch await checkPermission() {
         case .notDetermined:
             guard await requestPermission() else { return .denied }
-            if let container { scheduleAllHabitReminders(modelContainer: container) }
+            if let container { permissionGranted(schedulingExistingIn: container) }
             return .allowed
         case .denied:
             return .denied
@@ -226,6 +226,19 @@ final class NotificationService {
             // .authorized, .provisional, .ephemeral (and any future case) deliver.
             return .allowed
         }
+    }
+
+    /// Right after the user allowed notifications — the habit sheet's prompt
+    /// (`ensureReminderPermission`) or Settings' Daily Reminder switch — what was waiting on the
+    /// permission:
+    /// - every reminder-on habit already in the store, which the launch pass scheduled nothing
+    ///   for while the status was undecided;
+    /// - the badge (the Dock tile on the Mac). Nothing set it at the grant: it waited for the next
+    ///   save, activation or midnight, so on a Mac left in front it could stay blank for hours
+    ///   (RELEASE-1.4.0.md's follow-ups, Mac checklist item 12).
+    func permissionGranted(schedulingExistingIn container: ModelContainer) {
+        scheduleAllHabitReminders(modelContainer: container)
+        updateBadge(modelContainer: container)
     }
 
     /// The Save path of the habit sheet: permission first (asking if iOS never has), then the

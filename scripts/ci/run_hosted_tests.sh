@@ -51,8 +51,23 @@
 #   STRIDE_SPM_DIR               the shared Swift package checkout (scripts/ci/build_cache.sh)
 #   STRIDE_HOSTED_ALL=1          run the Stride scheme's whole test action (StrideTests too,
 #                                on iOS) instead of only StrideAppTests
+#   STRIDE_HOSTED_NO_SKIPS       test classes (comma- or space-separated) that must RUN: the run
+#                                fails if any of their tests skipped, or none of them ran
 #   STRIDE_SIM_LOCK_ROOT, STRIDE_SIM_LOCK_LABEL, STRIDE_SIM_LOCK_WAIT
 #                                the device lock, above (scripts/ci/sim_lock.sh)
+#
+# Skips. A skipped test is not a pass, so every run lists its skips by class, with the first
+# reason. StoreKitStatusTests (and StoreKitConfigurationLoadTests) skip wherever SKTestSession
+# does not take effect — the iOS 26.3+ simulator runtimes, "iPhone 17" here included
+# (FB22774836) — and every other test can still pass around them: a run with 11 silent skips
+# used to print the same "✓ passed" as a run of all of them. A run that a gate counts for a class
+# names it in STRIDE_HOSTED_NO_SKIPS. RELEASE-1.4.1.md gate 4 is this, on iOS 18.5, where all
+# of them run (2026-10-15):
+#   STRIDE_HOSTED_ALL=1 STRIDE_HOSTED_NO_SKIPS=StoreKitStatusTests,StoreKitConfigurationLoadTests \
+#     scripts/ci/run_hosted_tests.sh <an iOS 18.5 simulator> \
+#     -only-testing:StrideAppTests/StoreKitStatusTests -only-testing:StrideAppTests/StoreKitConfigurationLoadTests
+# (STRIDE_HOSTED_ALL=1 drops this script's own -only-testing:StrideAppTests, which would
+# otherwise widen the filter back to the whole bundle).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -185,10 +200,70 @@ read -r passed failed skipped result <<<"$counts"
 grep -E "error: -\[|' failed \(" "$LOG" | sed 's/^/    /' || true
 echo "    xcodebuild exit $status; passed $passed, failed $failed, skipped $skipped ($result)"
 
-if [[ $status -ne 0 || "$failed" != "0" || "$passed" -eq 0 ]]; then
+# Skips by class, and STRIDE_HOSTED_NO_SKIPS (header). Exit 3: a named class skipped or did not
+# run; 4: the per-test results could not be read while a class was named.
+NO_SKIPS_RC=0
+if [[ "${skipped:-0}" != "0" || -n "${STRIDE_HOSTED_NO_SKIPS:-}" ]]; then
+    { xcrun xcresulttool get test-results tests --path "$RESULT" 2>/dev/null || true; } \
+        | NO_SKIPS="${STRIDE_HOSTED_NO_SKIPS:-}" /usr/bin/python3 -c '
+import json, os, sys
+required = [c for c in os.environ.get("NO_SKIPS", "").replace(",", " ").split() if c]
+try:
+    tree = json.load(sys.stdin)
+except Exception:
+    print("    (the per-test results could not be read; skips are not listed)")
+    sys.exit(4 if required else 0)
+classes = {}
+def walk(node, suite):
+    kind = node.get("nodeType")
+    if kind == "Test Suite":
+        suite = node.get("name") or suite
+    if kind == "Test Case":
+        ident = node.get("nodeIdentifier") or ""
+        cls = ident.split("/")[0] if "/" in ident else (suite or "?")
+        c = classes.setdefault(cls, {"Passed": 0, "Failed": 0, "Skipped": 0, "other": 0, "reason": ""})
+        result = node.get("result", "")
+        c[result if result in ("Passed", "Failed", "Skipped") else "other"] += 1
+        if result == "Skipped" and not c["reason"]:
+            for child in node.get("children") or []:
+                if child.get("nodeType") == "Skip Message":
+                    c["reason"] = " ".join((child.get("name") or "").split())
+                    break
+        return
+    for child in node.get("children") or []:
+        walk(child, suite)
+for node in tree.get("testNodes", []):
+    walk(node, None)
+for cls in sorted(classes):
+    c = classes[cls]
+    if c["Skipped"]:
+        total = c["Passed"] + c["Failed"] + c["Skipped"] + c["other"]
+        reason = c["reason"] if len(c["reason"]) <= 200 else c["reason"][:197] + "..."
+        print("    skipped: %s %d of %d (%s)" % (cls, c["Skipped"], total, reason))
+bad = False
+for cls in required:
+    c = classes.get(cls)
+    if c is None:
+        print("    STRIDE_HOSTED_NO_SKIPS: %s ran no tests in this run" % cls)
+        bad = True
+    elif c["Skipped"]:
+        print("    STRIDE_HOSTED_NO_SKIPS: %s skipped %d of its tests; a skip is not a pass" % (cls, c["Skipped"]))
+        bad = True
+    else:
+        print("    STRIDE_HOSTED_NO_SKIPS: %s ran %d, none skipped" % (cls, c["Passed"] + c["Failed"]))
+sys.exit(3 if bad else 0)
+' || NO_SKIPS_RC=$?
+fi
+
+if [[ $status -ne 0 || "$failed" != "0" || "$passed" -eq 0 || $NO_SKIPS_RC -ne 0 ]]; then
     echo "✗ Hosted tests did not pass. Full log: $LOG"
+    [[ $NO_SKIPS_RC -ne 0 ]] && echo "  STRIDE_HOSTED_NO_SKIPS=${STRIDE_HOSTED_NO_SKIPS:-}: a named class did not run in full (above)."
     [[ $status -ne 0 && "$passed" -eq 0 && "$failed" == "0" ]] && tail -30 "$LOG" | sed 's/^/    /'
     exit 1
 fi
-echo "✓ Hosted tests passed ($passed tests)."
+if [[ "${skipped:-0}" != "0" ]]; then
+    echo "✓ Hosted tests passed ($passed tests; $skipped skipped, listed above: a skip is not a pass)."
+else
+    echo "✓ Hosted tests passed ($passed tests)."
+fi
 rm -rf "$RUN_DIR"
