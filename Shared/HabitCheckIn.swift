@@ -30,8 +30,10 @@ import SwiftData
 /// more than one live record. It keeps the record D2 reads (`HabitRecord.outranks`: the largest
 /// value, then the newest stamp, then the larger id — the same one on every device), moves
 /// another record's non-empty note onto it — or, when two different notes would have to become
-/// one, asks first (`.combineNotes`) and on confirmation joins them with a newline — deletes the
-/// rest and returns ALL their ids for tombstones. `tap` acts on the same kept record.
+/// one, asks first (`.combineNotes`) and on confirmation joins them with a newline — and deletes
+/// the rest HERE ONLY, with no tombstone, sending the kept record up again instead (`write`, "The
+/// duplicates go", says why: the server holds one row per habit and day, so a duplicate's
+/// tombstone could only ever delete the day). `tap` acts on the same kept record.
 ///
 /// History of the tap (1.2.3): four places did this and only the main list got it right. The
 /// widget's toggle and the watch deleted a count habit's whole partial day (6 of 8 glasses draws
@@ -69,9 +71,10 @@ enum HabitCheckIn {
     }
 
     struct Written: Equatable {
-        /// Every record this write deleted: all of the day's records for an un-check, a count set
-        /// to 0 or Reset, and the duplicates a day merge removed. Queue each one's tombstone
-        /// after the save, never before.
+        /// The ids to tombstone, each once: the day's records when the write leaves the day with
+        /// none (an un-check, a count set to 0, Reset). Queue them after the save, never before.
+        /// Never the duplicates a day merge removed — those go on this device only — and so
+        /// never an id a record of the day still carries.
         var deletedRecordIDs: [String]
         /// The day ends completed.
         var isCompleted: Bool
@@ -167,7 +170,7 @@ enum HabitCheckIn {
             if day.contains(where: { nonEmpty($0.note) != nil }), confirmed != .removeNote {
                 return .needsConfirmation(.removeNote)
             }
-            let ids = day.map { $0.id.uuidString }
+            let ids = distinctIDs(of: day)
             for record in day {
                 undo?.deleted(record, of: habit)
                 delete(record, of: habit, in: context)
@@ -224,14 +227,38 @@ enum HabitCheckIn {
             if noteChanges { kept.note = note }
             kept.touch()
         }
-        var deleted: [String] = []
+
+        // The duplicates go — here only, with no tombstone (W2 review: "merge-tombstones-server-row",
+        // SYNC-1, SYNC-2). The server holds ONE row per habit and day (routes/sync.js upsertEntry,
+        // `ON CONFLICT(habit_id, date)`), applies a push's deletions before its rows, and blocks a
+        // tombstoned id for good. So a duplicate's tombstone could only ever delete that day's one
+        // row, and by its echo the day on every device (sync rehearsal M6-M8 measured each):
+        // - under the duplicate's id, when the server had kept that one: the push deleted the row
+        //   and nothing put it back, since a merge that left the kept record as it was sent nothing;
+        // - under the kept record's OWN id, when the reconciler's day match had renamed both
+        //   records onto the server's id: the kept record's push was refused `tombstoned` and
+        //   dropped here too;
+        // - while a chunk carrying the duplicate was in flight, the resolver passed its queued
+        //   deletion on to the server's id (`SyncPushResolver.followAlias`), whichever was kept.
+        // Instead the kept record goes up again. Its upsert lands on the day's one row whatever id
+        // that row has; last writer wins at the kept record's stamp, which moves only when this
+        // write changed the record; and the server's `aliases` answer (or the next pull's day
+        // match) gives it the row's id, which no local record holds any more. So every device and
+        // the server end with one record of the day, under one id. Another device's own duplicate
+        // of the day stays until a write there merges it.
+        let dropsDuplicates = day.count > 1
         for record in day.dropFirst() {
-            deleted.append(record.id.uuidString)
             undo?.deleted(record, of: habit)
             delete(record, of: habit, in: context)
         }
-        guard valueChanges || noteChanges || !deleted.isEmpty else { return .noChange }
-        return .changed(Written(deletedRecordIDs: deleted, isCompleted: isCompleted(holding: value, habit),
+        if dropsDuplicates, !kept.isPending {
+            // Not a `touch()`: a fresh stamp would let this device's copy of the day beat a newer
+            // edit another device made to the server's row. The same stamp, sent again.
+            undo?.edited(kept)
+            kept.markNeedsResend()
+        }
+        guard valueChanges || noteChanges || dropsDuplicates else { return .noChange }
+        return .changed(Written(deletedRecordIDs: [], isCompleted: isCompleted(holding: value, habit),
                                 loggedValue: value, isCheckIn: value > (current ?? 0)))
     }
 
@@ -273,7 +300,7 @@ enum HabitCheckIn {
                 guard !day.contains(where: { nonEmpty($0.note) != nil }) else {
                     return Result(isCompleted: true, loggedValue: 1, needsConfirmation: .removeNote)
                 }
-                let ids = day.map { $0.id.uuidString }
+                let ids = distinctIDs(of: day)
                 for record in day { delete(record, of: habit, in: context) }
                 // Stated rather than recomputed: until the context saves, `habit.records` can
                 // still contain the objects just deleted.
@@ -451,6 +478,13 @@ enum HabitCheckIn {
         }
     }
 
+    /// The records' ids, each once, in order: two records of one day can carry the same id (the
+    /// reconciler's day match renames onto the server's id), and one tombstone covers both.
+    private static func distinctIDs(of records: [HabitRecord]) -> [String] {
+        var seen = Set<String>()
+        return records.map { $0.id.uuidString }.filter { seen.insert($0).inserted }
+    }
+
     /// nil for no note and for an empty one: both mean "no note" everywhere (`HabitStats.hasNote`).
     private static func nonEmpty(_ note: String?) -> String? {
         guard let note, !note.isEmpty else { return nil }
@@ -466,10 +500,33 @@ enum HabitCheckIn {
     /// away whatever else the context holds unsaved.
     ///
     /// Reverted in reverse order: an inserted record is removed and deleted; an edited one gets
-    /// its value, note and stamp back; a deleted one is re-inserted as a copy with its id, day,
-    /// value, note, stamp and delivery state — so the next save deletes the old row and writes the
-    /// same row back, and sync sees nothing to send. Pass one journal to every setter of a commit.
+    /// its value, note, stamp and forced-resend flag back; a deleted one is re-inserted as a copy
+    /// with its id, day, value, note, stamp and delivery state — so the next save deletes the old
+    /// row and writes the same row back, and sync sees nothing to send. Pass one journal to every
+    /// setter of a commit.
     final class Undo {
+        /// The fields a setter edits, as they were before this journal's first edit.
+        fileprivate struct Before {
+            let note: String?
+            let updatedAt: Date?
+            let value: Double
+            let needsResend: Bool
+
+            init(_ record: HabitRecord) {
+                note = record.note
+                updatedAt = record.updatedAt
+                value = record.value
+                needsResend = record.needsResend
+            }
+
+            func restore(on record: HabitRecord) {
+                record.note = note
+                record.updatedAt = updatedAt
+                record.value = value
+                record.needsResend = needsResend
+            }
+        }
+
         private struct Fields {
             let id: UUID
             let date: Date
@@ -484,7 +541,7 @@ enum HabitCheckIn {
 
             /// `before`: the fields as this journal first saw them, when it edited the record
             /// before deleting it.
-            init(_ record: HabitRecord, before: (note: String?, updatedAt: Date?, value: Double)? = nil) {
+            init(_ record: HabitRecord, before: Before? = nil) {
                 id = record.id
                 date = record.date
                 // `map`, not `?.`: a nil note or stamp before the edit is a value to restore.
@@ -494,7 +551,7 @@ enum HabitCheckIn {
                 syncedAt = record.syncedAt
                 syncHoldReason = record.syncHoldReason
                 syncHoldStamp = record.syncHoldStamp
-                needsResend = record.needsResend
+                needsResend = before.map { $0.needsResend } ?? record.needsResend
                 restoredAt = record.restoredAt
             }
 
@@ -514,7 +571,7 @@ enum HabitCheckIn {
 
         private enum Step {
             case inserted(HabitRecord, Habit)
-            case edited(HabitRecord, note: String?, updatedAt: Date?, value: Double)
+            case edited(HabitRecord, Before)
             case deleted(Fields, Habit)
         }
 
@@ -533,12 +590,12 @@ enum HabitCheckIn {
         func edited(_ record: HabitRecord) {
             let known = steps.contains {
                 switch $0 {
-                case .inserted(let r, _), .edited(let r, _, _, _): return r === record
+                case .inserted(let r, _), .edited(let r, _): return r === record
                 case .deleted: return false
                 }
             }
             guard !known else { return }
-            steps.append(.edited(record, note: record.note, updatedAt: record.updatedAt, value: record.value))
+            steps.append(.edited(record, Before(record)))
         }
 
         /// Before the record is deleted. A record this journal inserted is simply forgotten: its
@@ -548,10 +605,10 @@ enum HabitCheckIn {
                 steps.remove(at: i)
                 return
             }
-            var before: (note: String?, updatedAt: Date?, value: Double)?
-            if let i = steps.firstIndex(where: { if case .edited(let r, _, _, _) = $0 { return r === record }; return false }),
-               case .edited(_, let note, let updatedAt, let value) = steps[i] {
-                before = (note, updatedAt, value)
+            var before: Before?
+            if let i = steps.firstIndex(where: { if case .edited(let r, _) = $0 { return r === record }; return false }),
+               case .edited(_, let fields) = steps[i] {
+                before = fields
                 steps.remove(at: i)
             }
             steps.append(.deleted(Fields(record, before: before), habit))
@@ -564,10 +621,8 @@ enum HabitCheckIn {
                 case .inserted(let record, let habit):
                     habit.records.removeAll { $0 === record }
                     context.delete(record)
-                case .edited(let record, let note, let updatedAt, let value):
-                    record.note = note
-                    record.updatedAt = updatedAt
-                    record.value = value
+                case .edited(let record, let before):
+                    before.restore(on: record)
                 case .deleted(let fields, let habit):
                     habit.records.append(fields.copy())
                 }
@@ -645,7 +700,11 @@ enum HistoryLink {
         return String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)
     }
 
-    /// Exactly four, two and two ASCII digits with dashes, naming a date that exists.
+    /// Exactly four, two and two ASCII digits with dashes, naming a date that exists. Any year
+    /// from 1 (W2 review, "W2-URL-2"): day-keys take their year, month and day from the device's
+    /// calendar (`HabitCalendar.dayKey`), so on a Japanese-calendar device today's key is year 8
+    /// of Reiwa written as 0008-10-15 — the link round-trips through that same calendar in
+    /// `target`, which a 1970 floor refused, leaving every noted widget row there a dead link.
     private static func dateParts(_ text: String) -> (year: Int, month: Int, day: Int)? {
         let scalars = Array(text.unicodeScalars)
         guard scalars.count == 10, scalars[4] == "-", scalars[7] == "-" else { return nil }
@@ -658,7 +717,7 @@ enum HistoryLink {
             return value
         }
         guard let year = number(0..<4), let month = number(5..<7), let day = number(8..<10),
-              (1970...9999).contains(year), (1...12).contains(month), (1...31).contains(day),
+              (1...9999).contains(year), (1...12).contains(month), (1...31).contains(day),
               let date = HabitCalendar.utc.date(from: DateComponents(year: year, month: month, day: day)),
               case let c = HabitCalendar.utc.dateComponents([.year, .month, .day], from: date),
               c.year == year, c.month == month, c.day == day

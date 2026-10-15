@@ -721,17 +721,21 @@ final class HabitCheckInSetterTests: XCTestCase {
     // MARK: Same-day duplicates (decision 7)
 
     /// [2, 8] → setValue(3): the record D2 reads (8) is kept and set to 3, the other deleted —
-    /// whichever was inserted first, and whichever comes first in `records` after the save.
+    /// whichever was inserted first, and whichever comes first in `records` after the save. The
+    /// deletion is this device's only: no tombstone (W2 review; `write`, "The duplicates go"), and
+    /// the kept record, edited, goes up again.
     func testDuplicatesMergeIntoTheKeptRecordInBothOrders() throws {
         for order in [[2.0, 8.0], [8.0, 2.0]] {
             let records = order.map { record(value: $0) }
+            records.forEach { $0.acknowledge(sentStamp: $0.stamp) }
             let count = try habit(.count, records: records)
-            let keptID = try XCTUnwrap(records.first { $0.value == 8 }).id
-            let otherID = try XCTUnwrap(records.first { $0.value == 2 }).id
+            let kept = try XCTUnwrap(records.first { $0.value == 8 })
+            let keptID = kept.id
 
             let three = try written(HabitCheckIn.setValue(3, on: today, of: count, in: context))
-            XCTAssertEqual(three, .init(deletedRecordIDs: [otherID.uuidString], isCompleted: false, loggedValue: 3,
-                                        isCheckIn: false), "order \(order)")
+            XCTAssertEqual(three, .init(deletedRecordIDs: [], isCompleted: false, loggedValue: 3,
+                                        isCheckIn: false), "order \(order): no tombstone for the merge")
+            XCTAssertTrue(kept.isPending, "order \(order)")
             try context.save()
             let stored = try stored(count)
             XCTAssertEqual(stored.map(\.value), [3], "order \(order)")
@@ -744,8 +748,7 @@ final class HabitCheckInSetterTests: XCTestCase {
         let older = record(value: 4, stampOffset: 0)
         let newer = record(value: 4, stampOffset: 60)
         let count = try habit(.count, records: [newer, older])
-        XCTAssertEqual(try written(HabitCheckIn.setValue(5, on: today, of: count, in: context)).deletedRecordIDs,
-                       [older.id.uuidString])
+        XCTAssertEqual(try written(HabitCheckIn.setValue(5, on: today, of: count, in: context)).deletedRecordIDs, [])
         try context.save()
         XCTAssertEqual(try stored(count).map(\.id), [newer.id])
     }
@@ -765,10 +768,98 @@ final class HabitCheckInSetterTests: XCTestCase {
         let records = [record(stampOffset: 0), record(stampOffset: 5)]
         let yesNo = try habit(records: records)
         let merged = try written(HabitCheckIn.setChecked(true, on: today, of: yesNo, in: context))
-        XCTAssertEqual(merged, .init(deletedRecordIDs: [records[0].id.uuidString], isCompleted: true, loggedValue: 1,
-                                     isCheckIn: false))
+        XCTAssertEqual(merged, .init(deletedRecordIDs: [], isCompleted: true, loggedValue: 1, isCheckIn: false))
         try context.save()
         XCTAssertEqual(try stored(yesNo).map(\.id), [records[1].id])
+    }
+
+    /// A merge that leaves the kept record as it was still sends it up again — at ITS stamp, not a
+    /// new one — and tombstones nothing (W2 review, "merge-tombstones-server-row" (b), SYNC-2).
+    /// The server's one row of the day may be under the dropped record's id; a tombstone for it
+    /// deleted the day there and, by its echo, on every device, and with the kept record not
+    /// pending nothing put it back. Sent again, the kept record lands on that row whatever its
+    /// id. Every merge-only path: a stale row's check, History's nil setters, the note alert's
+    /// Save with the text unchanged.
+    func testAMergeOnlyWriteResendsTheKeptRecordAtItsStampAndTombstonesNothing() throws {
+        for write in ["setChecked(true)", "setChecked(nil)", "setValue(nil)", "setValue(1)", "setNote(nil)", "setNote(same)"] {
+            let records = [record(note: "kept", stampOffset: 0), record(note: "kept", stampOffset: 5)]
+            records.forEach { $0.acknowledge(sentStamp: $0.stamp) }
+            let yesNo = try habit(records: records)
+            let kept = records[1]
+            let stamp = kept.updatedAt
+            XCTAssertFalse(kept.isPending, write)
+
+            let change: HabitCheckIn.Change
+            switch write {
+            case "setChecked(true)": change = HabitCheckIn.setChecked(true, on: today, of: yesNo, in: context)
+            case "setChecked(nil)": change = HabitCheckIn.setChecked(nil, on: today, of: yesNo, in: context)
+            case "setValue(nil)": change = HabitCheckIn.setValue(nil, on: today, of: yesNo, in: context)
+            case "setValue(1)": change = HabitCheckIn.setValue(1, on: today, of: yesNo, in: context)
+            case "setNote(nil)": change = HabitCheckIn.setNote(nil, on: today, of: yesNo, in: context)
+            default: change = HabitCheckIn.setNote("kept", on: today, of: yesNo, in: context)
+            }
+            XCTAssertEqual(try written(change).deletedRecordIDs, [], write)
+            XCTAssertEqual(kept.updatedAt, stamp, "\(write): the stamp is the kept record's own")
+            XCTAssertTrue(kept.needsResend, write)
+            XCTAssertTrue(kept.isPending, "\(write): sent again")
+            try context.save()
+            XCTAssertEqual(try stored(yesNo).map(\.id), [kept.id], write)
+            XCTAssertEqual(try stored(yesNo).map(\.note), ["kept"], write)
+        }
+
+        // An edit in the same write moves the stamp instead; no forced resend is needed.
+        let records = [record(value: 2, stampOffset: 0), record(value: 8, stampOffset: 5)]
+        records.forEach { $0.acknowledge(sentStamp: $0.stamp) }
+        let count = try habit(.count, records: records)
+        let before = records[1].stamp
+        _ = try written(HabitCheckIn.setValue(9, on: today, of: count, in: context))
+        XCTAssertGreaterThan(records[1].stamp, before)
+        XCTAssertFalse(records[1].needsResend)
+        XCTAssertTrue(records[1].isPending)
+    }
+
+    /// Two records of one day under ONE id — the reconciler's day match renames a record onto the
+    /// server's id even when another local record already carries it. Merging them must not
+    /// tombstone that id: it is the kept record's own, and the server would delete the day's row,
+    /// block the id for good, refuse the kept record's push as `tombstoned` and spread the loss to
+    /// every device (W2 review, SYNC-1, "merge-tombstones-server-row" (a)). Un-checking the day
+    /// queues the id once.
+    func testASameIDPairMergesWithNoTombstoneAndUnchecksWithOne() throws {
+        func pair(_ kind: HabitKind = .binary, value: Double = 1, note: String? = nil) throws -> (Habit, UUID) {
+            let first = record(value: value, note: note, stampOffset: 0)
+            let twin = record(value: value, note: note, stampOffset: 0)
+            twin.id = first.id
+            [first, twin].forEach { $0.acknowledge(sentStamp: $0.stamp) }
+            return (try habit(kind, records: [first, twin]), first.id)
+        }
+
+        let (noted, notedID) = try pair()
+        XCTAssertEqual(try written(HabitCheckIn.setNote("from A", on: today, of: noted, in: context)).deletedRecordIDs, [])
+        try context.save()
+        XCTAssertEqual(try stored(noted).map(\.id), [notedID])
+        XCTAssertEqual(try stored(noted).map(\.note), ["from A"])
+        XCTAssertTrue(try XCTUnwrap(stored(noted).first).isPending)
+
+        let (count, countID) = try pair(.count, value: 3, note: "from B")
+        XCTAssertEqual(try written(HabitCheckIn.setValue(5, on: today, of: count, in: context)).deletedRecordIDs, [])
+        try context.save()
+        XCTAssertEqual(try stored(count).map(\.id), [countID])
+        XCTAssertEqual(try stored(count).map(\.value), [5])
+
+        let (mergeOnly, mergeOnlyID) = try pair()
+        XCTAssertEqual(try written(HabitCheckIn.setChecked(true, on: today, of: mergeOnly, in: context)).deletedRecordIDs, [])
+        try context.save()
+        XCTAssertEqual(try stored(mergeOnly).map(\.id), [mergeOnlyID])
+        XCTAssertTrue(try XCTUnwrap(stored(mergeOnly).first).isPending, "sent again at its stamp")
+
+        let (unchecked, uncheckedID) = try pair()
+        XCTAssertEqual(try written(HabitCheckIn.setChecked(false, on: today, of: unchecked, in: context)).deletedRecordIDs,
+                       [uncheckedID.uuidString], "one tombstone covers both")
+        try context.save()
+        XCTAssertTrue(try stored(unchecked).isEmpty)
+
+        let (tapped, tappedID) = try pair()
+        XCTAssertEqual(HabitCheckIn.tap(tapped, on: today, in: context).deletedRecordIDs, [tappedID.uuidString])
     }
 
     /// One note among the duplicates moves onto the kept record; the same note twice is one.
@@ -776,15 +867,14 @@ final class HabitCheckInSetterTests: XCTestCase {
         let kept = record(value: 8)
         let other = record(value: 2, note: "from the iPad")
         let count = try habit(.count, records: [other, kept])
-        XCTAssertEqual(try written(HabitCheckIn.setValue(9, on: today, of: count, in: context)).deletedRecordIDs,
-                       [other.id.uuidString])
+        XCTAssertEqual(try written(HabitCheckIn.setValue(9, on: today, of: count, in: context)).deletedRecordIDs, [])
         try context.save()
         let stored = try stored(count)
         XCTAssertEqual(stored.map(\.id), [kept.id])
         XCTAssertEqual(stored.map(\.note), ["from the iPad"])
 
         let same = try habit(records: [record(note: "same", stampOffset: 0), record(note: "same", stampOffset: 9)])
-        XCTAssertEqual(try written(HabitCheckIn.setChecked(true, on: today, of: same, in: context)).deletedRecordIDs.count, 1)
+        XCTAssertEqual(try written(HabitCheckIn.setChecked(true, on: today, of: same, in: context)).deletedRecordIDs, [])
         try context.save()
         XCTAssertEqual(try self.stored(same).map(\.note), ["same"])
     }
@@ -805,7 +895,7 @@ final class HabitCheckInSetterTests: XCTestCase {
         XCTAssertFalse(context.hasChanges)
 
         let combined = try written(HabitCheckIn.setValue(3, on: today, of: count, in: context, confirmed: .combineNotes))
-        XCTAssertEqual(combined.deletedRecordIDs, [other.id.uuidString])
+        XCTAssertEqual(combined.deletedRecordIDs, [])
         try context.save()
         let stored = try stored(count)
         XCTAssertEqual(stored.map(\.id), [kept.id])
@@ -825,7 +915,9 @@ final class HabitCheckInSetterTests: XCTestCase {
 
         // The other record's note equal to the new text: nothing to ask.
         let again = try habit(records: [record(note: "theirs", stampOffset: 0), record(note: "mine", stampOffset: 9)])
-        XCTAssertEqual(try written(HabitCheckIn.setNote("theirs", on: today, of: again, in: context)).deletedRecordIDs.count, 1)
+        XCTAssertEqual(try written(HabitCheckIn.setNote("theirs", on: today, of: again, in: context)).deletedRecordIDs, [])
+        try context.save()
+        XCTAssertEqual(try stored(again).map(\.note), ["theirs"])
     }
 
     /// Unchecking a duplicate day where any record carries a note asks to remove it.
@@ -900,6 +992,24 @@ final class HabitCheckInSetterTests: XCTestCase {
         try context.save()
         XCTAssertTrue(try stored(empty).isEmpty)
         XCTAssertNil(empty.record(on: today))
+    }
+
+    /// A merge-only write, taken back: the dropped duplicate returns as it was, and the kept
+    /// record's forced resend is lifted again — nothing for sync to send.
+    func testTheJournalTakesBackAMergesResend() throws {
+        let records = [record(note: "a", stampOffset: 0), record(note: "a", stampOffset: 5)]
+        records.forEach { $0.acknowledge(sentStamp: $0.stamp) }
+        let yesNo = try habit(records: records)
+        let undo = HabitCheckIn.Undo()
+        _ = try written(HabitCheckIn.setChecked(true, on: today, of: yesNo, in: context, undo: undo))
+        XCTAssertTrue(records[1].needsResend)
+        undo.revert(in: context)
+        XCTAssertFalse(records[1].needsResend)
+        try context.save()
+        let back = try stored(yesNo)
+        XCTAssertEqual(Set(back.map(\.id)), Set(records.map(\.id)))
+        XCTAssertEqual(back.map(\.note), ["a", "a"])
+        XCTAssertTrue(back.allSatisfy { !$0.isPending }, "re-inserted and restored as they were")
     }
 
     /// An edit then a delete of the same record in one journal brings it back as it was BEFORE the
@@ -980,6 +1090,35 @@ final class HistoryLinkTests: XCTestCase {
                 XCTAssertEqual(AppURLRoute.of(url, calendar: calendar), .history(habitID: habitID, day: parsed.day))
             }
         }
+    }
+
+    /// A device whose system calendar is not Gregorian (Settings → Language & Region → Calendar):
+    /// day-keys take that calendar's year (`HabitCalendar.dayKey`), so the widget writes today as
+    /// 0008-10-15 on a Japanese-calendar phone in Reiwa 8, and as 2569-10-15 on a Buddhist one. The
+    /// link round-trips through the same calendar to noon of the same civil day — 2026-10-15 — and
+    /// re-keys to the widget's own key (W2 review, "W2-URL-2": a 1970 floor rejected year 8, so
+    /// every noted row's link there opened the app on Today).
+    func testItRoundTripsOnAJapaneseOrBuddhistCalendarDevice() throws {
+        var gregorian = Calendar(identifier: .gregorian)
+        gregorian.timeZone = TimeZone(identifier: "Asia/Tokyo")!
+        for (identifier, year) in [(Calendar.Identifier.japanese, "0008"), (.buddhist, "2569")] {
+            var device = Calendar(identifier: identifier)
+            device.timeZone = TimeZone(identifier: "Asia/Tokyo")!
+            for hour in [0, 9, 21] {
+                let now = try XCTUnwrap(gregorian.date(from: DateComponents(year: 2026, month: 10, day: 15, hour: hour)))
+                let widgetKey = WidgetTimelinePlan.dayKey(of: now, in: device)   // as the widget keys its rows
+                let url = HistoryLink.url(habitID: habitID, dayKey: widgetKey)
+                XCTAssertTrue(url.absoluteString.hasSuffix("day=\(year)-10-15"), "\(identifier): \(url)")
+                let parsed = try XCTUnwrap(HistoryLink.target(of: url, calendar: device), "\(identifier) \(url)")
+                XCTAssertEqual(parsed.habitID, habitID)
+                XCTAssertEqual(gregorian.dateComponents([.year, .month, .day, .hour], from: parsed.day),
+                               DateComponents(year: 2026, month: 10, day: 15, hour: 12), "\(identifier)")
+                XCTAssertEqual(HabitCalendar.dayKey(forInstant: parsed.day, calendar: device), widgetKey, "\(identifier)")
+                XCTAssertEqual(AppURLRoute.of(url, calendar: device), .history(habitID: habitID, day: parsed.day))
+            }
+        }
+        XCTAssertNotNil(target("stride://history?habit=6F9619FF-8B86-D011-B42D-00C04FC964FF&day=0001-01-01"),
+                        "year 1 exists")
     }
 
     /// A lower-case id is the same habit, and the scheme and host are case-insensitive.

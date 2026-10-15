@@ -175,14 +175,16 @@ struct StrideApp: App {
 
     /// The app itself, over the opened store, in a window of its own: the window's shell is made
     /// here (`WindowShell`) rather than inside ContentView, so a URL the window receives can ask it
-    /// to present History (`openURL`).
+    /// to present History (`openURL`), and with it what tells whether the window already shows a
+    /// presentation (`WindowPresentation`).
     private func app(over modelContainer: ModelContainer) -> some View {
-        WindowShell { shell in
-            window(over: modelContainer, shell: shell)
+        WindowShell { shell, presentation in
+            window(over: modelContainer, shell: shell, presentation: presentation)
         }
     }
 
-    private func window(over modelContainer: ModelContainer, shell: ShellState) -> some View {
+    private func window(over modelContainer: ModelContainer, shell: ShellState,
+                        presentation: WindowPresentation) -> some View {
         ContentView(shell: shell)
             .task {
                 // Entitlements FIRST. Transaction.currentEntitlements is a local read that works
@@ -242,10 +244,10 @@ struct StrideApp: App {
             // And since 1.4.1 a checked, noted widget row: `stride://history?…` opens that habit's
             // History (D7). The two never meet (`AppURLRoute`): a history link goes nowhere near
             // AuthService, and only a login link's exact shape reaches it.
-            .onOpenURL { url in openURL(url, shell: shell, modelContainer) }
+            .onOpenURL { url in openURL(url, shell: shell, presentation: presentation, modelContainer) }
             .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
                 guard let url = activity.webpageURL else { return }
-                openURL(url, shell: shell, modelContainer)
+                openURL(url, shell: shell, presentation: presentation, modelContainer)
             }
             // Deliver links to the window that is already open. Without this, macOS opens a
             // second main window for every incoming URL (WindowGroup's default).
@@ -346,14 +348,12 @@ struct StrideApp: App {
     /// A URL handed to this window: History for a history link, the sign-in path for a login
     /// link, nothing for anything else (`AppURLRoute`).
     @MainActor
-    private func openURL(_ url: URL, shell: ShellState, _ modelContainer: ModelContainer) {
+    private func openURL(_ url: URL, shell: ShellState, presentation: WindowPresentation,
+                         _ modelContainer: ModelContainer) {
         switch AppURLRoute.of(url, calendar: .current) {
         case .history:
-            // Over whatever else the window shows, except a menu Export in progress (the Mac's;
-            // the widget that sends these is iOS-only): the request is a sheet the shell presents.
-            if case .export = shell.request { return }
             if let request = Self.historyRequest(for: url, in: modelContainer.mainContext) {
-                shell.request = request
+                Self.present(request, in: shell, presenting: presentation.isPresenting)
             }
         case .signIn:
             handleLoginLink(url, modelContainer)
@@ -375,6 +375,31 @@ struct StrideApp: App {
         let opensOn = HabitCalendar.dayKey(forInstant: day, calendar: calendar)
             > HabitCalendar.dayKey(forInstant: now, calendar: calendar) ? now : day
         return .history(habitID: habitID, day: opensOn)
+    }
+
+    /// Hands a history link's request to the window's shell — or leaves the shell as it is, and the
+    /// app just comes forward, as for a habit that is not here (W2 review, "W2-URL-1"):
+    /// - while a menu Export is in progress (the Mac's; the widget that sends these is iOS-only);
+    /// - while the window already shows a presentation (`presenting`): a sheet, cover or alert a
+    ///   view in it put up — Today's Add Habit, a row's Edit sheet or Note alert, the login sheet,
+    ///   the account screen, the onboarding — or the shell's own, History included. SwiftUI cannot
+    ///   present the shell's sheet over it ("already presenting"), and the request stayed set:
+    ///   measured on the iOS 26.5 simulator, SwiftUI then presents it by itself the moment the
+    ///   other one closes — History popping up over Today when the user finishes adding a habit,
+    ///   long after the tap — and until then an equal request from the next tap changes nothing.
+    ///   What is up is never dismissed for the link either: that would throw away an Add Habit or
+    ///   Edit draft, or cut a sign-in short. The Mac's menu commands follow the same rule under a
+    ///   sheet (`MenuCommandPress`).
+    ///
+    /// Otherwise the request is set, replacing any earlier one not yet on screen. Not cleared and
+    /// set again on a later turn, either (the review's suggestion for a request SwiftUI had
+    /// dropped): measured, that races SwiftUI's own retry of the dropped sheet and can leave the
+    /// request set with nothing presented — the dead link itself. Static, for the hosted tests.
+    @MainActor
+    static func present(_ request: ShellRequest, in shell: ShellState, presenting: Bool) {
+        if case .export = shell.request { return }
+        guard !presenting else { return }
+        shell.request = request
     }
 
     /// Signs in from a login link when signed out, then syncs — the same sync SettingsView runs
@@ -421,13 +446,108 @@ struct StrideApp: App {
 }
 
 /// One window's shell, made for the window and handed to its ContentView (which would otherwise
-/// make its own, `ContentView.init(shell:)`), so the window's URL handlers can set its request.
-/// `@State`, so each window has its own and keeps it for the window's life, as ContentView's did.
+/// make its own, `ContentView.init(shell:)`), so the window's URL handlers can set its request —
+/// with the window's `WindowPresentation`, which they ask first. `@State`, so each window has its
+/// own and keeps it for the window's life, as ContentView's did.
 private struct WindowShell<Content: View>: View {
     @State private var shell = ShellState()
-    @ViewBuilder let content: (ShellState) -> Content
+    @State private var presentation = WindowPresentation()
+    @ViewBuilder let content: (ShellState, WindowPresentation) -> Content
 
-    var body: some View { content(shell) }
+    var body: some View {
+        content(shell, presentation)
+            .background(WindowPresentation.Reader(presentation: presentation))
+    }
+}
+
+/// Whether one window already shows a presentation (`StrideApp.present(_:in:presenting:)`). On
+/// iOS: its root view controller has presented one — every sheet, full-screen cover and alert
+/// SwiftUI puts up in the window, the shell's or a view's inside it, is a modal presentation
+/// there. On the Mac: a sheet is attached to it (an alert is a sheet there too), or it is one.
+/// The window is the one `Reader`, a view in the window's content, finds itself in.
+@MainActor
+final class WindowPresentation {
+    #if os(iOS)
+    weak var window: UIWindow?
+
+    var isPresenting: Bool { Self.isPresenting(window) }
+
+    static func isPresenting(_ window: UIWindow?) -> Bool {
+        window?.rootViewController?.presentedViewController != nil
+    }
+
+    /// An empty view that hands its window to `presentation` (as LaunchWindowSize's Applier and
+    /// MenuCommands' MainWindowReader do on the Mac). It draws nothing and takes no touches.
+    struct Reader: UIViewRepresentable {
+        let presentation: WindowPresentation
+
+        func makeUIView(context: Context) -> ProbeView {
+            let view = ProbeView()
+            view.presentation = presentation
+            return view
+        }
+
+        func updateUIView(_ view: ProbeView, context: Context) {
+            view.presentation = presentation
+        }
+
+        final class ProbeView: UIView {
+            weak var presentation: WindowPresentation? {
+                didSet { presentation?.window = window }
+            }
+
+            override init(frame: CGRect) {
+                super.init(frame: frame)
+                isUserInteractionEnabled = false
+                accessibilityElementsHidden = true
+            }
+
+            required init?(coder: NSCoder) { nil }
+
+            override func didMoveToWindow() {
+                super.didMoveToWindow()
+                presentation?.window = window
+            }
+        }
+    }
+    #else
+    weak var window: NSWindow?
+
+    var isPresenting: Bool { Self.isPresenting(window) }
+
+    static func isPresenting(_ window: NSWindow?) -> Bool {
+        guard let window else { return false }
+        return window.attachedSheet != nil || window.sheetParent != nil
+    }
+
+    /// An empty view that hands its window to `presentation`. It draws nothing and takes no clicks.
+    struct Reader: NSViewRepresentable {
+        let presentation: WindowPresentation
+
+        func makeNSView(context: Context) -> ProbeView {
+            let view = ProbeView()
+            view.presentation = presentation
+            return view
+        }
+
+        func updateNSView(_ view: ProbeView, context: Context) {
+            view.presentation = presentation
+        }
+
+        final class ProbeView: NSView {
+            weak var presentation: WindowPresentation? {
+                didSet { presentation?.window = window }
+            }
+
+            override func viewDidMoveToWindow() {
+                super.viewDidMoveToWindow()
+                presentation?.window = window
+            }
+
+            override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        }
+    }
+    #endif
 }
 
 #if os(macOS)

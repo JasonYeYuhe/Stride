@@ -22,7 +22,8 @@ import Sentry
 ///    ones), log it (Logger and Sentry), skip 2–4 and return `.saveFailed`, so the caller resets
 ///    its UI (`justCompleted`, History's editor). Without the undo a pending delete would land
 ///    with mainContext's next save — it autosaves, and sync saves on it — with no tombstone.
-/// 2. Only on success: `SyncService.trackDeletedEntry` for every deleted id.
+/// 2. Only on success: `SyncService.trackDeletedEntry` for every deleted id — except one a record
+///    in the store still carries (`tombstones(for:in:)`), which the setters never return.
 /// 3. `CheckInEffects.afterCheckIn` with `endsReminders(checkingIn: day)` for a check-in, or a
 ///    widget reload plus a badge update for anything else (an un-check, a lower value, a note).
 /// 4. `StatsCache.bump(habitID:)`, synchronously, so the same render reads the new stats (D3
@@ -104,7 +105,7 @@ enum HabitEntryCommit {
 
         // Only now: a tombstone queued before the save could delete on the server a record that
         // is still here.
-        for id in written.deletedRecordIDs { environment.trackDeletedEntry(id) }
+        for id in tombstones(for: written.deletedRecordIDs, in: context) { environment.trackDeletedEntry(id) }
 
         let container = context.container
         let effects = environment.effects
@@ -125,6 +126,28 @@ enum HabitEntryCommit {
 
         environment.bumpStats(habitID)
         return .committed(written)
+    }
+
+    /// The ids of `deleted` to tombstone, each once: every one but those a record in the store
+    /// still carries after the save. The server keeps one row per id and per habit and day, and
+    /// blocks a tombstoned id for good, so a tombstone for an id that is still here deletes that
+    /// record's row on the server and, by its echo, the record on every device — this one
+    /// included (W2 review, "merge-tombstones-server-row": a day merge returned the kept record's
+    /// own id when two records shared it). HabitCheckIn returns no such id; this is the commit's
+    /// own guard against a writer that one day does. Left out, the worst case is an un-check that
+    /// does not reach the server, never a check-in lost everywhere. If the store cannot be asked,
+    /// every id is queued, as before this guard.
+    static func tombstones(for deleted: [String], in context: ModelContext) -> [String] {
+        var seen = Set<String>()
+        let ids = deleted.filter { seen.insert($0).inserted }
+        let uuids = ids.compactMap(UUID.init(uuidString:))
+        guard !uuids.isEmpty,
+              let surviving = try? context.fetch(FetchDescriptor<HabitRecord>(predicate: #Predicate { uuids.contains($0.id) })),
+              !surviving.isEmpty
+        else { return ids }
+        let kept = Set(surviving.map(\.id.uuidString))
+        logger.fault("check-in commit: \(kept.count, privacy: .public) deleted id(s) still carried by a record; no tombstone queued for them")
+        return ids.filter { !kept.contains($0) }
     }
 
     /// A fresh NSError with only the domain and code, as AppStoreLaunch reports a store failure:

@@ -44,6 +44,10 @@ func main() async -> Int32 {
         ("M3 last-writer-wins note", scenarios.lastWriterWinsNoteEdit),
         ("M4 record before createdAt", scenarios.recordBeforeCreatedAt),
         ("M5 stale cursor keeps the note", scenarios.staleCursorKeepsTheNote),
+        // W2 review: decision 7's day merge across devices.
+        ("M6 merge, server keeps other id", scenarios.mergeWhereTheServerKeepsTheOtherID),
+        ("M7 merge of a same-id pair", scenarios.mergeOfTwoRecordsWithOneID),
+        ("M8 merge while in flight", scenarios.mergeWhileTheDuplicateIsInFlight),
         // Last: its sweep takes every tombstone in the throwaway database.
         ("S24 migrated marks, no list", scenarios.migratedMarksWithNoList),
     ]
