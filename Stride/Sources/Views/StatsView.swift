@@ -357,10 +357,9 @@ struct HabitDetailStatsCard: View {
         shell.request = .history(habitID: habit.id, day: Date())
     }
 
-    /// Edit history and Share. Edit history is a visible, titled button — the one keyboard and
-    /// Full Keyboard Access path into History, since the heatmap's cells are not focusable.
-    @ViewBuilder
-    private var actions: some View {
+    /// Edit history is a visible, titled button — the one keyboard and Full Keyboard Access path
+    /// into History, since the heatmap's cells are not focusable.
+    private var editHistoryButton: some View {
         Button(action: openHistory) {
             Label("Edit history", systemImage: "calendar")
                 .font(.subheadline.weight(.medium))
@@ -368,6 +367,9 @@ struct HabitDetailStatsCard: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier(Self.editHistoryIdentifier)
+    }
+
+    private var shareButton: some View {
         Button {
             showShareSheet = true
         } label: {
@@ -381,22 +383,27 @@ struct HabitDetailStatsCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // At accessibility sizes the buttons get a row of their own under the name: beside a
-            // .title3 name and an emoji, "Edit history" would squeeze the name to a few letters.
-            HStack {
-                Text(habit.emoji)
-                    .font(.title2)
-                Text(habit.name)
-                    .font(.title3.bold())
-                Spacer()
-                if !typeSize.isAccessibilitySize {
-                    // Never "Edit hi…": a long name wraps instead.
-                    HStack(spacing: 16) { actions }
-                        .fixedSize()
+            // The buttons beside the name while it keeps its widest word, under it otherwise —
+            // by what fits, at every text size (DetailCardHeaderLayout).
+            DetailCardHeaderLayout {
+                HStack {
+                    Text(habit.emoji)
+                        .font(.title2)
+                    Text(habit.name)
+                        .font(.title3.bold())
                 }
-            }
-            if typeSize.isAccessibilitySize {
-                HStack(spacing: 24) { actions }
+                editHistoryButton
+                shareButton
+                // The narrowest the title above can be without breaking a word: the same emoji
+                // and font, the name's unbreakable runs one per line. Measured, never drawn.
+                HStack {
+                    Text(habit.emoji)
+                        .font(.title2)
+                    Text(verbatim: DetailCardHeaderLayout.unbreakableRuns(of: habit.name).joined(separator: "\n"))
+                        .font(.title3.bold())
+                }
+                .hidden()
+                .accessibilityHidden(true)
             }
 
             // Four tiles side by side leave each about 70 pt: at accessibility sizes "100%" in
@@ -471,6 +478,142 @@ struct HabitDetailStatsCard: View {
         .sheet(isPresented: $showShareSheet) {
             ShareStreakView(habit: habit)
         }
+    }
+}
+
+/// The detail card's header (D6): the emoji and name, then Edit history and Share. They share
+/// one row while the name keeps at least its widest word beside the buttons; otherwise the
+/// buttons get a row of their own under the name.
+///
+/// Chosen by what fits, at every text size and width. The buttons used to move only at the
+/// accessibility sizes, and below them they kept their full width beside the name whatever was
+/// left of it. At xxxLarge on a 375 pt iPhone the Spanish buttons ("Editar historial") left the
+/// name about 50 pt, so "Meditación" broke inside the word, a few letters a line (W3-1,
+/// W3-A11Y-1; StatsRenderTests measures it). A name that is only long, not wide, still wraps at
+/// its spaces beside the buttons, as before.
+///
+/// The content is four views, in this order, which is also VoiceOver's:
+/// 1. the title (emoji and name);
+/// 2. Edit history;
+/// 3. Share;
+/// 4. a hidden probe: the same emoji and font with the name's unbreakable runs one per line, so
+///    its width is the narrowest the title can take without breaking a word.
+///
+/// On one row the buttons keep their full width ("Edit hi…" never), as the `.fixedSize()` they
+/// had. On their own row they get the card's width, and "Edit history" wraps only when even that
+/// is too narrow (accessibility sizes in a compact iPad window).
+struct DetailCardHeaderLayout: Layout {
+    /// Between the name and the buttons, and between the two buttons, on one row.
+    static let rowSpacing: CGFloat = 16
+    /// Between the buttons on a row of their own, as at the accessibility sizes before.
+    static let stackedButtonSpacing: CGFloat = 24
+    /// Between the name and the buttons' row under it: the card's own spacing.
+    static let lineSpacing: CGFloat = 12
+
+    /// The runs of `name` that a line never breaks inside: its words, with the punctuation and
+    /// symbols that touch them ("(30", "min)", "30%"). A line may break between two runs.
+    /// Japanese and Chinese have no spaces, so their words come from the system's dictionary
+    /// segmentation; there a line may break anywhere, so a run is the cautious bound.
+    static func unbreakableRuns(of name: String) -> [String] {
+        var runs: [String] = []
+        name.enumerateSubstrings(in: name.startIndex..<name.endIndex,
+                                 options: [.byWords, .substringNotRequired]) { _, range, _, _ in
+            var lower = range.lowerBound, upper = range.upperBound
+            while lower > name.startIndex, sticks(name[name.index(before: lower)]) {
+                lower = name.index(before: lower)
+            }
+            while upper < name.endIndex, sticks(name[upper]) {
+                upper = name.index(after: upper)
+            }
+            runs.append(String(name[lower..<upper]))
+        }
+        // No word at all (only emoji or punctuation): the name is one run.
+        return runs.isEmpty ? [name] : runs
+    }
+
+    private static func sticks(_ character: Character) -> Bool {
+        !character.isWhitespace && (character.isPunctuation || character.isSymbol)
+    }
+
+    private struct Arrangement {
+        var frames: [CGRect]
+        var size: CGSize
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        arrangement(width: proposal.width, subviews: subviews).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let frames = arrangement(width: bounds.width, subviews: subviews).frames
+        for (subview, frame) in zip(subviews, frames) {
+            subview.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                          proposal: ProposedViewSize(frame.size))
+        }
+    }
+
+    private func arrangement(width proposed: CGFloat?, subviews: Subviews) -> Arrangement {
+        guard subviews.count == 4 else {
+            assertionFailure("DetailCardHeaderLayout takes the title, Edit history, Share and the probe")
+            return Arrangement(frames: [], size: .zero)
+        }
+        let title = subviews[0], edit = subviews[1], share = subviews[2], probe = subviews[3]
+        let editSize = edit.sizeThatFits(.unspecified)
+        let shareSize = share.sizeThatFits(.unspecified)
+        let probeSize = probe.sizeThatFits(.unspecified)
+        let probeFrame = CGRect(origin: .zero, size: probeSize)
+        let buttons = editSize.width + Self.rowSpacing + shareSize.width
+
+        // No width proposed (an ideal-size query): one row, the name on one line.
+        guard let width = proposed, width.isFinite else {
+            let titleSize = title.sizeThatFits(.unspecified)
+            return oneRow(width: titleSize.width + Self.rowSpacing + buttons, title: titleSize,
+                          edit: editSize, share: shareSize, probe: probeFrame)
+        }
+
+        let room = width - Self.rowSpacing - buttons
+        if room >= probeSize.width.rounded(.up) {
+            let titleSize = title.sizeThatFits(ProposedViewSize(width: room, height: nil))
+            return oneRow(width: width, title: CGSize(width: room, height: titleSize.height),
+                          edit: editSize, share: shareSize, probe: probeFrame)
+        }
+
+        // The buttons under the name, which gets the whole width. "Edit history" gives way only
+        // if the two buttons are wider than the card.
+        let titleSize = title.sizeThatFits(ProposedViewSize(width: width, height: nil))
+        var editFits = editSize
+        if editSize.width + Self.stackedButtonSpacing + shareSize.width > width {
+            let editRoom = max(0, width - Self.stackedButtonSpacing - shareSize.width)
+            editFits = edit.sizeThatFits(ProposedViewSize(width: editRoom, height: nil))
+            editFits.width = min(editFits.width, editRoom)
+        }
+        let top = titleSize.height + Self.lineSpacing
+        let rowHeight = max(editFits.height, shareSize.height)
+        return Arrangement(
+            frames: [
+                CGRect(x: 0, y: 0, width: width, height: titleSize.height),
+                CGRect(x: 0, y: top + (rowHeight - editFits.height) / 2,
+                       width: editFits.width, height: editFits.height),
+                CGRect(x: editFits.width + Self.stackedButtonSpacing, y: top + (rowHeight - shareSize.height) / 2,
+                       width: shareSize.width, height: shareSize.height),
+                probeFrame,
+            ],
+            size: CGSize(width: width, height: top + rowHeight))
+    }
+
+    /// Title at the leading edge, the buttons at the trailing one, all centred on the row.
+    private func oneRow(width: CGFloat, title: CGSize, edit: CGSize, share: CGSize, probe: CGRect) -> Arrangement {
+        let height = max(title.height, edit.height, share.height)
+        let shareX = width - share.width
+        let editX = shareX - Self.rowSpacing - edit.width
+        return Arrangement(
+            frames: [
+                CGRect(x: 0, y: (height - title.height) / 2, width: title.width, height: title.height),
+                CGRect(x: editX, y: (height - edit.height) / 2, width: edit.width, height: edit.height),
+                CGRect(x: shareX, y: (height - share.height) / 2, width: share.width, height: share.height),
+                probe,
+            ],
+            size: CGSize(width: width, height: height))
     }
 }
 

@@ -254,6 +254,139 @@ final class StatsRenderTests: XCTestCase {
         XCTAssertEqual(elements(in: window) { cellLabels.contains($0.accessibilityLabel ?? "") }.count, 0)
     }
 
+    // MARK: - The detail card's header (W3-1, W3-A11Y-1)
+
+    /// What a line never breaks inside: the words, with the punctuation that touches them. A name
+    /// written without spaces still splits, at its dictionary words.
+    func testTheNamesUnbreakableRunsAreItsWordsWithTheirPunctuation() {
+        let runs = DetailCardHeaderLayout.unbreakableRuns(of:)
+        XCTAssertEqual(runs("Read 30 Minutes"), ["Read", "30", "Minutes"])
+        XCTAssertEqual(runs("Leer 30 minutos"), ["Leer", "30", "minutos"])
+        XCTAssertEqual(runs("Meditación"), ["Meditación"])
+        XCTAssertEqual(runs("Read (30 min)"), ["Read", "(30", "min)"])
+        XCTAssertEqual(runs("Don't snack, 100%"), ["Don't", "snack,", "100%"])
+        XCTAssertEqual(runs("🏃‍♂️"), ["🏃‍♂️"], "no word at all: the name is one run")
+        XCTAssertEqual(runs(""), [""])
+        let japanese = "毎朝ストレッチを10分する"
+        let split = runs(japanese)
+        XCTAssertGreaterThan(split.count, 1, "\(split)")
+        XCTAssertTrue(split.allSatisfy { japanese.contains($0) && $0.count < japanese.count }, "\(split)")
+    }
+
+    /// The header at the widths and sizes the review measured. Whatever it picks, the name is
+    /// never narrower than its widest word (a word broken inside), it is read once, and the
+    /// buttons stay inside the card at their full width. The buttons sit beside the name while
+    /// its widest word fits there, and go under it when not. The card is 343 pt on a 375 pt iPhone
+    /// (StatsView's padding), 370 pt on a 402 pt one, and 288 pt in a 320 pt compact iPad window.
+    ///
+    /// Run against the header before the fix (buttons beside the name below the accessibility
+    /// sizes), the first three cases and the 288 pt one failed: "Meditación" got 52 pt of the
+    /// 132 it needs, "Leer 30 minutos" 54 of 95 and "Read 30 Minutes" 66 of 95.
+    func testTheHeaderNeverBreaksAWordOfTheName() async throws {
+        enum Expect { case oneRow, stacked, either }
+        struct Case {
+            let name: String, size: DynamicTypeSize, language: String, card: CGFloat, expect: Expect
+            var wraps = false
+        }
+        let cases = [
+            // The review's scenarios (W3-1, W3-A11Y-1).
+            Case(name: "Meditación", size: .xxxLarge, language: "es", card: 343, expect: .stacked),
+            Case(name: "Leer 30 minutos", size: .xxxLarge, language: "es", card: 343, expect: .stacked),
+            Case(name: "Read 30 Minutes", size: .xxxLarge, language: "en", card: 343, expect: .either),
+            Case(name: "Meditate", size: .xLarge, language: "en", card: 343, expect: .either),
+            Case(name: "Meditación", size: .large, language: "es", card: 343, expect: .either),
+            // The default layout where it fits, a long name wrapping at its spaces beside the
+            // buttons rather than pushed under them.
+            Case(name: "Meditate", size: .large, language: "en", card: 370, expect: .oneRow),
+            Case(name: "Drink a glass of water before breakfast", size: .large, language: "en",
+                 card: 370, expect: .oneRow, wraps: true),
+            // Narrow: the two buttons on their row still fit inside the card.
+            Case(name: "Meditación", size: .xxxLarge, language: "es", card: 288, expect: .stacked),
+            Case(name: "Meditate", size: .accessibility3, language: "en", card: 343, expect: .stacked),
+        ]
+
+        let subject = try habit("Header", values: days(-3...(-1)))
+        subject.emoji = "\u{1F9D8}"
+        let shell = ShellState(launchArguments: [])
+        var window: UIWindow?
+        for test in cases {
+            subject.name = test.name
+            let locale = Locale(identifier: test.language)
+            let editLabel = try XCTUnwrap(localized("Edit history", language: test.language))
+            // Above the card, the same button at its full width, to measure the card's against.
+            let reference = Button {} label: {
+                Label(editLabel, systemImage: "calendar").font(.subheadline.weight(.medium))
+            }
+            .buttonStyle(.plain)
+            .fixedSize()
+            .accessibilityIdentifier(Self.referenceIdentifier)
+            let card = VStack(alignment: .leading, spacing: 0) {
+                reference
+                HabitDetailStatsCard(habit: subject, stats: cache.stats(for: subject), shell: shell)
+                    .frame(width: test.card)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .dynamicTypeSize(test.size)
+            .environment(\.locale, locale)
+            if let window {
+                window.rootViewController = hostingController(card)
+            } else {
+                window = try host(card)
+            }
+            let shown = try XCTUnwrap(window)
+            let what = "\"\(test.name)\" at \(test.size), \(test.language), \(Int(test.card)) pt"
+
+            var found: (name: [NSObject], edit: NSObject, share: NSObject, reference: NSObject)?
+            try await waitUntil("the header of \(what)") {
+                let names = self.elements(in: shown) { $0.accessibilityLabel == test.name }
+                let buttons = self.elements(in: shown) { $0.accessibilityTraits.contains(.button) }
+                let identified = { (id: String) in buttons.first { self.identifier(of: $0) == id } }
+                guard let edit = identified(HabitDetailStatsCard.editHistoryIdentifier),
+                      edit.accessibilityLabel == editLabel,
+                      let reference = identified(Self.referenceIdentifier),
+                      let share = buttons.first(where: { $0 !== edit && $0 !== reference }),
+                      !names.isEmpty, names.allSatisfy({ !$0.accessibilityFrame.isEmpty })
+                else { return false }
+                found = (names, edit, share, reference)
+                return true
+            }
+            try await Task.sleep(for: .milliseconds(150))
+            let elements = try XCTUnwrap(found)
+            XCTAssertEqual(elements.name.count, 1, "\(what): the name is read once (the probe is hidden)")
+            let name = elements.name[0].accessibilityFrame
+            let edit = elements.edit.accessibilityFrame, share = elements.share.accessibilityFrame
+
+            let font = Font.title3.bold()
+            let widest = DetailCardHeaderLayout.unbreakableRuns(of: test.name)
+                .map { idealSize(of: Text(verbatim: $0).font(font), at: test.size, locale: locale).width }.max() ?? 0
+            XCTAssertGreaterThanOrEqual(name.width + 1, widest, "\(what): a word of the name broke inside (\(name))")
+
+            // The card starts at the window's leading edge; its padding is 16 pt each side.
+            for (label, frame) in [("name", name), ("Edit history", edit), ("Share", share)] {
+                XCTAssertGreaterThanOrEqual(frame.minX, 15.5, "\(what): \(label) inside the card (\(frame))")
+                XCTAssertLessThanOrEqual(frame.maxX, test.card - 15.5, "\(what): \(label) inside the card (\(frame))")
+            }
+            // Never "Edit hi…": as wide as the reference. Only on a row of its own at the
+            // accessibility sizes may it wrap, when the card is narrower than the two buttons.
+            if test.expect != .stacked || !test.size.isAccessibilitySize {
+                XCTAssertEqual(edit.width, elements.reference.accessibilityFrame.width, accuracy: 0.5,
+                               "\(what): Edit history at its full width")
+            }
+
+            let stacked = edit.minY >= name.maxY - 0.5 && share.minY >= name.maxY - 0.5
+            let beside = edit.minX >= name.maxX - 0.5 && edit.midY > name.minY && edit.midY < name.maxY
+            switch test.expect {
+            case .stacked: XCTAssertTrue(stacked, "\(what): the buttons under the name (name \(name), edit \(edit))")
+            case .oneRow: XCTAssertTrue(beside, "\(what): the buttons beside the name (name \(name), edit \(edit))")
+            case .either: XCTAssertTrue(stacked || beside, "\(what): name \(name), edit \(edit)")
+            }
+            if test.wraps {
+                let line = idealSize(of: Text(verbatim: test.name).font(font), at: test.size, locale: locale).height
+                XCTAssertGreaterThan(name.height, line * 1.5, "\(what): the name wraps at its spaces")
+            }
+        }
+    }
+
     // MARK: - The cards' pure parts
 
     /// The change beside the score is the difference of the two scores as drawn, never the
@@ -315,14 +448,36 @@ final class StatsRenderTests: XCTestCase {
         automation = try XCTUnwrap(AccessibilityAutomation.enable(), "the accessibility runtime's automation switch")
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let window = UIWindow(windowScene: scene)
-        window.rootViewController = UIHostingController(rootView: AnyView(
+        window.rootViewController = hostingController(view)
+        window.makeKeyAndVisible()
+        self.window = window
+        return window
+    }
+
+    /// `view` over this test's store and cache, in the picked language's locale unless it sets
+    /// its own: for a window `host` made, to show another view in.
+    private func hostingController(_ view: some View) -> UIViewController {
+        UIHostingController(rootView: AnyView(
             view
                 .modelContainer(container)
                 .environment(\.statsCache, cache)
                 .environment(\.locale, LanguageManager.shared.locale ?? .current)))
-        window.makeKeyAndVisible()
-        self.window = window
-        return window
+    }
+
+    /// The header test's full-width Edit history button, outside the card.
+    private static let referenceIdentifier = "test.referenceEditHistory"
+
+    /// `view` at its ideal size (a text on one line) at `size`, as SwiftUI lays it out.
+    private func idealSize(of view: some View, at size: DynamicTypeSize, locale: Locale) -> CGSize {
+        let measured = UIHostingController(rootView: view.fixedSize().dynamicTypeSize(size).environment(\.locale, locale))
+        return measured.sizeThatFits(in: CGSize(width: 10_000, height: 10_000))
+    }
+
+    /// `key` in the app's catalog for `language` (the source string for English).
+    private func localized(_ key: String, language: String) -> String? {
+        guard language != "en" else { return key }
+        return Bundle.main.path(forResource: language, ofType: "lproj").flatMap(Bundle.init(path:))?
+            .localizedString(forKey: key, value: nil, table: nil)
     }
 
     /// The heatmap's VoiceOver value, as the app words it for a day-unit habit.
