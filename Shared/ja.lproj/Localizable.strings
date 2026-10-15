@@ -587,3 +587,9 @@
 /* Today on a past day (D8): every habit was created after the day picked in the week strip, so
    none is listed for it. A habit created later can still be filled in for that day from History. */
 "No habits had started by this day." = "この日はまだどの習慣も始まっていませんでした。";
+
+/* History's note (W4 review): a button in the question that comes up when a changed note cannot be
+   saved as it is — over the 500-character cap, or on a day that holds a second, different note the
+   user does not want combined. It puts the saved note back, unchanged, and then closes History,
+   picks the other day, or makes the change that was asked for. */
+"Discard Changes" = "変更を破棄";

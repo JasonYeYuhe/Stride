@@ -11,6 +11,10 @@ import SwiftUI
 ///
 /// - History's editor writes a value alone: a note another device sent while it is open survives
 ///   (the editor even shows it), and so does a stored note longer than the 500-character cap.
+/// - A changed note that cannot be written as it is — over the cap, or on a day with a second,
+///   different note the user declines to combine — is never dropped without asking, and the
+///   question always has a way out ("Discard Changes"); a combine on Done keeps both notes.
+/// - Day cells stay inside their columns at 320 pt, and a rest day speaks an amount it holds.
 /// - History closes when its habit is deleted by another context, writes nothing for it, and is
 ///   a shell sheet that survives a size-class crossing.
 /// - Today on a past day lists only the habits that had started (O11); a History backfill moves a
@@ -211,6 +215,182 @@ final class HabitHistoryTests: XCTestCase {
                        "another day starts from its own note")
         XCTAssertEqual(draft.refreshed(day: 10, stored: "x", hasRecord: false), .init(day: 10, seen: "", text: ""),
                        "no record, no note (D7)")
+
+        XCTAssertEqual(draft.discarded(), .init(day: 10, seen: "pulled again", text: "pulled again"),
+                       "Discard Changes: the stored note, untouched again")
+        XCTAssertFalse(draft.discarded().isDirty)
+    }
+
+    // MARK: - A changed note is never dropped without asking (W4 review)
+
+    /// "W4-HIST-1": a stored 600-character note (1.4.0's uncapped alert, another client) with a
+    /// typo fixed is still over the cap, so it cannot be written. Done and another day used to
+    /// drop it without a word, while a swipe was refused for the same text. Now each asks, Cancel
+    /// keeps the text, and Discard Changes puts the stored note back and goes on — here to the
+    /// day that was picked. Nothing is ever written for the draft.
+    func testAChangedNoteOverTheCapIsNeverDroppedWithoutAsking() async throws {
+        let long = String(repeating: "日記 note ", count: 75)
+        let water = try habit("History Probe Over Cap", .count, records: [(0, 2, long), (1, 3, nil)])
+        let shell = ShellState(launchArguments: [])
+        let window = try await hostShell(shell)
+        shell.request = .history(habitID: water.id, day: today)
+        try await waitUntil("History is presented") { self.host?.presentedViewController != nil }
+        let noteLabel = appLocalized("Note")
+        try await waitUntil("the editor shows the whole note") { self.value(of: noteLabel, in: window) == long }
+
+        try typeIntoNote("!", in: window)
+        try await waitUntil("the draft is changed") { self.value(of: noteLabel, in: window) == long + "!" }
+        let capQuestion = appLocalized("Notes can be up to 500 characters.")
+
+        // Done asks; Cancel keeps the text and the sheet.
+        try await activate(labeled: appLocalized("Done"), in: window)
+        let atDone = try await alert(titled: capQuestion)
+        XCTAssertEqual(Set(atDone.actions.compactMap(\.title)), [appLocalized("Discard Changes"), appLocalized("Cancel")])
+        try await answer(atDone, appLocalized("Cancel"))
+        XCTAssertNotNil(host?.presentedViewController, "History is still up")
+        XCTAssertEqual(value(of: noteLabel, in: window), long + "!", "the text is kept")
+
+        // Another day asks too, and the day stays until the answer.
+        let todayCell = "history.day." + HistoryLink.dayString(of: todayKey)
+        let yesterdayCell = "history.day." + HistoryLink.dayString(of: HabitCalendar.dayKey(for: try daysAgo(1)))
+        try await activate(identified: yesterdayCell, in: window)
+        let atDay = try await alert(titled: capQuestion)
+        XCTAssertTrue(isSelected(todayCell, in: window), "today stays selected while it asks")
+
+        // Discard Changes: the stored note is back, untouched, and the picked day follows.
+        try await answer(atDay, appLocalized("Discard Changes"))
+        try await waitUntil("the picked day is selected") { self.isSelected(yesterdayCell, in: window) }
+        XCTAssertEqual(saves, 0, "nothing written for the draft")
+        XCTAssertEqual(try stored(water).first { $0.value == 2 }?.note, long, "the stored note, whole")
+
+        // Nothing is left to ask about: Done closes.
+        try await activate(labeled: appLocalized("Done"), in: window)
+        try await waitUntil("History closes") { self.host?.presentedViewController == nil }
+        try await waitUntil("and the request clears") { shell.request == nil }
+        XCTAssertEqual(saves, 0)
+        XCTAssertEqual(tombstones, [])
+    }
+
+    /// "W4-HIST-2": two devices left notes "A" and "B" on one day; the user edits the note they
+    /// see to "A2" and declines to combine. Cancel used to leave no way out but Combine: Done,
+    /// another day, the toggle and the stepper all asked again, and the swipe was refused. Cancel
+    /// still keeps the edit (the stepper asks again, writing nothing); the same question offers
+    /// Discard Changes, which closes History with both notes as they were.
+    func testDecliningToCombineNotesLeavesAWayOut() async throws {
+        let water = try habit("History Probe Two Notes", .count, records: [(0, 3, "A"), (0, 2, "B")])
+        let shell = ShellState(launchArguments: [])
+        let window = try await hostShell(shell)
+        shell.request = .history(habitID: water.id, day: today)
+        try await waitUntil("History is presented") { self.host?.presentedViewController != nil }
+        let noteLabel = appLocalized("Note")
+        try await waitUntil("the editor shows the kept record's note") { self.value(of: noteLabel, in: window) == "A" }
+
+        try typeIntoNote("2", in: window)
+        try await waitUntil("the draft is changed") { self.value(of: noteLabel, in: window) == "A2" }
+        let combine = appLocalized("This day has more than one note. Combine them into one?")
+
+        try await activate(labeled: appLocalized("Done"), in: window)
+        let atDone = try await alert(titled: combine)
+        XCTAssertEqual(Set(atDone.actions.compactMap(\.title)),
+                       [appLocalized("Combine"), appLocalized("Discard Changes"), appLocalized("Cancel")])
+        try await answer(atDone, appLocalized("Cancel"))
+        XCTAssertEqual(value(of: noteLabel, in: window), "A2", "Cancel keeps the edit")
+
+        // The stepper asks first too; nothing is written.
+        try await element(labeled: appLocalized("Amount"), in: window).accessibilityIncrement()
+        try await answer(try await alert(titled: combine), appLocalized("Cancel"))
+        XCTAssertEqual(saves, 0)
+
+        // The way out.
+        try await activate(labeled: appLocalized("Done"), in: window)
+        try await answer(try await alert(titled: combine), appLocalized("Discard Changes"))
+        try await waitUntil("History closes") { self.host?.presentedViewController == nil }
+        try await waitUntil("and the request clears") { shell.request == nil }
+        XCTAssertEqual(saves, 0, "nothing written")
+        XCTAssertEqual(Set(try stored(water).compactMap(\.note)), ["A", "B"], "both notes, as they were")
+        XCTAssertEqual(try stored(water).count, 2)
+    }
+
+    /// The same day and edit, combined at Done: one record carrying both notes, one save, no
+    /// tombstone (decision 7, amended), and History closes — the field took the combined note
+    /// from the store, so Done's own write has nothing left to write over it with.
+    func testCombiningAtDoneKeepsBothNotesAndCloses() async throws {
+        let water = try habit("History Probe Combine", .count, records: [(0, 3, "A"), (0, 2, "B")])
+        let shell = ShellState(launchArguments: [])
+        let window = try await hostShell(shell)
+        shell.request = .history(habitID: water.id, day: today)
+        try await waitUntil("History is presented") { self.host?.presentedViewController != nil }
+        let noteLabel = appLocalized("Note")
+        try await waitUntil("the editor shows the kept record's note") { self.value(of: noteLabel, in: window) == "A" }
+        try typeIntoNote("2", in: window)
+        try await waitUntil("the draft is changed") { self.value(of: noteLabel, in: window) == "A2" }
+
+        try await activate(labeled: appLocalized("Done"), in: window)
+        let question = try await alert(titled: appLocalized("This day has more than one note. Combine them into one?"))
+        try await answer(question, appLocalized("Combine"))
+        try await waitUntil("History closes") { self.host?.presentedViewController == nil }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(try stored(water).map(\.note), ["A2\nB"], "one record, both notes")
+        XCTAssertEqual(try stored(water).map(\.value), [3])
+        XCTAssertEqual(saves, 1, "the combine's save, and no second write of the draft over it")
+        XCTAssertEqual(tombstones, [])
+    }
+
+    // MARK: - The grid's cells (W4 review)
+
+    /// "W4-AX-2": at 320 pt (Display Zoom, a narrow iPad window) the seven columns are about
+    /// 35 pt. A fixed 42 pt cell overlapped each neighbour by about 3 pt — the selected ring drew
+    /// over the next day and a tap near the edge picked the later one. Each cell, which is the
+    /// button's frame and its tap area, now stays inside its own column.
+    func testDayCellsStayInsideTheirColumnsAt320Points() async throws {
+        let read = try habit("History Probe Narrow", records: (0..<12).map { (daysAgo: $0, value: 1, note: nil) })
+        let window = try hostHistory(of: read, width: 320)
+        var cells: [(id: String, frame: CGRect)] = []
+        try await waitUntil("the month's days") {
+            cells = self.elements(in: window) { self.identifier(of: $0)?.hasPrefix("history.day.") == true }
+                .map { (self.identifier(of: $0) ?? "", $0.accessibilityFrame) }
+            return cells.count >= 28
+        }
+        XCTAssertEqual(window.bounds.width, 320)
+        let column = (320 - 32 - 16 - 6 * 4) / 7.0
+        var neighbours = 0
+        for row in Dictionary(grouping: cells, by: { Int($0.frame.midY.rounded()) }).values {
+            let sorted = row.sorted { $0.frame.minX < $1.frame.minX }
+            for cell in sorted {
+                XCTAssertLessThanOrEqual(cell.frame.width, column + 0.5, "\(cell.id) is wider than its column: \(cell.frame)")
+                XCTAssertGreaterThanOrEqual(cell.frame.height, 44, "\(cell.id) keeps a 44 pt row")
+            }
+            for (left, right) in zip(sorted, sorted.dropFirst()) {
+                XCTAssertLessThanOrEqual(left.frame.maxX, right.frame.minX + 0.5,
+                                         "\(left.id) overlaps \(right.id): \(left.frame) / \(right.frame)")
+                neighbours += 1
+            }
+        }
+        XCTAssertGreaterThanOrEqual(neighbours, 20, "every row was measured")
+    }
+
+    /// "W4-AX-3": a count habit's rest day with 3 of 8 logged draws a ring; VoiceOver now says
+    /// the amount after "rest day", as it does on a scheduled day. An empty rest day, and a yes/no
+    /// one (whose check is its value, "Completed"), stay "…, rest day".
+    func testARestDaySpeaksAnAmountItHolds() throws {
+        let water = Habit(name: "Rest Probe Water")
+        water.habitKind = .count
+        water.targetValue = 8
+        let read = Habit(name: "Rest Probe Read")
+        let noon = try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 10, day: 11, hour: 12)))
+        let date = noon.formatted(.dateTime.weekday(.wide).month(.wide).day().locale(appLocale))
+        let restDay = appLocalized("\(date), rest day")
+        let three = SafeNumber.amount(3), eight = SafeNumber.amount(8), zero = SafeNumber.amount(0)
+
+        XCTAssertEqual(HabitHistoryView.cellLabel(noon: noon, habit: water, value: 3, scheduled: false),
+                       appLocalized("\(restDay), \(three) of \(eight)"))
+        XCTAssertEqual(HabitHistoryView.cellLabel(noon: noon, habit: water, value: 0, scheduled: false), restDay)
+        XCTAssertEqual(HabitHistoryView.cellLabel(noon: noon, habit: water, value: 3, scheduled: true),
+                       appLocalized("\(date), \(three) of \(eight)"))
+        XCTAssertEqual(HabitHistoryView.cellLabel(noon: noon, habit: water, value: 0, scheduled: true),
+                       appLocalized("\(date), \(zero) of \(eight)"))
+        XCTAssertEqual(HabitHistoryView.cellLabel(noon: noon, habit: read, value: 1, scheduled: false), restDay)
+        XCTAssertEqual(HabitHistoryView.cellLabel(noon: noon, habit: read, value: 1, scheduled: true), date)
     }
 
     // MARK: - History's habit, gone
@@ -385,8 +565,15 @@ final class HabitHistoryTests: XCTestCase {
 
     // MARK: - Hosting
 
-    private func hostHistory(of habit: Habit) throws -> UIWindow {
-        try host(AnyView(HabitHistoryView(habitID: habit.id, day: today)))
+    /// History alone as the window's root, `width` points wide if given (the screen's otherwise).
+    private func hostHistory(of habit: Habit, width: CGFloat? = nil) throws -> UIWindow {
+        let window = try host(AnyView(HabitHistoryView(habitID: habit.id, day: today)))
+        if let width { window.frame = CGRect(x: 0, y: 0, width: width, height: window.frame.height) }
+        return window
+    }
+
+    private func daysAgo(_ days: Int) throws -> Date {
+        try XCTUnwrap(Calendar.current.date(byAdding: .day, value: -days, to: today))
     }
 
     /// ContentView as the app shows it, over this test's store; compact (an iPhone host) unless
@@ -431,6 +618,94 @@ final class HabitHistoryTests: XCTestCase {
             return found != nil
         }
         return try XCTUnwrap(found)
+    }
+
+    private func element(identified id: String, in root: NSObject) async throws -> NSObject {
+        var found: NSObject?
+        try await waitUntil("an element identified “\(id)”") {
+            found = self.elements(in: root) { self.identifier(of: $0) == id }.first
+            return found != nil
+        }
+        return try XCTUnwrap(found)
+    }
+
+    /// A double-tap under VoiceOver on the element labelled `label`.
+    private func activate(labeled label: String, in root: NSObject) async throws {
+        let element = try await element(labeled: label, in: root)
+        XCTAssertTrue(element.accessibilityActivate(), "activating “\(label)”")
+    }
+
+    private func activate(identified id: String, in root: NSObject) async throws {
+        let element = try await element(identified: id, in: root)
+        XCTAssertTrue(element.accessibilityActivate(), "activating “\(id)”")
+    }
+
+    /// An element's accessibility identifier: SwiftUI's elements answer it without declaring
+    /// `UIAccessibilityIdentification`.
+    private func identifier(of element: NSObject) -> String? {
+        if let identified = element as? UIAccessibilityIdentification { return identified.accessibilityIdentifier }
+        let selector = NSSelectorFromString("accessibilityIdentifier")
+        guard element.responds(to: selector) else { return nil }
+        return element.perform(selector)?.takeUnretainedValue() as? String
+    }
+
+    private func isSelected(_ id: String, in root: NSObject) -> Bool {
+        elements(in: root) { self.identifier(of: $0) == id }.first?.accessibilityTraits.contains(.selected) ?? false
+    }
+
+    // MARK: - Typing and alerts
+
+    /// Types `text` at the end of History's note field, as the keyboard does: its text view takes
+    /// the focus and the text goes in through its text input, so the field's binding hears an edit.
+    private func typeIntoNote(_ text: String, in window: UIWindow) throws {
+        var fields: [UIView] = []
+        func collect(_ view: UIView) {
+            guard !view.isHidden else { return }
+            if view is UITextView || view is UITextField { fields.append(view) }
+            view.subviews.forEach(collect)
+        }
+        collect(window)
+        let field = try XCTUnwrap(fields.first, "History's note field")
+        XCTAssertEqual(fields.count, 1, "History has one text field")
+        XCTAssertTrue(field.becomeFirstResponder(), "the note field takes the focus")
+        if let view = field as? UITextView {
+            view.selectedRange = NSRange(location: (view.text as NSString).length, length: 0)
+            view.insertText(text)
+        } else if let field = field as? UITextField {
+            field.selectedTextRange = field.textRange(from: field.endOfDocument, to: field.endOfDocument)
+            field.insertText(text)
+        }
+    }
+
+    /// The alert up over History, once its title is `title` and it has finished coming up.
+    private func alert(titled title: String) async throws -> UIAlertController {
+        var found: UIAlertController?
+        try await waitUntil("an alert “\(title)”") {
+            var controller = self.window?.rootViewController?.presentedViewController
+            while let presented = controller {
+                if let alert = presented as? UIAlertController, alert.title == title, !alert.isBeingPresented {
+                    found = alert
+                    return true
+                }
+                controller = presented.presentedViewController
+            }
+            return false
+        }
+        return try XCTUnwrap(found)
+    }
+
+    /// Taps the alert's button `title` the way UIKit handles a tap on it: the alert is dismissed,
+    /// then the action's handler — SwiftUI's, which runs the Button's action and clears the
+    /// presentation — is called. (`accessibilityActivate()` on an alert button returns false
+    /// here, and the handler alone leaves the alert up: SwiftUI takes it as already dismissed.)
+    private func answer(_ alert: UIAlertController, _ title: String) async throws {
+        typealias Handler = @convention(block) (UIAlertAction) -> Void
+        let action = try XCTUnwrap(alert.actions.first { $0.title == title }, "the alert's “\(title)”")
+        let block = try XCTUnwrap(action.value(forKey: "handler") as AnyObject?, "its handler")
+        alert.dismiss(animated: false) { unsafeBitCast(block, to: Handler.self)(action) }
+        try await waitUntil("the alert goes") { alert.presentingViewController == nil }
+        // Its answer may go on with what was asked for on the next turn (`proceed`).
+        try await Task.sleep(for: .milliseconds(100))
     }
 
     /// The distinct accessibility elements under `root` that `matches`, in tree order — presented

@@ -28,6 +28,14 @@ import SwiftData
 /// record (D7): a yes/no day once it is checked, a count day once it holds a value. The 500-
 /// character cap applies to new input only (`acceptsNoteDraft`): an existing longer note is shown
 /// and kept whole, and a value edit never touches it.
+///
+/// **A changed note is never dropped without the user's word** while the sheet is up (W4 review,
+/// "W4-HIST-1", "W4-HIST-2"). Done, another day, the toggle and the stepper each write the draft
+/// first; a draft that cannot be written as it is — over the cap, or one whose day holds a
+/// second, different note the user declines to combine — stops them with a question that offers
+/// "Discard Changes", which puts the stored note back and then does what was asked. A swipe is
+/// refused for a changed draft (`interactiveDismissDisabled`), so only a close the app makes on its
+/// own (the habit deleted, another request) drops one.
 struct HabitHistoryView: View {
     /// The cap on a new note's length (D6). An existing longer note is never truncated.
     static let noteCharacterLimit = 500
@@ -45,6 +53,9 @@ struct HabitHistoryView: View {
     @Environment(\.dismiss) private var dismiss
     /// nil: the app's own commit (`HabitEntryCommit.Environment.live`); the hosted tests inject one.
     @Environment(\.habitEntryCommit) private var injectedCommit
+    /// At accessibility sizes the month title and the Amount label take their own lines
+    /// ("W4-AX-1"), as Today's rows and the progress card do.
+    @Environment(\.dynamicTypeSize) private var typeSize
     /// The habit, re-fetched by the query whenever the store changes: empty once it is gone.
     @Query private var matches: [Habit]
 
@@ -56,6 +67,9 @@ struct HabitHistoryView: View {
     @State private var draft = NoteDraft()
     /// A write waiting for the user's go (D7), committed again unchanged on confirmation.
     @State private var confirming: PendingWrite?
+    /// A changed note over the cap that stood in front of what the user asked for: never written,
+    /// and dropped only by "Discard Changes".
+    @State private var overCap: OverCapDraft?
     @FocusState private var noteFocused: Bool
     private var cache = StatsCache.shared
 
@@ -96,7 +110,8 @@ struct HabitHistoryView: View {
                 }
             }
         }
-        // A swipe would drop a note being typed; Done writes it.
+        // A swipe would drop a changed note without a word. Done writes it, or asks when it
+        // cannot be written as it is (`flushNote`), so both ways out keep the user's text.
         .interactiveDismissDisabled(draft.isDirty)
         .onChange(of: matches.isEmpty, initial: true) { _, gone in
             if gone { dismiss() }
@@ -108,23 +123,40 @@ struct HabitHistoryView: View {
             refresh()
         }
         .onAppear { refresh() }
+        // Leaving the field writes what can be written without a question, and keeps the rest:
+        // a question comes only from something the user asked for (Done, a day, a write, Save),
+        // never from a scroll — nor from the alert that took the focus, whose own follow-up it
+        // would replace.
         .onChange(of: noteFocused) { _, focused in
-            if !focused { flushNote() }
+            if !focused { flushNote(asking: false) }
         }
-        // Whatever closed the sheet, the note the user typed is not left behind. Nothing can be
-        // asked any more, so a write that needs a question is dropped.
+        // A close the app made on its own (the habit deleted, another shell request): nothing can
+        // be asked any more, so a draft that needs a question, or is over the cap, is dropped.
+        // The user's own ways out never get here with one: a swipe is refused and Done asks.
         .onDisappear { flushNote(asking: false) }
         .alert("Remove the check-in and its note?", isPresented: isConfirming(.removeNote), presenting: confirming) { pending in
             Button("Remove", role: .destructive) {
-                perform(pending.write, on: pending.day, confirmed: pending.about)
+                if perform(pending.write, on: pending.day, confirmed: pending.about) { proceed(pending.then) }
             }
             Button("Cancel", role: .cancel) {}
         }
         .alert("This day has more than one note. Combine them into one?", isPresented: isConfirming(.combineNotes),
                presenting: confirming) { pending in
             Button("Combine") {
-                perform(pending.write, on: pending.day, confirmed: pending.about)
+                if perform(pending.write, on: pending.day, confirmed: pending.about) { proceed(pending.then) }
             }
+            // The draft's own question: without this way out, Cancel left a changed note that
+            // Done, another day, the toggle and the stepper each asked about again, and that a
+            // swipe could not drop ("W4-HIST-2"). Cancel still keeps it, to edit further.
+            if pending.isNoteDraft {
+                Button("Discard Changes", role: .destructive) { discardDraft(then: pending.then) }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        // A changed note over the cap cannot be written, and is not dropped without asking
+        // ("W4-HIST-1"): the cap line says why, and Cancel goes back to shorten it.
+        .alert("Notes can be up to 500 characters.", isPresented: isOverCap, presenting: overCap) { pending in
+            Button("Discard Changes", role: .destructive) { discardDraft(then: pending.then) }
             Button("Cancel", role: .cancel) {}
         }
         #if os(macOS)
@@ -194,39 +226,30 @@ struct HabitHistoryView: View {
             + Self.monthCells(month, in: calendar).enumerated().map { index, day in
                 day.map(GridCell.day) ?? .lead(index)
             }
+        let title = Text(verbatim: month.formatted(.dateTime.month(.wide).year().locale(appLocale)))
+            .font(.headline)
+            .multilineTextAlignment(.center)
+            .accessibilityAddTraits(.isHeader)
         return VStack(spacing: 8) {
-            HStack {
-                Button {
-                    showMonth(-1, from: month, calendar: calendar)
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.body.weight(.semibold))
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
+            if typeSize.isAccessibilitySize {
+                // The title gets the row's whole width, the chevrons the line under it: between two
+                // fixed 44 pt buttons "September 2026" had about 250 pt at AX5 and broke inside
+                // "September", and Spanish's "septiembre de 2026" even on a Pro Max ("W4-AX-1").
+                // Not capped: it is the page's context. Wrapped, it breaks between words.
+                title.frame(maxWidth: .infinity)
+                HStack {
+                    monthButton(-1, from: month, disabled: month <= earliest, calendar: calendar)
+                    Spacer()
+                    monthButton(1, from: month, disabled: month >= latest, calendar: calendar)
                 }
-                .buttonStyle(.plain)
-                .disabled(month <= earliest)
-                .accessibilityLabel("Previous Month")
-                .accessibilityIdentifier("history.previousMonth")
-
-                Spacer()
-                Text(verbatim: month.formatted(.dateTime.month(.wide).year().locale(appLocale)))
-                    .font(.headline)
-                    .accessibilityAddTraits(.isHeader)
-                Spacer()
-
-                Button {
-                    showMonth(1, from: month, calendar: calendar)
-                } label: {
-                    Image(systemName: "chevron.right")
-                        .font(.body.weight(.semibold))
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
+            } else {
+                HStack {
+                    monthButton(-1, from: month, disabled: month <= earliest, calendar: calendar)
+                    Spacer()
+                    title
+                    Spacer()
+                    monthButton(1, from: month, disabled: month >= latest, calendar: calendar)
                 }
-                .buttonStyle(.plain)
-                .disabled(month >= latest)
-                .accessibilityLabel("Next Month")
-                .accessibilityIdentifier("history.nextMonth")
             }
 
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 7), spacing: 4) {
@@ -254,10 +277,32 @@ struct HabitHistoryView: View {
         .background(RoundedRectangle(cornerRadius: 16).fill(Color.appSecondaryBackground))
     }
 
+    /// ‹ or ›: a 44 pt button that shows the month before (-1) or after (1).
+    private func monthButton(_ delta: Int, from month: Date, disabled: Bool, calendar: Calendar) -> some View {
+        Button {
+            showMonth(delta, from: month, calendar: calendar)
+        } label: {
+            Image(systemName: delta < 0 ? "chevron.left" : "chevron.right")
+                .font(.body.weight(.semibold))
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .accessibilityLabel(delta < 0 ? "Previous Month" : "Next Month")
+        .accessibilityIdentifier(delta < 0 ? "history.previousMonth" : "history.nextMonth")
+    }
+
     /// One day: a 44 pt button, filled when the day is completed, a ring for a count day under its
     /// goal, a 4 pt dot for a note. One accessibility element with the date (its weekday
-    /// included), the amount for a count habit or "rest day", and the state as its value — the
-    /// per-day equivalent of the heatmap's single element (D5).
+    /// included), the amount for a count habit (on a rest day too, after "rest day"), and the
+    /// state as its value — the per-day equivalent of the heatmap's single element (D5).
+    ///
+    /// The circle is at most 36 pt and shrinks with its column ("W4-AX-2"): with a fixed 36 pt
+    /// (42 with its ring) the cells overlapped below a 366 pt width — Display Zoom's 320 pt, a
+    /// narrow iPad window — the selected ring drew over the next day and a tap near the edge
+    /// picked the later one. At 320 pt the circle is about 29 pt and the ring fills its 35 pt
+    /// column; from 375 pt up nothing changes.
     private func dayCell(_ n: Int, habit: Habit, stats: HabitStats, window: ClosedRange<Int>, selected: Int,
                          calendar: Calendar) -> some View {
         let key = HabitStats.key(ofDay: n)
@@ -274,6 +319,9 @@ struct HabitHistoryView: View {
             select(n)
         } label: {
             ZStack {
+                // Takes the square the cell is offered, so a day with no circle (the digits alone)
+                // is as big as one with a circle, and its ring as round.
+                Color.clear
                 if completed {
                     Circle().fill(habit.color)
                 } else if value > 0 {
@@ -295,7 +343,8 @@ struct HabitHistoryView: View {
                         .offset(y: 12)
                 }
             }
-            .frame(width: 36, height: 36)
+            .aspectRatio(1, contentMode: .fit)
+            .frame(maxWidth: 36, maxHeight: 36)
             .padding(3)
             .overlay {
                 if isSelected { Circle().stroke(Color.primary, lineWidth: 2) }
@@ -312,14 +361,17 @@ struct HabitHistoryView: View {
         .accessibilityIdentifier("history.day." + HistoryLink.dayString(of: key))
     }
 
-    /// The date with its weekday; on a count habit's scheduled day the amount of the goal, on a
-    /// rest day "rest day".
-    private static func cellLabel(noon: Date, habit: Habit, value: Double, scheduled: Bool) -> String {
-        let dateLabel = noon.formatted(.dateTime.weekday(.wide).month(.wide).day().locale(appLocale))
-        if !scheduled { return appLocalized("\(dateLabel), rest day") }
-        guard habit.habitKind == .count else { return dateLabel }
+    /// The date with its weekday, then "rest day" on a rest day; for a count habit then the amount
+    /// of the goal, on a scheduled day always and on a rest day when it holds one — the ring the
+    /// cell draws for it, spoken ("W4-AX-3": it said only "…, rest day", as Today's row never
+    /// would). A yes/no rest day's check is its value, "Completed".
+    static func cellLabel(noon: Date, habit: Habit, value: Double, scheduled: Bool) -> String {
+        var dateLabel = noon.formatted(.dateTime.weekday(.wide).month(.wide).day().locale(appLocale))
+        if !scheduled { dateLabel = appLocalized("\(dateLabel), rest day") }
+        guard habit.habitKind == .count, scheduled || value > 0 else { return dateLabel }
         let logged = SafeNumber.amount(value)
         let target = SafeNumber.amount(habit.targetValue)
+        // The same "%@, %@ of %@" as a scheduled day's, its first argument already localized.
         return appLocalized("\(dateLabel), \(logged) of \(target)")
     }
 
@@ -378,13 +430,32 @@ struct HabitHistoryView: View {
         // Nothing to take away from an empty day.
         let decrement: (() -> Void)? = shown > 0 ? { write(.value(max(0, shown - 1)), on: n) } : nil
         let amount = "\(logged)/\(target)" + (unit.map { " \($0)" } ?? "")
-        return Stepper(onIncrement: increment, onDecrement: decrement, onEditingChanged: { _ in }) {
-            HStack {
-                Text("Amount")
-                Spacer()
-                Text(verbatim: amount)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
+        return Group {
+            if typeSize.isAccessibilitySize {
+                // The words get the row's whole width, one line each, and the control the line
+                // under them: beside a stepper that does not grow, "Amount" and "3/8 glasses"
+                // shared about 236 pt at AX5 and both broke mid-word ("W4-AX-1").
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Amount")
+                    Text(verbatim: amount)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                    Stepper(onIncrement: increment, onDecrement: decrement, onEditingChanged: { _ in }) {
+                        Text("Amount")
+                    }
+                    .labelsHidden()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Stepper(onIncrement: increment, onDecrement: decrement, onEditingChanged: { _ in }) {
+                    HStack {
+                        Text("Amount")
+                        Spacer()
+                        Text(verbatim: amount)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         }
         // One adjustable element, as Today's count row is: "Amount, 3 of 8 glasses", swipe up or
@@ -445,43 +516,76 @@ struct HabitHistoryView: View {
     }
 
     /// Picks another day. A note being typed is written first; when that needs a question, the
-    /// question comes up and the day stays.
+    /// question comes up and the day stays until it is answered.
     private func select(_ n: Int) {
         guard n != selectedDay else { return }
-        guard flushNote() else { return }
+        guard flushNote(then: .select(n)) else { return }
         noteFocused = false
         selectedDay = n
         refresh()
     }
 
     /// Done: the note being typed is written, then the sheet closes — unless that write asks
-    /// first, or its save failed (the editor then shows the store again).
+    /// first (the answer then closes it, or Cancel stays), or its save failed (the editor then
+    /// shows the store again).
     private func finish() {
-        guard flushNote() else { return }
+        guard flushNote(then: .close) else { return }
         dismiss()
     }
 
     /// A check or a value, after any note the user typed: the note is written first, so an
     /// un-check that follows it asks about the note the user just wrote.
     private func write(_ write: Write, on n: Int) {
-        guard flushNote() else { return }
+        guard flushNote(then: .write(write, n)) else { return }
         perform(write, on: n)
     }
 
-    /// Writes the note draft if the user changed it and it may be written (`acceptsNoteDraft`);
-    /// false when that stopped what was to follow: a question is up, the save failed, or the
-    /// habit is gone. A draft over the cap is not written, and stops nothing.
+    /// Writes the note draft if the user changed it; false when that stopped what was to follow
+    /// (`followUp`): a question is up, the save failed, or the habit is gone.
+    ///
+    /// - `asking` (the user asked for something): a draft over the cap (`acceptsNoteDraft`) is
+    ///   not written and stops it, with "Notes can be up to 500 characters." and Discard
+    ///   Changes / Cancel; a write that needs the user's go asks, its question offering Discard
+    ///   Changes too. An answer that writes or discards goes on with `followUp`.
+    /// - not `asking` (the field lost focus, or the sheet is gone): what can be written without a
+    ///   question is; the rest is left as it is, and stops nothing.
     @discardableResult
-    private func flushNote(asking: Bool = true) -> Bool {
-        guard draft.isDirty, let day = draft.day,
-              Self.acceptsNoteDraft(draft.text, stored: draft.seen) else { return true }
-        return perform(.note(draft.text), on: day, asking: asking)
+    private func flushNote(asking: Bool = true, then followUp: FollowUp? = nil) -> Bool {
+        guard draft.isDirty, let day = draft.day else { return true }
+        guard Self.acceptsNoteDraft(draft.text, stored: draft.seen) else {
+            guard asking else { return true }
+            overCap = OverCapDraft(then: followUp)
+            return false
+        }
+        return perform(.note(draft.text), on: day, asking: asking, then: followUp)
+    }
+
+    /// "Discard Changes": the note goes back to what the store holds, then what the user asked
+    /// for goes on. Nothing is written for the draft.
+    private func discardDraft(then followUp: FollowUp?) {
+        draft = draft.discarded()
+        refresh()
+        proceed(followUp)
+    }
+
+    /// Goes on with what a note draft stood in front of, once the question that stood between is
+    /// gone: on the next turn, after the alert's own dismissal has cleared its state, so a step
+    /// that asks again puts up a question of its own rather than having it cleared.
+    private func proceed(_ followUp: FollowUp?) {
+        guard let followUp else { return }
+        DispatchQueue.main.async {
+            switch followUp {
+            case .close: finish()
+            case .select(let n): select(n)
+            case .write(let write, let n): self.write(write, on: n)
+            }
+        }
     }
 
     /// One write, re-resolved now. True when it went through (or there was nothing to write).
     @discardableResult
     private func perform(_ write: Write, on n: Int, confirmed: HabitCheckIn.Confirmation? = nil,
-                         asking: Bool = true) -> Bool {
+                         asking: Bool = true, then followUp: FollowUp? = nil) -> Bool {
         let result = Self.commit(write, habitID: habitID, dayKey: HabitStats.key(ofDay: n), in: modelContext,
                                  confirmed: confirmed, environment: injectedCommit ?? .live)
         switch result {
@@ -489,10 +593,14 @@ struct HabitHistoryView: View {
             dismiss()
             return false
         case .outcome(.committed), .outcome(.noChange):
+            // The note went in: the field shows the stored note now, untouched. It is not always
+            // the text written — a combine stores both notes — and a draft kept against it would
+            // be written again at the next Done, over the other device's note.
+            if case .note = write { draft = NoteDraft() }
             refresh()
             return true
         case .outcome(.needsConfirmation(let about)):
-            if asking { confirming = PendingWrite(write: write, day: n, about: about) }
+            if asking { confirming = PendingWrite(write: write, day: n, about: about, then: followUp) }
             return false
         case .outcome(.saveFailed):
             // Undone by the commit; the editor shows the store again (D4 step 1).
@@ -518,6 +626,10 @@ struct HabitHistoryView: View {
                 set: { if !$0 { confirming = nil } })
     }
 
+    private var isOverCap: Binding<Bool> {
+        Binding(get: { overCap != nil }, set: { if !$0 { overCap = nil } })
+    }
+
     // MARK: - The model (static, for the hosted tests)
 
     /// What the editor writes.
@@ -527,10 +639,35 @@ struct HabitHistoryView: View {
         case note(String)
     }
 
+    /// What the user asked for that a changed note stood in front of (`flushNote`); it goes on
+    /// once the note is written or discarded.
+    enum FollowUp: Equatable {
+        /// Done.
+        case close
+        /// Another day in the grid.
+        case select(Int)
+        /// A check or a value (`write(_:on:)`).
+        case write(Write, Int)
+    }
+
     struct PendingWrite: Equatable {
         let write: Write
         let day: Int
         let about: HabitCheckIn.Confirmation
+        /// For a note draft's write, what the user asked for behind it; nil for a check or value
+        /// write, the Save button, or a question with nothing behind it.
+        var then: FollowUp? = nil
+
+        /// The question is about the note draft: it offers "Discard Changes" as well.
+        var isNoteDraft: Bool {
+            if case .note = write { return true }
+            return false
+        }
+    }
+
+    /// A changed note over the cap that stood in front of `then`.
+    struct OverCapDraft: Equatable {
+        var then: FollowUp?
     }
 
     enum CommitResult: Equatable {
@@ -605,6 +742,11 @@ struct HabitHistoryView: View {
             let stored = hasRecord ? (stored ?? "") : ""
             guard hasRecord, day == self.day, isDirty else { return NoteDraft(day: day, seen: stored, text: stored) }
             return NoteDraft(day: day, seen: stored, text: text)
+        }
+
+        /// "Discard Changes": the stored note as last read, untouched again.
+        func discarded() -> NoteDraft {
+            NoteDraft(day: day, seen: seen, text: seen)
         }
     }
 
