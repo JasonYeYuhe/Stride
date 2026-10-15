@@ -581,3 +581,15 @@
 /* Editing a habit (2026-10-15 decision 8): under the Goal and Frequency settings in edit mode only.
    A new target or schedule re-scores every past day. */
 "Changes apply to your whole history, including streaks and strength." = "更改将应用于你的全部历史记录，包括连续记录和习惯强度。";
+
+/* 1.4.1 W4 */
+
+/* Today on a past day (D8): every habit was created after the day picked in the week strip, so
+   none is listed for it. A habit created later can still be filled in for that day from History. */
+"No habits had started by this day." = "这一天还没有开始任何习惯。";
+
+/* History's note (W4 review): a button in the question that comes up when a changed note cannot be
+   saved as it is — over the 500-character cap, or on a day that holds a second, different note the
+   user does not want combined. It puts the saved note back, unchanged, and then closes History,
+   picks the other day, or makes the change that was asked for. */
+"Discard Changes" = "丢弃更改";

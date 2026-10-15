@@ -23,30 +23,42 @@ struct WeeklyReviewView: View {
         return (start, end)
     }
 
-    // Delegates to the model. The local version divided a raw count of records by elapsed calendar
-    // days, ignoring the schedule and count targets, so on a Sunday "Gym — Mon/Wed/Fri" done on all
-    // three days scored 43% and was tagged "Needs work", while "Water — 8 glasses" with one glass a
-    // day scored 100% and was crowned "Best".
-    private func completionRate(for habit: Habit, in range: (start: Date, end: Date)) -> Double {
-        habit.completionRate(from: range.start, to: range.end)
+    /// Every rate the review shows, from ONE `HabitStats` per habit (StatsCache) for the whole
+    /// render. The rates are the model's rule (`completionRate(from:to:)`). The local version
+    /// divided a raw count of records by elapsed calendar days, ignoring the schedule and count
+    /// targets, so on a Sunday "Gym — Mon/Wed/Fri" done on all three days scored 43% and was
+    /// tagged "Needs work", while "Water — 8 glasses" with one glass a day scored 100% and was
+    /// crowned "Best".
+    ///
+    /// Built once per render and never kept (W1's carried "per-call wrapper cost"): through the
+    /// `Habit` wrappers the body asked about 11 rates per habit, each building its own
+    /// `HabitStats` with a store query — ~270 ms for 10 habits × 730 records.
+    private struct Summary {
+        /// This week's rate of each habit, in `habits`' order.
+        let rates: [Double]
+        let overall: Double
+        let lastWeekOverall: Double
+        let best: Habit?
+        let needsWork: Habit?
     }
 
-    private var overallRate: Double {
-        guard !habits.isEmpty else { return 0 }
-        return habits.map { completionRate(for: $0, in: weekRange) }.reduce(0, +) / Double(habits.count)
-    }
-
-    private var lastWeekOverallRate: Double {
-        guard !habits.isEmpty else { return 0 }
-        return habits.map { completionRate(for: $0, in: lastWeekRange) }.reduce(0, +) / Double(habits.count)
-    }
-
-    private var bestHabit: Habit? {
-        habits.max { completionRate(for: $0, in: weekRange) < completionRate(for: $1, in: weekRange) }
-    }
-
-    private var needsWorkHabit: Habit? {
-        habits.min { completionRate(for: $0, in: weekRange) < completionRate(for: $1, in: weekRange) }
+    private func summary() -> Summary {
+        let stats = StatsCache.shared.stats(for: habits)
+        let week = weekRange, lastWeek = lastWeekRange
+        let rates = stats.map { $0.completionRate(from: week.start, to: week.end) }
+        let lastRates = stats.map { $0.completionRate(from: lastWeek.start, to: lastWeek.end) }
+        // As `max(by:)` / `min(by:)` over the habits picked them: the first of equal rates.
+        var best: Int?, worst: Int?
+        for (index, rate) in rates.enumerated() {
+            if best.map({ rates[$0] < rate }) ?? true { best = index }
+            if worst.map({ rate < rates[$0] }) ?? true { worst = index }
+        }
+        let count = Double(max(1, habits.count))
+        return Summary(rates: rates,
+                       overall: rates.reduce(0, +) / count,
+                       lastWeekOverall: lastRates.reduce(0, +) / count,
+                       best: best.map { habits[$0] },
+                       needsWork: worst.map { habits[$0] })
     }
 
     var body: some View {
@@ -55,7 +67,7 @@ struct WeeklyReviewView: View {
                 if habits.isEmpty {
                     emptyState
                 } else {
-                    review
+                    review(summary())
                 }
             }
             .background(Color.appBackground)
@@ -95,18 +107,18 @@ struct WeeklyReviewView: View {
         .frame(maxWidth: .infinity)
     }
 
-    private var review: some View {
+    private func review(_ summary: Summary) -> some View {
         VStack(spacing: 20) {
             // Overall progress
             VStack(spacing: 12) {
-                WeeklyRateRing(rate: overallRate)
+                WeeklyRateRing(rate: summary.overall)
                     // Past .accessibility2 the ring only pushes the per-habit rows — the part
                     // with the detail — further down; its number is already about 1.5x body there.
                     .dynamicTypeSize(...DynamicTypeSize.accessibility2)
                     .accessibilityElement(children: .ignore)
-                .accessibilityLabel("This week, \(Int(overallRate * 100)) percent complete")
+                .accessibilityLabel("This week, \(Int(summary.overall * 100)) percent complete")
 
-                let diff = overallRate - lastWeekOverallRate
+                let diff = summary.overall - summary.lastWeekOverall
                 if abs(diff) > 0.01 {
                     HStack(spacing: 4) {
                         Image(systemName: diff > 0 ? "arrow.up.right" : "arrow.down.right")
@@ -131,8 +143,8 @@ struct WeeklyReviewView: View {
                     .padding(.horizontal)
                     .accessibilityAddTraits(.isHeader)
 
-                ForEach(habits) { habit in
-                    let rate = completionRate(for: habit, in: weekRange)
+                ForEach(Array(habits.enumerated()), id: \.element.id) { index, habit in
+                    let rate = summary.rates[index]
                     HStack(spacing: 12) {
                         Text(habit.emoji)
                             .font(.title3)
@@ -173,7 +185,7 @@ struct WeeklyReviewView: View {
                         .padding(.horizontal)
                         .accessibilityAddTraits(.isHeader)
 
-                    if let best = bestHabit {
+                    if let best = summary.best {
                         HStack(spacing: 10) {
                             Image(systemName: "star.fill")
                                 .foregroundStyle(.yellow)
@@ -184,7 +196,7 @@ struct WeeklyReviewView: View {
                         .padding(.horizontal)
                     }
 
-                    if let worst = needsWorkHabit, worst.id != bestHabit?.id {
+                    if let worst = summary.needsWork, worst.id != summary.best?.id {
                         HStack(spacing: 10) {
                             Image(systemName: "arrow.up.heart.fill")
                                 .foregroundStyle(.orange)
