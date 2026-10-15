@@ -193,3 +193,49 @@ The key's weekday is wrong on every day for Japanese (shift of 3–4), Buddhist 
 - Guard semantics for ≥ 1.3.1: a per-row hold or a 426.
 - New ids plus tombstones for delivered rows.
 - The window's lower bound of 2026-01-01.
+
+## 8. W10: the client half as built (2026-10-16, not merged; Q2)
+- **Day calendar (5(a)).** `HabitCalendar.dayCalendar(c)` (`Shared/DateHelpers.swift`): `c` when
+  Gregorian, else a Gregorian calendar in `c.timeZone` (nothing else is copied: weekday numbering
+  is the same everywhere). Used by both `dayKey`s, `WidgetTimelinePlan.dayKey(of:in:)`,
+  `HistoryLink.target`, and one site this report did not list: `HabitHistoryView.noon(ofDay:in:)`,
+  which built a key's instant in the device's calendar (2026-10-15 as Reiwa 2026). Month grids and
+  labels stay in the device's calendar.
+- **Window.** [2025-01-01, today + 2], not this report's 2026-01-01: 1.4.1's History allows
+  backfills into 2025, and History's floor is now capped at 2025-01-01
+  (`HabitHistoryView.window`). `HabitStats.startDay` ignores record days before it, and
+  `HabitScore.series` never starts before it.
+- **Repair (5(b)).** `Shared/DayKeyRepair.swift`: `DayKeyDecoder` (inverse maps over the real days,
+  the device's calendar first, then the 14 in a fixed order; ties by the local day of `updatedAt`,
+  else the latest on or before it, else the earliest) and `DayKeyRepair.run`/`launchPass`, called
+  every launch by `SharedModelContainer.repairDayKeysIfNeeded` in `prepareStore`, after the v2
+  migration and before `SyncService.prepareLaunch`; flag `stride_daykey_migration_v3_done` in the
+  App Group defaults. Choices beyond this report:
+  - "May be on the server" is `syncedAt != nil` **or `restoredAt != nil`** (a restore that kept its
+    ids may hold an id the server has at the wrong day).
+  - When it has something to repair, the pass runs `SyncDeliveryMigration` first: a 1.3.0 store's
+    rows are all "never delivered" until that rule marks what 1.3.0 pushed, and a row re-keyed in
+    place and marked afterwards would be "delivered" at a day the server lacks.
+  - A delivered row held for a reason other than `invalid_value` (row_error, not_owned, tombstoned)
+    is left as it is for the user to resolve in Settings; the next launch takes it once it is no
+    longer held. A never-delivered held row is re-keyed in place and re-held at its new stamp.
+  - Merges use `HabitCheckIn.setChecked(nil, …)` on each repaired day with two records (decision 7
+    as amended: no tombstone for the duplicate). Two different notes are left for the next write to
+    ask about.
+  - The new record keeps the old one's `updatedAt` (nil stays nil: its stamp becomes its real day).
+- **Widget.** `ExtensionStoreOpen` refuses with `waitForApp(dayKeyRepair)` while the flag is unset
+  on a device whose calendar is neither Gregorian nor ISO 8601; the app reloads widgets when the pass
+  sets the flag or changes the store.
+- **Restore.** `DataBackup.restoredDay`: a real day as it is; an out-of-window key any calendar
+  wrote, read back with a new id (and no `restoredAt`; its old id's queued deletion is not
+  withdrawn); any other canonical 1970–2100 day as before; anything else is still `invalidDate`.
+- **Snoozes.** `NotificationRouter.day(from:)` is unchanged: corrected keys parse; an old key is
+  refused or (Ethiopic) is neither today nor yesterday, so it never credits the stray day.
+- **Residual.** A never-delivered row whose first push reached the server but whose answer was lost
+  (pending until its next push) is re-keyed in place, and that next push is answered `row_error`
+  (the server holds the id at the wrong day): the row is held. The window closes at the next
+  successful push, so only an upgrade landing inside it is exposed.
+- **Tests.** StrideTests `DayKeyCalendarTests` (14 calendars × 6 zones, Gregorian byte-identical,
+  weekday and week math) and `DayKeyRepairTests` (decoder recovery, every record kind, merges,
+  idempotence, tombstone after save, 1.3.0 order, the widget gate, restore, the strength floor);
+  the two "0008"/"2569" tests flipped; hosted History window and noon; rehearsal K1 and K2.
