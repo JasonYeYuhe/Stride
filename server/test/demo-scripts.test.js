@@ -76,7 +76,15 @@ async function copyWithSchema() {
 }
 
 let template; // a stride.db with the schema and nothing else, copied for each in-process test
-before(async () => { template = path.join(await copyWithSchema(), "stride.db"); });
+before(async () => {
+  template = path.join(await copyWithSchema(), "stride.db");
+  // One self-contained file: whatever db.js left in the WAL goes into it, so a copy of the file
+  // alone holds the whole schema.
+  const db = new Database(template);
+  db.pragma("wal_checkpoint(TRUNCATE)");
+  db.pragma("journal_mode = DELETE");
+  db.close();
+});
 
 /** A fresh database with the schema, open in this process. */
 function scratchDb() {
