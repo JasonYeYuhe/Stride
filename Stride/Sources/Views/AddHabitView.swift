@@ -11,6 +11,9 @@ struct AddHabitView: View {
     var editingHabit: Habit?
 
     @State private var name = ""
+    /// The habit's description (`Habit.note`, RELEASE-1.4.1.md D7): optional, shown as one
+    /// secondary line under the name on Today. Synced and backed up as it always was.
+    @State private var habitDescription = ""
     @State private var selectedEmoji = "⭐"
     @State private var selectedColor = HabitColor.all[0]
     @State private var showingTemplates = false
@@ -70,6 +73,14 @@ struct AddHabitView: View {
                         #endif
                 }
 
+                Section("Description") {
+                    TextField("e.g., Right after breakfast", text: $habitDescription, axis: .vertical)
+                        .lineLimit(1...4)
+                        #if os(macOS)
+                        .textFieldStyle(.plain)
+                        #endif
+                }
+
                 Section {
                     Picker("Type", selection: $kind) {
                         Text("Yes / No").tag(HabitKind.binary)
@@ -96,10 +107,13 @@ struct AddHabitView: View {
                 } header: {
                     Text("Goal")
                 } footer: {
-                    if kind == .count {
-                        Text("Log a number each day and reach your target to complete the habit.")
-                    } else {
-                        Text("A simple done / not-done check each day.")
+                    VStack(alignment: .leading, spacing: 4) {
+                        if kind == .count {
+                            Text("Log a number each day and reach your target to complete the habit.")
+                        } else {
+                            Text("A simple done / not-done check each day.")
+                        }
+                        if isEditing { rescoresHistoryNote }
                     }
                 }
 
@@ -243,6 +257,7 @@ struct AddHabitView: View {
             .onAppear {
                 if let habit = editingHabit {
                     name = habit.name
+                    habitDescription = habit.note ?? ""
                     selectedEmoji = habit.emoji
                     reminderEnabled = habit.reminderEnabled
                     reminderTime = habit.reminderTimeDate
@@ -283,14 +298,26 @@ struct AddHabitView: View {
         }
     }
 
+    /// A failed save takes the new group back out — only it: `rollback()` would also throw away
+    /// whatever else mainContext holds unsaved — and says so, instead of a `try?` that left it
+    /// pending for mainContext's next autosave and picked for a habit that was then never saved
+    /// with it (RELEASE-1.4.1.md, 2026-10-15 consequences).
     private func createGroup() {
         let trimmed = newGroupName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let maxOrder = (groups.map(\.sortOrder).max() ?? -1) + 1
         let group = HabitGroup(name: trimmed, colorHex: selectedColor.hex, sortOrder: maxOrder)
         modelContext.insert(group)
-        try? modelContext.save()
-        selectedGroupId = group.id
+        do {
+            try modelContext.save()
+            selectedGroupId = group.id
+        } catch {
+            modelContext.delete(group)
+            showSaveError = true
+            #if DEBUG
+            print("Failed to save new group: \(error)")
+            #endif
+        }
     }
 
     /// Permission is settled before anything is saved or dismissed: on a fresh install the system
@@ -330,6 +357,7 @@ struct AddHabitView: View {
             emoji: selectedEmoji,
             colorHex: selectedColor.hex
         )
+        habit.note = descriptionToSave
         habit.reminderEnabled = reminderEnabled
         habit.reminderTimeDate = reminderTime
         habit.habitKind = kind
@@ -390,12 +418,22 @@ struct AddHabitView: View {
         } header: {
             Text("Frequency")
         } footer: {
-            switch schedule {
-            case .daily: Text("Tracked every day.")
-            case .specificDays: Text("Only the selected days count toward your streak — other days are rest days.")
-            case .timesPerWeek: Text("Hit your weekly goal any days you like; your streak counts weeks.")
+            VStack(alignment: .leading, spacing: 4) {
+                switch schedule {
+                case .daily: Text("Tracked every day.")
+                case .specificDays: Text("Only the selected days count toward your streak — other days are rest days.")
+                case .timesPerWeek: Text("Hit your weekly goal any days you like; your streak counts weeks.")
+                }
+                if isEditing { rescoresHistoryNote }
             }
         }
+    }
+
+    /// Edit mode only (2026-10-15 decision 8): a new target or schedule re-scores every past day —
+    /// streaks, rates and strength are computed from the habit as it is now, and 1.4.1 keeps no
+    /// history of its settings.
+    private var rescoresHistoryNote: some View {
+        Text("Changes apply to your whole history, including streaks and strength.")
     }
 
     /// Presentation order only; `activeDays`, `mask(from:)` and `daySet(from:)` stay 0 = Sunday.
@@ -487,10 +525,53 @@ struct AddHabitView: View {
         Set((0..<7).filter { mask & (1 << $0) != 0 })
     }
 
+    /// The description as saved: trimmed, nil when empty (`Habit.note`'s "none").
+    private var descriptionToSave: String? {
+        let trimmed = habitDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// The fields `updateHabit` writes, as they were before: put back when the save fails, so the
+    /// failed edit is not left pending in mainContext for its next autosave or sync save to write
+    /// after all, with a stamp the user never saw succeed (RELEASE-1.4.1.md, 2026-10-15
+    /// consequences). Only these: `rollback()` would also throw away whatever else is unsaved.
+    private struct EditedFields {
+        let name: String, emoji: String, colorHex: String, note: String?
+        let reminderEnabled: Bool, reminderHour: Int, reminderMinute: Int
+        let kind: String, targetValue: Double, unit: String?
+        let scheduleKind: String, timesPerWeek: Int, activeDaysMask: Int, groupId: UUID?
+        let updatedAt: Date?
+
+        init(_ habit: Habit) {
+            name = habit.name; emoji = habit.emoji; colorHex = habit.colorHex; note = habit.note
+            reminderEnabled = habit.reminderEnabled
+            reminderHour = habit.reminderHour; reminderMinute = habit.reminderMinute
+            kind = habit.kind; targetValue = habit.targetValue; unit = habit.unit
+            scheduleKind = habit.scheduleKind; timesPerWeek = habit.timesPerWeek
+            activeDaysMask = habit.activeDaysMask; groupId = habit.groupId
+            updatedAt = habit.updatedAt
+        }
+
+        func restore(on habit: Habit) {
+            habit.name = name; habit.emoji = emoji; habit.colorHex = colorHex; habit.note = note
+            habit.reminderEnabled = reminderEnabled
+            habit.reminderHour = reminderHour; habit.reminderMinute = reminderMinute
+            habit.kind = kind; habit.targetValue = targetValue; habit.unit = unit
+            habit.scheduleKind = scheduleKind; habit.timesPerWeek = timesPerWeek
+            habit.activeDaysMask = activeDaysMask; habit.groupId = groupId
+            habit.updatedAt = updatedAt
+        }
+    }
+
     private func updateHabit() async {
         guard let habit = editingHabit else { return }
+        let before = EditedFields(habit)
         let kindChanged = habit.habitKind != kind
         habit.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Untouched, a description another client stored untrimmed is left exactly as it is.
+        if (habit.note ?? "").trimmingCharacters(in: .whitespacesAndNewlines) != (descriptionToSave ?? "") {
+            habit.note = descriptionToSave
+        }
         habit.emoji = selectedEmoji
         habit.colorHex = selectedColor.hex
         habit.reminderEnabled = reminderEnabled
@@ -517,6 +598,7 @@ struct AddHabitView: View {
             }
             dismiss()
         } catch {
+            before.restore(on: habit)
             showSaveError = true
             #if DEBUG
             print("Failed to update habit: \(error)")

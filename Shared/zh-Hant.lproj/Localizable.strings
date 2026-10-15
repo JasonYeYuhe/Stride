@@ -581,3 +581,9 @@
 /* Editing a habit (2026-10-15 decision 8): under the Goal and Frequency settings in edit mode only.
    A new target or schedule re-scores every past day. */
 "Changes apply to your whole history, including streaks and strength." = "變更將套用到你的全部歷史紀錄，包括連續紀錄和習慣強度。";
+
+/* 1.4.1 W4 */
+
+/* Today on a past day (D8): every habit was created after the day picked in the week strip, so
+   none is listed for it. A habit created later can still be filled in for that day from History. */
+"No habits had started by this day." = "這一天還沒有開始任何習慣。";
