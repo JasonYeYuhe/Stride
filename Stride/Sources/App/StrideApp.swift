@@ -87,6 +87,12 @@ struct StrideApp: App {
         // Re-anchor legacy local-midnight records to UTC day-keys before any
         // streak math or sync runs (idempotent — see SharedModelContainer).
         SharedModelContainer.migrateRecordDayKeysIfNeeded(modelContainer)
+        // Then the keys builds before 1.4.1 wrote on a non-Gregorian device, put back on their
+        // real days (X2, DayKeyRepair): every launch, before any sync can push them or a widget on
+        // such a device opens the store. It runs the delivery-state rule below first when it has
+        // something to repair (a 1.3.0 store's rows are "never delivered" until that rule).
+        SharedModelContainer.repairDayKeysIfNeeded(modelContainer,
+                                                   reloadWidgets: { WidgetCenter.shared.reloadAllTimelines() })
         // Before any sync: the 1.3.1 migrated-rows rule (rows a 1.3.0 snapshot already pushed
         // count as delivered, so a full pull may delete them if another device did) and the
         // owner-unknown note. Once per install each; the Keychain read is the one AuthService

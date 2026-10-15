@@ -342,7 +342,11 @@ enum DataBackup {
 
     /// The checks `decode` runs after parsing; `restore` runs them again, since a document can
     /// also be built in code. Throws the first problem found, in a fixed order.
-    static func validate(_ document: BackupDocument, limits: Limits = .default) throws {
+    ///
+    /// `days` reads each check-in's day (`restoredDay`): a key a non-Gregorian device wrote before
+    /// 1.4.1 is read back to its real day, not refused (X2).
+    static func validate(_ document: BackupDocument, limits: Limits = .default,
+                         days decoder: DayKeyDecoder = DayKeyDecoder()) throws {
         guard document.habits.count <= limits.maxHabits else {
             throw DataBackupError.tooManyHabits(count: document.habits.count, limit: limits.maxHabits)
         }
@@ -374,7 +378,7 @@ enum DataBackup {
                     throw DataBackupError.duplicateID(.record, record.id)
                 }
                 try checkAmount(record.value, "habit \(habit.id.uuidString) record \(record.id.uuidString) value")
-                guard dayKey(record.date) != nil else {
+                guard restoredDay(of: record, days: decoder) != nil else {
                     throw DataBackupError.invalidDate("habit \(habit.id.uuidString) record \(record.id.uuidString): \(record.date)")
                 }
                 guard days.insert(record.date).inserted else {
@@ -441,17 +445,42 @@ enum DataBackup {
     /// formats back to the same string, so "2026-9-5" and "2026-02-30" (which DateFormatter
     /// would read leniently or roll over) are both refused.
     static func dayKey(_ string: String) -> Date? {
-        guard let date = HabitCalendar.dayStringFormatter.date(from: string),
-              HabitCalendar.dayStringFormatter.string(from: date) == string else { return nil }
+        guard let date = canonicalDayKey(string) else { return nil }
         let year = HabitCalendar.utc.component(.year, from: date)
         guard (1970...2100).contains(year) else { return nil }
         return date
     }
 
+    /// The day-key for a canonical `yyyy-MM-dd` of any four-digit year, or nil.
+    private static func canonicalDayKey(_ string: String) -> Date? {
+        guard string.utf8.count == 10,
+              let date = HabitCalendar.dayStringFormatter.date(from: string),
+              HabitCalendar.dayStringFormatter.string(from: date) == string else { return nil }
+        return date
+    }
+
+    /// A backup check-in's day as a restore brings it back (X2), or nil for a day the file cannot
+    /// mean:
+    /// - a real day (2025-01-01 to today + 2): itself;
+    /// - a key a build before 1.4.1 wrote on a non-Gregorian device — 0008-10-15 from a
+    ///   Japanese-calendar phone, 2569-10-15 from a Buddhist one, any four-digit year — read back to
+    ///   its real day (`DayKeyDecoder`, the record's `updatedAt` breaking a tie), `decoded`. The
+    ///   restore gives it a NEW id: the server may hold the old one at the wrong day, and a push of
+    ///   that id at another day is refused. Before 1.4.1 such a file was refused whole
+    ///   (`invalidDate`), so the user's own backups did not restore on 13 of 14 calendars;
+    /// - any other day `dayKey` accepts (1970–2100, canonical): itself, as before;
+    /// - anything else — not canonical, or a year outside 1970–2100 no calendar wrote — nil.
+    static func restoredDay(of record: BackupRecord, days: DayKeyDecoder) -> (day: Date, decoded: Bool)? {
+        guard let key = canonicalDayKey(record.date) else { return nil }
+        if days.isRealDay(HabitStats.dayNumber(ofKey: key)) { return (key, false) }
+        if let real = days.realDay(ofKey: key, stamp: record.updatedAt) { return (real, true) }
+        return dayKey(record.date).map { ($0, false) }
+    }
+
     // MARK: Preview
 
-    static func preview(of document: BackupDocument) -> BackupPreview {
-        let days = document.habits.flatMap { $0.records.compactMap { dayKey($0.date) } }
+    static func preview(of document: BackupDocument, days decoder: DayKeyDecoder = DayKeyDecoder()) -> BackupPreview {
+        let days = document.habits.flatMap { $0.records.compactMap { restoredDay(of: $0, days: decoder)?.day } }
         return BackupPreview(
             habits: document.habits.count,
             archivedHabits: document.habits.filter(\.isArchived).count,
@@ -586,6 +615,10 @@ enum DataBackup {
     /// deletion queue is left alone: a queued deletion names an OLD id, and it still means what it
     /// meant (withdrawn, the original would survive on the server beside its copy).
     ///
+    /// **Days a non-Gregorian device wrote before 1.4.1** (X2) — 0008-10-15 for 2026-10-15 from a
+    /// Japanese-calendar phone — come back on their real day under a new id, whatever `identity`
+    /// says (`restoredDay`); `now` and `calendar` decide today and which calendar is tried first.
+    ///
     /// The caller owns what follows: setting the store's owner (`RestoreDecision.plan.owner`),
     /// rescheduling reminders for `reminderEnabled` habits and reloading widgets — and not
     /// restoring under a sync that is still in flight (`DataExportService.restore` waits).
@@ -595,13 +628,15 @@ enum DataBackup {
                         identity: RestoreIdentity = .keepIDs,
                         withdrawingDeletionsFrom deletionQueue: SyncDeletionQueue?,
                         limits: Limits = .default,
-                        now: Date = Date()) throws -> BackupPreview {
+                        now: Date = Date(),
+                        calendar: Calendar = .current) throws -> BackupPreview {
         guard document.schemaVersion == schemaVersion else {
             throw document.schemaVersion > schemaVersion
                 ? DataBackupError.newerVersion(document.schemaVersion)
                 : DataBackupError.version1Export
         }
-        try validate(document, limits: limits)
+        let days = DayKeyDecoder(today: now, calendar: calendar)
+        try validate(document, limits: limits, days: days)
         guard try context.fetchCount(FetchDescriptor<Habit>()) == 0,
               try context.fetchCount(FetchDescriptor<HabitRecord>()) == 0,
               try context.fetchCount(FetchDescriptor<HabitGroup>()) == 0 else {
@@ -610,6 +645,10 @@ enum DataBackup {
 
         let rows = identity == .newCopies ? newCopies(of: document) : document
         let restoredAt: Date? = identity == .keepIDs ? now : nil
+        // The check-ins restored under the file's own ids: only their queued deletions are
+        // withdrawn below. A check-in read back from a non-Gregorian key gets a new id instead
+        // (`restoredDay`), and a deletion queued for its old id still means what it meant.
+        var keptRecordIDs: [String] = []
 
         for item in rows.groups {
             let group = HabitGroup(name: item.name, colorHex: item.colorHex, sortOrder: item.sortOrder)
@@ -642,14 +681,22 @@ enum DataBackup {
             context.insert(habit)
 
             habit.records = item.records.compactMap { entry in
-                guard let day = dayKey(entry.date) else { return nil } // validated above
+                guard let (day, decoded) = restoredDay(of: entry, days: days) else { return nil } // validated above
                 let record = HabitRecord(date: day, note: entry.note, value: entry.value)
-                record.id = entry.id
+                // A key read back to its real day (X2) comes back as a new row: the server may hold
+                // the file's id at the wrong day, and refuses that id at another. New, it needs no
+                // `restoredAt` either (no tombstone can name it). The stamp is the file's, as for
+                // every other check-in. The server's wrong-day row, if any, is repaired by the next
+                // launch's `DayKeyRepair` once a pull brings it here.
+                if !decoded {
+                    record.id = entry.id
+                    record.restoredAt = restoredAt
+                    keptRecordIDs.append(entry.id.uuidString)
+                }
                 // Verbatim, like the reconciler: re-deriving it through the local calendar would
                 // move it a day in any zone west of UTC.
                 record.date = day
                 record.updatedAt = entry.updatedAt
-                record.restoredAt = restoredAt
                 return record
             }
         }
@@ -660,15 +707,15 @@ enum DataBackup {
             context.rollback()
             throw error
         }
-        guard identity == .keepIDs else { return preview(of: rows) }
+        guard identity == .keepIDs else { return preview(of: rows, days: days) }
         // After the save: a restore that failed must not have cancelled a deletion.
         // `acknowledge` removes exactly the ids given, from the app's queues and the widget's.
         deletionQueue?.acknowledge(SyncDeletionQueue.Batch(
             habits: rows.habits.map(\.id.uuidString),
-            entries: rows.habits.flatMap { $0.records.map(\.id.uuidString) },
+            entries: keptRecordIDs,
             groups: rows.groups.map(\.id.uuidString)
         ))
-        return preview(of: rows)
+        return preview(of: rows, days: days)
     }
 
     // MARK: Erase
