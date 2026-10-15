@@ -163,21 +163,83 @@ final class DayKeyRepairTests: XCTestCase {
         }
     }
 
-    /// A Gregorian device (or one on another calendar) reads back keys pulled from a device on any
-    /// calendar but an Islamic one, whose four variants write the same keys a day apart (only the
-    /// device's own variant is exact; X2 section 5(b)).
+    private static let islamic: [Calendar.Identifier] = [.islamicUmmAlQura, .islamicCivil, .islamic, .islamicTabular]
+
+    /// The batch `settleIslamicVariant(by:)` takes, for the keys `identifier` wrote on `days`,
+    /// stamped by `stamp`.
+    private func batch(_ days: [Int], _ identifier: Calendar.Identifier,
+                       stamp: (Int) -> Date?) -> [(keyDay: Int, stamp: Date?)] {
+        days.map { (HabitStats.dayNumber(ofKey: oldKey($0, identifier)), stamp($0)) }
+    }
+
+    /// A Gregorian device reads back keys pulled from a device on any calendar — the four Islamic
+    /// variants too, which write the same keys a day apart: the batch's stamps settle which wrote
+    /// them (W10-DECODE-1; before, Umm al-Qura was tried first and 295, 301 and 415 of 654 civil,
+    /// astronomical and tabular days landed a day off).
     func testAnotherDevicesKeysReadBackOnAGregorianOne() {
-        let decoder = DayKeyDecoder(today: now, calendar: calendar(.gregorian))
-        let islamic: Set<Calendar.Identifier> = [.islamicCivil, .islamicUmmAlQura, .islamic, .islamicTabular]
-        for identifier in DayKeyDecoder.calendars where !islamic.contains(identifier) {
-            for d in day(2026, 3, 27)...today {
+        let days = Array(day(2026, 3, 27)...today)
+        for identifier in DayKeyDecoder.calendars {
+            let decoder = DayKeyDecoder(today: now, calendar: calendar(.gregorian))
+            decoder.settleIslamicVariant(by: batch(days, identifier) { self.instant($0) })
+            XCTAssertEqual(decoder.islamicVariant, Self.islamic.contains(identifier) ? identifier : nil, "\(identifier)")
+            for d in days {
                 XCTAssertEqual(decoder.realDay(ofKey: oldKey(d, identifier), stamp: instant(d)), key(d), "\(identifier) \(d)")
             }
         }
-        // Umm al-Qura is tried first of the four, so its keys read back exactly.
-        for d in day(2026, 3, 27)...today {
-            XCTAssertEqual(decoder.realDay(ofKey: oldKey(d, .islamicUmmAlQura), stamp: instant(d)), key(d), "\(d)")
+    }
+
+    /// Check-ins made the next day (yesterday's, from the strip: a stamp a day late) do not flip the
+    /// variant, as a record-by-record match would: with every fourth stamp a day late, a Gregorian
+    /// device reads each Islamic variant's keys exactly as the device that wrote them does.
+    func testLateStampsDoNotChangeWhichVariantReadsTheKeys() {
+        let days = Array(day(2025, 1, 1)...today)
+        let stamp: (Int) -> Date = { d in d % 4 == 0 ? self.instant(d + 1, hour: 9) : self.instant(d) }
+        for identifier in Self.islamic {
+            let gregorian = DayKeyDecoder(today: now, calendar: calendar(.gregorian))
+            let writer = DayKeyDecoder(today: now, calendar: calendar(identifier))
+            for decoder in [gregorian, writer] { decoder.settleIslamicVariant(by: batch(days, identifier, stamp: stamp)) }
+            XCTAssertEqual(gregorian.islamicVariant, identifier)
+            XCTAssertEqual(writer.islamicVariant, identifier)
+            var wrong = 0
+            for d in days {
+                let k = oldKey(d, identifier)
+                XCTAssertEqual(gregorian.realDay(ofKey: k, stamp: stamp(d)), writer.realDay(ofKey: k, stamp: stamp(d)), "\(identifier) \(d)")
+                if gregorian.realDay(ofKey: k, stamp: stamp(d)) != key(d) { wrong += 1 }
+            }
+            // Only where two days share a key and the stamp names the later one.
+            XCTAssertLessThan(wrong, 10, "\(identifier)")
         }
+    }
+
+    /// The device's own Islamic variant goes first only on a tie: a phone left at Umm al-Qura (ar_SA's
+    /// default) reads the keys it pulled from, or wrote before switching from, Islamic (civil) as
+    /// civil; with no stamps, or no Islamic key in the batch, nothing changes.
+    func testTheDevicesOwnVariantDecidesOnlyATie() throws {
+        let days = Array(day(2026, 3, 27)...today)
+        let ummAlQura = DayKeyDecoder(today: now, calendar: calendar(.islamicUmmAlQura))
+        ummAlQura.settleIslamicVariant(by: batch(days, .islamicCivil) { self.instant($0) })
+        XCTAssertEqual(ummAlQura.islamicVariant, .islamicCivil)
+        for d in days {
+            XCTAssertEqual(ummAlQura.realDay(ofKey: oldKey(d, .islamicCivil), stamp: instant(d)), key(d), "\(d)")
+        }
+
+        let unstamped = DayKeyDecoder(today: now, calendar: calendar(.islamicCivil))
+        unstamped.settleIslamicVariant(by: batch(days, .islamicUmmAlQura) { _ in nil })
+        XCTAssertNil(unstamped.islamicVariant)
+        XCTAssertEqual(unstamped.order.first, .islamicCivil, "no stamps: the device's own, as before")
+        let japanese = DayKeyDecoder(today: now, calendar: calendar(.gregorian))
+        japanese.settleIslamicVariant(by: batch(days, .japanese) { self.instant($0) })
+        XCTAssertNil(japanese.islamicVariant)
+        XCTAssertEqual(japanese.order, DayKeyDecoder.calendars)
+        // A tie between the device's own variant and another: its own.
+        let tie = DayKeyDecoder(today: now, calendar: calendar(.islamic))
+        let shared = days.first { d in
+            let k = HabitStats.dayNumber(ofKey: self.oldKey(d, .islamic))
+            return HabitStats.dayNumber(ofKey: self.oldKey(d, .islamicUmmAlQura)) == k
+        }
+        let agreed = try XCTUnwrap(shared, "a day both variants key alike")
+        tie.settleIslamicVariant(by: batch([agreed], .islamic) { self.instant($0) })
+        XCTAssertEqual(tie.islamicVariant, .islamic)
     }
 
     /// Where two real days share a key: the stamp's day; else the latest on or before it; else the
@@ -452,6 +514,120 @@ final class DayKeyRepairTests: XCTestCase {
         }
     }
 
+    /// A Gregorian iPad that pulled an Islamic (civil) phone's rows puts every one on its real day:
+    /// the pass settles the variant over all of the store's stray keys before reading any back.
+    func testAGregorianDeviceRepairsAnIslamicCivilPhonesRows() throws {
+        let read = habit()
+        let days = Array((today - 59)...today)
+        for d in days { record(read, at: oldKey(d, .islamicCivil), stamp: SyncTimestamp.floorToMillisecond(instant(d)), delivered: true) }
+        try context.save()
+
+        let outcome = try DayKeyRepair.run(in: context, now: now, calendar: calendar(.gregorian), deletionQueue: queue())
+
+        XCTAssertEqual(outcome.replaced, 60)
+        XCTAssertEqual(outcome.mergedDays, 0, "no two records on one day: none read a day off")
+        XCTAssertEqual(try stored(read).keys.sorted(), days)
+    }
+
+    /// The days left with two records are merged in a second save, after the moves are saved and
+    /// their tombstones queued. If that save fails the moves stand, the tombstones stay queued,
+    /// and the day keeps its two records — decision 7's ordinary state, merged by its next write.
+    func testAFailedMergeSaveLeavesTheMovesAndTheirTombstones() throws {
+        let read = habit()
+        let d = today - 2
+        let existing = record(read, at: key(d), stamp: SyncTimestamp.floorToMillisecond(instant(d, hour: 22)), delivered: true)
+        let stray = record(read, at: oldKey(d, .japanese), note: "old build", stamp: SyncTimestamp.floorToMillisecond(instant(d, hour: 8)),
+                           delivered: true)
+        try context.save()
+        let queue = queue()
+        struct Refused: Error {}
+        var saves = 0
+
+        let outcome = try DayKeyRepair.run(in: context, now: now, calendar: calendar(.japanese), deletionQueue: queue,
+                                           save: { context in
+                                               saves += 1
+                                               if saves > 1 { throw Refused() }
+                                               try context.save()
+                                           })
+
+        XCTAssertEqual(saves, 2)
+        XCTAssertTrue(outcome.mergeSaveFailed)
+        XCTAssertEqual(outcome.mergedDays, 0)
+        XCTAssertEqual(outcome.replaced, 1)
+        XCTAssertEqual(outcome.tombstones, [stray.id.uuidString])
+        XCTAssertEqual(queue.pending().entries, [stray.id.uuidString])
+        XCTAssertFalse(context.hasChanges)
+        let day = try XCTUnwrap(try stored(read)[d])
+        XCTAssertEqual(day.count, 2)
+        XCTAssertTrue(day.contains { $0.id == existing.id })
+        // Its next write merges it, as any duplicate day.
+        guard case .changed = HabitCheckIn.setChecked(nil, on: key(d), of: read, in: context) else {
+            return XCTFail("the next write did not merge the day")
+        }
+        try context.save()
+        XCTAssertEqual(try stored(read)[d]?.map(\.id), [existing.id])
+        XCTAssertEqual(try stored(read)[d]?.first?.note, "old build")
+    }
+
+    /// The first pass over a realistic store — 10 habits × 200 days of Japanese keys, delivered and
+    /// not, a Gregorian record already on every tenth day (a merge), on disk and opened cold, as
+    /// the launch opens it — is fast: 0.59 s in a Debug build on an M-series Mac, and 3.0 s for
+    /// 40 × 250 (10,000 stray records), linear (W10-PERF-1: the first build asked the store once
+    /// per day while holding every move pending, and took 45 s at -O for 5 × 200 and more than ten
+    /// minutes for 20 × 200, past the launch watchdog). The bound leaves room for a slow CI runner.
+    func testTheFirstPassOverARealisticStoreIsFast() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("DayKeyRepairTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("Stride.store")
+        let disk = try ModelContainer(for: SharedModelContainer.schema, configurations: [ModelConfiguration(url: url)])
+        do {
+            let writer = ModelContext(disk)
+            for h in 0..<10 {
+                let habit = Habit(name: "Habit \(h)")
+                habit.habitKind = h.isMultiple(of: 3) ? .count : .binary
+                habit.targetValue = h.isMultiple(of: 3) ? 4 : 1
+                habit.createdAt = instant(day(2026, 3, 27), hour: 9)
+                writer.insert(habit)
+                var records: [HabitRecord] = []
+                for n in 0..<200 {
+                    let d = today - n
+                    let r = HabitRecord(date: oldKey(d, .japanese), value: Double(1 + n % 3))
+                    r.date = oldKey(d, .japanese)
+                    r.updatedAt = SyncTimestamp.floorToMillisecond(instant(d))
+                    if (n + h).isMultiple(of: 2) { r.syncedAt = r.updatedAt }
+                    records.append(r)
+                    if n.isMultiple(of: 10) {
+                        let g = HabitRecord(date: key(d), value: 1)
+                        g.date = key(d)
+                        g.updatedAt = SyncTimestamp.floorToMillisecond(instant(d, hour: 22))
+                        g.syncedAt = g.updatedAt
+                        records.append(g)
+                    }
+                }
+                habit.records = records
+            }
+            try writer.save()
+        }
+        let context = ModelContext(disk)
+        let queue = queue()
+
+        let started = Date()
+        let outcome = try DayKeyRepair.run(in: context, now: now, calendar: calendar(.japanese), deletionQueue: queue)
+        let elapsed = Date().timeIntervalSince(started)
+
+        XCTAssertEqual(outcome.found, 2_000)
+        XCTAssertEqual(outcome.replaced + outcome.rekeyed, 2_000)
+        XCTAssertEqual(outcome.mergedDays, 200)
+        XCTAssertEqual(queue.pending().entries.count, outcome.replaced)
+        XCTAssertLessThan(elapsed, 3, "the first pass took \(elapsed) s")
+        let reader = ModelContext(disk)
+        let records = try reader.fetch(FetchDescriptor<HabitRecord>())
+        XCTAssertEqual(records.count, 2_000)
+        XCTAssertTrue(records.allSatisfy { (day(2025, 1, 1)...today).contains(HabitStats.dayNumber(ofKey: $0.date)) })
+        print("DayKeyRepair first pass, 10 × 200 on disk: \(String(format: "%.3f", elapsed)) s")
+    }
+
     // MARK: - The launch's pass
 
     /// The flag is set by the first completed pass, whatever it found, and said so once; every
@@ -598,6 +774,102 @@ final class DayKeyRepairTests: XCTestCase {
         XCTAssertEqual(byDay[day(2024, 5, 1)]?.first?.id, older.id)
         XCTAssertEqual(Set(queue.pending().entries), Set([japanese, buddhist, hebrew].map(\.id.uuidString)),
                        "the old ids' deletions still mean what they meant")
+    }
+
+    private func backupHabit(_ name: String, kind: String = "binary", target: Double = 1,
+                             _ records: [BackupRecord]) -> BackupHabit {
+        var h = backupHabit(records)
+        h.name = name
+        h.kind = kind
+        h.targetValue = target
+        return h
+    }
+
+    /// A Japanese-calendar user in London in winter (UTC+0) on 1.4.0 checked a day from the strip's
+    /// cell (a local midnight is a UTC one there, so it keyed Gregorian: 2026-12-15) and from the
+    /// default Today (0008-12-15): their backup holds both for one day (X2's mixed keys). Restored,
+    /// each day ends with one record, merged as decision 7 merges a day — the record D2 reads kept,
+    /// a lone note moved onto it, no fresh stamp — except two different notes, which stay for the
+    /// day's next write to ask about. The preview counts what is restored; only the kept records'
+    /// queued deletions are withdrawn; and the next launch's repair has nothing left to do
+    /// (W10-KEYS-1: before, both records were inserted, and no pass ever merged them).
+    func testARestoreMergesAnOldKeyWithTheGregorianKeyOfTheSameDay() throws {
+        let london = TimeZone(identifier: "Europe/London")!
+        let device = calendar(.japanese, london)
+        let winter = key(day(2026, 12, 16)).addingTimeInterval(12 * 3_600)
+        let d = day(2026, 12, 15)
+        func at(_ n: Int, _ hour: Int) -> Date { key(n).addingTimeInterval(Double(hour) * 3_600) }   // London = UTC
+        func old(_ n: Int) -> Date { oldKey(n, .japanese, zone: london) }
+        XCTAssertEqual(HabitCalendar.dayStringFormatter.string(from: old(d)), "0008-12-15")
+
+        let strip = backupRecord(key(d), stamp: at(d, 20))
+        let fromToday = backupRecord(old(d), note: "from Today", stamp: at(d, 8))
+        var small = backupRecord(key(d - 1), stamp: at(d - 1, 21)); small.value = 3
+        var large = backupRecord(old(d - 1), stamp: at(d - 1, 9)); large.value = 5
+        let mine = backupRecord(key(d - 2), note: "mine", stamp: at(d - 2, 20))
+        let theirs = backupRecord(old(d - 2), note: "theirs", stamp: at(d - 2, 8))
+        let alone = backupRecord(old(d - 3), stamp: at(d - 3, 8))
+        let document = BackupDocument(schemaVersion: DataBackup.schemaVersion, exportedAt: winter, groups: [],
+                                      habits: [backupHabit("Read", [strip, fromToday]),
+                                               backupHabit("Water", kind: "count", target: 8, [small, large]),
+                                               backupHabit("Journal", [mine, theirs, alone])])
+        XCTAssertNoThrow(try DataBackup.validate(document, days: DayKeyDecoder(today: winter, calendar: device)),
+                         "two strings for one day are not a damaged file")
+        let decoder = DataBackup.dayDecoder(for: document, now: winter, calendar: device)
+        XCTAssertEqual(DataBackup.preview(of: document, days: decoder).checkIns, 5)
+
+        let queue = queue()
+        for r in [strip, fromToday, small, large, mine, theirs] { queue.trackEntry(r.id.uuidString) }
+        let preview = try DataBackup.restore(document, into: context, identity: .keepIDs, withdrawingDeletionsFrom: queue,
+                                             now: winter, calendar: device)
+        XCTAssertEqual(preview.checkIns, 5)
+
+        let habits = try context.fetch(FetchDescriptor<Habit>())
+        func days(_ name: String) throws -> [Int: [HabitRecord]] {
+            let h = try XCTUnwrap(habits.first { $0.name == name })
+            return Dictionary(grouping: h.records) { HabitStats.dayNumber(ofKey: $0.date) }
+        }
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<HabitRecord>()), 5)
+        // Read: the strip's record outranks (the newer stamp); the Today record's note moves onto
+        // it, and its stamp stays the file's.
+        let read = try XCTUnwrap(try days("Read")[d])
+        XCTAssertEqual(read.map(\.id), [strip.id])
+        XCTAssertEqual(read.first?.note, "from Today")
+        XCTAssertEqual(read.first?.updatedAt, strip.updatedAt, "a restore never stamps")
+        XCTAssertNotNil(read.first?.restoredAt)
+        // Water: the larger value is the day (the old key's, under a new id).
+        let water = try XCTUnwrap(try days("Water")[d - 1])
+        XCTAssertEqual(water.count, 1)
+        XCTAssertEqual(water.first?.value, 5)
+        XCTAssertNotEqual(water.first?.id, large.id)
+        XCTAssertNotEqual(water.first?.id, small.id)
+        // Journal: two different notes stay, for the next write to ask; the lone old key restores.
+        let journal = try days("Journal")
+        XCTAssertEqual(Set(try XCTUnwrap(journal[d - 2]).compactMap(\.note)), ["mine", "theirs"])
+        XCTAssertEqual(journal[d - 3]?.count, 1)
+        // Withdrawn: only the ids a restored record goes by (strip, mine).
+        XCTAssertEqual(Set(queue.pending().entries), Set([fromToday, small, large, theirs].map(\.id.uuidString)))
+
+        let pass = DayKeyRepair.launchPass(in: context, flags: defaults(), syncDefaults: defaults(), deletionQueue: queue,
+                                           now: winter, calendar: device)
+        XCTAssertEqual(pass.result, .nothingToRepair)
+    }
+
+    /// A backup from a phone set to Islamic (civil), restored on a phone left at Umm al-Qura (ar_SA's
+    /// default): every check-in on its real day, the variant settled by the whole file
+    /// (W10-DECODE-1: Umm al-Qura first put about 45 % of them a day off).
+    func testABackupFromAnotherIslamicVariantRestoresOnTheRealDays() throws {
+        let days = Array((today - 89)...today)
+        let records = days.map { backupRecord(oldKey($0, .islamicCivil), stamp: instant($0)) }
+        let document = BackupDocument(schemaVersion: DataBackup.schemaVersion, exportedAt: now, groups: [],
+                                      habits: [backupHabit(records)])
+        let preview = try DataBackup.restore(document, into: context, identity: .newCopies, withdrawingDeletionsFrom: nil,
+                                             now: now, calendar: calendar(.islamicUmmAlQura))
+        XCTAssertEqual(preview.checkIns, 90)
+        XCTAssertEqual(preview.firstDay, key(days[0]))
+        XCTAssertEqual(preview.lastDay, key(today))
+        let restored = try context.fetch(FetchDescriptor<HabitRecord>())
+        XCTAssertEqual(restored.map { HabitStats.dayNumber(ofKey: $0.date) }.sorted(), days)
     }
 
     /// What no calendar wrote and the parser's old bounds refuse, or a date that is not canonical,

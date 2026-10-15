@@ -193,4 +193,73 @@ extension Scenarios {
                         && note?.hasSuffix("|6.0|eight, finally") == true && calm,
                      "\(describe(bSynced)), \(describe(aSynced)); server \(server.values.sorted()); A≠server: \(finalA != server), B≠server: \(finalB != server); calm \(calm)")
     }
+
+    // K3 — A ran 1.4.0 on a phone set to Islamic (civil): 300 days of check-ins went up at civil
+    // keys (1446–1448), a day apart from Umm al-Qura's in about half the months, a third of them
+    // stamped the next day (yesterday's, checked from the strip). B, a Gregorian iPad on 1.4.1,
+    // pulls them and repairs first; A updates later. The variant is settled by the whole batch's
+    // stamps (W10-DECODE-1), so B puts every row on the day A meant — before, B tried Umm al-Qura
+    // first and moved the rows of those months a day under new ids, tombstoning the right ones —
+    // and B, A and the server end with the same rows, nothing pending or queued.
+    func islamicCivilKeysRepairedOnAGregorianDevice() async throws {
+        let account = try Account.create()
+        let a = Device131("A", account: account), b = Device131("B", account: account)
+        defer { a.remove(); b.remove() }
+        let now = Date()
+        let gregorian = calendar(.gregorian)
+        let today = HabitStats.dayNumber(ofKey: HabitCalendar.dayKey(forInstant: now, calendar: gregorian))
+        let days = Array((today - 300)...(today - 1))
+        // A late stamp only where the key is the day's alone: where two days share a key, a stamp
+        // a day late names the later one on every device alike, which says nothing about the vote.
+        var writers: [Int: Int] = [:]
+        for d in (today - 400)...(today + 2) { writers[HabitStats.dayNumber(ofKey: oldKey(d, .islamicCivil)), default: 0] += 1 }
+        func stamp(_ d: Int) -> Date {
+            let late = d % 3 == 0 && writers[HabitStats.dayNumber(ofKey: oldKey(d, .islamicCivil))] == 1 ? 1 : 0
+            return SyncTimestamp.floorToMillisecond(now.addingTimeInterval(Double(d - today + late) * 86_400))
+        }
+
+        let walk = a.habit("Walk")
+        walk.records = days.map { d in
+            let r = HabitRecord(date: oldKey(d, .islamicCivil))
+            r.date = oldKey(d, .islamicCivil)
+            r.updatedAt = stamp(d)
+            return r
+        }
+        try a.save()
+        let oldIDs = Set(walk.records.map(\.id.uuidString))
+        guard isSynced(await a.sync()), isSynced(await b.sync()) else { throw Missing(description: "the first syncs") }
+        let pulled = try liveEntries(b)
+        let unsettled = DayKeyDecoder(today: now, calendar: gregorian)
+        let offByOne = days.filter { unsettled.realDay(ofKeyDay: HabitStats.dayNumber(ofKey: oldKey($0, .islamicCivil)), stamp: stamp($0)) != $0 }
+        report.check("setup: B pulled A's 300 Islamic (civil) rows as they are; Umm al-Qura first would have read some of them a day off",
+                     pulled.count == 300 && pulled.keys.allSatisfy { isStray(String($0.split(separator: "|")[1]), today: today) }
+                        && !offByOne.isEmpty,
+                     "\(pulled.count) pulled; \(offByOne.count) a day off by the old rule")
+
+        let bPass = DayKeyRepair.launchPass(in: b.context, flags: b.defaults, syncDefaults: b.defaults,
+                                            deletionQueue: b.queue, now: now, calendar: gregorian)
+        var bOutcome = DayKeyRepair.Outcome()
+        if case .repaired(let o) = bPass.result { bOutcome = o }
+        let expected = Set(days.map { "\(walk.id.uuidString)|\(dayString($0))" })
+        let bDays = try liveEntries(b)
+        report.check("B's pass puts all 300 on their real days under new ids — no day twice, none merged — and queues the 300 old ids",
+                     bOutcome.replaced == 300 && bOutcome.mergedDays == 0 && Set(bDays.keys) == expected
+                        && Set(b.queue.pending().entries) == oldIDs,
+                     "\(bPass.result); \(bDays.count) days, \(bDays.keys.filter { !expected.contains($0) }.count) not expected")
+
+        let bSynced = await b.sync()
+        let aPass = DayKeyRepair.launchPass(in: a.context, flags: a.defaults, syncDefaults: a.defaults,
+                                            deletionQueue: a.queue, now: now, calendar: calendar(.islamicCivil))
+        let aSynced = await a.sync()
+        let bAgain = await b.sync()
+        let server = try await serverEntries(account)
+        let finalA = try liveEntries(a), finalB = try liveEntries(b)
+        let calm = try a.pendingCount() == 0 && b.pendingCount() == 0 && a.queue.pending().isEmpty && b.queue.pending().isEmpty
+        var aOutcome = DayKeyRepair.Outcome()
+        if case .repaired(let o) = aPass.result { aOutcome = o }
+        report.check("…and after B's sync, A's own repair and A's and B's syncs, the server, A and B each hold exactly the 300 real days, under one id each; nothing pending or queued",
+                     isSynced(bSynced) && isSynced(aSynced) && isSynced(bAgain) && aOutcome.replaced == 300
+                        && Set(server.keys) == expected && finalA == server && finalB == server && calm,
+                     "\(describe(bSynced)), \(describe(aSynced)), \(describe(bAgain)); server \(server.count), A≠server: \(finalA != server), B≠server: \(finalB != server); calm \(calm)")
+    }
 }

@@ -27,10 +27,22 @@ import os.log
 /// calendar is tried first, then the others in `calendars`' order; the first that wrote the key
 /// decides. Where several real days share the key, the one on the local day of the record's
 /// `updatedAt` wins, else the latest on or before that day (before today without a stamp), else
-/// the earliest. The four Islamic variants write the same keys a day apart, which is why the
-/// device's own goes first. A key no calendar wrote — a clock set years ahead, a hand-edited
-/// backup — is left alone. Maps are built on first use, one per calendar: about 2 ms each over
-/// 650 days.
+/// the earliest. A key no calendar wrote — a clock set years ahead, a hand-edited backup — is left
+/// alone. Maps are built on first use, one per calendar: about 2 ms each over 650 days.
+///
+/// **The Islamic variants.** No key of one calendar family is a key of another (their years are
+/// far apart), except within the Islamic family: Umm al-Qura, civil, astronomical and tabular
+/// write the same keys, often a day apart. Which of them wrote a store's keys is decided once
+/// for the whole batch (`settleIslamicVariant(by:)`, before any decoding): the variant that puts
+/// the most of the batch's records on their stamp's local day, the device's own on a tie, the
+/// fixed order with no stamps. Not record by record: a check-in made the next day (yesterday's,
+/// from the strip) has a stamp a day late, which another variant's map often holds for the same
+/// key, so a per-record match moves it a day (the review measured 298 of 654 Umm al-Qura keys off
+/// with every stamp a day late); a batch's stray Islamic keys all come from the one device that
+/// wrote them. Not "the device's own first" either: a Gregorian iPad that pulled an Islamic-civil
+/// phone's rows, a restore of that phone's backup on a phone left at Umm al-Qura, or a user who
+/// has since changed variant read the civil, astronomical and tabular keys with Umm al-Qura's map
+/// — 295, 301 and 415 of 654 days a day off on a Gregorian device (W10-DECODE-1).
 final class DayKeyDecoder {
     /// Every calendar a key could have been written in besides Gregorian and ISO 8601 (which write
     /// Gregorian's Y/M/D), in the order tried after the device's own. A device on a calendar not
@@ -41,13 +53,22 @@ final class DayKeyDecoder {
         .hebrew, .persian, .indian, .coptic, .ethiopicAmeteMihret, .ethiopicAmeteAlem, .chinese,
     ]
 
+    /// The four variants that write overlapping keys (see the type's note), in `calendars`' order.
+    static let islamicVariants: [Calendar.Identifier] = [.islamicUmmAlQura, .islamicCivil, .islamic, .islamicTabular]
+
     /// Today's day number, as a key of the device's day (Gregorian, in its zone).
     let todayNumber: Int
     /// The days a key can name (`HabitCalendar.realDayNumbers`); nil when the clock says today is
     /// before 2025 — then nothing is decoded.
     let realDays: ClosedRange<Int>?
-    /// The calendars tried, in order: the device's own first when it wrote stray keys.
-    let order: [Calendar.Identifier]
+    /// The calendars tried, in order: the device's own first when it wrote stray keys, and the
+    /// Islamic variant `settleIslamicVariant(by:)` chose ahead of every other but a non-Islamic own.
+    private(set) var order: [Calendar.Identifier]
+    /// The variant `settleIslamicVariant(by:)` chose; nil before it ran, or when the batch's stamps
+    /// did not say (then the device's own variant, or the fixed order, decides as before).
+    private(set) var islamicVariant: Calendar.Identifier?
+    /// The device's own calendar.
+    private let own: Calendar.Identifier
     /// For a stamp's local day: Gregorian, in the device's zone.
     private let stampCalendar: Calendar
     private var maps: [Calendar.Identifier: [Int: [Int]]] = [:]
@@ -57,6 +78,7 @@ final class DayKeyDecoder {
         todayNumber = HabitStats.dayNumber(ofKey: HabitCalendar.dayKey(forInstant: today, calendar: calendar))
         realDays = HabitCalendar.realDayNumbers(todayNumber: todayNumber)
         let own = calendar.identifier
+        self.own = own
         order = HabitCalendar.wroteGregorianKeys(calendar)
             ? Self.calendars
             : [own] + Self.calendars.filter { $0 != own }
@@ -65,6 +87,36 @@ final class DayKeyDecoder {
     /// Whether `day` (a day number) is one a key can name.
     func isRealDay(_ day: Int) -> Bool {
         realDays?.contains(day) ?? false
+    }
+
+    /// Decides which Islamic variant wrote the Islamic keys among `batch` — every stored key about
+    /// to be read back, with its record's stamp (`updatedAt`) — and tries it first from now on.
+    /// For each variant, the records it would put on their stamp's local day are counted; the
+    /// most wins, the device's own variant on a tie (else the first in `calendars`' order). A
+    /// batch with no Islamic key, or whose stamps match no variant, changes nothing. Call it once,
+    /// before reading any of the batch back: every key of the batch is then read by the same
+    /// variant. Builds the four Islamic maps only when the batch holds a stray key.
+    func settleIslamicVariant(by batch: [(keyDay: Int, stamp: Date?)]) {
+        guard realDays != nil else { return }
+        // A device on a calendar outside the Islamic family reads the keys it wrote itself first,
+        // as before, and those are no Islamic variant's: the vote skips them, so a Japanese phone's
+        // own keys never build the four Islamic maps.
+        let ownFirst = order.first == own && !Self.islamicVariants.contains(own)
+        var score: [Calendar.Identifier: Int] = [:]
+        for item in batch where !isRealDay(item.keyDay) {
+            guard let stamp = item.stamp else { continue }
+            if ownFirst, map(for: own)[item.keyDay] != nil { continue }
+            let stampDay = stampDayNumber(of: stamp)
+            for variant in Self.islamicVariants where map(for: variant)[item.keyDay]?.contains(stampDay) == true {
+                score[variant, default: 0] += 1
+            }
+        }
+        guard let best = score.values.max(), best > 0 else { return }
+        let leaders = Self.islamicVariants.filter { score[$0] == best }
+        let choice = leaders.contains(own) ? own : leaders[0]
+        islamicVariant = choice
+        let rest = order.filter { $0 != choice }
+        order = ownFirst ? [own, choice] + rest.dropFirst() : [choice] + rest
     }
 
     /// The real day of the stored key `key`, or nil when no calendar wrote it (or it is a real day
@@ -76,9 +128,7 @@ final class DayKeyDecoder {
     /// `realDay(ofKey:stamp:)` by day number.
     func realDay(ofKeyDay keyDay: Int, stamp: Date?) -> Int? {
         guard realDays != nil, !isRealDay(keyDay) else { return nil }
-        let stampDay = stamp.map {
-            HabitStats.dayNumber(ofKey: HabitCalendar.dayKey(forInstant: $0, calendar: stampCalendar))
-        }
+        let stampDay = stamp.map(stampDayNumber(of:))
         for identifier in order {
             guard let days = map(for: identifier)[keyDay], let first = days.first else { continue }
             if days.count == 1 { return first }
@@ -87,6 +137,11 @@ final class DayKeyDecoder {
             return days.last(where: { $0 <= reference }) ?? first
         }
         return nil
+    }
+
+    /// The local day (Gregorian, in the device's zone) of a stamp.
+    private func stampDayNumber(of stamp: Date) -> Int {
+        HabitStats.dayNumber(ofKey: HabitCalendar.dayKey(forInstant: stamp, calendar: stampCalendar))
     }
 
     /// The day number of the key a build before 1.4.1 wrote, under `calendar`, for real day `day`:
@@ -146,14 +201,28 @@ final class DayKeyDecoder {
 ///
 /// **Days that end with two records** (the real day already had one — a check-in from another
 /// device, or a UTC+0 device's strip pick, which always keyed Gregorian) are merged as every write
-/// merges them (2026-10-15 decision 7, amended): `HabitCheckIn.setChecked(nil, …)` keeps the record
-/// D2 reads, moves a lone note onto it, deletes the others here only, with no tombstone, and sends
-/// the kept one again. Two different notes are not combined without the user: that day stays as
-/// it is until its next write, which asks (`.combineNotes`).
+/// merges them (2026-10-15 decision 7, amended): `HabitCheckIn.merge`, `setChecked(nil, …)`'s merge,
+/// keeps the record D2 reads, moves a lone note onto it, deletes the others here only, with no
+/// tombstone, and sends the kept one again. Two different notes are not combined without the user:
+/// that day stays as it is until its next write, which asks (`.combineNotes`).
 ///
 /// **Order.** The caller runs `SyncDeliveryMigration` first (`launchPass`): on a store from 1.3.0
 /// every row opens "never delivered" until that rule marks what 1.3.0 had pushed, and a row
 /// re-keyed in place and marked afterwards would be delivered at a day the server does not hold.
+///
+/// **Cost** (W10-PERF-1). The pass runs before the first frame (`StrideApp.prepareStore`), so it
+/// never asks the store once per day: in a context holding the move's pending changes, every
+/// fetch is checked in memory against each of them, and the first build asked once per repaired
+/// day — a 1,000-record store took 45 s, a 4,000-record one more than ten minutes, past the launch
+/// watchdog, and a kill before the save kept nothing, so every launch began again. Now the moves
+/// are saved first; the days that may hold two records are then read once per habit
+/// (`HabitCheckIn.liveRecords(of:onDays:)`), with no change pending, before any merge; and only
+/// the days that do are merged (`HabitCheckIn.merge`, with that answer), then saved. The tombstones
+/// go in one write (`SyncDeletionQueue.trackEntries`). Measured 2026-10-16 in a Debug build, on
+/// disk and cold: 0.6 s for 2,000 stray records, 3.0 s for 10,000 — linear (StrideTests'
+/// `testTheFirstPassOverARealisticStoreIsFast`). A merge save that fails leaves decision 7's
+/// ordinary state — the day's next write merges it — and is reported (`Outcome.mergeSaveFailed`),
+/// not thrown: the moves and their tombstones stand.
 enum DayKeyRepair {
     /// Set in the App Group's defaults once the first pass has completed on this install, whatever
     /// it found. The widget on a non-Gregorian device opens the store only after it
@@ -182,6 +251,9 @@ enum DayKeyRepair {
         var mergedDays = 0
         /// Days left with two records whose notes differ, for their next write to ask.
         var daysAskingToCombineNotes = 0
+        /// The merges' save failed: those days were left with two records, for their next write to
+        /// merge (`mergedDays` is then 0). The moves were saved and their tombstones queued.
+        var mergeSaveFailed = false
         /// The old ids queued as tombstones, after the save.
         var tombstones: [String] = []
 
@@ -189,26 +261,42 @@ enum DayKeyRepair {
         var changedStore: Bool { rekeyed + replaced + mergedDays > 0 }
     }
 
-    /// One pass over `context`'s store; saves (and on a failed save rolls back and throws), then
-    /// queues the tombstones. `now` and `calendar` decide today, the real days and the device's
-    /// own calendar (the app passes `Calendar.current`, never `appCalendar`). `save` is the
-    /// context's own, injected only so the tests can make it fail.
+    /// One pass over `context`'s store: moves the stray records and saves (on a failed save rolls
+    /// back and throws), queues the tombstones, then merges the days left with two records and
+    /// saves again. `now` and `calendar` decide today, the real days and the device's own calendar
+    /// (the app passes `Calendar.current`, never `appCalendar`). `save` is the context's own,
+    /// injected only so the tests can make it fail.
     @MainActor
     static func run(in context: ModelContext, now: Date = Date(), calendar: Calendar = .current,
                     deletionQueue: SyncDeletionQueue?,
                     save: (ModelContext) throws -> Void = { try $0.save() }) throws -> Outcome {
         var outcome = Outcome()
         let decoder = DayKeyDecoder(today: now, calendar: calendar)
-        guard let stray = try strayRecordIDs(in: context, decoder: decoder), !stray.isEmpty else { return outcome }
+        // Held for the whole pass: the fetch loaded their rows, which the records below read; let
+        // go, each would fault its row back one query at a time (0.2 s for 2,000).
+        guard let fetched = try strayRecords(in: context, decoder: decoder), !fetched.isEmpty else { return outcome }
+        let stray = Set(fetched.map(\.persistentModelID))
+        defer { withExtendedLifetime(fetched) {} }
+
+        // The stray records, habit by habit. By `persistentModelID`, which reading never faults: a
+        // record another context deleted and saved is not among `stray` (the store answered it)
+        // and is never read.
+        var strays: [(habit: Habit, records: [HabitRecord])] = []
+        for habit in try context.fetch(FetchDescriptor<Habit>()) {
+            let records = habit.records.filter { stray.contains($0.persistentModelID) && !$0.isDeleted }
+            if !records.isEmpty { strays.append((habit, records)) }
+        }
+        // Which Islamic variant wrote them, decided once for all of them (`DayKeyDecoder`).
+        decoder.settleIslamicVariant(by: strays.flatMap { $0.records.map {
+            (keyDay: HabitStats.dayNumber(ofKey: $0.date), stamp: $0.updatedAt)
+        } })
 
         var touched: [(habit: Habit, days: Set<Int>)] = []
         var oldIDs: [String] = []
-        for habit in try context.fetch(FetchDescriptor<Habit>()) {
-            // By `persistentModelID`, which reading never faults: a record another context
-            // deleted and saved is not among `stray` (the store answered it) and is never read.
-            let records = habit.records.filter { stray.contains($0.persistentModelID) && !$0.isDeleted }
-            guard !records.isEmpty else { continue }
+        var seenOldIDs = Set<String>()
+        for (habit, records) in strays {
             var days = Set<Int>()
+            var copies: [HabitRecord] = []
             for record in records {
                 outcome.found += 1
                 guard let day = decoder.realDay(ofKeyDay: HabitStats.dayNumber(ofKey: record.date),
@@ -230,9 +318,10 @@ enum DayKeyRepair {
                     // edit another device made to the day. nil stays nil (a record never edited
                     // since before v2): its stamp is then its real day, no longer year 8 or 2569.
                     copy.updatedAt = record.updatedAt
-                    habit.records.append(copy)
+                    copies.append(copy)
                     // Once each: two records can go by one id (a same-id pair, X1).
-                    if !oldIDs.contains(record.id.uuidString) { oldIDs.append(record.id.uuidString) }
+                    let old = record.id.uuidString
+                    if seenOldIDs.insert(old).inserted { oldIDs.append(old) }
                     context.delete(record)
                     outcome.replaced += 1
                     if hold == .invalidValue { outcome.holdsLifted += 1 }
@@ -250,19 +339,9 @@ enum DayKeyRepair {
                 }
                 days.insert(day)
             }
+            // One append per habit: each append to the relationship rewrites the whole array.
+            if !copies.isEmpty { habit.records.append(contentsOf: copies) }
             if !days.isEmpty { touched.append((habit, days)) }
-        }
-
-        for (habit, days) in touched {
-            for day in days.sorted() {
-                let key = HabitStats.key(ofDay: day)
-                guard HabitCheckIn.liveRecords(of: habit, on: key).count > 1 else { continue }
-                switch HabitCheckIn.setChecked(nil, on: key, of: habit, in: context) {
-                case .changed: outcome.mergedDays += 1
-                case .needsConfirmation: outcome.daysAskingToCombineNotes += 1
-                case .noChange: break
-                }
-            }
         }
 
         if context.hasChanges {
@@ -278,22 +357,55 @@ enum DayKeyRepair {
         // pair, X1): that would delete its row too. If the store cannot be asked, every id goes, as
         // `HabitEntryCommit.tombstones` does.
         let carried = carriedIDs(oldIDs, in: context)
-        for id in oldIDs where !(carried?.contains(id) ?? false) {
-            deletionQueue?.trackEntry(id)
-            outcome.tombstones.append(id)
+        outcome.tombstones = oldIDs.filter { !(carried?.contains($0) ?? false) }
+        deletionQueue?.trackEntries(outcome.tombstones)
+
+        // The days that end with two records: every touched habit's days read first, with nothing
+        // pending, then merged (no merge changes another day's records).
+        let duplicates = touched.flatMap { habit, days in
+            HabitCheckIn.liveRecords(of: habit, onDays: days)
+                .filter { $0.value.count > 1 }
+                .sorted { $0.key < $1.key }
+                .map { (habit: habit, day: $0.key, records: $0.value) }
+        }
+        var merged = 0
+        for item in duplicates {
+            switch HabitCheckIn.merge(item.records, on: HabitStats.key(ofDay: item.day), of: item.habit, in: context) {
+            case .changed: merged += 1
+            case .needsConfirmation: outcome.daysAskingToCombineNotes += 1
+            case .noChange: break
+            }
+        }
+        if context.hasChanges {
+            do {
+                try save(context)
+                outcome.mergedDays = merged
+            } catch {
+                context.rollback()
+                outcome.mergeSaveFailed = true
+            }
         }
         return outcome
     }
 
-    /// The live records outside the real days, by persistent identifier; nil when the clock says
-    /// today is before 2025 (nothing is taken for a stray key then).
+    /// The live records outside the real days; nil when the clock says today is before 2025
+    /// (nothing is taken for a stray key then).
     @MainActor
-    static func strayRecordIDs(in context: ModelContext, decoder: DayKeyDecoder) throws -> Set<PersistentIdentifier>? {
+    static func strayRecords(in context: ModelContext, decoder: DayKeyDecoder) throws -> [HabitRecord]? {
+        try strays(decoder).map { try context.fetch($0) }
+    }
+
+    /// How many `strayRecords` there are, counted without loading any: the launch's question.
+    @MainActor
+    static func strayRecordCount(in context: ModelContext, decoder: DayKeyDecoder) throws -> Int {
+        try strays(decoder).map { try context.fetchCount($0) } ?? 0
+    }
+
+    private static func strays(_ decoder: DayKeyDecoder) -> FetchDescriptor<HabitRecord>? {
         guard let real = decoder.realDays else { return nil }
         let first = HabitStats.key(ofDay: real.lowerBound)
         let end = HabitStats.key(ofDay: real.upperBound + 1)
-        let records = try context.fetch(FetchDescriptor<HabitRecord>(predicate: #Predicate { $0.date < first || $0.date >= end }))
-        return Set(records.map(\.persistentModelID))
+        return FetchDescriptor<HabitRecord>(predicate: #Predicate { $0.date < first || $0.date >= end })
     }
 
     /// Of `ids`, those a record in the store still goes by; nil when it cannot be asked.
@@ -340,14 +452,14 @@ enum DayKeyRepair {
         let result: LaunchResult
         do {
             let decoder = DayKeyDecoder(today: now, calendar: calendar)
-            if (try strayRecordIDs(in: context, decoder: decoder) ?? []).isEmpty {
+            if try strayRecordCount(in: context, decoder: decoder) == 0 {
                 result = .nothingToRepair
             } else if SyncDeliveryMigration.runOnceIfNeeded(in: context, defaults: syncDefaults) == .failed {
                 logger.error("Day-key repair deferred: the delivery-state migration has not run")
                 return (.deferred, false)
             } else {
                 let outcome = try run(in: context, now: now, calendar: calendar, deletionQueue: deletionQueue)
-                logger.notice("Day-key repair: \(outcome.found, privacy: .public) found, \(outcome.rekeyed, privacy: .public) re-keyed, \(outcome.replaced, privacy: .public) replaced, \(outcome.holdsLifted, privacy: .public) holds lifted, \(outcome.undecodable, privacy: .public) undecodable, \(outcome.leftHeld, privacy: .public) left held, \(outcome.mergedDays, privacy: .public) days merged, \(outcome.daysAskingToCombineNotes, privacy: .public) asking, \(outcome.tombstones.count, privacy: .public) tombstones")
+                logger.notice("Day-key repair: \(outcome.found, privacy: .public) found, \(outcome.rekeyed, privacy: .public) re-keyed, \(outcome.replaced, privacy: .public) replaced, \(outcome.holdsLifted, privacy: .public) holds lifted, \(outcome.undecodable, privacy: .public) undecodable, \(outcome.leftHeld, privacy: .public) left held, \(outcome.mergedDays, privacy: .public) days merged, \(outcome.daysAskingToCombineNotes, privacy: .public) asking, \(outcome.tombstones.count, privacy: .public) tombstones\(outcome.mergeSaveFailed ? "; the merges' save failed (left for their next write)" : "", privacy: .public)")
                 result = .repaired(outcome)
             }
         } catch {

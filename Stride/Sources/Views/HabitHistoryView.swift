@@ -512,8 +512,8 @@ struct HabitHistoryView: View {
     // MARK: - Actions
 
     private func showMonth(_ delta: Int, from month: Date, calendar: Calendar) {
-        guard let moved = calendar.date(byAdding: .month, value: delta, to: month) else { return }
-        displayedMonth = Self.monthStart(containing: moved, in: calendar)
+        guard let moved = Self.month(delta, from: month, in: calendar) else { return }
+        displayedMonth = moved
     }
 
     /// Picks another day. A note being typed is written first; when that needs a question, the
@@ -787,10 +787,21 @@ struct HabitHistoryView: View {
                                                                              day: c.day, hour: 12)) ?? key
     }
 
-    /// Noon of the first day of the month containing `instant`, in `calendar`.
+    /// Noon of the first day of the month containing `instant`, in `calendar`: the calendar's own
+    /// month interval, which knows its leap months. Rebuilt from era, year and month it lost them
+    /// (W10-KEYS-2): a Chinese-calendar month 6 and leap month 6 share all three, so the leap
+    /// month (2025-07-25 to 2025-08-22) mapped back to month 6, could not be shown, and the
+    /// forward chevron stuck on month 6. Noon, so a DST change at midnight does not matter.
     static func monthStart(containing instant: Date, in calendar: Calendar) -> Date {
-        let c = calendar.dateComponents([.era, .year, .month], from: instant)
-        return calendar.date(from: DateComponents(era: c.era, year: c.year, month: c.month, day: 1, hour: 12)) ?? instant
+        guard let start = calendar.dateInterval(of: .month, for: instant)?.start else { return instant }
+        return calendar.date(bySettingHour: 12, minute: 0, second: 0, of: start)
+            ?? calendar.date(byAdding: .hour, value: 12, to: start) ?? instant
+    }
+
+    /// The month `delta` months from the one starting at `month` (a `monthStart`), as its
+    /// `monthStart`: what the chevrons show.
+    static func month(_ delta: Int, from month: Date, in calendar: Calendar) -> Date? {
+        calendar.date(byAdding: .month, value: delta, to: month).map { monthStart(containing: $0, in: calendar) }
     }
 
     /// The grid's cells for the month starting at `monthStart`: nil for each cell before its first

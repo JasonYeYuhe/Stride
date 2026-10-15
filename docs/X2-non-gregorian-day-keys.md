@@ -200,7 +200,10 @@ The key's weekday is wrong on every day for Japanese (shift of 3–4), Buddhist 
   is the same everywhere). Used by both `dayKey`s, `WidgetTimelinePlan.dayKey(of:in:)`,
   `HistoryLink.target`, and one site this report did not list: `HabitHistoryView.noon(ofDay:in:)`,
   which built a key's instant in the device's calendar (2026-10-15 as Reiwa 2026). Month grids and
-  labels stay in the device's calendar.
+  labels stay in the device's calendar; a month's start is the calendar's own month interval
+  (`HabitHistoryView.monthStart`), so a Chinese leap month (2025-07-25 to 2025-08-22) is a month of
+  its own (review W10-KEYS-2: rebuilt from era, year and month it folded into month 6, and "next"
+  stuck there).
 - **Window.** [2025-01-01, today + 2], not this report's 2026-01-01: 1.4.1's History allows
   backfills into 2025, and History's floor is now capped at 2025-01-01
   (`HabitHistoryView.window`). `HabitStats.startDay` ignores record days before it, and
@@ -223,12 +226,30 @@ The key's weekday is wrong on every day for Japanese (shift of 3–4), Buddhist 
     as amended: no tombstone for the duplicate). Two different notes are left for the next write to
     ask about.
   - The new record keeps the old one's `updatedAt` (nil stays nil: its stamp becomes its real day).
+  - **Islamic variants** (review W10-DECODE-1). Umm al-Qura, civil, astronomical and tabular write
+    the same keys, often a day apart; no other two calendars share a key. The variant is settled
+    once per batch — a store's stray records, or a backup file — by which one puts the most records
+    on their stamp's local day (the device's own on a tie): `DayKeyDecoder.settleIslamicVariant`.
+    Record by record, "own variant first" put 295, 301 and 415 of 654 civil, astronomical and
+    tabular days a day off on a Gregorian device, and a per-record stamp match flips check-ins
+    stamped the next day.
+  - **Cost** (review W10-PERF-1). The moves are saved first, the tombstones queued in one write,
+    then each touched habit's days read once (no change pending) and only the days with two records
+    merged (`HabitCheckIn.merge`) and saved again; a failed merge save leaves decision 7's ordinary
+    state. Asking the store per day with every move pending had made a 1,000-record store take
+    45 s and a 4,000-record one over ten minutes (past the launch watchdog, every launch). Now
+    0.6 s for 2,000 strays and 3.0 s for 10,000 in a Debug build, on disk, linear.
 - **Widget.** `ExtensionStoreOpen` refuses with `waitForApp(dayKeyRepair)` while the flag is unset
   on a device whose calendar is neither Gregorian nor ISO 8601; the app reloads widgets when the pass
   sets the flag or changes the store.
 - **Restore.** `DataBackup.restoredDay`: a real day as it is; an out-of-window key any calendar
   wrote, read back with a new id (and no `restoredAt`; its old id's queued deletion is not
   withdrawn); any other canonical 1970–2100 day as before; anything else is still `invalidDate`.
+  The whole file settles the Islamic variant (`dayDecoder(for:)`). Two strings that restore to one
+  day (a 1.4.0 UTC+0 device's strip pick and Today, review W10-KEYS-1) are merged before insertion
+  (`mergingDays`: the record D2 reads, a lone note moved onto it, no fresh stamp; two different
+  notes left for the next write); only kept ids' queued deletions are withdrawn, and the preview
+  counts what is restored. Two records under one identical date string are still `duplicateDay`.
 - **Snoozes.** `NotificationRouter.day(from:)` is unchanged: corrected keys parse; an old key is
   refused or (Ethiopic) is neither today nor yesterday, so it never credits the stray day.
 - **Residual.** A never-delivered row whose first push reached the server but whose answer was lost
@@ -238,4 +259,7 @@ The key's weekday is wrong on every day for Japanese (shift of 3–4), Buddhist 
 - **Tests.** StrideTests `DayKeyCalendarTests` (14 calendars × 6 zones, Gregorian byte-identical,
   weekday and week math) and `DayKeyRepairTests` (decoder recovery, every record kind, merges,
   idempotence, tombstone after save, 1.3.0 order, the widget gate, restore, the strength floor);
-  the two "0008"/"2569" tests flipped; hosted History window and noon; rehearsal K1 and K2.
+  the two "0008"/"2569" tests flipped; hosted History window, noon and the Chinese leap month;
+  rehearsal K1, K2 and K3 (a Gregorian device repairing 300 Islamic-civil rows). Review fixes add
+  the Islamic decode on another device (same-day and next-day stamps), the merge save's failure,
+  a 10 × 200 on-disk perf bound and the London mixed-key restore.

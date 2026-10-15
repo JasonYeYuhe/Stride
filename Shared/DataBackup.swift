@@ -344,7 +344,14 @@ enum DataBackup {
     /// also be built in code. Throws the first problem found, in a fixed order.
     ///
     /// `days` reads each check-in's day (`restoredDay`): a key a non-Gregorian device wrote before
-    /// 1.4.1 is read back to its real day, not refused (X2).
+    /// 1.4.1 is read back to its real day, not refused (X2). Whether one can be read back does not
+    /// depend on which Islamic variant `dayDecoder(for:)` settles on, so any decoder will do here.
+    ///
+    /// Two check-ins of one habit under one date string are a damaged file (`duplicateDay`): an
+    /// export writes one per day. Two strings that restore to ONE day are not — an old key beside
+    /// the Gregorian key of its real day, which a 1.4.0 device in UTC+0 wrote (its strip's picks
+    /// keyed Gregorian, its Today year 8) or a device that pulled another's rows holds — and
+    /// `restore` merges them (`mergingDays`).
     static func validate(_ document: BackupDocument, limits: Limits = .default,
                          days decoder: DayKeyDecoder = DayKeyDecoder()) throws {
         guard document.habits.count <= limits.maxHabits else {
@@ -470,6 +477,9 @@ enum DataBackup {
     ///   (`invalidDate`), so the user's own backups did not restore on 13 of 14 calendars;
     /// - any other day `dayKey` accepts (1970–2100, canonical): itself, as before;
     /// - anything else — not canonical, or a year outside 1970–2100 no calendar wrote — nil.
+    ///
+    /// `days` should be `dayDecoder(for:)` of the whole file, so that every Islamic key in it is
+    /// read by the variant that wrote them.
     static func restoredDay(of record: BackupRecord, days: DayKeyDecoder) -> (day: Date, decoded: Bool)? {
         guard let key = canonicalDayKey(record.date) else { return nil }
         if days.isRealDay(HabitStats.dayNumber(ofKey: key)) { return (key, false) }
@@ -477,14 +487,80 @@ enum DataBackup {
         return dayKey(record.date).map { ($0, false) }
     }
 
+    /// The decoder for `document`'s days: today and the device's calendar from `now` and
+    /// `calendar`, and the Islamic variant settled by the whole file's keys and stamps
+    /// (`DayKeyDecoder.settleIslamicVariant(by:)`) — one device wrote them, so they are read
+    /// together, not one by one.
+    static func dayDecoder(for document: BackupDocument, now: Date = Date(),
+                           calendar: Calendar = .current) -> DayKeyDecoder {
+        let decoder = DayKeyDecoder(today: now, calendar: calendar)
+        var batch: [(keyDay: Int, stamp: Date?)] = []
+        for habit in document.habits {
+            for record in habit.records {
+                guard let key = canonicalDayKey(record.date) else { continue }
+                batch.append((HabitStats.dayNumber(ofKey: key), record.updatedAt))
+            }
+        }
+        decoder.settleIslamicVariant(by: batch)
+        return decoder
+    }
+
+    /// A restored habit's check-ins, each day that holds two or more merged as decision 7 merges a
+    /// day (2026-10-15, amended; `HabitCheckIn.setChecked(nil, …)`): the record D2 reads is kept
+    /// (`HabitRecord.outranks`), a lone note moves onto it, and the others are dropped — they were
+    /// never in this store, so there is nothing to tombstone. A day whose records carry two
+    /// different notes keeps them all, for its next write to ask (`.combineNotes`), as
+    /// `DayKeyRepair` leaves one. Unlike a write, nothing is stamped: a restore keeps the file's
+    /// stamps (see `restore`). Such days come from old keys read back beside the Gregorian key of
+    /// the same day (`validate`). `records` are not yet in any context; the order is kept.
+    static func mergingDays(_ records: [HabitRecord]) -> [HabitRecord] {
+        var byDay: [Int: [HabitRecord]] = [:]
+        var order: [Int] = []
+        for record in records {
+            let day = HabitStats.dayNumber(ofKey: record.date)
+            if byDay[day] == nil { order.append(day) }
+            byDay[day, default: []].append(record)
+        }
+        guard order.count < records.count else { return records }
+        var kept = Set<ObjectIdentifier>()
+        for day in order {
+            let ranked = byDay[day, default: []].sorted { $0.outranks($1) }
+            let notes = distinctNotes(ranked.map(\.note))
+            guard ranked.count > 1, notes.count <= 1 else { ranked.forEach { kept.insert(ObjectIdentifier($0)) }; continue }
+            let first = ranked[0]
+            if first.note?.isEmpty ?? true, let note = notes.first { first.note = note }
+            kept.insert(ObjectIdentifier(first))
+        }
+        return records.filter { kept.contains(ObjectIdentifier($0)) }
+    }
+
+    /// How many check-ins `restore` inserts for `habit`: one per day, but every record of a day
+    /// whose notes differ (`mergingDays`).
+    private static func restoredCount(of habit: BackupHabit, days decoder: DayKeyDecoder) -> Int {
+        var notesByDay: [Int: [String?]] = [:]
+        for record in habit.records {
+            guard let day = restoredDay(of: record, days: decoder)?.day else { continue }
+            notesByDay[HabitStats.dayNumber(ofKey: day), default: []].append(record.note)
+        }
+        return notesByDay.values.reduce(0) { $0 + ($1.count > 1 && distinctNotes($1).count > 1 ? $1.count : 1) }
+    }
+
+    /// The non-empty notes among `notes`, each once, in order.
+    private static func distinctNotes(_ notes: [String?]) -> [String] {
+        var seen = Set<String>()
+        return notes.compactMap { $0 }.filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
     // MARK: Preview
 
-    static func preview(of document: BackupDocument, days decoder: DayKeyDecoder = DayKeyDecoder()) -> BackupPreview {
+    /// What `restore` would bring back: `days` defaults to `dayDecoder(for: document)`.
+    static func preview(of document: BackupDocument, days decoder: DayKeyDecoder? = nil) -> BackupPreview {
+        let decoder = decoder ?? dayDecoder(for: document)
         let days = document.habits.flatMap { $0.records.compactMap { restoredDay(of: $0, days: decoder)?.day } }
         return BackupPreview(
             habits: document.habits.count,
             archivedHabits: document.habits.filter(\.isArchived).count,
-            checkIns: document.habits.reduce(0) { $0 + $1.records.count },
+            checkIns: document.habits.reduce(0) { $0 + restoredCount(of: $1, days: decoder) },
             groups: document.groups.count,
             firstDay: days.min(),
             lastDay: days.max(),
@@ -617,7 +693,10 @@ enum DataBackup {
     ///
     /// **Days a non-Gregorian device wrote before 1.4.1** (X2) — 0008-10-15 for 2026-10-15 from a
     /// Japanese-calendar phone — come back on their real day under a new id, whatever `identity`
-    /// says (`restoredDay`); `now` and `calendar` decide today and which calendar is tried first.
+    /// says (`restoredDay`, by `dayDecoder(for:)` of the whole file); `now` and `calendar` decide
+    /// today and which calendar is tried first. Where one lands on a day the file also holds under
+    /// its Gregorian key, the day is merged (`mergingDays`), and only the kept records' queued
+    /// deletions are withdrawn.
     ///
     /// The caller owns what follows: setting the store's owner (`RestoreDecision.plan.owner`),
     /// rescheduling reminders for `reminderEnabled` habits and reloading widgets — and not
@@ -635,7 +714,7 @@ enum DataBackup {
                 ? DataBackupError.newerVersion(document.schemaVersion)
                 : DataBackupError.version1Export
         }
-        let days = DayKeyDecoder(today: now, calendar: calendar)
+        let days = dayDecoder(for: document, now: now, calendar: calendar)
         try validate(document, limits: limits, days: days)
         guard try context.fetchCount(FetchDescriptor<Habit>()) == 0,
               try context.fetchCount(FetchDescriptor<HabitRecord>()) == 0,
@@ -647,7 +726,8 @@ enum DataBackup {
         let restoredAt: Date? = identity == .keepIDs ? now : nil
         // The check-ins restored under the file's own ids: only their queued deletions are
         // withdrawn below. A check-in read back from a non-Gregorian key gets a new id instead
-        // (`restoredDay`), and a deletion queued for its old id still means what it meant.
+        // (`restoredDay`), and a deletion queued for its old id still means what it meant; so does
+        // one queued for a check-in a merged day dropped (`mergingDays`).
         var keptRecordIDs: [String] = []
 
         for item in rows.groups {
@@ -680,7 +760,8 @@ enum DataBackup {
             habit.restoredAt = restoredAt
             context.insert(habit)
 
-            habit.records = item.records.compactMap { entry in
+            var fileIDs = Set<ObjectIdentifier>()
+            let records: [HabitRecord] = item.records.compactMap { entry in
                 guard let (day, decoded) = restoredDay(of: entry, days: days) else { return nil } // validated above
                 let record = HabitRecord(date: day, note: entry.note, value: entry.value)
                 // A key read back to its real day (X2) comes back as a new row: the server may hold
@@ -691,7 +772,7 @@ enum DataBackup {
                 if !decoded {
                     record.id = entry.id
                     record.restoredAt = restoredAt
-                    keptRecordIDs.append(entry.id.uuidString)
+                    fileIDs.insert(ObjectIdentifier(record))
                 }
                 // Verbatim, like the reconciler: re-deriving it through the local calendar would
                 // move it a day in any zone west of UTC.
@@ -699,6 +780,10 @@ enum DataBackup {
                 record.updatedAt = entry.updatedAt
                 return record
             }
+            // Before insertion, so a dropped duplicate never reaches the store.
+            let merged = mergingDays(records)
+            habit.records = merged
+            keptRecordIDs += merged.filter { fileIDs.contains(ObjectIdentifier($0)) }.map(\.id.uuidString)
         }
 
         do {
