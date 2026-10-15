@@ -390,7 +390,9 @@ struct HabitDetailStatsCard: View {
                     .font(.title3.bold())
                 Spacer()
                 if !typeSize.isAccessibilitySize {
+                    // Never "Edit hi…": a long name wraps instead.
                     HStack(spacing: 16) { actions }
+                        .fixedSize()
                 }
             }
             if typeSize.isAccessibilitySize {
