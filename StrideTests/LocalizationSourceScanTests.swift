@@ -223,30 +223,64 @@ final class LocalizationSourceScanTests: XCTestCase {
 
     /// The App Store descriptions (metadata/<locale>/description.txt, which push_metadata.py sends
     /// stripped): each fits App Store Connect's 4,000 characters, and each STRIDE PRO block lists
-    /// D11's three things. The English block is D11's draft copy; the others must name the
-    /// strength chart with the app's own word for Strength, and the statistics paragraph must
-    /// mention History (the plan says "fix past days in your history", never "tap").
+    /// D11's three things under the paywall's own titles. Every bullet opens with the catalog's
+    /// "Habit Groups", "Advanced Analytics" or "Weekly Review", in that order, and the locale's
+    /// separator; Advanced Analytics names Insights and the strength chart with the catalog's words
+    /// and the top 5. The statistics paragraph names the free strength score and holds the sentence
+    /// that fixes past days in History (the plan says "fix past days in your history", never
+    /// "tap"). The English block is D11's draft copy.
     func testStoreDescriptionsSellD11sProSet() throws {
-        let locales = [("en-US", "en"), ("es-ES", "es"), ("ja", "ja"), ("ko", "ko"), ("zh-Hans", "zh-Hans"), ("zh-Hant", "zh-Hant")]
-        for (locale, language) in locales {
+        // Locale, catalog, the separator between a bullet's title and its text, and the sentence
+        // that fixes past days. That sentence, not the History word: ko's 기록 is also in every
+        // 연속 기록 ("streak"), so the word alone passes with the sentence gone.
+        let locales: [(String, String, String, String)] = [
+            ("en-US", "en", " — ", "Fix past days in your history"),
+            ("es-ES", "es", ": ", "Corrige los días pasados en tu historial"),
+            ("ja", "ja", "：", "履歴から過去の日を修正"),
+            ("ko", "ko", " — ", "기록에서 지난 날을 고칠"),
+            ("zh-Hans", "zh-Hans", "：", "历史记录里修正"),
+            ("zh-Hant", "zh-Hant", "——", "歷史紀錄中修正"),
+        ]
+        let titles = ["Habit Groups", "Advanced Analytics", "Weekly Review"]
+        for (locale, language, separator, fixPastDays) in locales {
             let url = Self.repositoryRoot.appendingPathComponent("metadata/\(locale)/description.txt")
             let text = try String(contentsOf: url, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
             // UTF-16 units: never fewer than the characters App Store Connect counts.
             XCTAssertLessThanOrEqual(text.utf16.count, 4000, "\(locale): App Store Connect refuses a description over 4,000 characters")
-            let bullets = text.components(separatedBy: "\n").filter { $0.hasPrefix("• ") || $0.hasPrefix("・") || $0.hasPrefix("- ") }
+            // The bullets without their marker.
+            let bullets = text.components(separatedBy: "\n").compactMap { line -> String? in
+                for marker in ["• ", "・", "- "] where line.hasPrefix(marker) { return String(line.dropFirst(marker.count)) }
+                return nil
+            }
             XCTAssertEqual(bullets.count, 3, "\(locale): the STRIDE PRO block lists exactly Habit Groups, Advanced Analytics and Weekly Review")
             guard bullets.count == 3 else { continue }
             // The app's own words (English has no Localizable.strings: the key is the text).
             let catalog: [String: String]
-            if language == "en" { catalog = ["Strength": "Strength", "History": "History"] } else { catalog = try Self.catalog(language) }
-            let strength = try XCTUnwrap(catalog["Strength"], "\(language) has no \"Strength\"").lowercased()
-            let history = try XCTUnwrap(catalog["History"], "\(language) has no \"History\"").lowercased()
-            let lowered = text.lowercased()
-            XCTAssertTrue(bullets[1].lowercased().contains(strength) && bullets[1].contains("5"),
+            if language == "en" {
+                catalog = Dictionary(uniqueKeysWithValues: (titles + ["Insights", "Strength", "History"]).map { ($0, $0) })
+            } else {
+                catalog = try Self.catalog(language)
+            }
+            func word(_ key: String) throws -> String { try XCTUnwrap(catalog[key], "\(language) has no \"\(key)\"") }
+
+            // Each bullet opens with its paywall row's title; what follows the separator is its text.
+            var bodies: [String] = []
+            for (bullet, key) in zip(bullets, titles) {
+                let head = try word(key) + separator
+                XCTAssertTrue(bullet.hasPrefix(head), "\(locale): the \(key) bullet opens with the app's \"\(head)\": \(bullet)")
+                bodies.append(bullet.hasPrefix(head) ? String(bullet.dropFirst(head.count)) : bullet)
+            }
+            let analytics = bodies[1].lowercased()
+            let insights = try word("Insights").lowercased()
+            let strength = try word("Strength").lowercased()
+            let history = try word("History").lowercased()
+            XCTAssertTrue(analytics.contains(insights), "\(locale): Advanced Analytics names \(insights): \(bullets[1])")
+            XCTAssertTrue(analytics.contains(strength) && analytics.contains("5"),
                           "\(locale): Advanced Analytics names the \(strength) chart and the top 5 streaks: \(bullets[1])")
-            XCTAssertGreaterThanOrEqual(lowered.components(separatedBy: strength).count - 1, 2,
+            XCTAssertGreaterThanOrEqual(text.lowercased().components(separatedBy: strength).count - 1, 2,
                                         "\(locale): Strength is named twice, the free score in the statistics paragraph and the Pro chart")
-            XCTAssertTrue(lowered.contains(history), "\(locale): the statistics paragraph says past days are fixed in \(history)")
+            XCTAssertTrue(fixPastDays.lowercased().contains(history), "\(locale): the fix-past-days sentence uses the app's \(history)")
+            XCTAssertTrue(text.contains(fixPastDays), "\(locale): the statistics paragraph lacks \"\(fixPastDays)\"")
         }
 
         let en = try String(contentsOf: Self.repositoryRoot.appendingPathComponent("metadata/en-US/description.txt"), encoding: .utf8)
