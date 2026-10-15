@@ -466,7 +466,7 @@ class StoreDevice {
     func tapAndSave(_ habit: Habit, day: Int) throws -> HabitCheckIn.Result {
         let result = tap(habit, day: day)
         try save()
-        if let id = result.deletedRecordID { queueEntryDeletion(id) }
+        result.deletedRecordIDs.forEach(queueEntryDeletion)
         return result
     }
 

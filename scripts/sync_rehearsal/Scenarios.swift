@@ -684,7 +684,7 @@ struct Scenarios {
                 habit.records.append(HabitRecord(date: Scenario.day(0)))
                 try d.save()
             }
-            return untap.deletedRecordID ?? "none"
+            return untap.deletedRecordIDs.first ?? "none"
         }
 
         for mode in ["first 1.3.1 sync (no cursor)", "Full resync"] {

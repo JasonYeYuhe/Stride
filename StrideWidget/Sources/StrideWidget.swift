@@ -123,12 +123,20 @@ struct ToggleHabitIntent: AppIntent {
         // progress (6 of 8 glasses draws as an empty circle, so the tap was invited) and queued a
         // tombstone that deleted it on every other device. HabitCheckIn branches on the kind.
         let result = HabitCheckIn.tap(habit, on: Date(), in: context)
+        guard result.needsConfirmation == nil else {
+            // A checked, noted yes/no day: the widget cannot ask "Remove the check-in and its
+            // note?", so it deletes nothing (RELEASE-1.4.1.md D7). The reload draws the row checked
+            // again, undoing the toggle's own flip.
+            WidgetCenter.shared.reloadAllTimelines()
+            return .result()
+        }
 
-        // Persist first; only record the deletion tombstone for sync once the
+        // Persist first; only record the deletion tombstones for sync once the
         // save actually succeeded, so a failed save can't emit a tombstone for
-        // a record that still exists.
+        // a record that still exists. Every live record of the day goes on an
+        // un-check — two devices' duplicates too — so there can be more than one.
         try context.save()
-        if let deletedID = result.deletedRecordID {
+        for deletedID in result.deletedRecordIDs {
             SyncDeletionQueue.live.trackSharedEntry(deletedID)
         }
         WidgetCenter.shared.reloadAllTimelines()

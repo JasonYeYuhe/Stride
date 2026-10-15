@@ -634,13 +634,15 @@ struct SettingsView: View {
                 Button("Delete", role: .destructive) {
                     if let habit = habitToDelete {
                         let habitID = habit.id
-                        SyncService.shared.trackDeletedHabit(habit.id.uuidString)
-                        for record in habit.records {
-                            SyncService.shared.trackDeletedEntry(record.id.uuidString)
-                        }
+                        let entryIDs = habit.records.map { $0.id.uuidString }
                         modelContext.delete(habit)
                         do {
                             try modelContext.save()
+                            // Only once the deletion is saved (RELEASE-1.4.1.md D4): a tombstone
+                            // queued for a save that then failed deleted on the server a habit
+                            // that is still here.
+                            SyncService.shared.trackDeletedHabit(habitID.uuidString)
+                            for id in entryIDs { SyncService.shared.trackDeletedEntry(id) }
                             // Its repeating reminder outlived it: "💪 Gym — Time to work on your
                             // habit!" every morning, with no row left to open and turn it off.
                             NotificationService.shared.removeHabitReminder(for: habitID)

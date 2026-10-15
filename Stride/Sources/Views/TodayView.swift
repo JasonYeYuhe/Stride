@@ -1,6 +1,5 @@
 import SwiftUI
 import SwiftData
-import WidgetKit
 
 struct TodayView: View {
     @Environment(\.modelContext) private var modelContext
@@ -414,6 +413,8 @@ struct HabitRowView: View {
     @State private var showingEdit = false
     @State private var showingNote = false
     @State private var noteText = ""
+    /// A write waiting for the user's go (D7): asked, and only then committed again, unchanged.
+    @State private var confirming: PendingConfirmation?
 
     private var isCompleted: Bool {
         habit.isCompletedOn(date)
@@ -493,8 +494,7 @@ struct HabitRowView: View {
             }
             if isCompleted {
                 Button {
-                    noteText = todayRecord?.note ?? ""
-                    showingNote = true
+                    beginNote()
                 } label: {
                     Label(todayRecord?.note != nil ? "Edit Note" : "Add Note", systemImage: "note.text")
                 }
@@ -506,13 +506,24 @@ struct HabitRowView: View {
         .alert("Note", isPresented: $showingNote) {
             TextField("How did it go?", text: $noteText)
             Button("Save") {
-                todayRecord?.note = noteText.isEmpty ? nil : noteText
-                todayRecord?.touch()
-                try? modelContext.save()
+                perform(.note(noteText))
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Add a note for today's check-in.")
+        }
+        .alert("Remove the check-in and its note?", isPresented: isConfirming(.removeNote), presenting: confirming) { pending in
+            Button("Remove", role: .destructive) {
+                withAnimation { perform(pending.write, confirmed: pending.about) }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        .alert("This day has more than one note. Combine them into one?", isPresented: isConfirming(.combineNotes),
+               presenting: confirming) { pending in
+            Button("Combine") {
+                withAnimation { perform(pending.write, confirmed: pending.about) }
+            }
+            Button("Cancel", role: .cancel) {}
         }
         .accessibilityElement(children: .combine)
         // A ternary nested inside the interpolation would be a plain String argument, never
@@ -540,8 +551,7 @@ struct HabitRowView: View {
             }
             if isCompleted {
                 Button(todayRecord?.note != nil ? "Edit Note" : "Add Note") {
-                    noteText = todayRecord?.note ?? ""
-                    showingNote = true
+                    beginNote()
                 }
             }
         }
@@ -662,51 +672,83 @@ struct HabitRowView: View {
         .scaleEffect(justCompleted ? 1.2 : 1.0)
     }
 
-    private func toggleCompletion() {
-        // Shared with the widget, the watch and Siri — see HabitCheckIn.
-        let result = HabitCheckIn.tap(habit, on: date, in: modelContext)
-        if result.isCompleted {
-            justCompleted = true
+    // MARK: - Writes (RELEASE-1.4.1.md D4)
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                withAnimation(.easeOut(duration: 0.2)) {
-                    justCompleted = false
-                }
-            }
-
-            #if os(iOS)
-            let generator = UIImpactFeedbackGenerator(style: .medium)
-            generator.impactOccurred()
-            #endif
-        } else {
-            justCompleted = false
-        }
-        do {
-            try modelContext.save()
-            // Queue the tombstone only once the deletion is actually saved.
-            if let id = result.deletedRecordID { SyncService.shared.trackDeletedEntry(id) }
-        } catch {
-            #if DEBUG
-            print("Failed to save habit completion: \(error)")
-            #endif
-        }
-        refresh(checkedIn: result.deletedRecordID == nil)
+    /// What a row asks for. Kept while a confirmation is up, so the write the user confirms is
+    /// exactly the one they asked for — re-resolved against the store again when it runs.
+    enum RowWrite: Equatable {
+        case checked(Bool)
+        case value(Double)
+        case note(String)
     }
 
-    /// After a save: the widgets and the badge, always. A check-in goes through `CheckInEffects`
-    /// (RELEASE-1.4.0.md D4), which also ends the habit's snooze and withdraws its banners, but
-    /// only for a day those can be asking for (`CheckInEffects.endsReminders`): `date` is the week
-    /// strip's, and a backfill of Wednesday at 20:30 on Thursday must leave Thursday's snooze and
-    /// banner alone. Taking a check-in back (an un-check, a unit removed) leaves them too, since
-    /// they still ask for something not done.
-    private func refresh(checkedIn: Bool) {
-        if checkedIn {
-            CheckInEffects.afterCheckIn(habitID: habit.id, container: modelContext.container,
-                                        endsReminders: CheckInEffects.endsReminders(checkingIn: date))
-        } else {
-            WidgetCenter.shared.reloadAllTimelines()
-            NotificationService.shared.updateBadge(modelContainer: modelContext.container)
+    struct PendingConfirmation: Equatable {
+        let write: RowWrite
+        let about: HabitCheckIn.Confirmation
+    }
+
+    /// One alert per kind of question; dismissing it drops the pending write.
+    private func isConfirming(_ about: HabitCheckIn.Confirmation) -> Binding<Bool> {
+        Binding(get: { confirming?.about == about },
+                set: { if !$0 { confirming = nil } })
+    }
+
+    /// Every row write: one HabitCheckIn setter inside `HabitEntryCommit.commit`, which saves,
+    /// undoes on a failed save, queues tombstones only after it, and runs the effects (widgets,
+    /// the snooze and banners for a check-in, the badge) and the stats bump.
+    private func perform(_ write: RowWrite, confirmed: HabitCheckIn.Confirmation? = nil) {
+        let habit = self.habit
+        let date = self.date
+        let context = modelContext
+        let outcome = HabitEntryCommit.commit(habitID: habit.id, day: date, in: context) { undo in
+            switch write {
+            case .checked(let checked):
+                return HabitCheckIn.setChecked(checked, on: date, of: habit, in: context, confirmed: confirmed, undo: undo)
+            case .value(let value):
+                return HabitCheckIn.setValue(value, on: date, of: habit, in: context, confirmed: confirmed, undo: undo)
+            case .note(let text):
+                return HabitCheckIn.setNote(text, on: date, of: habit, in: context, confirmed: confirmed, undo: undo)
+            }
         }
+        switch outcome {
+        case .committed(let written):
+            guard written.isCheckIn else {
+                justCompleted = false
+                return
+            }
+            if written.isCompleted { celebrate() }
+            #if os(iOS)
+            // A yes/no check-in, or any unit added — as before 1.4.1.
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            #endif
+        case .needsConfirmation(let about):
+            confirming = PendingConfirmation(write: write, about: about)
+        case .saveFailed:
+            justCompleted = false
+        case .noChange:
+            break
+        }
+    }
+
+    private func celebrate() {
+        justCompleted = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            withAnimation(.easeOut(duration: 0.2)) { justCompleted = false }
+        }
+    }
+
+    /// The note editor opens on the note of the day's kept record — the one a write edits
+    /// (`HabitCheckIn.liveRecords(of:on:)`, `Habit.record(on:)`).
+    private func beginNote() {
+        noteText = habit.record(on: date)?.note ?? ""
+        showingNote = true
+    }
+
+    /// The row's state as the user saw it, flipped: a check the widget already took back is not
+    /// deleted again, and one checked elsewhere is not un-checked by a stale row
+    /// (`setChecked` re-reads the store and writes only what differs).
+    private func toggleCompletion() {
+        perform(.checked(!isCompleted))
     }
 
     // MARK: - Count habit logging
@@ -720,48 +762,20 @@ struct HabitRowView: View {
         return "\(logged)/\(target)\(unit)"
     }
 
+    /// The value the row shows, plus one — set, not added: the user asked for what they saw + 1.
     private func incrementCount() {
-        // A count tap adds one unit and never deletes — shared with the widget, watch and Siri.
-        if HabitCheckIn.tap(habit, on: date, in: modelContext).isCompleted {
-            justCompleted = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                withAnimation(.easeOut(duration: 0.2)) { justCompleted = false }
-            }
-        }
-        #if os(iOS)
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        #endif
-        saveAndRefresh(checkedIn: true)
+        perform(.value(habit.loggedValue(on: date) + 1))
     }
 
+    /// At 1 this deletes the day (and asks first when it carries a note, D7).
     private func decrementCount() {
-        guard let record = habit.record(on: date) else { return }
-        if record.value <= 1 {
-            SyncService.shared.trackDeletedEntry(record.id.uuidString)
-            modelContext.delete(record)
-        } else {
-            record.value -= 1
-            record.touch()
-        }
-        saveAndRefresh(checkedIn: false)
+        let shown = habit.loggedValue(on: date)
+        guard shown > 0 else { return }
+        perform(.value(max(0, shown - 1)))
     }
 
     private func resetCount() {
-        guard let record = habit.record(on: date) else { return }
-        SyncService.shared.trackDeletedEntry(record.id.uuidString)
-        modelContext.delete(record)
-        saveAndRefresh(checkedIn: false)
-    }
-
-    private func saveAndRefresh(checkedIn: Bool) {
-        do {
-            try modelContext.save()
-        } catch {
-            #if DEBUG
-            print("Failed to save count update: \(error)")
-            #endif
-        }
-        refresh(checkedIn: checkedIn)
+        perform(.value(0))
     }
 }
 

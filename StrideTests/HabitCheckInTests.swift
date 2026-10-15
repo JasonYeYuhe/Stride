@@ -47,12 +47,12 @@ final class HabitCheckInTests: XCTestCase {
         context.insert(habit)
 
         let first = HabitCheckIn.tap(habit, on: today, in: context)
-        XCTAssertEqual(first, .init(deletedRecordID: nil, isCompleted: true, loggedValue: 1))
+        XCTAssertEqual(first, .init(isCompleted: true, loggedValue: 1))
         try context.save()
         let recordID = try XCTUnwrap(habit.record(on: today)).id.uuidString
 
         let second = HabitCheckIn.tap(habit, on: today, in: context)
-        XCTAssertEqual(second, .init(deletedRecordID: recordID, isCompleted: false, loggedValue: 0))
+        XCTAssertEqual(second, .init(deletedRecordIDs: [recordID], isCompleted: false, loggedValue: 0))
         try context.save()
 
         // Re-fetch before asserting, as the app always does (@Query, and a fresh ModelContext per
@@ -65,7 +65,7 @@ final class HabitCheckInTests: XCTestCase {
 
         // And a third tap checks it again — it must not 'delete' a ghost of the old record.
         let third = HabitCheckIn.tap(refetched, on: today, in: context)
-        XCTAssertEqual(third, .init(deletedRecordID: nil, isCompleted: true, loggedValue: 1))
+        XCTAssertEqual(third, .init(isCompleted: true, loggedValue: 1))
     }
 
     // MARK: - Count habits (the widget / watch bug)
@@ -79,7 +79,7 @@ final class HabitCheckInTests: XCTestCase {
         let result = HabitCheckIn.tap(habit, on: today, in: context)
         try context.save()
 
-        XCTAssertNil(result.deletedRecordID, "a count tap must never delete, or queue a tombstone")
+        XCTAssertTrue(result.deletedRecordIDs.isEmpty, "a count tap must never delete, or queue a tombstone")
         XCTAssertEqual(result.loggedValue, 7)
         XCTAssertFalse(result.isCompleted)
         XCTAssertEqual(recordsToday(habit).count, 1)
@@ -89,7 +89,7 @@ final class HabitCheckInTests: XCTestCase {
     func testCountTapOnAnEmptyDayStartsAtOne() throws {
         let habit = try countHabit(target: 8, logged: nil)
         let result = HabitCheckIn.tap(habit, on: today, in: context)
-        XCTAssertEqual(result, .init(deletedRecordID: nil, isCompleted: false, loggedValue: 1))
+        XCTAssertEqual(result, .init(isCompleted: false, loggedValue: 1))
         XCTAssertEqual(recordsToday(habit).count, 1)
     }
 
@@ -176,12 +176,12 @@ final class HabitCheckInTests: XCTestCase {
         try context.save()
 
         let untap = HabitCheckIn.tap(habit, on: today, in: context)
-        let untappedID = try XCTUnwrap(untap.deletedRecordID)
+        let untappedID = try XCTUnwrap(untap.deletedRecordIDs.first)
         try context.save()
         XCTAssertTrue(try storedToday(habit).isEmpty)
 
         let retap = HabitCheckIn.tap(habit, on: today, in: context)
-        XCTAssertEqual(retap, .init(deletedRecordID: nil, isCompleted: true, loggedValue: 1),
+        XCTAssertEqual(retap, .init(isCompleted: true, loggedValue: 1),
                        "the re-tap checks the day; it must not delete the old record a second time")
         try context.save()
 
@@ -191,7 +191,7 @@ final class HabitCheckInTests: XCTestCase {
 
         // And the next tap unchecks THAT record.
         let third = HabitCheckIn.tap(habit, on: today, in: context)
-        XCTAssertEqual(third.deletedRecordID, stored.first?.id.uuidString)
+        XCTAssertEqual(third.deletedRecordIDs, stored.map(\.id.uuidString))
         try context.save()
         XCTAssertTrue(try storedToday(habit).isEmpty)
     }
@@ -207,7 +207,7 @@ final class HabitCheckInTests: XCTestCase {
         try context.save()
 
         let result = HabitCheckIn.tap(habit, on: today, in: context)
-        XCTAssertEqual(result, .init(deletedRecordID: nil, isCompleted: false, loggedValue: 1))
+        XCTAssertEqual(result, .init(isCompleted: false, loggedValue: 1))
         try context.save()
 
         let stored = try storedToday(habit)
@@ -259,11 +259,11 @@ final class HabitCheckInTests: XCTestCase {
         let widget = ModelContext(container)
         let habitID = habit.id
         let widgetHabit = try XCTUnwrap(widget.fetch(FetchDescriptor<Habit>(predicate: #Predicate { $0.id == habitID })).first)
-        XCTAssertNotNil(HabitCheckIn.tap(widgetHabit, on: today, in: widget).deletedRecordID)
+        XCTAssertEqual(HabitCheckIn.tap(widgetHabit, on: today, in: widget).deletedRecordIDs.count, 1)
         try widget.save()
 
         let appTap = HabitCheckIn.tap(habit, on: today, in: context)
-        XCTAssertEqual(appTap, .init(deletedRecordID: nil, isCompleted: true, loggedValue: 1))
+        XCTAssertEqual(appTap, .init(isCompleted: true, loggedValue: 1))
         try context.save()
         XCTAssertEqual(try storedToday(habit).count, 1)
     }
@@ -284,7 +284,7 @@ final class HabitCheckInTests: XCTestCase {
             return result
         }
         XCTAssertFalse(try widgetTap().isCompleted)
-        XCTAssertEqual(try widgetTap(), .init(deletedRecordID: nil, isCompleted: true, loggedValue: 1))
+        XCTAssertEqual(try widgetTap(), .init(isCompleted: true, loggedValue: 1))
         XCTAssertEqual(try storedToday(habit).count, 1)
     }
 
@@ -299,7 +299,7 @@ final class HabitCheckInTests: XCTestCase {
         let result = try XCTUnwrap(HabitCheckIn.fromReminder(habit, on: today, in: context))
         try context.save()
 
-        XCTAssertEqual(result, .init(deletedRecordID: nil, isCompleted: true, loggedValue: 1))
+        XCTAssertEqual(result, .init(isCompleted: true, loggedValue: 1))
         XCTAssertEqual(try storedToday(habit).count, 1)
     }
 
@@ -326,7 +326,7 @@ final class HabitCheckInTests: XCTestCase {
         let result = try XCTUnwrap(HabitCheckIn.fromReminder(habit, on: today, in: context))
         try context.save()
 
-        XCTAssertEqual(result, .init(deletedRecordID: nil, isCompleted: false, loggedValue: 4))
+        XCTAssertEqual(result, .init(isCompleted: false, loggedValue: 4))
         XCTAssertEqual(try storedToday(habit).map(\.id), [recordID])
         XCTAssertEqual(try storedToday(habit).first?.value, 4)
     }
@@ -338,7 +338,7 @@ final class HabitCheckInTests: XCTestCase {
         XCTAssertEqual(HabitCheckIn.fromReminder(full, on: today, in: context)?.loggedValue, 9)
         let empty = try countHabit(target: 8, logged: nil)
         XCTAssertEqual(HabitCheckIn.fromReminder(empty, on: today, in: context),
-                       .init(deletedRecordID: nil, isCompleted: false, loggedValue: 1))
+                       .init(isCompleted: false, loggedValue: 1))
     }
 
     /// The design review's data-loss case ("stale-category-addone-untoggles-binary"): a count
@@ -403,5 +403,527 @@ final class HabitCheckInTests: XCTestCase {
 
         XCTAssertEqual(habit.records.map(\.date), [fifteenth])
         XCTAssertNil(habit.record(on: delivered), "tomorrow untouched")
+    }
+}
+
+/// The D4 setters (RELEASE-1.4.1.md D4, D7, Data safety 1 and 2; 2026-10-15 decision 7): every
+/// setter on an empty day, one record, a ghost, a record another context deleted, and same-day
+/// duplicates; no-ops that leave the stamp alone; and the confirmation on every path that would
+/// delete a note. Host-less: what HabitEntryCommit adds (the save, its undo, the tombstones after
+/// it) is StrideAppTests/HabitEntryCommitTests, apart from the journal itself (bottom).
+@MainActor
+final class HabitCheckInSetterTests: XCTestCase {
+
+    var container: ModelContainer!
+    var context: ModelContext!
+    let today = HabitCalendar.utc.date(from: DateComponents(year: 2026, month: 9, day: 16))!
+
+    override func setUp() {
+        super.setUp()
+        let schema = Schema([Habit.self, HabitRecord.self, HabitGroup.self])
+        container = try! ModelContainer(for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        context = container.mainContext
+    }
+
+    override func tearDown() {
+        container = nil
+        context = nil
+        super.tearDown()
+    }
+
+    // MARK: Helpers
+
+    /// A saved habit whose day `today` holds `records` (in that insertion order).
+    private func habit(_ kind: HabitKind = .binary, target: Double = 8, records: [HabitRecord] = []) throws -> Habit {
+        let habit = Habit(name: kind == .count ? "Drink Water" : "Meditate")
+        habit.habitKind = kind
+        if kind == .count { habit.targetValue = target }
+        context.insert(habit)
+        for record in records { habit.records.append(record) }
+        try context.save()
+        return habit
+    }
+
+    private func record(value: Double = 1, note: String? = nil, stampOffset: TimeInterval = 0) -> HabitRecord {
+        let record = HabitRecord(date: today, note: note, value: value)
+        record.updatedAt = SyncTimestamp.floorToMillisecond(Date(timeIntervalSince1970: 1_790_000_000 + stampOffset))
+        return record
+    }
+
+    /// The habit's records for `today` as the STORE holds them, through a fresh context.
+    private func stored(_ habit: Habit) throws -> [HabitRecord] {
+        let id = habit.id
+        let fresh = ModelContext(container)
+        let found = try fresh.fetch(FetchDescriptor<Habit>(predicate: #Predicate { $0.id == id })).first
+        return (found?.records ?? []).filter { HabitCalendar.record($0.date, isOnSameDayAs: today) }
+    }
+
+    private struct NotWritten: Error, CustomStringConvertible {
+        let change: HabitCheckIn.Change
+        var description: String { "expected a write, got \(change)" }
+    }
+
+    /// The setter's write; a thrown error (failing the test) when it wrote nothing.
+    private func written(_ change: HabitCheckIn.Change) throws -> HabitCheckIn.Written {
+        guard case .changed(let written) = change else { throw NotWritten(change: change) }
+        return written
+    }
+
+    // MARK: No record
+
+    func testSettersOnAnEmptyDay() throws {
+        let yesNo = try habit()
+        XCTAssertEqual(HabitCheckIn.setChecked(false, on: today, of: yesNo, in: context), .noChange)
+        XCTAssertEqual(HabitCheckIn.setValue(0, on: today, of: yesNo, in: context), .noChange)
+        XCTAssertEqual(HabitCheckIn.setNote("a note", on: today, of: yesNo, in: context), .noChange,
+                       "never a note-only yes/no record (D7)")
+        XCTAssertEqual(HabitCheckIn.setChecked(nil, on: today, of: yesNo, in: context), .noChange)
+        XCTAssertFalse(context.hasChanges)
+
+        let checked = try written(HabitCheckIn.setChecked(true, on: today, of: yesNo, in: context))
+        XCTAssertEqual(checked, .init(deletedRecordIDs: [], isCompleted: true, loggedValue: 1, isCheckIn: true))
+        try context.save()
+        XCTAssertEqual(try stored(yesNo).map(\.value), [1])
+
+        let count = try habit(.count)
+        XCTAssertEqual(HabitCheckIn.setValue(0, on: today, of: count, in: context), .noChange, "never a value-0 record")
+        XCTAssertEqual(HabitCheckIn.setValue(-3, on: today, of: count, in: context), .noChange)
+        XCTAssertEqual(HabitCheckIn.setValue(.nan, on: today, of: count, in: context), .noChange)
+        XCTAssertEqual(HabitCheckIn.setValue(.infinity, on: today, of: count, in: context), .noChange)
+        XCTAssertEqual(HabitCheckIn.setNote("x", on: today, of: count, in: context), .noChange)
+        let three = try written(HabitCheckIn.setValue(3, on: today, of: count, in: context))
+        XCTAssertEqual(three, .init(deletedRecordIDs: [], isCompleted: false, loggedValue: 3, isCheckIn: true))
+        try context.save()
+        XCTAssertEqual(try stored(count).map(\.value), [3])
+    }
+
+    // MARK: One record
+
+    func testANoOpLeavesTheStampAlone() throws {
+        let yesNo = try habit(records: [record(note: "felt good")])
+        let count = try habit(.count, records: [record(value: 5, note: "kept")])
+        let yesNoStamp = try XCTUnwrap(yesNo.records.first?.updatedAt)
+        let countStamp = try XCTUnwrap(count.records.first?.updatedAt)
+
+        XCTAssertEqual(HabitCheckIn.setChecked(true, on: today, of: yesNo, in: context), .noChange)
+        XCTAssertEqual(HabitCheckIn.setValue(1, on: today, of: yesNo, in: context), .noChange)
+        XCTAssertEqual(HabitCheckIn.setNote("felt good", on: today, of: yesNo, in: context), .noChange)
+        XCTAssertEqual(HabitCheckIn.setNote(nil, on: today, of: yesNo, in: context), .noChange)
+        XCTAssertEqual(HabitCheckIn.setValue(5, on: today, of: count, in: context), .noChange)
+        XCTAssertEqual(HabitCheckIn.setValue(nil, on: today, of: count, in: context), .noChange)
+        XCTAssertEqual(HabitCheckIn.setChecked(false, on: today, of: count, in: context), .noChange,
+                       "5 of 8 is already not checked: its units are left alone")
+        XCTAssertEqual(HabitCheckIn.setNote("kept", on: today, of: count, in: context), .noChange)
+
+        XCTAssertFalse(context.hasChanges)
+        XCTAssertEqual(yesNo.records.first?.updatedAt, yesNoStamp)
+        XCTAssertEqual(count.records.first?.updatedAt, countStamp)
+    }
+
+    /// An edit moves the stamp, so the row is pending again (SyncDelivery.swift `isPending`).
+    func testAnEditChangesTheStampAndMakesTheRowPending() throws {
+        let count = try habit(.count, records: [record(value: 2)])
+        let kept = try XCTUnwrap(count.records.first)
+        kept.acknowledge(sentStamp: kept.stamp)
+        try context.save()
+        XCTAssertFalse(kept.isPending)
+        let before = kept.stamp
+
+        let four = try written(HabitCheckIn.setValue(4, on: today, of: count, in: context))
+        XCTAssertEqual(four, .init(deletedRecordIDs: [], isCompleted: false, loggedValue: 4, isCheckIn: true))
+        XCTAssertGreaterThan(kept.stamp, before)
+        XCTAssertTrue(kept.isPending)
+        try context.save()
+
+        kept.acknowledge(sentStamp: kept.stamp)
+        let noted = try written(HabitCheckIn.setNote("after lunch", on: today, of: count, in: context))
+        XCTAssertFalse(noted.isCheckIn, "a note is not a check-in")
+        XCTAssertTrue(kept.isPending)
+        try context.save()
+        XCTAssertEqual(try stored(count).map(\.note), ["after lunch"])
+
+        let lower = try written(HabitCheckIn.setValue(3, on: today, of: count, in: context))
+        XCTAssertFalse(lower.isCheckIn, "a lower value is not a check-in")
+        let cleared = try written(HabitCheckIn.setNote("", on: today, of: count, in: context))
+        XCTAssertEqual(cleared.loggedValue, 3)
+        try context.save()
+        XCTAssertEqual(try stored(count).map(\.note), [nil])
+        XCTAssertEqual(try stored(count).map(\.id), [kept.id], "the same record throughout")
+    }
+
+    func testUncheckingDeletesTheRecordAndReturnsItsID() throws {
+        let yesNo = try habit(records: [record()])
+        let id = try XCTUnwrap(yesNo.records.first).id.uuidString
+        XCTAssertEqual(try written(HabitCheckIn.setChecked(false, on: today, of: yesNo, in: context)),
+                       .init(deletedRecordIDs: [id], isCompleted: false, loggedValue: 0, isCheckIn: false))
+        try context.save()
+        XCTAssertTrue(try stored(yesNo).isEmpty)
+
+        let count = try habit(.count, records: [record(value: 8)])
+        let countID = try XCTUnwrap(count.records.first).id.uuidString
+        XCTAssertEqual(try written(HabitCheckIn.setChecked(false, on: today, of: count, in: context)).deletedRecordIDs,
+                       [countID], "a complete count day un-checked is deleted")
+        try context.save()
+        XCTAssertTrue(try stored(count).isEmpty)
+    }
+
+    func testCheckingACountHabitRaisesItToTheTargetAndNeverLowersIt() throws {
+        let count = try habit(.count, records: [record(value: 3)])
+        XCTAssertEqual(try written(HabitCheckIn.setChecked(true, on: today, of: count, in: context)).loggedValue, 8)
+        let over = try habit(.count, records: [record(value: 11)])
+        XCTAssertEqual(HabitCheckIn.setChecked(true, on: today, of: over, in: context), .noChange)
+    }
+
+    // MARK: Deleting a noted check-in asks first (D7), on every path
+
+    func testDeletingANotedRecordNeedsConfirmationOnEveryPath() throws {
+        let yesNo = try habit(records: [record(note: "ran in the rain")])
+        let count = try habit(.count, records: [record(value: 1, note: "one glass, at last")])
+
+        // Today's toggle and History's un-check.
+        XCTAssertEqual(HabitCheckIn.setChecked(false, on: today, of: yesNo, in: context), .needsConfirmation(.removeNote))
+        // The stepper to 0 and Today's decrement at 1.
+        XCTAssertEqual(HabitCheckIn.setValue(0, on: today, of: count, in: context), .needsConfirmation(.removeNote))
+        XCTAssertEqual(HabitCheckIn.setValue(0, on: today, of: yesNo, in: context), .needsConfirmation(.removeNote))
+        // Reset (Today's resetCount is setValue(0)) on a day well past 1.
+        let full = try habit(.count, records: [record(value: 8, note: "all eight")])
+        XCTAssertEqual(HabitCheckIn.setValue(0, on: today, of: full, in: context), .needsConfirmation(.removeNote))
+        XCTAssertEqual(HabitCheckIn.setChecked(false, on: today, of: full, in: context), .needsConfirmation(.removeNote))
+        // The widget's tap on a noted yes/no row: it cannot ask, so it writes nothing.
+        let tap = HabitCheckIn.tap(yesNo, on: today, in: context)
+        XCTAssertEqual(tap, .init(isCompleted: true, loggedValue: 1, needsConfirmation: .removeNote))
+        XCTAssertFalse(context.hasChanges, "nothing was written on any path")
+
+        // Confirmed, the delete goes ahead.
+        let id = try XCTUnwrap(yesNo.records.first).id.uuidString
+        XCTAssertEqual(try written(HabitCheckIn.setChecked(false, on: today, of: yesNo, in: context, confirmed: .removeNote)).deletedRecordIDs,
+                       [id])
+        // A confirmation for something else is not this one.
+        XCTAssertEqual(HabitCheckIn.setValue(0, on: today, of: count, in: context, confirmed: .combineNotes),
+                       .needsConfirmation(.removeNote))
+        XCTAssertEqual(try written(HabitCheckIn.setValue(0, on: today, of: count, in: context, confirmed: .removeNote)).loggedValue, 0)
+        try context.save()
+        XCTAssertTrue(try stored(yesNo).isEmpty)
+        XCTAssertTrue(try stored(count).isEmpty)
+        XCTAssertEqual(try stored(full).map(\.note), ["all eight"])
+    }
+
+    /// A decrement above 1 keeps the record and its note: no question.
+    func testANotedCountDaySteppedDownButNotToZeroAsksNothing() throws {
+        let count = try habit(.count, records: [record(value: 3, note: "kept")])
+        XCTAssertEqual(try written(HabitCheckIn.setValue(2, on: today, of: count, in: context)).loggedValue, 2)
+        XCTAssertEqual(count.records.first?.note, "kept")
+    }
+
+    // MARK: Ghosts and another context's deletion
+
+    /// Deleted and saved in this context: the Habit still lists it, with no context.
+    func testSettersOnAGhostActOnTheStore() throws {
+        let yesNo = try habit(records: [record()])
+        let ghost = try XCTUnwrap(yesNo.records.first)
+        let ghostID = ghost.id
+        context.delete(ghost)
+        try context.save()
+        XCTAssertTrue(yesNo.records.contains { $0 === ghost }, "the ghost is still listed")
+
+        XCTAssertEqual(HabitCheckIn.setChecked(false, on: today, of: yesNo, in: context), .noChange,
+                       "no second deletion of the ghost, no second tombstone")
+        XCTAssertEqual(HabitCheckIn.setNote("x", on: today, of: yesNo, in: context), .noChange)
+        XCTAssertEqual(try written(HabitCheckIn.setChecked(true, on: today, of: yesNo, in: context)).deletedRecordIDs, [])
+        try context.save()
+        let stored = try stored(yesNo)
+        XCTAssertEqual(stored.count, 1, "setChecked on a ghost creates a fresh record")
+        XCTAssertNotEqual(stored.first?.id, ghostID)
+
+        let count = try habit(.count, records: [record(value: 6)])
+        let countGhost = try XCTUnwrap(count.records.first)
+        context.delete(countGhost)
+        try context.save()
+        XCTAssertEqual(try written(HabitCheckIn.setValue(2, on: today, of: count, in: context)).loggedValue, 2,
+                       "a fresh record at the value asked, not the ghost's 6 + anything")
+        try context.save()
+        XCTAssertEqual(try self.stored(count).map(\.value), [2])
+    }
+
+    /// The widget's pattern, without the app ever having read the record: the app's context
+    /// loaded the habit and its records as faults, the widget deleted the record and saved in a
+    /// context of its own. Any read of the record's date there would fault (W1, "Crash safety");
+    /// every setter asks the store first, so none crashes, and each acts on what the store holds.
+    func testARecordDeletedByAnotherContextNeitherCrashesNorCounts() throws {
+        let seeded = try habit(records: [record()])
+        let countSeeded = try habit(.count, records: [record(value: 4)])
+        let ids = [seeded.id, countSeeded.id]
+
+        let app = ModelContext(container)
+        let appHabits = try app.fetch(FetchDescriptor<Habit>(predicate: #Predicate { ids.contains($0.id) }))
+        let yesNo = try XCTUnwrap(appHabits.first { $0.id == seeded.id })
+        let count = try XCTUnwrap(appHabits.first { $0.id == countSeeded.id })
+        XCTAssertEqual(yesNo.records.count + count.records.count, 2)   // faults; no attribute read
+
+        let widget = ModelContext(container)
+        for habit in try widget.fetch(FetchDescriptor<Habit>()) {
+            for record in habit.records { widget.delete(record) }
+        }
+        try widget.save()
+
+        XCTAssertEqual(HabitCheckIn.setChecked(false, on: today, of: yesNo, in: app), .noChange)
+        XCTAssertEqual(HabitCheckIn.setValue(0, on: today, of: count, in: app), .noChange)
+        XCTAssertEqual(HabitCheckIn.setNote("x", on: today, of: yesNo, in: app), .noChange)
+        XCTAssertEqual(HabitCheckIn.setChecked(nil, on: today, of: count, in: app), .noChange)
+        XCTAssertNil(HabitCheckIn.liveRecords(of: count, on: today).first)
+        XCTAssertEqual(try written(HabitCheckIn.setValue(1, on: today, of: count, in: app)).loggedValue, 1)
+        XCTAssertEqual(HabitCheckIn.tap(yesNo, on: today, in: app), .init(isCompleted: true, loggedValue: 1))
+        try app.save()
+        XCTAssertEqual(try stored(yesNo).count, 1)
+        XCTAssertEqual(try stored(count).map(\.value), [1])
+    }
+
+    /// Another context saved the record after this one loaded it — a reminder's Add 1, Siri, the
+    /// widget. A ModelContext does not take that in, and its save writes the object's whole state,
+    /// so the setters adopt the store's fields first: a note written here keeps the other
+    /// context's unit, and a value written here keeps the other context's note.
+    func testAWriteKeepsWhatAnotherContextSavedSince() throws {
+        let count = try habit(.count, records: [record(value: 3, note: "mine")])
+        let kept = try XCTUnwrap(count.records.first)
+        XCTAssertEqual(kept.value, 3)   // read here, as Today's row has
+
+        let id = count.id
+        let other = ModelContext(container)
+        let theirs = try XCTUnwrap(other.fetch(FetchDescriptor<Habit>(predicate: #Predicate { $0.id == id })).first?.records.first)
+        theirs.value = 4                 // the reminder's Add 1
+        theirs.note = "theirs"
+        theirs.touch()
+        try other.save()
+        let theirStamp = theirs.stamp
+
+        let noted = try written(HabitCheckIn.setNote("theirs, then mine", on: today, of: count, in: context))
+        XCTAssertEqual(noted.loggedValue, 4)
+        XCTAssertGreaterThan(kept.stamp, theirStamp, "the new stamp follows the stored one")
+        try context.save()
+        XCTAssertEqual(try stored(count).map(\.value), [4], "the other context's unit is kept")
+        XCTAssertEqual(try stored(count).map(\.note), ["theirs, then mine"])
+
+        theirs.note = "theirs again"
+        theirs.touch()
+        try other.save()
+        _ = try written(HabitCheckIn.setValue(6, on: today, of: count, in: context))
+        try context.save()
+        XCTAssertEqual(try stored(count).map(\.note), ["theirs again"], "the other context's note is kept")
+
+        // Already what the store holds once adopted: no write, no stamp.
+        theirs.value = 9
+        theirs.touch()
+        try other.save()
+        XCTAssertEqual(HabitCheckIn.setValue(9, on: today, of: count, in: context), .noChange)
+        XCTAssertEqual(kept.value, 9)
+    }
+
+    // MARK: Same-day duplicates (decision 7)
+
+    /// [2, 8] → setValue(3): the record D2 reads (8) is kept and set to 3, the other deleted —
+    /// whichever was inserted first, and whichever comes first in `records` after the save.
+    func testDuplicatesMergeIntoTheKeptRecordInBothOrders() throws {
+        for order in [[2.0, 8.0], [8.0, 2.0]] {
+            let records = order.map { record(value: $0) }
+            let count = try habit(.count, records: records)
+            let keptID = try XCTUnwrap(records.first { $0.value == 8 }).id
+            let otherID = try XCTUnwrap(records.first { $0.value == 2 }).id
+
+            let three = try written(HabitCheckIn.setValue(3, on: today, of: count, in: context))
+            XCTAssertEqual(three, .init(deletedRecordIDs: [otherID.uuidString], isCompleted: false, loggedValue: 3,
+                                        isCheckIn: false), "order \(order)")
+            try context.save()
+            let stored = try stored(count)
+            XCTAssertEqual(stored.map(\.value), [3], "order \(order)")
+            XCTAssertEqual(stored.map(\.id), [keptID], "order \(order): the 8 is the one kept")
+        }
+    }
+
+    /// Equal values: the newer stamp is kept, as D2 reads it.
+    func testEqualDuplicatesKeepTheNewerStamp() throws {
+        let older = record(value: 4, stampOffset: 0)
+        let newer = record(value: 4, stampOffset: 60)
+        let count = try habit(.count, records: [newer, older])
+        XCTAssertEqual(try written(HabitCheckIn.setValue(5, on: today, of: count, in: context)).deletedRecordIDs,
+                       [older.id.uuidString])
+        try context.save()
+        XCTAssertEqual(try stored(count).map(\.id), [newer.id])
+    }
+
+    func testUncheckingAYesNoDayWithTwoRecordsDeletesBoth() throws {
+        let records = [record(stampOffset: 0), record(stampOffset: 5)]
+        let yesNo = try habit(records: records)
+        let change = try written(HabitCheckIn.setChecked(false, on: today, of: yesNo, in: context))
+        XCTAssertEqual(Set(change.deletedRecordIDs), Set(records.map(\.id.uuidString)))
+        XCTAssertEqual(change.deletedRecordIDs.count, 2)
+        try context.save()
+        XCTAssertTrue(try stored(yesNo).isEmpty, "none left: one survivor would keep the day checked")
+    }
+
+    /// Any setter merges first — even one with nothing else to do.
+    func testANoOpSetterStillMergesTheDay() throws {
+        let records = [record(stampOffset: 0), record(stampOffset: 5)]
+        let yesNo = try habit(records: records)
+        let merged = try written(HabitCheckIn.setChecked(true, on: today, of: yesNo, in: context))
+        XCTAssertEqual(merged, .init(deletedRecordIDs: [records[0].id.uuidString], isCompleted: true, loggedValue: 1,
+                                     isCheckIn: false))
+        try context.save()
+        XCTAssertEqual(try stored(yesNo).map(\.id), [records[1].id])
+    }
+
+    /// One note among the duplicates moves onto the kept record; the same note twice is one.
+    func testOneNoteMovesOntoTheKeptRecord() throws {
+        let kept = record(value: 8)
+        let other = record(value: 2, note: "from the iPad")
+        let count = try habit(.count, records: [other, kept])
+        XCTAssertEqual(try written(HabitCheckIn.setValue(9, on: today, of: count, in: context)).deletedRecordIDs,
+                       [other.id.uuidString])
+        try context.save()
+        let stored = try stored(count)
+        XCTAssertEqual(stored.map(\.id), [kept.id])
+        XCTAssertEqual(stored.map(\.note), ["from the iPad"])
+
+        let same = try habit(records: [record(note: "same", stampOffset: 0), record(note: "same", stampOffset: 9)])
+        XCTAssertEqual(try written(HabitCheckIn.setChecked(true, on: today, of: same, in: context)).deletedRecordIDs.count, 1)
+        try context.save()
+        XCTAssertEqual(try self.stored(same).map(\.note), ["same"])
+    }
+
+    /// Two different notes: asked first, on every setter; confirmed, joined one per line, the
+    /// kept record's first.
+    func testTwoDifferentNotesNeedConfirmationThenCombine() throws {
+        let kept = record(value: 8, note: "phone: after the run")
+        let other = record(value: 2, note: "iPad: before bed")
+        let count = try habit(.count, records: [other, kept])
+
+        XCTAssertEqual(HabitCheckIn.setValue(3, on: today, of: count, in: context), .needsConfirmation(.combineNotes))
+        XCTAssertEqual(HabitCheckIn.setChecked(true, on: today, of: count, in: context), .needsConfirmation(.combineNotes))
+        XCTAssertEqual(HabitCheckIn.setValue(nil, on: today, of: count, in: context), .needsConfirmation(.combineNotes))
+        XCTAssertEqual(HabitCheckIn.setNote("new", on: today, of: count, in: context), .needsConfirmation(.combineNotes))
+        XCTAssertEqual(HabitCheckIn.setValue(3, on: today, of: count, in: context, confirmed: .removeNote),
+                       .needsConfirmation(.combineNotes))
+        XCTAssertFalse(context.hasChanges)
+
+        let combined = try written(HabitCheckIn.setValue(3, on: today, of: count, in: context, confirmed: .combineNotes))
+        XCTAssertEqual(combined.deletedRecordIDs, [other.id.uuidString])
+        try context.save()
+        let stored = try stored(count)
+        XCTAssertEqual(stored.map(\.id), [kept.id])
+        XCTAssertEqual(stored.map(\.value), [3])
+        XCTAssertEqual(stored.map(\.note), ["phone: after the run\niPad: before bed"])
+    }
+
+    /// Writing a note over the kept record's keeps another record's different note, on confirmation.
+    func testANewNoteOnADuplicateDayKeepsTheOtherNote() throws {
+        let kept = record(value: 1, note: "mine", stampOffset: 9)
+        let other = record(value: 1, note: "theirs", stampOffset: 0)
+        let yesNo = try habit(records: [other, kept])
+        XCTAssertEqual(HabitCheckIn.setNote("edited", on: today, of: yesNo, in: context), .needsConfirmation(.combineNotes))
+        _ = try written(HabitCheckIn.setNote("edited", on: today, of: yesNo, in: context, confirmed: .combineNotes))
+        try context.save()
+        XCTAssertEqual(try stored(yesNo).map(\.note), ["edited\ntheirs"])
+
+        // The other record's note equal to the new text: nothing to ask.
+        let again = try habit(records: [record(note: "theirs", stampOffset: 0), record(note: "mine", stampOffset: 9)])
+        XCTAssertEqual(try written(HabitCheckIn.setNote("theirs", on: today, of: again, in: context)).deletedRecordIDs.count, 1)
+    }
+
+    /// Unchecking a duplicate day where any record carries a note asks to remove it.
+    func testUncheckingADuplicateDayWithANoteAsks() throws {
+        let yesNo = try habit(records: [record(stampOffset: 0), record(note: "noted", stampOffset: 5)])
+        XCTAssertEqual(HabitCheckIn.setChecked(false, on: today, of: yesNo, in: context), .needsConfirmation(.removeNote))
+        XCTAssertEqual(HabitCheckIn.tap(yesNo, on: today, in: context).needsConfirmation, .removeNote)
+        XCTAssertEqual(try written(HabitCheckIn.setChecked(false, on: today, of: yesNo, in: context, confirmed: .removeNote))
+                        .deletedRecordIDs.count, 2)
+    }
+
+    // MARK: The tap on duplicates
+
+    /// The widget's un-check deletes every record of the day; its count tap adds to the kept one
+    /// and deletes nothing.
+    func testTheTapActsOnTheKeptRecord() throws {
+        let yesNoRecords = [record(stampOffset: 0), record(stampOffset: 5)]
+        let yesNo = try habit(records: yesNoRecords)
+        let untap = HabitCheckIn.tap(yesNo, on: today, in: context)
+        XCTAssertEqual(Set(untap.deletedRecordIDs), Set(yesNoRecords.map(\.id.uuidString)))
+        XCTAssertFalse(untap.isCompleted)
+        try context.save()
+        XCTAssertTrue(try stored(yesNo).isEmpty)
+
+        let small = record(value: 2), large = record(value: 7)
+        let count = try habit(.count, records: [small, large])
+        let tap = HabitCheckIn.tap(count, on: today, in: context)
+        XCTAssertEqual(tap, .init(isCompleted: true, loggedValue: 8))
+        try context.save()
+        XCTAssertEqual(try stored(count).map(\.value).sorted(), [2, 8], "the 7 gained the unit; nothing deleted")
+        XCTAssertEqual(HabitCheckIn.markDone(count, on: today, in: context), nil, "8 of 8 is done")
+    }
+
+    // MARK: The journal (HabitEntryCommit's undo)
+
+    /// Each kind of change, reverted: the store ends exactly as it was, every field included.
+    func testTheJournalTakesBackDeletesEditsAndInserts() throws {
+        let noted = record(value: 1, note: "keep me")
+        noted.acknowledge(sentStamp: noted.stamp)
+        let yesNo = try habit(records: [noted])
+        let before = (id: noted.id, value: noted.value, note: noted.note, stamp: noted.updatedAt, synced: noted.syncedAt)
+
+        let undo = HabitCheckIn.Undo()
+        _ = try written(HabitCheckIn.setChecked(false, on: today, of: yesNo, in: context, confirmed: .removeNote, undo: undo))
+        undo.revert(in: context)
+        XCTAssertTrue(undo.isEmpty)
+        try context.save()
+        let back = try XCTUnwrap(try stored(yesNo).first)
+        XCTAssertEqual(try stored(yesNo).count, 1)
+        XCTAssertEqual(back.id, before.id)
+        XCTAssertEqual(back.value, before.value)
+        XCTAssertEqual(back.note, before.note)
+        XCTAssertEqual(back.updatedAt, before.stamp)
+        XCTAssertEqual(back.syncedAt, before.synced)
+        XCTAssertFalse(back.isPending, "re-inserted as it was: nothing for sync to send")
+
+        let count = try habit(.count, records: [record(value: 3, note: "three")])
+        let kept = try XCTUnwrap(count.records.first)
+        let stamp = kept.updatedAt
+        let edit = HabitCheckIn.Undo()
+        _ = try written(HabitCheckIn.setValue(5, on: today, of: count, in: context, undo: edit))
+        _ = try written(HabitCheckIn.setNote("five", on: today, of: count, in: context, undo: edit))
+        edit.revert(in: context)
+        XCTAssertEqual(kept.value, 3)
+        XCTAssertEqual(kept.note, "three")
+        XCTAssertEqual(kept.updatedAt, stamp)
+
+        let empty = try habit(.count)
+        let insert = HabitCheckIn.Undo()
+        _ = try written(HabitCheckIn.setValue(2, on: today, of: empty, in: context, undo: insert))
+        insert.revert(in: context)
+        try context.save()
+        XCTAssertTrue(try stored(empty).isEmpty)
+        XCTAssertNil(empty.record(on: today))
+    }
+
+    /// An edit then a delete of the same record in one journal brings it back as it was BEFORE the
+    /// edit; an insert then a delete leaves nothing.
+    func testTheJournalComposesWithinOneCommit() throws {
+        let count = try habit(.count, records: [record(value: 3, note: "three")])
+        let kept = try XCTUnwrap(count.records.first)
+        let stamp = kept.updatedAt
+        let undo = HabitCheckIn.Undo()
+        _ = try written(HabitCheckIn.setValue(5, on: today, of: count, in: context, undo: undo))
+        _ = try written(HabitCheckIn.setValue(0, on: today, of: count, in: context, confirmed: .removeNote, undo: undo))
+        undo.revert(in: context)
+        try context.save()
+        let back = try XCTUnwrap(try stored(count).first)
+        XCTAssertEqual(back.value, 3)
+        XCTAssertEqual(back.note, "three")
+        XCTAssertEqual(back.updatedAt, stamp)
+
+        let empty = try habit()
+        let twice = HabitCheckIn.Undo()
+        _ = try written(HabitCheckIn.setChecked(true, on: today, of: empty, in: context, undo: twice))
+        _ = try written(HabitCheckIn.setChecked(false, on: today, of: empty, in: context, undo: twice))
+        XCTAssertTrue(twice.isEmpty)
+        try context.save()
+        XCTAssertTrue(try stored(empty).isEmpty)
     }
 }
