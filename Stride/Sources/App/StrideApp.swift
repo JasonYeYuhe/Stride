@@ -38,6 +38,10 @@ struct StrideApp: App {
         // terminated app in the background with no scene at all, and its response goes to whoever
         // is the delegate when launch finishes. After the store open, which the handler writes to.
         NotificationActionHandler.install()
+        // Statistics' cache (RELEASE-1.4.1.md D3): its save, day, zone and activation observers,
+        // for the process and not for a window, on both platforms — a scene-less save (that
+        // reminder action, Siri) must reach it as surely as a window's.
+        StatsCache.shared.installObservers()
         #if os(iOS)
         // The background refresh's launch handler (RELEASE-1.4.0.md D5), here for the same reason:
         // registration must be complete before launch finishes, and a refresh launches the app in
@@ -169,9 +173,17 @@ struct StrideApp: App {
         .environment(\.locale, languageManager.locale ?? .current)
     }
 
-    /// The app itself, over the opened store.
+    /// The app itself, over the opened store, in a window of its own: the window's shell is made
+    /// here (`WindowShell`) rather than inside ContentView, so a URL the window receives can ask it
+    /// to present History (`openURL`).
     private func app(over modelContainer: ModelContainer) -> some View {
-        ContentView()
+        WindowShell { shell in
+            window(over: modelContainer, shell: shell)
+        }
+    }
+
+    private func window(over modelContainer: ModelContainer, shell: ShellState) -> some View {
+        ContentView(shell: shell)
             .task {
                 // Entitlements FIRST. Transaction.currentEntitlements is a local read that works
                 // offline and returns in milliseconds. It used to be the last of four awaits,
@@ -226,10 +238,14 @@ struct StrideApp: App {
             // AuthService ignores a second delivery of the same tap. Links that fail to
             // open the app (Gmail's link proxy, in-app mail browsers) land on the /login
             // page with the token to paste, as before.
-            .onOpenURL { url in handleLoginLink(url, modelContainer) }
+            //
+            // And since 1.4.1 a checked, noted widget row: `stride://history?…` opens that habit's
+            // History (D7). The two never meet (`AppURLRoute`): a history link goes nowhere near
+            // AuthService, and only a login link's exact shape reaches it.
+            .onOpenURL { url in openURL(url, shell: shell, modelContainer) }
             .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
                 guard let url = activity.webpageURL else { return }
-                handleLoginLink(url, modelContainer)
+                openURL(url, shell: shell, modelContainer)
             }
             // Deliver links to the window that is already open. Without this, macOS opens a
             // second main window for every incoming URL (WindowGroup's default).
@@ -327,6 +343,40 @@ struct StrideApp: App {
     /// The SyncServices a foreground pass is under way for (`syncIfLoggedIn`).
     @MainActor private static var foregroundPasses: Set<ObjectIdentifier> = []
 
+    /// A URL handed to this window: History for a history link, the sign-in path for a login
+    /// link, nothing for anything else (`AppURLRoute`).
+    @MainActor
+    private func openURL(_ url: URL, shell: ShellState, _ modelContainer: ModelContainer) {
+        switch AppURLRoute.of(url, calendar: .current) {
+        case .history:
+            // Over whatever else the window shows, except a menu Export in progress (the Mac's;
+            // the widget that sends these is iOS-only): the request is a sheet the shell presents.
+            if case .export = shell.request { return }
+            if let request = Self.historyRequest(for: url, in: modelContainer.mainContext) {
+                shell.request = request
+            }
+        case .signIn:
+            handleLoginLink(url, modelContainer)
+        case .other:
+            break
+        }
+    }
+
+    /// The shell request a history link asks for (`ShellRequest.history`), or nil: not a history
+    /// link, or its habit is not here (deleted, archived, or never synced to this device) — then
+    /// the app just opens. A day after today opens on today (History never shows a future day,
+    /// D8). Static, for the hosted tests.
+    @MainActor
+    static func historyRequest(for url: URL, in context: ModelContext, now: Date = Date(),
+                               calendar: Calendar = .current) -> ShellRequest? {
+        guard case .history(let habitID, let day) = AppURLRoute.of(url, calendar: calendar) else { return nil }
+        let descriptor = FetchDescriptor<Habit>(predicate: #Predicate { $0.id == habitID && !$0.isArchived })
+        guard let count = try? context.fetchCount(descriptor), count > 0 else { return nil }
+        let opensOn = HabitCalendar.dayKey(forInstant: day, calendar: calendar)
+            > HabitCalendar.dayKey(forInstant: now, calendar: calendar) ? now : day
+        return .history(habitID: habitID, day: opensOn)
+    }
+
     /// Signs in from a login link when signed out, then syncs — the same sync SettingsView runs
     /// when `isLoggedIn` turns true, needed here because Settings may not be on screen (or, on
     /// macOS, open at all). SyncService ignores the second of two overlapping syncs.
@@ -368,6 +418,16 @@ struct StrideApp: App {
         // Re-schedule per-habit reminders
         NotificationService.shared.rescheduleAllHabitReminders(modelContainer: modelContainer)
     }
+}
+
+/// One window's shell, made for the window and handed to its ContentView (which would otherwise
+/// make its own, `ContentView.init(shell:)`), so the window's URL handlers can set its request.
+/// `@State`, so each window has its own and keeps it for the window's life, as ContentView's did.
+private struct WindowShell<Content: View>: View {
+    @State private var shell = ShellState()
+    @ViewBuilder let content: (ShellState) -> Content
+
+    var body: some View { content(shell) }
 }
 
 #if os(macOS)

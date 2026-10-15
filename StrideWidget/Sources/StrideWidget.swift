@@ -17,6 +17,9 @@ extension WidgetTimelinePlan.Row {
 
 struct HabitEntry: TimelineEntry {
     let date: Date
+    /// The habit-day the rows describe (the plan's `Entry.dayKey`): the midnight entry's is
+    /// tomorrow's. A noted row's History link opens on it.
+    let dayKey: Date
     let habits: [HabitSnapshot]
     /// The store is not the widget's to open yet: the app has not opened it at this schema
     /// (`StoreSchemaGate` — a fresh install, or an upgrade whose migration only the app may run;
@@ -32,14 +35,15 @@ struct HabitEntry: TimelineEntry {
         return Double(completedCount) / Double(totalCount)
     }
 
-    init(date: Date, habits: [HabitSnapshot], isWaitingForApp: Bool = false) {
+    init(date: Date, dayKey: Date? = nil, habits: [HabitSnapshot], isWaitingForApp: Bool = false) {
         self.date = date
+        self.dayKey = dayKey ?? WidgetTimelinePlan.dayKey(of: date, in: .current)
         self.habits = habits
         self.isWaitingForApp = isWaitingForApp
     }
 
     init(_ planned: WidgetTimelinePlan.Entry) {
-        self.init(date: planned.date, habits: planned.rows)
+        self.init(date: planned.date, dayKey: planned.dayKey, habits: planned.rows)
     }
 
     /// The one line under the ring: small and large widgets. Each phrase is its own key.
@@ -125,8 +129,9 @@ struct ToggleHabitIntent: AppIntent {
         let result = HabitCheckIn.tap(habit, on: Date(), in: context)
         guard result.needsConfirmation == nil else {
             // A checked, noted yes/no day: the widget cannot ask "Remove the check-in and its
-            // note?", so it deletes nothing (RELEASE-1.4.1.md D7). The reload draws the row checked
-            // again, undoing the toggle's own flip.
+            // note?", so it deletes nothing (RELEASE-1.4.1.md D7). Such a row is drawn as a link to
+            // History (`HabitRowView`), so this is a timeline drawn before the note arrived — by
+            // sync, or from the app. The reload draws the row checked again, and as that link.
             WidgetCenter.shared.reloadAllTimelines()
             return .result()
         }
@@ -295,7 +300,7 @@ struct MediumWidgetView: View {
                 let displayHabits = Array(entry.habits.prefix(4))
 
                 ForEach(displayHabits) { habit in
-                    HabitRowView(habit: habit, font: .caption)
+                    HabitRowView(habit: habit, dayKey: entry.dayKey, font: .caption)
                 }
 
                 if entry.habits.count > 4 {
@@ -421,7 +426,7 @@ struct LargeWidgetView: View {
                 VStack(alignment: .leading, spacing: 7) {
                     ForEach(shown.dropFirst(column * rowsPerColumn).prefix(rowsPerColumn)) { habit in
                         // At the largest sizes the badge squeezed the name to one letter.
-                        HabitRowView(habit: habit, font: .subheadline, showsStreak: !isHuge)
+                        HabitRowView(habit: habit, dayKey: entry.dayKey, font: .subheadline, showsStreak: !isHuge)
                     }
                     if column == columns - 1, layout.more > 0 {
                         Text("+\(layout.more) more")
@@ -445,13 +450,28 @@ struct LargeWidgetView: View {
 /// A count habit stays a `Button` — its tap adds one unit (`HabitCheckIn.tap`), which is not an
 /// on/off switch, and drawing it as one would promise that a second tap clears the day. That
 /// promise is the bug 1.2.3 fixed: the widget's tap used to delete a count habit's whole day.
+///
+/// A checked yes/no row whose day has a note is neither (RELEASE-1.4.1.md D7): un-checking it
+/// would delete the note, and the extension cannot ask "Remove the check-in and its note?". It is
+/// a `Link` that opens the app on that habit's History for the row's day (`HistoryLink`), where
+/// the un-check asks. Drawn exactly like the checked toggle, so nothing moves.
 struct HabitRowView: View {
     let habit: HabitSnapshot
+    /// The day the row describes: its entry's (`HabitEntry.dayKey`).
+    let dayKey: Date
     var font: Font = .caption
     var showsStreak = false
 
     var body: some View {
-        if habit.isCount {
+        if let history = HistoryLink.url(for: habit, dayKey: dayKey) {
+            Link(destination: history) {
+                HabitRowLabel(habit: habit, isOn: true, font: font, showsStreak: showsStreak)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(habit.name), completed")
+            .accessibilityValue(streakPhrase)
+            .accessibilityHint("Opens History")
+        } else if habit.isCount {
             Button(intent: ToggleHabitIntent(habitId: habit.habitId)) {
                 HabitRowLabel(habit: habit, isOn: habit.isCompleted, font: font, showsStreak: showsStreak)
             }

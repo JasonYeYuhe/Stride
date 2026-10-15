@@ -927,3 +927,163 @@ final class HabitCheckInSetterTests: XCTestCase {
         XCTAssertTrue(try stored(empty).isEmpty)
     }
 }
+
+/// The widget's noted row and its app route (RELEASE-1.4.1.md D7): `HistoryLink` builds and
+/// parses `stride://history?habit=<UUID>&day=<yyyy-MM-dd>`, and `AppURLRoute` keeps it apart from
+/// the sign-in link. Anything that opens a URL can reach the app, so the rejections matter as much
+/// as the round trip — and a login link must still route to sign-in, never to History.
+final class HistoryLinkTests: XCTestCase {
+
+    private let habitID = UUID(uuidString: "6F9619FF-8B86-D011-B42D-00C04FC964FF")!
+    private let token = "3f2b8c1e9a7d4c05b6e1f0a2d3c4b5a69788f1e2d3c4b5a6978801a2b3c4d5e6"
+
+    private func calendar(_ zone: String) -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: zone)!
+        return calendar
+    }
+
+    private func key(_ year: Int, _ month: Int, _ day: Int) -> Date {
+        HabitCalendar.utc.date(from: DateComponents(year: year, month: month, day: day))!
+    }
+
+    /// A string Foundation cannot parse fails the test instead of counting as a rejection.
+    private func target(_ string: String, file: StaticString = #filePath,
+                        line: UInt = #line) -> (habitID: UUID, day: Date)? {
+        guard let url = URL(string: string) else {
+            XCTFail("not a URL: \(string)", file: file, line: line)
+            return nil
+        }
+        return HistoryLink.target(of: url, calendar: calendar("America/Los_Angeles"))
+    }
+
+    // MARK: - The link
+
+    func testTheLinkNamesTheHabitAndTheKeysDate() {
+        XCTAssertEqual(HistoryLink.url(habitID: habitID, dayKey: key(2026, 9, 16)).absoluteString,
+                       "stride://history?habit=6F9619FF-8B86-D011-B42D-00C04FC964FF&day=2026-09-16")
+    }
+
+    /// The day comes back as noon of that date in the device's calendar — a local instant, what
+    /// `ShellRequest.history` takes — and keys back to the same day in every zone, including on a
+    /// day a DST change shortens (Los Angeles, 2026-03-08) and lengthens (2026-11-01), and across
+    /// the date line.
+    func testItRoundTripsInEveryZone() throws {
+        for zone in ["America/Los_Angeles", "Asia/Tokyo", "UTC", "Pacific/Kiritimati", "Pacific/Pago_Pago"] {
+            let calendar = calendar(zone)
+            for dayKey in [key(2026, 9, 16), key(2026, 3, 8), key(2026, 11, 1), key(2024, 2, 29), key(2026, 12, 31)] {
+                let url = HistoryLink.url(habitID: habitID, dayKey: dayKey)
+                let parsed = try XCTUnwrap(HistoryLink.target(of: url, calendar: calendar), "\(zone) \(dayKey)")
+                XCTAssertEqual(parsed.habitID, habitID)
+                XCTAssertEqual(HabitCalendar.dayKey(forInstant: parsed.day, calendar: calendar), dayKey, zone)
+                XCTAssertEqual(calendar.component(.hour, from: parsed.day), 12, zone)
+                XCTAssertEqual(AppURLRoute.of(url, calendar: calendar), .history(habitID: habitID, day: parsed.day))
+            }
+        }
+    }
+
+    /// A lower-case id is the same habit, and the scheme and host are case-insensitive.
+    func testCaseDoesNotMatterWhereURLsIgnoreIt() {
+        XCTAssertEqual(target("stride://history?habit=6f9619ff-8b86-d011-b42d-00c04fc964ff&day=2026-09-16")?.habitID, habitID)
+        XCTAssertEqual(target("STRIDE://History?habit=6F9619FF-8B86-D011-B42D-00C04FC964FF&day=2026-09-16")?.habitID, habitID)
+        XCTAssertNotNil(target("stride://history?day=2026-09-16&habit=6F9619FF-8B86-D011-B42D-00C04FC964FF"), "either order")
+    }
+
+    func testAnythingButExactlyOneHistoryLinkIsRejected() {
+        let id = habitID.uuidString
+        let rejected = [
+            "https://history?habit=\(id)&day=2026-09-16",                       // another scheme
+            "stridex://history?habit=\(id)&day=2026-09-16",
+            "stride://login?habit=\(id)&day=2026-09-16",                        // another host
+            "stride://history/?habit=\(id)&day=2026-09-16",                     // a path
+            "stride://history/x?habit=\(id)&day=2026-09-16",
+            "stride://history:80?habit=\(id)&day=2026-09-16",                   // a port
+            "stride://me@history?habit=\(id)&day=2026-09-16",                   // a user
+            "stride://history?habit=\(id)&day=2026-09-16#x",                    // a fragment
+            "stride://history?habit=\(id)",                                     // an item missing
+            "stride://history?day=2026-09-16",
+            "stride://history",
+            "stride://history?habit=\(id)&habit=\(id)&day=2026-09-16",          // twice
+            "stride://history?habit=\(id)&day=2026-09-16&day=2026-09-16",
+            "stride://history?habit=\(id)&day=2026-09-16&utm=1",                // an extra item
+            "stride://history?habit=&day=2026-09-16",                           // empty values
+            "stride://history?habit=\(id)&day=",
+            "stride://history?habit&day=2026-09-16",
+            "stride://history?habit=not-a-uuid&day=2026-09-16",
+            "stride://history?habit=6F9619FF8B86D011B42D00C04FC964FF&day=2026-09-16",   // no dashes
+            "stride://history?habit=%7B\(id)%7D&day=2026-09-16",                // braces
+            "stride://history?habit=\(id)&day=2026-9-16",                       // the date's shape
+            "stride://history?habit=\(id)&day=20260916",
+            "stride://history?habit=\(id)&day=2026-09-16T12:00",
+            "stride://history?habit=\(id)&day=%202026-09-16",
+            "stride://history?habit=\(id)&day=2026-09-1x",
+            "stride://history?habit=\(id)&day=%EF%BC%92026-09-16",              // a full-width digit
+            "stride://history?habit=\(id)&day=2026-02-30",                      // dates that do not exist
+            "stride://history?habit=\(id)&day=2026-02-29",
+            "stride://history?habit=\(id)&day=2026-13-01",
+            "stride://history?habit=\(id)&day=2026-00-10",
+            "stride://history?habit=\(id)&day=2026-04-31",
+            "stride://history?habit=\(id)&day=0000-01-01",
+        ]
+        for string in rejected {
+            XCTAssertNil(target(string), string)
+        }
+    }
+
+    // MARK: - Kept apart from sign-in
+
+    /// A login link still routes to sign-in, never to History; a history link never to sign-in;
+    /// and neither shape on the other's scheme or host is taken for either.
+    func testALoginLinkStillRoutesToSignIn() throws {
+        let calendar = calendar("America/Los_Angeles")
+        func route(_ string: String) throws -> AppURLRoute {
+            AppURLRoute.of(try XCTUnwrap(URL(string: string), string), calendar: calendar)
+        }
+        XCTAssertEqual(try route("https://stride-api.colorarchive.me/login?token=\(token)"), .signIn)
+        XCTAssertEqual(try route("HTTPS://Stride-API.ColorArchive.me/login?utm_source=mail&token=\(token)"), .signIn)
+        guard case .history = try route("stride://history?habit=\(habitID.uuidString)&day=2026-09-16") else {
+            return XCTFail("a history link opens History")
+        }
+        XCTAssertEqual(try route("stride://login?token=\(token)"), .other, "the custom scheme never signs in")
+        XCTAssertEqual(try route("stride://history?token=\(token)"), .other)
+        XCTAssertEqual(try route("https://stride-api.colorarchive.me/history?habit=\(habitID.uuidString)&day=2026-09-16"),
+                       .other, "History is never reached over https")
+        XCTAssertEqual(try route("https://stride-api.colorarchive.me/login?token=\(token)&habit=\(habitID.uuidString)&day=2026-09-16"),
+                       .signIn, "a login link with extra items is still only a login link")
+        XCTAssertEqual(try route("https://example.com/"), .other)
+    }
+
+    // MARK: - Which widget rows open it
+
+    private func row(isCount: Bool = false, isCompleted: Bool = true, hasNote: Bool = true,
+                     id: String? = nil) -> WidgetTimelinePlan.Row {
+        WidgetTimelinePlan.Row(habitId: id ?? habitID.uuidString, name: "Read", emoji: "📚", colorHex: "#007AFF",
+                               isCount: isCount, isCompleted: isCompleted, progress: isCompleted ? 1 : 0,
+                               streak: 3, streakInWeeks: false, hasNote: hasNote)
+    }
+
+    /// Only a checked, noted yes/no row: un-checking it from the extension would delete the note.
+    /// A count row's tap adds one and never deletes, so it stays a button; an unchecked or
+    /// note-less row stays a toggle.
+    func testOnlyACheckedNotedYesNoRowOpensHistory() {
+        let day = key(2026, 9, 16)
+        XCTAssertEqual(HistoryLink.url(for: row(), dayKey: day), HistoryLink.url(habitID: habitID, dayKey: day))
+        XCTAssertNil(HistoryLink.url(for: row(hasNote: false), dayKey: day))
+        XCTAssertNil(HistoryLink.url(for: row(isCompleted: false), dayKey: day))
+        XCTAssertNil(HistoryLink.url(for: row(isCount: true), dayKey: day))
+        XCTAssertNil(HistoryLink.url(for: row(id: "1"), dayKey: day), "the gallery's placeholder rows")
+    }
+
+    /// The link of the plan's midnight entry names tomorrow, the day that entry shows.
+    func testTheMidnightEntrysRowsLinkToTheirOwnDay() throws {
+        let calendar = calendar("America/Los_Angeles")
+        let now = calendar.date(from: DateComponents(year: 2026, month: 9, day: 16, hour: 21))!
+        let input = WidgetTimelinePlan.RowInput(habitId: habitID.uuidString, name: "Read", emoji: "📚",
+                                                colorHex: "#007AFF", isCount: false, streakInWeeks: false,
+                                                status: { _ in .init(isCompleted: true, progress: 1, streak: 1, hasNote: true) })
+        let plan = WidgetTimelinePlan(now: now, calendar: calendar, rows: [input])
+        let urls = plan.entries.map { HistoryLink.url(for: $0.rows[0], dayKey: $0.dayKey)?.absoluteString }
+        XCTAssertEqual(urls, ["stride://history?habit=\(habitID.uuidString)&day=2026-09-16",
+                              "stride://history?habit=\(habitID.uuidString)&day=2026-09-17"])
+    }
+}

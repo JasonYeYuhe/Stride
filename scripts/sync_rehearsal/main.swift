@@ -38,6 +38,12 @@ func main() async -> Int32 {
         ("S21 account screen", scenarios.accountScreen),
         ("S22 owner unknown → Upload", scenarios.accountScreenUnknownOwnerUpload),
         ("S23 same day, two ids → uncheck", scenarios.sameDayOnTwoDevicesThenUncheck),
+        // M4 (1.4.1): History's past-day edits, RELEASE-1.4.1.md Data safety 2.
+        ("M1 past-day edit, pulled by B", scenarios.pastDayEditPulledByB),
+        ("M2 past-day untap + re-tap", scenarios.pastDayUntapAndReTap),
+        ("M3 last-writer-wins note", scenarios.lastWriterWinsNoteEdit),
+        ("M4 record before createdAt", scenarios.recordBeforeCreatedAt),
+        ("M5 stale cursor keeps the note", scenarios.staleCursorKeepsTheNote),
         // Last: its sweep takes every tombstone in the throwaway database.
         ("S24 migrated marks, no list", scenarios.migratedMarksWithNoList),
     ]

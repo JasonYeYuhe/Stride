@@ -345,3 +345,93 @@ final class HabitEntryCommitTests: XCTestCase {
         XCTAssertEqual(stored.first?.note, long)
     }
 }
+
+/// The app's half of the widget's noted row (RELEASE-1.4.1.md D7): the history link the row opens
+/// becomes the shell request that presents that habit's History on that day
+/// (`StrideApp.historyRequest`, which `.onOpenURL` hands to the window's shell) — and only a habit
+/// that is here and not archived does; anything else opens the app as it is. The sign-in path
+/// never sees a history link, and a login link never becomes a history request.
+@MainActor
+final class HistoryRouteTests: XCTestCase {
+
+    private var container: ModelContainer!
+    private var context: ModelContext!
+
+    private var calendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        return calendar
+    }
+    /// 2026-09-16 21:00 in Los Angeles: already the 17th in UTC.
+    private var now: Date { calendar.date(from: DateComponents(year: 2026, month: 9, day: 16, hour: 21))! }
+
+    override func setUp() {
+        super.setUp()
+        let schema = Schema([Habit.self, HabitRecord.self, HabitGroup.self])
+        container = try! ModelContainer(for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        context = container.mainContext
+    }
+
+    override func tearDown() {
+        context = nil
+        container = nil
+        super.tearDown()
+    }
+
+    private func key(_ year: Int, _ month: Int, _ day: Int) -> Date {
+        HabitCalendar.utc.date(from: DateComponents(year: year, month: month, day: day))!
+    }
+
+    private func request(_ url: URL) -> ShellRequest? {
+        StrideApp.historyRequest(for: url, in: context, now: now, calendar: calendar)
+    }
+
+    private func habit(archived: Bool = false) throws -> Habit {
+        let habit = Habit(name: "Read")
+        habit.isArchived = archived
+        context.insert(habit)
+        try context.save()
+        return habit
+    }
+
+    /// The day-key of the day the request opens History on, if it is a history request for `habit`.
+    private func openedDay(_ habit: Habit, _ dayKey: Date) -> Date? {
+        guard case .history(let id, let day)? = request(HistoryLink.url(habitID: habit.id, dayKey: dayKey)),
+              id == habit.id else { return nil }
+        return HabitCalendar.dayKey(forInstant: day, calendar: calendar)
+    }
+
+    func testAHistoryLinkOpensThatHabitsHistoryOnThatDay() throws {
+        let habit = try habit()
+        XCTAssertEqual(openedDay(habit, key(2026, 9, 12)), key(2026, 9, 12),
+                       "the row's day, as a local instant in the device's zone")
+        XCTAssertEqual(openedDay(habit, key(2026, 9, 16)), key(2026, 9, 16),
+                       "today in Los Angeles, though UTC is on the 17th")
+    }
+
+    /// History never shows a future day (D8): a link to one opens on today.
+    func testADayAfterTodayOpensOnToday() throws {
+        let habit = try habit()
+        XCTAssertEqual(openedDay(habit, key(2026, 9, 17)), key(2026, 9, 16))
+        XCTAssertEqual(openedDay(habit, key(2026, 9, 20)), key(2026, 9, 16))
+    }
+
+    /// Deleted, archived, or never synced here: the app just opens.
+    func testAHabitThatIsNotHereOpensTheAppAsItIs() throws {
+        XCTAssertNil(request(HistoryLink.url(habitID: UUID(), dayKey: key(2026, 9, 12))))
+        let archived = try habit(archived: true)
+        XCTAssertNil(request(HistoryLink.url(habitID: archived.id, dayKey: key(2026, 9, 12))))
+    }
+
+    /// A login link is the sign-in path's, never a history request; a malformed history link is
+    /// nobody's.
+    func testALoginLinkIsNeverAHistoryRequest() throws {
+        let habit = try habit()
+        let login = try XCTUnwrap(URL(string: "https://stride-api.colorarchive.me/login?token=3f2b8c1e9a7d4c05b6e1f0a2d3c4b5a69788f1e2d3c4b5a6978801a2b3c4d5e6"))
+        XCTAssertNil(request(login))
+        XCTAssertEqual(AppURLRoute.of(login, calendar: calendar), .signIn)
+        let malformed = try XCTUnwrap(URL(string: "stride://history?habit=\(habit.id.uuidString)&day=2026-02-30"))
+        XCTAssertNil(request(malformed))
+        XCTAssertEqual(AppURLRoute.of(malformed, calendar: calendar), .other)
+    }
+}

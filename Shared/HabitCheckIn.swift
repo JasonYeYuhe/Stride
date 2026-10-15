@@ -576,3 +576,111 @@ enum HabitCheckIn {
         }
     }
 }
+
+// MARK: - The widget's noted row (D7)
+
+/// The link a checked, noted widget row opens instead of toggling (RELEASE-1.4.1.md D7):
+/// `stride://history?habit=<UUID>&day=<yyyy-MM-dd>`, which the app answers by showing that habit's
+/// History on that day (`ShellRequest.history`). The extension cannot ask "Remove the check-in and
+/// its note?", so it never un-checks such a row (`HabitCheckIn.tap` writes nothing there); the
+/// user un-checks it in History, which asks.
+///
+/// A custom scheme, and deliberately not registered (no `CFBundleURLTypes`): WidgetKit hands a
+/// widget's `Link` URL to its own containing app, whatever the scheme, so nothing else — another
+/// app, a web page — can route into History. It carries no secret either way, unlike the sign-in
+/// link, which is why that one is a universal link (`LoginLink`) and this is kept apart from it:
+/// `AppURLRoute` sends exactly this shape to History and nothing else.
+///
+/// Pure and in Shared/: the widget builds it, the app parses it, and StrideTests pins both.
+enum HistoryLink {
+    static let scheme = "stride"
+    static let host = "history"
+
+    /// The link for `habitID` on `dayKey` (a day-key: UTC midnight, `HabitCalendar`).
+    static func url(habitID: UUID, dayKey: Date) -> URL {
+        var components = URLComponents()
+        components.scheme = scheme
+        components.host = host
+        components.queryItems = [URLQueryItem(name: "habit", value: habitID.uuidString),
+                                 URLQueryItem(name: "day", value: dayString(of: dayKey))]
+        return components.url!
+    }
+
+    /// The link a widget row opens, or nil while the row stays a toggle: only a yes/no row that is
+    /// checked and has a note (a count row's tap adds one and never deletes, `HabitCheckIn.tap`).
+    static func url(for row: WidgetTimelinePlan.Row, dayKey: Date) -> URL? {
+        guard !row.isCount, row.isCompleted, row.hasNote, let habitID = UUID(uuidString: row.habitId) else { return nil }
+        return url(habitID: habitID, dayKey: dayKey)
+    }
+
+    /// The habit and the day of a history link — the day as a local instant (noon of that date in
+    /// `calendar`), which is what `ShellRequest.history(habitID:day:)` takes — or nil for every URL
+    /// that is not exactly one: this scheme and host, no user, password, port, path or fragment,
+    /// and exactly the two items, each once, a UUID and a real `yyyy-MM-dd` date.
+    static func target(of url: URL, calendar: Calendar) -> (habitID: UUID, day: Date)? {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              components.scheme?.lowercased() == scheme,
+              components.host?.lowercased() == host,
+              components.user == nil, components.password == nil, components.port == nil,
+              components.percentEncodedPath.isEmpty, components.fragment == nil,
+              let items = components.queryItems, items.count == 2,
+              items.filter({ $0.name == "habit" }).count == 1, items.filter({ $0.name == "day" }).count == 1,
+              let habitValue = items.first(where: { $0.name == "habit" })?.value, habitValue.count == 36,
+              let habitID = UUID(uuidString: habitValue),
+              let dayValue = items.first(where: { $0.name == "day" })?.value,
+              let date = dateParts(dayValue)
+        else { return nil }
+        // Noon: it exists on every civil day (a DST change happens at night), so the instant is on
+        // that date in `calendar` whatever the zone.
+        guard let instant = calendar.date(from: DateComponents(year: date.year, month: date.month, day: date.day, hour: 12)),
+              case let c = calendar.dateComponents([.year, .month, .day], from: instant),
+              c.year == date.year, c.month == date.month, c.day == date.day
+        else { return nil }
+        return (habitID, instant)
+    }
+
+    /// `yyyy-MM-dd` of a day-key, in UTC (the key's own date).
+    static func dayString(of dayKey: Date) -> String {
+        let c = HabitCalendar.utc.dateComponents([.year, .month, .day], from: HabitCalendar.startOfKey(dayKey))
+        return String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)
+    }
+
+    /// Exactly four, two and two ASCII digits with dashes, naming a date that exists.
+    private static func dateParts(_ text: String) -> (year: Int, month: Int, day: Int)? {
+        let scalars = Array(text.unicodeScalars)
+        guard scalars.count == 10, scalars[4] == "-", scalars[7] == "-" else { return nil }
+        func number(_ range: Range<Int>) -> Int? {
+            var value = 0
+            for scalar in scalars[range] {
+                guard ("0"..."9").contains(scalar) else { return nil }
+                value = value * 10 + Int(scalar.value - 48)
+            }
+            return value
+        }
+        guard let year = number(0..<4), let month = number(5..<7), let day = number(8..<10),
+              (1970...9999).contains(year), (1...12).contains(month), (1...31).contains(day),
+              let date = HabitCalendar.utc.date(from: DateComponents(year: year, month: month, day: day)),
+              case let c = HabitCalendar.utc.dateComponents([.year, .month, .day], from: date),
+              c.year == year, c.month == month, c.day == day
+        else { return nil }
+        return (year, month, day)
+    }
+}
+
+/// Where a URL handed to the app goes (StrideApp's `.onOpenURL` and universal-link handlers).
+/// History and sign-in are kept apart: a history link (`HistoryLink`, the custom scheme) only ever
+/// opens History and never reaches AuthService; a sign-in link (`LoginLink`, https on our host) only
+/// ever signs in. The shapes are disjoint, and anything that is neither opens the app as it is.
+enum AppURLRoute: Equatable {
+    case history(habitID: UUID, day: Date)
+    case signIn
+    /// Neither: the app opens as it is.
+    case other
+
+    static func of(_ url: URL, calendar: Calendar) -> AppURLRoute {
+        if let target = HistoryLink.target(of: url, calendar: calendar) {
+            return .history(habitID: target.habitID, day: target.day)
+        }
+        return LoginLink.token(from: url) != nil ? .signIn : .other
+    }
+}
