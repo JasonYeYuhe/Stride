@@ -21,6 +21,9 @@ struct StatsView: View {
     @State private var showingWeeklyReview = false
     @State private var showingPaywall = false
     private var store = StoreService.shared
+    /// Every number on this screen comes from here (RELEASE-1.4.1.md D3), read once per render
+    /// and handed down — never kept across renders.
+    @Environment(\.statsCache) private var cache
     #if DEBUG
     /// Counts this view's creations for the hosted shell tests (`ShellTabLifetime`).
     @StateObject private var lifetime: ShellTabLifetime
@@ -48,15 +51,16 @@ struct StatsView: View {
     #if DEBUG
     @State private var didScrollToLaunchAnchor = false
 
-    /// `-statsScrollTo detail|insights|trend|weekday|heatmap` scrolls to that card once, on launch,
-    /// so scripts/a11y_sweep.sh can capture what sits below the fold. `simctl` has no touch input,
-    /// and at accessibility-XXXL the charts this release made scale (acceptance (4)) start two
-    /// screens down — the first sweep's PNGs proved the top of the screen only. DEBUG-only for the
-    /// same reason as ContentView's `-paywall`, and it draws nothing: the anchors are `.id`s that
-    /// a release build never compiles.
+    /// `-statsScrollTo detail|insights|trend|strength|beststreaks|weekday|heatmap` scrolls to that
+    /// card once, on launch, so scripts/a11y_sweep.sh can capture what sits below the fold.
+    /// `simctl` has no touch input, and at accessibility-XXXL the charts this release made scale
+    /// (acceptance (4)) start two screens down — the first sweep's PNGs proved the top of the
+    /// screen only. DEBUG-only for the same reason as ContentView's `-paywall`, and it draws
+    /// nothing: the anchors are `.id`s that a release build never compiles.
     ///
-    /// Insights and the trend are Pro-only. Without Pro both anchors land on the locked card that
-    /// replaces them, so a sweep on a simulator with no purchase shows that card twice.
+    /// Insights, the trend, strength and the best streaks (1.4.1, D10) are Pro-only. Without Pro
+    /// each of those anchors lands on the locked card that replaces them, so a sweep on a
+    /// simulator with no purchase shows that card four times.
     ///
     /// "On launch" means when this view is created. With `-tab 1` that is the launch on every
     /// layout; since 1.4.0 the regular-width shell creates Stats on its first visit, and this
@@ -68,7 +72,7 @@ struct StatsView: View {
         else { return }
         didScrollToLaunchAnchor = true
         var anchor = arguments[idx + 1]
-        if !store.isPro, anchor == "insights" || anchor == "trend" { anchor = "analytics" }
+        if !store.isPro, ["insights", "trend", "strength", "beststreaks"].contains(anchor) { anchor = "analytics" }
         // After the first layout pass (and the @Query's first fetch): a scrollTo issued before
         // the target has a frame does nothing, silently.
         try? await Task.sleep(for: .milliseconds(500))
@@ -119,24 +123,35 @@ struct StatsView: View {
                         }
 
                         if let habit = selectedHabit {
+                            // One read of the cache for every card below, in this render (D3).
+                            // A commit bumps the cache before it returns, so the render after a
+                            // check-in — in History, on Today — already reads the new numbers.
+                            let stats = cache.stats(for: habit)
                             VStack(spacing: 16) {
-                                HabitDetailStatsCard(habit: habit)
+                                HabitDetailStatsCard(habit: habit, stats: stats, shell: shell)
                                     .statsLaunchAnchor("detail")
                                 if store.isPro {
-                                    InsightsCard(habit: habit)
+                                    InsightsCard(habit: habit, stats: stats)
                                         .statsLaunchAnchor("insights")
-                                    TrendCard(habit: habit)
+                                    TrendCard(habit: habit, stats: stats)
                                         .statsLaunchAnchor("trend")
+                                    StrengthCard(habit: habit, stats: stats)
+                                        .statsLaunchAnchor("strength")
+                                    BestStreaksCard(habit: habit, stats: stats)
+                                        .statsLaunchAnchor("beststreaks")
                                 } else {
+                                    // Exactly what Advanced Analytics holds (D11). Weekly Review
+                                    // is Pro too, but it is not behind this card: its toolbar
+                                    // button sells it.
                                     ProLockedCard(
                                         title: "Advanced Analytics",
-                                        message: "8-week trends, insights & weekly review"
+                                        message: "Insights, the 8-week trend, the strength chart and your top 5 streaks"
                                     ) { showingPaywall = true }
                                     .statsLaunchAnchor("analytics")
                                 }
-                                WeeklyBarChart(habit: habit)
+                                WeeklyBarChart(habit: habit, stats: stats)
                                     .statsLaunchAnchor("weekday")
-                                HeatmapView(habit: habit)
+                                HeatmapView(habit: habit, stats: stats, shell: shell)
                                     .statsLaunchAnchor("heatmap")
                             }
                             .padding(.horizontal)
@@ -186,31 +201,56 @@ private extension View {
     }
 }
 
+// MARK: - The cache
+
+extension EnvironmentValues {
+    /// The `StatsCache` Statistics reads (RELEASE-1.4.1.md D3): the app's one cache, which
+    /// `HabitEntryCommit` bumps. A hosted test puts its own here (StatsRenderTests), over a store
+    /// of its own, so it never fills or empties the host app's.
+    var statsCache: StatsCache {
+        get { self[StatsCacheKey.self] }
+        set { self[StatsCacheKey.self] = newValue }
+    }
+}
+
+private struct StatsCacheKey: EnvironmentKey {
+    // SwiftUI reads the environment on the main actor, where the cache lives.
+    static var defaultValue: StatsCache { MainActor.assumeIsolated { StatsCache.shared } }
+}
+
 // MARK: - Overall Stats
 struct OverallStatsCard: View {
     let habits: [Habit]
+    @Environment(\.statsCache) private var cache
 
-    private var todayCount: Int {
-        habits.filter { $0.isCompletedOn(Date()) }.count
+    /// Every habit's stats in one read (D3): after a clear-all, ONE store fetch refills them all.
+    private struct Summary {
+        let todayCount: Int
+        let bestStreak: (value: Int, inWeeks: Bool)
+        let avgCompletion: Double
     }
 
-    /// The longest streak across habits. This was the maximum CURRENT streak under a "Best Streak"
-    /// label, so the moment a long streak broke the tile dropped to 0 as if the record were erased.
-    /// Times-per-week habits count streaks in weeks, so they are only compared with each other.
-    private var bestStreak: (value: Int, inWeeks: Bool) {
-        let dayUnitHabits = habits.filter { $0.schedule != .timesPerWeek }
-        if dayUnitHabits.isEmpty {
-            return (habits.map { $0.bestStreak() }.max() ?? 0, true)
-        }
-        return (dayUnitHabits.map { $0.bestStreak() }.max() ?? 0, false)
-    }
-
-    private var avgCompletion: Double {
-        guard !habits.isEmpty else { return 0 }
-        return habits.map { $0.completionRate() }.reduce(0, +) / Double(habits.count)
+    private var summary: Summary {
+        let now = Date()
+        let all = cache.stats(for: habits, today: now)
+        let todayCount = all.filter { $0.isCompleted(on: now) }.count
+        // The longest streak across habits. This was the maximum CURRENT streak under a "Best
+        // Streak" label, so the moment a long streak broke the tile dropped to 0 as if the record
+        // were erased. Times-per-week habits count streaks in weeks, so they are only compared
+        // with each other.
+        let dayUnit = all.filter { $0.schedule != .timesPerWeek }
+        let bestStreak = dayUnit.isEmpty
+            ? (all.map(\.bestStreak).max() ?? 0, true)
+            : (dayUnit.map(\.bestStreak).max() ?? 0, false)
+        let avgCompletion = all.isEmpty ? 0 : all.map { $0.completionRate(days: 30) }.reduce(0, +) / Double(all.count)
+        return Summary(todayCount: todayCount, bestStreak: bestStreak, avgCompletion: avgCompletion)
     }
 
     var body: some View {
+        let summary = self.summary
+        let todayCount = summary.todayCount
+        let bestStreak = summary.bestStreak
+        let avgCompletion = summary.avgCompletion
         HStack(spacing: 0) {
             StatItem(value: "\(todayCount)/\(habits.count)", label: "Today", icon: "checkmark.circle",
                      a11yValue: "\(todayCount) of \(habits.count) habits completed")
@@ -288,8 +328,16 @@ struct HabitChip: View {
 // MARK: - Habit Detail Stats
 struct HabitDetailStatsCard: View {
     let habit: Habit
+    /// This render's stats for `habit`, from StatsCache (StatsView reads it once per render).
+    let stats: HabitStats
+    /// The window's shell: Edit history opens History through it (D6), as a shell sheet that
+    /// survives a size-class crossing and never pushes into the shared stack.
+    let shell: ShellState
     @State private var showShareSheet = false
     @Environment(\.dynamicTypeSize) private var typeSize
+
+    /// The sim kit's handle on the Edit history button (RELEASE-1.4.1.md D6, E2E H1).
+    static let editHistoryIdentifier = "stats.editHistory"
 
     /// The unit drawn beside a streak number, which is drawn separately and larger.
     ///
@@ -304,23 +352,58 @@ struct HabitDetailStatsCard: View {
             : Text("days (unit after \(count))")
     }
 
+    /// History, opened on today (D6). The heatmap's tap opens it on the tapped day instead.
+    private func openHistory() {
+        shell.request = .history(habitID: habit.id, day: Date())
+    }
+
+    /// Edit history is a visible, titled button — the one keyboard and Full Keyboard Access path
+    /// into History, since the heatmap's cells are not focusable.
+    private var editHistoryButton: some View {
+        Button(action: openHistory) {
+            Label("Edit history", systemImage: "calendar")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(habit.color)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(Self.editHistoryIdentifier)
+    }
+
+    private var shareButton: some View {
+        Button {
+            showShareSheet = true
+        } label: {
+            Image(systemName: "square.and.arrow.up")
+                .font(.body)
+                .foregroundStyle(habit.color)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Share streak")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text(habit.emoji)
-                    .font(.title2)
-                Text(habit.name)
-                    .font(.title3.bold())
-                Spacer()
-                Button {
-                    showShareSheet = true
-                } label: {
-                    Image(systemName: "square.and.arrow.up")
-                        .font(.body)
-                        .foregroundStyle(habit.color)
+            // The buttons beside the name while it keeps its widest word, under it otherwise —
+            // by what fits, at every text size (DetailCardHeaderLayout).
+            DetailCardHeaderLayout {
+                HStack {
+                    Text(habit.emoji)
+                        .font(.title2)
+                    Text(habit.name)
+                        .font(.title3.bold())
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Share streak")
+                editHistoryButton
+                shareButton
+                // The narrowest the title above can be without breaking a word: the same emoji
+                // and font, the name's unbreakable runs one per line. Measured, never drawn.
+                HStack {
+                    Text(habit.emoji)
+                        .font(.title2)
+                    Text(verbatim: DetailCardHeaderLayout.unbreakableRuns(of: habit.name).joined(separator: "\n"))
+                        .font(.title3.bold())
+                }
+                .hidden()
+                .accessibilityHidden(true)
             }
 
             // Four tiles side by side leave each about 70 pt: at accessibility sizes "100%" in
@@ -329,7 +412,7 @@ struct HabitDetailStatsCard: View {
                 ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
                 : AnyLayout(HStackLayout(spacing: 20))
             tiles {
-                let current = habit.currentStreak()
+                let current = stats.currentStreak()
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Current Streak")
                         .font(.caption)
@@ -344,7 +427,7 @@ struct HabitDetailStatsCard: View {
                 }
                 .accessibilityElement(children: .combine)
 
-                let best = habit.bestStreak()
+                let best = stats.bestStreak
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Best Streak")
                         .font(.caption)
@@ -363,19 +446,24 @@ struct HabitDetailStatsCard: View {
                     Text("30-Day Rate")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text("\(Int(habit.completionRate() * 100))%")
+                    Text("\(Int(stats.completionRate(days: 30) * 100))%")
                         .font(.title2.bold())
                 }
                 .accessibilityElement(children: .combine)
 
+                // Was "Total", `records.count`: it counted partial count days and records a
+                // deletion elsewhere had left behind. The check-in count is History's header
+                // now (D10, O7); the tile stays the fourth, so the layout does not move.
+                let strength = HabitScore.displayValue(stats.strength)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Total")
+                    Text("Strength")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text("\(habit.records.count)")
+                    Text(strength, format: .number)
                         .font(.title2.bold())
                 }
                 .accessibilityElement(children: .combine)
+                .help("Strength grows with every check-in and recovers after a miss.")
 
                 if !typeSize.isAccessibilitySize {
                     Spacer()
@@ -390,6 +478,142 @@ struct HabitDetailStatsCard: View {
         .sheet(isPresented: $showShareSheet) {
             ShareStreakView(habit: habit)
         }
+    }
+}
+
+/// The detail card's header (D6): the emoji and name, then Edit history and Share. They share
+/// one row while the name keeps at least its widest word beside the buttons; otherwise the
+/// buttons get a row of their own under the name.
+///
+/// Chosen by what fits, at every text size and width. The buttons used to move only at the
+/// accessibility sizes, and below them they kept their full width beside the name whatever was
+/// left of it. At xxxLarge on a 375 pt iPhone the Spanish buttons ("Editar historial") left the
+/// name about 50 pt, so "Meditación" broke inside the word, a few letters a line (W3-1,
+/// W3-A11Y-1; StatsRenderTests measures it). A name that is only long, not wide, still wraps at
+/// its spaces beside the buttons, as before.
+///
+/// The content is four views, in this order, which is also VoiceOver's:
+/// 1. the title (emoji and name);
+/// 2. Edit history;
+/// 3. Share;
+/// 4. a hidden probe: the same emoji and font with the name's unbreakable runs one per line, so
+///    its width is the narrowest the title can take without breaking a word.
+///
+/// On one row the buttons keep their full width ("Edit hi…" never), as the `.fixedSize()` they
+/// had. On their own row they get the card's width, and "Edit history" wraps only when even that
+/// is too narrow (accessibility sizes in a compact iPad window).
+struct DetailCardHeaderLayout: Layout {
+    /// Between the name and the buttons, and between the two buttons, on one row.
+    static let rowSpacing: CGFloat = 16
+    /// Between the buttons on a row of their own, as at the accessibility sizes before.
+    static let stackedButtonSpacing: CGFloat = 24
+    /// Between the name and the buttons' row under it: the card's own spacing.
+    static let lineSpacing: CGFloat = 12
+
+    /// The runs of `name` that a line never breaks inside: its words, with the punctuation and
+    /// symbols that touch them ("(30", "min)", "30%"). A line may break between two runs.
+    /// Japanese and Chinese have no spaces, so their words come from the system's dictionary
+    /// segmentation; there a line may break anywhere, so a run is the cautious bound.
+    static func unbreakableRuns(of name: String) -> [String] {
+        var runs: [String] = []
+        name.enumerateSubstrings(in: name.startIndex..<name.endIndex,
+                                 options: [.byWords, .substringNotRequired]) { _, range, _, _ in
+            var lower = range.lowerBound, upper = range.upperBound
+            while lower > name.startIndex, sticks(name[name.index(before: lower)]) {
+                lower = name.index(before: lower)
+            }
+            while upper < name.endIndex, sticks(name[upper]) {
+                upper = name.index(after: upper)
+            }
+            runs.append(String(name[lower..<upper]))
+        }
+        // No word at all (only emoji or punctuation): the name is one run.
+        return runs.isEmpty ? [name] : runs
+    }
+
+    private static func sticks(_ character: Character) -> Bool {
+        !character.isWhitespace && (character.isPunctuation || character.isSymbol)
+    }
+
+    private struct Arrangement {
+        var frames: [CGRect]
+        var size: CGSize
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        arrangement(width: proposal.width, subviews: subviews).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let frames = arrangement(width: bounds.width, subviews: subviews).frames
+        for (subview, frame) in zip(subviews, frames) {
+            subview.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                          proposal: ProposedViewSize(frame.size))
+        }
+    }
+
+    private func arrangement(width proposed: CGFloat?, subviews: Subviews) -> Arrangement {
+        guard subviews.count == 4 else {
+            assertionFailure("DetailCardHeaderLayout takes the title, Edit history, Share and the probe")
+            return Arrangement(frames: [], size: .zero)
+        }
+        let title = subviews[0], edit = subviews[1], share = subviews[2], probe = subviews[3]
+        let editSize = edit.sizeThatFits(.unspecified)
+        let shareSize = share.sizeThatFits(.unspecified)
+        let probeSize = probe.sizeThatFits(.unspecified)
+        let probeFrame = CGRect(origin: .zero, size: probeSize)
+        let buttons = editSize.width + Self.rowSpacing + shareSize.width
+
+        // No width proposed (an ideal-size query): one row, the name on one line.
+        guard let width = proposed, width.isFinite else {
+            let titleSize = title.sizeThatFits(.unspecified)
+            return oneRow(width: titleSize.width + Self.rowSpacing + buttons, title: titleSize,
+                          edit: editSize, share: shareSize, probe: probeFrame)
+        }
+
+        let room = width - Self.rowSpacing - buttons
+        if room >= probeSize.width.rounded(.up) {
+            let titleSize = title.sizeThatFits(ProposedViewSize(width: room, height: nil))
+            return oneRow(width: width, title: CGSize(width: room, height: titleSize.height),
+                          edit: editSize, share: shareSize, probe: probeFrame)
+        }
+
+        // The buttons under the name, which gets the whole width. "Edit history" gives way only
+        // if the two buttons are wider than the card.
+        let titleSize = title.sizeThatFits(ProposedViewSize(width: width, height: nil))
+        var editFits = editSize
+        if editSize.width + Self.stackedButtonSpacing + shareSize.width > width {
+            let editRoom = max(0, width - Self.stackedButtonSpacing - shareSize.width)
+            editFits = edit.sizeThatFits(ProposedViewSize(width: editRoom, height: nil))
+            editFits.width = min(editFits.width, editRoom)
+        }
+        let top = titleSize.height + Self.lineSpacing
+        let rowHeight = max(editFits.height, shareSize.height)
+        return Arrangement(
+            frames: [
+                CGRect(x: 0, y: 0, width: width, height: titleSize.height),
+                CGRect(x: 0, y: top + (rowHeight - editFits.height) / 2,
+                       width: editFits.width, height: editFits.height),
+                CGRect(x: editFits.width + Self.stackedButtonSpacing, y: top + (rowHeight - shareSize.height) / 2,
+                       width: shareSize.width, height: shareSize.height),
+                probeFrame,
+            ],
+            size: CGSize(width: width, height: top + rowHeight))
+    }
+
+    /// Title at the leading edge, the buttons at the trailing one, all centred on the row.
+    private func oneRow(width: CGFloat, title: CGSize, edit: CGSize, share: CGSize, probe: CGRect) -> Arrangement {
+        let height = max(title.height, edit.height, share.height)
+        let shareX = width - share.width
+        let editX = shareX - Self.rowSpacing - edit.width
+        return Arrangement(
+            frames: [
+                CGRect(x: 0, y: (height - title.height) / 2, width: title.width, height: title.height),
+                CGRect(x: editX, y: (height - edit.height) / 2, width: edit.width, height: edit.height),
+                CGRect(x: shareX, y: (height - share.height) / 2, width: share.width, height: share.height),
+                probe,
+            ],
+            size: CGSize(width: width, height: height))
     }
 }
 
@@ -428,49 +652,67 @@ struct ProLockedCard: View {
     }
 }
 
+/// The Monday-anchored weeks the 8-week cards draw (TrendCard, StrengthCard), as day-keys, and
+/// their labels.
+enum StatsWeeks {
+    static let count = 8
+
+    /// The Mondays of the `count` weeks ending with the one holding `today` (a day-key, as
+    /// `HabitStats.today`), oldest first — the weeks `HabitStats.weeklyStrength` buckets.
+    static func mondays(endingWithWeekOf today: Date, count: Int = count) -> [Date] {
+        let thisMonday = HabitStats.monday(ofWeekContaining: HabitStats.dayNumber(ofKey: today))
+        return (0..<count).reversed().map { HabitStats.key(ofDay: thisMonday - 7 * $0) }
+    }
+
+    /// "M/d" in UTC (day-keys are UTC midnights), under each bar. Built once: TrendCard made a
+    /// DateFormatter on every render (D10).
+    static let label: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "M/d"
+        f.timeZone = TimeZone(identifier: "UTC")
+        return f
+    }()
+
+    /// What VoiceOver says instead of `label`: the visible "M/d" is a fixed field order it reads
+    /// as "nine slash eight". UTC like `label`, and in the picked language, since it is spoken
+    /// inside a picked-language sentence. A FormatStyle is a value, not a formatter to cache.
+    @MainActor
+    static var spoken: Date.FormatStyle {
+        var style = Date.FormatStyle.dateTime.month().day()
+        style.timeZone = HabitCalendar.utc.timeZone
+        style.locale = appLocale
+        return style
+    }
+}
+
 // MARK: - Trend (last 8 weeks completion rate)
 struct TrendCard: View {
     let habit: Habit
-    private let utc = HabitCalendar.utc
-    private let weekCount = 8
+    /// This render's stats (StatsView): eight `Habit.completionRate` calls built eight.
+    let stats: HabitStats
     @Environment(\.dynamicTypeSize) private var typeSize
     /// Room for the value and date labels around the bars: 30 at the default size, where the
     /// chart was a fixed 110 pt that the labels overflowed as soon as they could grow.
     @ScaledMetric(relativeTo: .caption2) private var labelRoom: CGFloat = 30
 
     private struct WeekPoint: Identifiable {
-        let id = UUID()
+        /// The week's Monday: stable across renders (a fresh UUID per render rebuilt every bar).
+        let id: Date
         let label: String
-        /// Spoken instead of `label`: the visible "M/d" is a fixed field order VoiceOver reads
-        /// as "nine slash eight".
+        /// Spoken instead of `label` (StatsWeeks.spoken).
         let spokenDate: String
         let rate: Double
     }
 
     private var points: [WeekPoint] {
-        // Monday-anchored weeks ending with the current week.
-        let todayKey = HabitCalendar.dayKey(for: Date())
-        let weekday = utc.component(.weekday, from: todayKey)
-        let daysFromMonday = (weekday + 5) % 7
-        guard let thisWeekStart = utc.date(byAdding: .day, value: -daysFromMonday, to: todayKey) else { return [] }
-
-        let fmt = DateFormatter()
-        fmt.dateFormat = "M/d"
-        fmt.timeZone = TimeZone(identifier: "UTC")
-
-        // Same instants as `fmt`, so the spoken date has to stay UTC-anchored too.
-        var spokenFmt = Date.FormatStyle.dateTime.month().day()
-        spokenFmt.timeZone = utc.timeZone
-        // Spoken inside a picked-language sentence, so the month name must follow the picker too.
-        spokenFmt.locale = appLocale
-
-        return (0..<weekCount).reversed().compactMap { back in
-            guard let start = utc.date(byAdding: .day, value: -7 * back, to: thisWeekStart),
-                  let end = utc.date(byAdding: .day, value: 6, to: start) else { return nil }
+        let spoken = StatsWeeks.spoken
+        return StatsWeeks.mondays(endingWithWeekOf: stats.today).map { start in
+            let end = start.addingTimeInterval(6 * 86_400)
             return WeekPoint(
-                label: fmt.string(from: start),
-                spokenDate: start.formatted(spokenFmt),
-                rate: habit.completionRate(from: start, to: end)
+                id: start,
+                label: StatsWeeks.label.string(from: start),
+                spokenDate: start.formatted(spoken),
+                rate: stats.completionRate(from: start, to: end)
             )
         }
     }
@@ -539,6 +781,9 @@ struct TrendCard: View {
 // MARK: - Insights (best/worst day, momentum)
 struct InsightsCard: View {
     let habit: Habit
+    /// This render's stats (StatsView): the weekday counts and both rates read one HabitStats
+    /// instead of building three.
+    let stats: HabitStats
     private let utc = HabitCalendar.utc
 
     // LocalizedStringKey, not String: a String reaches Text() as verbatim content, so these rows
@@ -546,7 +791,7 @@ struct InsightsCard: View {
     private var insights: [(icon: String, text: LocalizedStringKey)] {
         var out: [(String, LocalizedStringKey)] = []
         let symbols = appCalendar.weekdaySymbols // index 0 = Sunday
-        let counts = habit.completionsPerWeekday()    // keys 1...7
+        let counts = stats.completionsPerWeekday     // keys 1...7
 
         if let best = counts.max(by: { $0.value < $1.value }), best.value > 0 {
             out.append(("star.fill", "Strongest on \(symbols[best.key - 1])"))
@@ -559,14 +804,14 @@ struct InsightsCard: View {
         }
 
         // Momentum: this week vs last week
-        let todayKey = HabitCalendar.dayKey(for: Date())
+        let todayKey = stats.today
         let weekday = utc.component(.weekday, from: todayKey)
         let daysFromMonday = (weekday + 5) % 7
         if let thisStart = utc.date(byAdding: .day, value: -daysFromMonday, to: todayKey),
            let lastStart = utc.date(byAdding: .day, value: -7, to: thisStart),
            let lastEnd = utc.date(byAdding: .day, value: -1, to: thisStart) {
-            let thisRate = habit.completionRate(from: thisStart, to: todayKey)
-            let lastRate = habit.completionRate(from: lastStart, to: lastEnd)
+            let thisRate = stats.completionRate(from: thisStart, to: todayKey)
+            let lastRate = stats.completionRate(from: lastStart, to: lastEnd)
             if lastRate > 0 || thisRate > 0 {
                 // Formatted outside the key so the key carries no literal "%" to escape.
                 let was = "\(Int(lastRate*100))%"
@@ -617,11 +862,13 @@ struct InsightsCard: View {
 // MARK: - Weekly Bar Chart
 struct WeeklyBarChart: View {
     let habit: Habit
+    /// This render's stats (StatsView).
+    let stats: HabitStats
     @Environment(\.dynamicTypeSize) private var typeSize
     /// See TrendCard: 30 at the default size keeps the chart at its 110 pt there.
     @ScaledMetric(relativeTo: .caption2) private var labelRoom: CGFloat = 30
     private var weekdayData: [(symbol: String, fullSymbol: String, count: Int, maxCount: Int)] {
-        let counts = habit.completionsPerWeekday()
+        let counts = stats.completionsPerWeekday
         let maxCount = counts.values.max() ?? 1
         let calendar = appCalendar
         let symbols = calendar.shortWeekdaySymbols
@@ -702,6 +949,11 @@ struct WeeklyBarChart: View {
 // MARK: - Heatmap
 struct HeatmapView: View {
     let habit: Habit
+    /// This render's stats (StatsView), passed on to the grid: its 84 cells, its note dots and
+    /// its summary read this one cached set (D3) instead of 84 `isCompletedOn` lookups.
+    let stats: HabitStats
+    /// The window's shell, for the grid's tap and its VoiceOver action (D5).
+    let shell: ShellState
     private var calendar: Calendar { appCalendar }
     /// The legend's swatches grow with the "Less"/"More" beside them; 12 at the default size.
     @ScaledMetric(relativeTo: .caption2) private var swatch: CGFloat = 12
@@ -722,10 +974,10 @@ struct HeatmapView: View {
                 .font(.headline)
                 .accessibilityAddTraits(.isHeader)
 
-            HeatmapGrid(habit: habit, columns: weekColumns, calendar: calendar)
+            HeatmapGrid(habit: habit, stats: stats, shell: shell, columns: weekColumns, calendar: calendar)
                 // The cells scale with the weekday letters. Past .accessibility2 that only makes
                 // the grid taller than the screen while showing fewer weeks, and VoiceOver reads
-                // each cell anyway (the letters are hidden from it).
+                // the grid as one summary anyway.
                 .dynamicTypeSize(...DynamicTypeSize.accessibility2)
 
             HStack(spacing: 4) {
@@ -743,7 +995,7 @@ struct HeatmapView: View {
                     .scaledSystemFont(size: 9)
                     .foregroundStyle(.secondary)
             }
-            // A colour ramp legend; every cell states completed / not completed outright.
+            // A colour ramp legend; the grid's summary states the count outright.
             .accessibilityHidden(true)
         }
         .padding()
@@ -771,8 +1023,22 @@ struct HeatmapView: View {
 /// what is inside it. The grid hugs its columns at the row's trailing edge: on the one day in
 /// seven with only 12 columns the spare width sits on the leading side and the current week
 /// still ends at the card's edge, and the cell, sized for 13, does not change from day to day.
+///
+/// **A tap opens History on that day, at every width (RELEASE-1.4.1.md D5).** No cell toggles:
+/// a phone's cell is 14 pt, a regular-width one can be too (`cellSize` never goes below the
+/// scaled cell), and an untick tombstones on every device. One tap gesture over the columns
+/// finds the day through `HeatmapLayout.day(at:in:cell:)`, so the 3 pt gaps are not dead and no
+/// cell is a Button: on the Mac nothing here takes keyboard focus (no 84 Tab stops). The Edit
+/// history button on the detail card is the keyboard path.
+///
+/// **Accessibility (a D5 decision).** The grid is ONE element: "Activity", its value the
+/// completed days of the 84 and the current streak, and an "Edit history" action — VoiceOver's
+/// double-tap does the same — that opens History on today. History's month grid is the
+/// per-day accessible equivalent; 84 stops here told no more than its summary does.
 private struct HeatmapGrid: View {
     let habit: Habit
+    let stats: HabitStats
+    let shell: ShellState
     /// Seven cells each, top to bottom in the letters' order; nil is an empty cell.
     let columns: [[Date?]]
     let calendar: Calendar
@@ -782,12 +1048,29 @@ private struct HeatmapGrid: View {
     /// The row's width (the card's inside), 0 until the first layout pass has measured it.
     @State private var rowWidth: CGFloat = 0
 
+    /// History on `day` (a local midnight from the columns, or now): a shell sheet (D6).
+    private func openHistory(on day: Date) {
+        shell.request = .history(habitID: habit.id, day: day)
+    }
+
+    /// The grid's VoiceOver value: "N of 84 days completed", then the current streak in the
+    /// habit's unit. One key per unit, chosen outside the interpolation; the counts are locals,
+    /// so the source scan can type them.
+    private var summary: Text {
+        let tally = HeatmapLayout.tally(columns) { stats.isCompleted(on: $0) }
+        let completed = tally.completed
+        let total = tally.total
+        let streak = stats.currentStreak()
+        return habit.schedule == .timesPerWeek
+            ? Text("\(completed) of \(total) days completed, \(streak) week streak")
+            : Text("\(completed) of \(total) days completed, \(streak) day streak")
+    }
+
     var body: some View {
         let strip = typeSize.isAccessibilitySize
         let cell = HeatmapLayout.cellSize(scaled: scaledCell, availableWidth: rowWidth, regular: regularLayout)
         HStack(alignment: .top, spacing: HeatmapLayout.spacing) {
-            // Row labels that only mean anything through visual alignment with the grid;
-            // each cell names its own weekday instead.
+            // Row labels that only mean anything through visual alignment with the grid.
             VStack(alignment: .trailing, spacing: HeatmapLayout.spacing) {
                 ForEach(0..<7, id: \.self) { i in
                     let symbols = calendar.veryShortWeekdaySymbols
@@ -810,6 +1093,12 @@ private struct HeatmapGrid: View {
                         }
                     }
                 }
+                // The whole block, gaps included, takes the tap; the location is in the columns'
+                // own space, so it scrolls with the strip.
+                .contentShape(Rectangle())
+                .onTapGesture(coordinateSpace: .local) { location in
+                    if let day = HeatmapLayout.day(at: location, in: columns, cell: cell) { openHistory(on: day) }
+                }
             }
             // nil (the system default) below the breakpoint, where the grid is narrower than the
             // scroll view: an anchor can also position content like that, and at the default
@@ -823,6 +1112,19 @@ private struct HeatmapGrid: View {
         } action: { width in
             rowWidth = width
         }
+        #if os(macOS)
+        // Said outright, although nothing inside is a control: a Tab never stops in the grid.
+        .focusable(false)
+        #endif
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Activity")
+        .accessibilityValue(summary)
+        .accessibilityHint("Opens History")
+        .accessibilityAddTraits(.isButton)
+        // VoiceOver's double-tap: without a default action it would tap the element's centre — a
+        // day about six weeks back, picked by geometry.
+        .accessibilityAction { openHistory(on: Date()) }
+        .accessibilityAction(named: "Edit history") { openHistory(on: Date()) }
     }
 
     /// At regular width, once measured: the columns' own width, or what the row leaves beside the
@@ -838,15 +1140,20 @@ private struct HeatmapGrid: View {
     @ViewBuilder
     private func dayCell(_ day: Date?, side: CGFloat) -> some View {
         if let day {
-            let completed = habit.isCompletedOn(day)
-            // `monthYear` is a hard-coded "MMMM yyyy", so cells announced
-            // "September 2026 16" — English field order, the year on all 84
-            // cells, and never the weekday the columns are organised by.
-            let dateLabel = day.formatted(.dateTime.weekday(.wide).month().day().locale(appLocale))
+            let model = HeatmapLayout.Cell(completed: stats.isCompleted(on: day), hasNote: stats.hasNote(on: day))
+            let completed = model.fill == .completed
             RoundedRectangle(cornerRadius: 2)
                 .fill(completed ? habit.color : Color.gray.opacity(0.15))
                 .frame(width: side, height: side)
-                .accessibilityLabel(completed ? "\(dateLabel), completed" : "\(dateLabel), not completed")
+                .overlay {
+                    // The day carries a note (D5, D7): a dot that contrasts with either fill. A
+                    // count day below its target can carry one too, on the empty fill.
+                    if model.hasNote {
+                        Circle()
+                            .fill(completed ? Color.white : habit.color)
+                            .frame(width: HeatmapLayout.noteDot, height: HeatmapLayout.noteDot)
+                    }
+                }
         } else {
             // Before the twelve weeks, or after today: room, not a day.
             Color.clear.frame(width: side, height: side)
@@ -887,8 +1194,9 @@ extension View {
 
 /// A left-to-right bar for the accessibility-size rows of the bar charts; `fraction` in 0...1.
 /// Never shorter than the 4 pt stub the columns draw for zero, and drawn over a faint full-width
-/// track, so an empty week still reads as a value on a scale and not as missing data.
-private struct HorizontalBar: View {
+/// track, so an empty week still reads as a value on a scale and not as missing data. Also
+/// StrengthCard's (StatsProCards.swift).
+struct HorizontalBar: View {
     let fraction: Double
     let fill: Color
 

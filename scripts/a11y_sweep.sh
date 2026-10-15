@@ -34,8 +34,18 @@
 # simulator if it is not booted; sets the content size, light appearance and a fixed 9:41
 # status bar (so two runs diff cleanly); launches with `-demo -tab <n>` for Today, Stats and
 # Settings and with `-demo -paywall` for the paywall; captures each with `simctl io screenshot`.
-# Stats is captured five times: the top, then scrolled to Insights, the 8-week trend, By Weekday
-# and the Activity heatmap with the DEBUG-only `-statsScrollTo <anchor>` (StatsView).
+# Stats is captured seven times: the top, then scrolled to Insights, the 8-week trend, Strength,
+# the top 5 streaks (1.4.1), By Weekday and the Activity heatmap with the DEBUG-only
+# `-statsScrollTo <anchor>` (StatsView).
+# The default-size run (`--size default`) also takes the habit's detail card at the two sizes
+# between it and the accessibility ones, which no run of its own covers:
+# 02_stats_detail_extra-large.png and 02_stats_detail_extra-extra-extra-large.png. The card's
+# header keeps Edit history and Share beside the name only while the name's widest word fits
+# there (DetailCardHeaderLayout), so these are the sizes where it changes. The habit shown is
+# "Morning Run", the demo set's first. The header depends on the width too: for the narrow case
+# add `--device "iPhone 17e"` (about 390 pt, the narrowest iPhone simulator on this Mac in
+# 2026-10) and `--lang es`, whose "Editar historial" is the widest button. The hosted
+# StatsRenderTests measure the header at 375 pt.
 # The `sync` set (1.3.1, DEV-PLAN-1.3.md M2 phase C) draws every new sync state from its DEBUG
 # launch scenario, since none of them can be produced on a simulator with no server:
 #   10_today_sync_<state>  Today's line under the progress card, `-syncStatus <state>` for
@@ -79,8 +89,9 @@
 #     baseline needed two to three screens of scrolling). Still top-only: Today's lower rows,
 #     the Settings habit rows and the paywall price cards; review those by scrolling the booted
 #     simulator.
-#   - Insights and the 8-week trend are Pro-only. On a simulator with no purchase (the normal
-#     case) 02_stats_insights and 02_stats_trend both show the "Advanced Analytics" locked card.
+#   - Insights, the 8-week trend, Strength and the top 5 streaks are Pro-only. On a simulator
+#     with no purchase (the normal case) 02_stats_insights, _trend, _strength and _beststreaks
+#     all show the "Advanced Analytics" locked card.
 #   - The paywall's prices come from whatever StoreKit answers `simctl launch` (not Xcode's
 #     scheme configuration). On 2026-09-27 they loaded; if they do not, the PNG shows the
 #     spinner where the price cards go — raise STRIDE_A11Y_SETTLE or review them in Xcode.
@@ -302,8 +313,18 @@ capture() {
 if [[ "$SET" != sync ]]; then
     capture 01_today.png    -tab 0
     capture 02_stats.png    -tab 1
+    if [[ "$SIZE" == large ]]; then
+        # The sizes between the default and the accessibility ones (header), then back.
+        for between in extra-large extra-extra-extra-large; do
+            xcrun simctl ui "$UDID" content_size "$between"
+            capture "02_stats_detail_$between.png" -tab 1 -statsScrollTo detail
+        done
+        xcrun simctl ui "$UDID" content_size "$SIZE"
+    fi
     capture 02_stats_insights.png -tab 1 -statsScrollTo insights
     capture 02_stats_trend.png    -tab 1 -statsScrollTo trend
+    capture 02_stats_strength.png -tab 1 -statsScrollTo strength
+    capture 02_stats_beststreaks.png -tab 1 -statsScrollTo beststreaks
     capture 02_stats_weekday.png  -tab 1 -statsScrollTo weekday
     capture 02_stats_heatmap.png  -tab 1 -statsScrollTo heatmap
     capture 03_settings.png -tab 2

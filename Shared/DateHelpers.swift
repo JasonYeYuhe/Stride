@@ -89,23 +89,11 @@ extension Date {
         Calendar.current.isDateInToday(self)
     }
 
-    var shortWeekday: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "EEE"
-        return formatter.string(from: self)
-    }
-
-    var dayNumber: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "d"
-        return formatter.string(from: self)
-    }
-
-    var monthYear: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MMMM yyyy"
-        return formatter.string(from: self)
-    }
+    // 1.4.1 (D10) deleted `shortWeekday`, `dayNumber` and `monthYear`: nothing called them, and
+    // each built a DateFormatter per call with a fixed pattern and no locale, so any new caller
+    // would have drawn English in every language ("MMMM yyyy" read "September 2026" on a
+    // Japanese-picked app). Names come from `appCalendar`; dates from a FormatStyle with
+    // `appLocale`.
 
     static func daysInRange(from startDate: Date, to endDate: Date) -> [Date] {
         let calendar = Calendar.current
