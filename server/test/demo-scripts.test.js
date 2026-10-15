@@ -25,7 +25,8 @@ const NODE_MODULES = path.join(SERVER, "node_modules");
 const topup = require("../ops/demo-topup");
 const addOnly = require("../ops/demo-add-habits");
 const seedDemo = require("../seed-demo");
-const { DEMO_EMAIL, PATTERNS, DAY_MS, addDays, dayString, entryDayCap, isChecked, digest, weekdayOf } = topup;
+const { DEMO_EMAIL, PATTERNS, DAY_MS, addDays, dayString, dayIn, entryDayCap, isChecked, digest, uuidFrom, weekdayOf,
+  patternIndex, demoHabitId } = topup;
 
 const PORT = 3094;
 const SIX = ["Morning Run", "Read 30 Minutes", "Meditate", "Drink 8 Glasses", "Practice Guitar", "Journal"];
@@ -120,19 +121,45 @@ function fixedId(label) {
 }
 
 /**
+ * The top-up as it ran before 1.4.1 (0d61b1c), for an account shaped like production's: the six
+ * habits by name and age, dated by UTC, each day picked by a hash of habit id + date, nothing on
+ * or before the UTC day of the newest entry tombstone.
+ */
+function preW8TopUp(db, now) {
+  const user = db.prepare("SELECT id FROM users WHERE email = ?").get(DEMO_EMAIL);
+  const today = dayString(now), earliest = addDays(today, -29), at = now.toISOString();
+  const { lastDeleted } = db.prepare("SELECT substr(max(deleted_at), 1, 10) AS lastDeleted FROM deletion_tombstones WHERE user_id = ? AND entity_type = 'entry'").get(user.id);
+  const habits = db.prepare(`SELECT h.id, h.name, substr(h.created_at, 1, 10) AS created,
+    (SELECT max(e.date) FROM habit_entries e WHERE e.habit_id = h.id) AS last FROM habits h WHERE h.user_id = ? AND h.is_archived = 0`).all(user.id);
+  for (const h of habits) {
+    if (!SIX.includes(h.name) || !(h.created < earliest)) continue;
+    const floors = [earliest, h.created];
+    if (h.last) floors.push(addDays(h.last, 1));
+    if (lastDeleted) floors.push(addDays(lastDeleted, 1));
+    for (let day = floors.reduce((a, b) => (a > b ? a : b)); day <= today; day = addDays(day, 1)) {
+      const d = digest(h.id, day);
+      if (PATTERNS[h.name][d.readUInt32BE(28) % 30] !== 1) continue;
+      db.prepare("INSERT OR IGNORE INTO habit_entries (id, habit_id, date, value, created_at, updated_at, client_updated_at) VALUES (?, ?, ?, 1, ?, ?, ?)")
+        .run(uuidFrom(d), h.id, day, at, at, at);
+    }
+  }
+}
+
+/**
  * The demo account as production holds it before 1.4.1: the six habits the way the 1.2.3-era
- * seed-demo.js inserted them (no kind or schedule columns, so the defaults; created 45 days
- * before a seed whose 30 pattern days end on `seedDay`), the nightly top-up since, a signed-in
- * reviewer (a session, the reusable token), a habit the reviewer made with a noted check-in, and
- * an entry tombstone from a reviewer's un-check.
+ * seed-demo.js inserted them (random ids; no kind or schedule columns, so the defaults; one
+ * created_at for all six, 45 days before a seed whose 30 pattern days end on `seedDay`), the
+ * pre-1.4.1 top-up nightly since, a signed-in reviewer (a session, the reusable token), a habit
+ * the reviewer made with a noted check-in, and an entry tombstone from a reviewer's un-check.
+ * `label` varies the habit ids (so the hash-picked days).
  * @returns {{ userId: number, token: string, session: string }}
  */
-function legacyAccount(db, { now, seedDay = addDays(entryDayCap(now), -29) }) {
+function legacyAccount(db, { now, seedDay = addDays(entryDayCap(now), -29), label = "legacy" }) {
   const userId = Number(db.prepare("INSERT INTO users (email) VALUES (?)").run(DEMO_EMAIL).lastInsertRowid);
   const seedNow = new Date(`${seedDay}T09:00:00.000Z`);
   const createdAt = new Date(seedNow.getTime() - 45 * DAY_MS).toISOString();
   SIX.forEach((name, sort) => {
-    const id = fixedId(`legacy|${name}`);
+    const id = fixedId(`${label}|${name}`);
     db.prepare(`INSERT INTO habits (id, user_id, name, emoji, color_hex, sort_order, created_at, updated_at, client_updated_at)
       VALUES (?, ?, ?, '⭐', '#34C759', ?, ?, ?, ?)`).run(id, userId, name, sort, createdAt, createdAt, createdAt);
     const pattern = /** @type {number[]} */ (PATTERNS[name]);
@@ -141,7 +168,7 @@ function legacyAccount(db, { now, seedDay = addDays(entryDayCap(now), -29) }) {
       const date = addDays(seedDay, day - 29);
       const at = `${date}T09:00:00.000Z`;
       db.prepare("INSERT INTO habit_entries (id, habit_id, date, created_at, updated_at, client_updated_at) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(fixedId(`legacy|${name}|${date}`), id, date, at, at, at);
+        .run(fixedId(`${label}|${name}|${date}`), id, date, at, at, at);
     }
   });
   // A reviewer: a habit of their own, created last week, with one noted check-in; an un-check
@@ -154,11 +181,11 @@ function legacyAccount(db, { now, seedDay = addDays(entryDayCap(now), -29) }) {
     .run(fixedId("legacy|reviewer-entry"), own, addDays(entryDayCap(now), -2), ownCreated, ownCreated, ownCreated);
   const deletedAt = `${addDays(seedDay, -3)}T12:00:00.000Z`;
   db.prepare("INSERT INTO deletion_tombstones (user_id, entity_type, entity_id, deleted_at, habit_id, entry_date) VALUES (?, 'entry', ?, ?, ?, ?)")
-    .run(userId, fixedId("legacy|deleted"), deletedAt, fixedId("legacy|Journal"), addDays(seedDay, -3));
-  // The nightly top-up since the seed.
+    .run(userId, fixedId(`${label}|deleted`), deletedAt, fixedId(`${label}|Journal`), addDays(seedDay, -3));
+  // The nightly top-up since the seed, as it ran before 1.4.1.
   for (let night = addDays(seedDay, 1); night <= dayString(now); night = addDays(night, 1)) {
     const at = new Date(`${night}T03:50:00.000Z`);
-    if (at <= now) assert.equal(topup.topUp(db, { now: at }).status, 0);
+    if (at <= now) preW8TopUp(db, at);
   }
   const token = crypto.randomBytes(24).toString("hex");
   db.prepare("INSERT INTO magic_link_tokens (user_id, token_hash, expires_at, is_reusable) VALUES (?, ?, ?, 1)")
@@ -227,6 +254,62 @@ function gate2(db, today) {
   return habits.map((h) => ({ name: h.name, ...strengthOf(h, entriesOf(db, h.id), today) }));
 }
 
+// ---------- a reviewer, and the nights ----------
+
+const demoUserId = (db) => db.prepare("SELECT id FROM users WHERE email = ?").get(DEMO_EMAIL).id;
+
+/** A reviewer's un-check of `habitId` on `day` at `at`, written as routes/sync.js's push writes
+ * it: the row goes, and its tombstone names the row's habit and day. */
+function uncheck(db, habitId, day, at) {
+  const row = db.prepare("SELECT id, habit_id, date FROM habit_entries WHERE habit_id = ? AND date = ?").get(habitId, day);
+  assert.ok(row, `a check-in of ${habitId} on ${day}`);
+  db.prepare("DELETE FROM habit_entries WHERE id = ?").run(row.id);
+  db.prepare("INSERT INTO deletion_tombstones (user_id, entity_type, entity_id, deleted_at, habit_id, entry_date) VALUES (?, 'entry', ?, ?, ?, ?)")
+    .run(demoUserId(db), row.id, at.toISOString(), row.habit_id, row.date);
+}
+
+/** A reviewer's check-in, as an app pushes one: a random id. Returns the id. */
+function checkIn(db, habitId, day, at) {
+  const id = crypto.randomUUID().toUpperCase();
+  db.prepare("INSERT INTO habit_entries (id, habit_id, date, value, created_at, updated_at, client_updated_at) VALUES (?, ?, ?, 1, ?, ?, ?)")
+    .run(id, habitId, day, at.toISOString(), at.toISOString(), at.toISOString());
+  return id;
+}
+
+/** The cron's run on UTC day `day`. */
+const night = (day) => new Date(`${day}T03:50:00.000Z`);
+
+/** The cron's runs on UTC days `from` through `to`; their report lines. */
+function nights(db, from, to) {
+  const lines = [];
+  for (let d = from; d <= to; d = addDays(d, 1)) {
+    const r = topup.topUp(db, { now: night(d) });
+    assert.equal(r.status, 0, r.line);
+    lines.push(r.line);
+  }
+  return lines;
+}
+
+const newestDay = (db, habitId, onOrBefore) =>
+  db.prepare("SELECT max(date) AS d FROM habit_entries WHERE habit_id = ? AND date <= ?").get(habitId, onOrBefore).d;
+
+/**
+ * Where the demo scripts' habits (those with a demo id) differ from their rules on [from, to]:
+ * "<name> <day> checked" for a done day the rule has empty, "… empty" for the reverse. Done: any
+ * check-in of a yes/no habit, a value at the target of a count habit.
+ */
+function offRule(db, from, to) {
+  const out = [];
+  const habits = db.prepare("SELECT h.* FROM habits h WHERE h.user_id = ? ORDER BY sort_order").all(demoUserId(db));
+  for (const h of habits.filter((x) => PATTERNS[x.name] && x.id === demoHabitId(x.user_id, x.name, x.created_at))) {
+    const done = new Set(entriesOf(db, h.id).filter((e) => h.kind !== "count" || e.value >= h.target_value).map((e) => e.date));
+    for (let d = from; d <= to; d = addDays(d, 1)) {
+      if (done.has(d) !== isChecked(PATTERNS[h.name], d)) out.push(`${h.name} ${d} ${done.has(d) ? "checked" : "empty"}`);
+    }
+  }
+  return out;
+}
+
 // ---------- tests ----------
 
 describe("the entry-day cap is min(UTC today, America/Los_Angeles today)", () => {
@@ -249,26 +332,31 @@ describe("the entry-day cap is min(UTC today, America/Los_Angeles today)", () =>
 });
 
 describe("the top-up's rules (ops/demo-topup.js)", () => {
-  it("Stretch: Monday, Wednesday and Friday for any habit id, so every Monday-to-Sunday week holds exactly three", () => {
-    for (const id of [fixedId("a"), fixedId("b"), crypto.randomUUID().toUpperCase()]) {
-      let monday = "2025-12-29"; // a Monday
-      for (let week = 0; week < 104; week++, monday = addDays(monday, 7)) {
-        const days = [0, 1, 2, 3, 4, 5, 6].map((n) => addDays(monday, n)).filter((d) => isChecked(PATTERNS.Stretch, id, d));
-        assert.deepEqual(days.map(weekdayOf), [1, 3, 5], `week of ${monday}`);
-      }
+  it("Stretch: Monday, Wednesday and Friday, so every Monday-to-Sunday week holds exactly three", () => {
+    let monday = "2025-12-29"; // a Monday
+    for (let week = 0; week < 104; week++, monday = addDays(monday, 7)) {
+      const days = [0, 1, 2, 3, 4, 5, 6].map((n) => addDays(monday, n)).filter((d) => isChecked(PATTERNS.Stretch, d));
+      assert.deepEqual(days.map(weekdayOf), [1, 3, 5], `week of ${monday}`);
     }
   });
 
-  it("the daily patterns keep their hash-picked positions and their seeded rates", () => {
-    const sums = Object.fromEntries(SIX.map((n) => [n, /** @type {number[]} */ (PATTERNS[n]).reduce((a, b) => a + b, 0)]));
-    assert.deepEqual(sums, { "Morning Run": 23, "Read 30 Minutes": 27, "Meditate": 19, "Drink 8 Glasses": 24, "Practice Guitar": 15, "Journal": 25 });
-    const id = fixedId("hash");
+  it("the daily patterns are laid down in order at the calendar's place, so any 30 days in a row hold exactly the pattern's count", () => {
+    const sums = Object.fromEntries([...SIX, "Water"].map((n) => [n, /** @type {number[]} */ (PATTERNS[n]).reduce((a, b) => a + b, 0)]));
+    assert.deepEqual(sums, { "Morning Run": 23, "Read 30 Minutes": 27, "Meditate": 19, "Drink 8 Glasses": 24, "Practice Guitar": 15, "Journal": 25, "Water": 24 });
+    assert.equal(patternIndex("1970-01-01"), 0);
+    assert.equal(patternIndex("1969-12-31"), 29);
     for (let day = "2026-01-01"; day <= "2026-12-31"; day = addDays(day, 1)) {
+      assert.equal(patternIndex(addDays(day, 1)), (patternIndex(day) + 1) % 30, day);
       for (const name of [...SIX, "Water"]) {
         const pattern = /** @type {number[]} */ (PATTERNS[name]);
-        assert.equal(isChecked(pattern, id, day), pattern[digest(id, day).readUInt32BE(28) % 30] === 1);
+        assert.equal(isChecked(pattern, day), pattern[patternIndex(day)] === 1);
+        let n = 0;
+        for (let k = 0; k < 30; k++) if (isChecked(pattern, addDays(day, k))) n++;
+        assert.equal(n, sums[name], `${name}, 30 days from ${day}`);
       }
     }
+    // So only Read 30 Minutes and Journal are ever done on gate 2's 25 of 30.
+    assert.deepEqual(Object.keys(PATTERNS).filter((n) => topup.reachesGate(PATTERNS[n])).sort(), ["Journal", "Read 30 Minutes"]);
   });
 
   it("Water's pattern is the days its seeded history reaches the target of 8", () => {
@@ -330,6 +418,168 @@ describe("no entry is dated after the Los Angeles day", () => {
     topup.topUp(db, { now: new Date("2026-10-17T03:50:00.000Z") });
     assert.equal(db.prepare("SELECT count(*) AS n FROM habit_entries WHERE date > '2026-10-16'").get().n, 0);
     assert.ok(db.prepare("SELECT count(*) AS n FROM habit_entries WHERE date = '2026-10-16'").get().n > 0);
+  });
+});
+
+describe("a reviewer's un-check stays un-checked, and costs no other habit a day", () => {
+  /** A fresh seed on 2026-10-01 and the cron's runs since, through UTC `through`. */
+  const seeded = (through) => {
+    const db = scratchDb();
+    seedDemo.seed(db, { token: "u".repeat(48), now: new Date("2026-10-01T20:00:00.000Z") });
+    nights(db, "2026-10-02", through);
+    assert.deepEqual(offRule(db, "2026-10-02", entryDayCap(night(through))), [], "the seed and the nights follow the rules");
+    return db;
+  };
+  // A daily habit other than Journal that the rule checks on Tuesday 2026-10-20.
+  const own = SIX.find((n) => n !== "Journal" && isChecked(PATTERNS[n], "2026-10-20"));
+
+  for (const [when, at] of [["11:00 PDT (18:00 UTC)", "2026-10-20T18:00:00.000Z"], ["19:00 PDT (02:00 UTC, before the 03:50 run)", "2026-10-21T02:00:00.000Z"]]) {
+    it(`on Tuesday 2026-10-20 at ${when}: the next two runs write every rule day around it but the un-checked ones`, () => {
+      const db = seeded("2026-10-20"); // the 03:50 UTC run of the 20th wrote through Monday the 19th (Los Angeles)
+      const journal = habitRow(db, "Journal").id;
+      const lastJournal = newestDay(db, journal, "2026-10-19");
+      // Journal's newest check-in un-checked; and the reviewer's own tick of today, un-ticked.
+      uncheck(db, journal, lastJournal, new Date(at));
+      checkIn(db, habitRow(db, own).id, "2026-10-20", new Date(Date.parse(at) - 3600_000));
+      uncheck(db, habitRow(db, own).id, "2026-10-20", new Date(at));
+
+      const lines = nights(db, "2026-10-21", "2026-10-22"); // through Wednesday the 21st
+      assert.deepEqual(offRule(db, "2026-10-12", "2026-10-21").sort(),
+        [`Journal ${lastJournal} empty`, `${own} 2026-10-20 empty`].sort());
+      assert.match(lines[0], new RegExp(`un-checked days kept: .*Journal through ${lastJournal}`));
+      // Stretch keeps three in the week of Monday the 19th (Monday, Wednesday and, after Friday's run, Friday).
+      nights(db, "2026-10-23", "2026-10-24");
+      const stretch = entriesOf(db, habitRow(db, "Stretch").id).filter((e) => e.date >= "2026-10-19" && e.date <= "2026-10-25");
+      assert.deepEqual(stretch.map((e) => e.date), ["2026-10-19", "2026-10-21", "2026-10-23"]);
+    });
+  }
+
+  it("on Tuesday 2026-11-03 at 21:00 PST (05:00 UTC on the 4th): Wednesday the 4th is written for every other habit, and Stretch's week holds three", () => {
+    const db = scratchDb();
+    seedDemo.seed(db, { token: "v".repeat(48), now: new Date("2026-10-20T20:00:00.000Z") });
+    nights(db, "2026-10-21", "2026-11-04"); // through Tuesday the 3rd (Los Angeles)
+    const read = habitRow(db, "Read 30 Minutes").id;
+    const lastRead = newestDay(db, read, "2026-11-03");
+    uncheck(db, read, lastRead, new Date("2026-11-04T05:00:00.000Z"));
+    nights(db, "2026-11-05", "2026-11-07"); // through Friday the 6th
+    assert.deepEqual(offRule(db, "2026-10-28", "2026-11-06"), [`Read 30 Minutes ${lastRead} empty`]);
+    const stretch = entriesOf(db, habitRow(db, "Stretch").id).filter((e) => e.date >= "2026-11-02" && e.date <= "2026-11-08");
+    assert.deepEqual(stretch.map((e) => e.date), ["2026-11-02", "2026-11-04", "2026-11-06"]);
+  });
+
+  it("a tombstone that names no habit and day (its DELETE removed nothing: a retry, an id never pushed) costs no day", () => {
+    const db = seeded("2026-10-20");
+    const journal = habitRow(db, "Journal").id;
+    const lastJournal = newestDay(db, journal, "2026-10-19");
+    const at = new Date("2026-10-20T18:00:00.000Z");
+    uncheck(db, journal, lastJournal, at);
+    const add = db.prepare("INSERT INTO deletion_tombstones (user_id, entity_type, entity_id, deleted_at) VALUES (?, 'entry', ?, ?)");
+    const retried = db.prepare("SELECT entity_id FROM deletion_tombstones WHERE habit_id IS NOT NULL").get().entity_id;
+    add.run(demoUserId(db), retried, new Date(at.getTime() + 60_000).toISOString());                         // the retry
+    add.run(demoUserId(db), crypto.randomUUID().toUpperCase(), new Date(at.getTime() + 120_000).toISOString()); // never pushed
+    nights(db, "2026-10-21", "2026-10-22");
+    assert.deepEqual(offRule(db, "2026-10-12", "2026-10-21"), [`Journal ${lastJournal} empty`]);
+  });
+
+  it("on an account filled before 1.4.1: nothing on or before the un-checked day is written again, though the rule there has changed", () => {
+    const db = scratchDb();
+    legacyAccount(db, { now: new Date("2026-10-20T10:00:00.000Z") });
+    const before = new Map();
+    let reread = 0; // days the in-order rule checks between a habit's previous check-in and the un-checked one
+    for (const name of SIX) {
+      const id = fixedId(`legacy|${name}`);
+      const dates = entriesOf(db, id).map((e) => e.date);
+      const last = dates[dates.length - 1], previous = dates[dates.length - 2];
+      for (let d = addDays(previous, 1); d <= last; d = addDays(d, 1)) if (isChecked(PATTERNS[name], d)) reread++;
+      uncheck(db, id, last, new Date("2026-10-20T18:00:00.000Z"));
+      before.set(name, { id, last, kept: dates.slice(0, -1) });
+    }
+    assert.ok(reread > 0, "the floor is what keeps those days");
+    nights(db, "2026-10-21", "2026-10-26");
+    for (const [name, { id, last, kept }] of before) {
+      const dates = entriesOf(db, id).map((e) => e.date);
+      assert.deepEqual(dates.filter((d) => d <= last), kept, name);
+      assert.ok(dates.some((d) => d > last), `${name} is still filled after ${last}`);
+    }
+  });
+});
+
+describe("which habits the top-up fills: the demo scripts', by identity", () => {
+  const now = new Date("2026-10-20T10:00:00.000Z");
+  /** A reviewer's habit from an earlier review: a random id, created `daysAgo` days before `now`. */
+  const reviewerHabit = (db, name, columns = {}, daysAgo = 40) => {
+    const id = crypto.randomUUID().toUpperCase();
+    const at = new Date(now.getTime() - daysAgo * DAY_MS).toISOString();
+    const c = { kind: "binary", target_value: 1, schedule_kind: "daily", times_per_week: 7, ...columns };
+    db.prepare(`INSERT INTO habits (id, user_id, name, kind, target_value, schedule_kind, times_per_week, created_at, updated_at, client_updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, demoUserId(db), name, c.kind, c.target_value, c.schedule_kind, c.times_per_week, at, at, at);
+    return id;
+  };
+
+  it("a reviewer's own daily \"Stretch\" (the template) from an earlier review: demo-add-habits.js leaves it alone, and so does the top-up", () => {
+    const db = scratchDb();
+    legacyAccount(db, { now });
+    const theirs = reviewerHabit(db, "Stretch");
+    assert.deepEqual(addOnly.addHabits(db, { now }).added, ["Water"]);
+    nights(db, "2026-10-21", "2026-11-05");
+    assert.equal(entriesOf(db, theirs).length, 0);
+    assert.ok(entriesOf(db, habitRow(db, "Water").id).some((e) => e.date > "2026-10-20"));
+  });
+
+  it("a reviewer's \"Stretch\" made 3 times a week, or \"Water\" of 8, has no demo id, so gets nothing either", () => {
+    const db = scratchDb();
+    legacyAccount(db, { now });
+    const ids = [reviewerHabit(db, "Stretch", { schedule_kind: "timesPerWeek", times_per_week: 3 }),
+      reviewerHabit(db, "Water", { kind: "count", target_value: 8 })];
+    assert.deepEqual(addOnly.addHabits(db, { now }).added, []);
+    const line = nights(db, "2026-10-21", "2026-10-28").pop();
+    for (const id of ids) assert.equal(entriesOf(db, id).length, 0);
+    assert.match(line, /; 3 habit\(s\) not from the demo scripts left alone/); // and Read Fiction
+  });
+
+  it("beside the six seeded before 1.4.1 (one created_at for all six), a reviewer's own \"Meditate\" from an earlier review is left alone", () => {
+    const db = scratchDb();
+    legacyAccount(db, { now });
+    const theirs = reviewerHabit(db, "Meditate");
+    checkIn(db, theirs, "2026-10-01", now);
+    nights(db, "2026-10-21", "2026-10-31");
+    assert.deepEqual(entriesOf(db, theirs).map((e) => e.date), ["2026-10-01"]);
+    for (const name of SIX) assert.ok(entriesOf(db, fixedId(`legacy|${name}`)).some((e) => e.date > "2026-10-20"), name);
+  });
+
+  it("after a re-seed only demo ids count: a reviewer's \"Morning Run\" older than the window gets nothing", () => {
+    const db = scratchDb();
+    seedDemo.seed(db, { token: "w".repeat(48), now: new Date("2026-09-01T20:00:00.000Z") });
+    const theirs = reviewerHabit(db, "Morning Run", {}, 45);
+    nights(db, "2026-09-02", "2026-10-21");
+    assert.equal(entriesOf(db, theirs).length, 0);
+    assert.deepEqual(offRule(db, "2026-09-02", "2026-10-20"), []);
+  });
+
+  it("a demo habit the reviewer has changed (Water's target, Stretch's schedule, Journal made a count) is theirs from then on", () => {
+    const db = scratchDb();
+    seedDemo.seed(db, { token: "x".repeat(48), now: new Date("2026-09-20T20:00:00.000Z") });
+    nights(db, "2026-09-21", "2026-10-10");
+    db.prepare("UPDATE habits SET target_value = 10 WHERE name = 'Water'").run();
+    db.prepare("UPDATE habits SET schedule_kind = 'daily' WHERE name = 'Stretch'").run();
+    db.prepare("UPDATE habits SET kind = 'count', target_value = 3 WHERE name = 'Journal'").run();
+    const line = nights(db, "2026-10-11", "2026-10-20").pop();
+    for (const name of ["Water", "Stretch", "Journal"]) {
+      assert.ok(entriesOf(db, habitRow(db, name).id).every((e) => e.date <= "2026-10-09"), name);
+    }
+    assert.match(line, /; 3 habit\(s\) not from the demo scripts left alone/);
+    assert.deepEqual(offRule(db, "2026-10-10", "2026-10-19").filter((d) => !/^(Water|Stretch|Journal) /.test(d)), []);
+  });
+
+  it("--dry-run reports exactly what a run would add, and writes nothing", () => {
+    const db = scratchDb();
+    seedDemo.seed(db, { token: "y".repeat(48), now: new Date("2026-10-01T20:00:00.000Z") });
+    const rows = snapshot(db);
+    const dry = topup.topUp(db, { now: night("2026-10-05"), dryRun: true });
+    assert.deepEqual(snapshot(db), rows);
+    const real = topup.topUp(db, { now: night("2026-10-05") });
+    assert.ok(real.added > 0);
+    assert.equal(dry.line.replace(" DRY RUN", ""), real.line);
   });
 });
 
@@ -428,10 +678,11 @@ describe("the rows demo-add-habits.js writes", () => {
       times_per_week: 3, active_days_mask: 127, is_archived: 0, group_id: null, note: null, reminder_enabled: 0 });
   });
 
-  it("created_at 91 days back, before the first check-in in any zone; updated_at = client_updated_at = now; upper-case ids", () => {
+  it("created_at 91 days back, before the first check-in in any zone; updated_at = client_updated_at = now; upper-case ids, the habit's its demo id", () => {
     for (const name of ["Water", "Stretch"]) {
       const h = habitRow(db, name);
       assert.equal(h.created_at, new Date(now.getTime() - 91 * DAY_MS).toISOString());
+      assert.equal(h.id, demoHabitId(h.user_id, name, h.created_at));
       assert.equal(h.updated_at, now.toISOString());
       assert.equal(h.client_updated_at, now.toISOString());
       assert.match(h.id, UPPER_UUID);
@@ -458,7 +709,7 @@ describe("the rows demo-add-habits.js writes", () => {
     const byDate = new Map(water.map((e) => [e.date, e]));
     for (let i = 0; i < 90; i++) {
       const date = addDays("2026-10-15", i - 89);
-      const v = addOnly.WATER_VALUES[i % 30];
+      const v = addOnly.WATER_VALUES[patternIndex(date)];
       assert.equal(byDate.get(date)?.value ?? 0, v, date);
     }
     // The notes say what the day shows.
@@ -489,9 +740,13 @@ describe("seed-demo.js and demo-add-habits.js agree", () => {
     }
   });
 
-  it("every seeded habit has every column filled, 90 days of its pattern in order, created 91 days back", () => {
+  it("every seeded habit has every column filled, 90 days of its pattern in order, created 91 days back, its demo id", () => {
     const habits = seeded.prepare("SELECT * FROM habits ORDER BY sort_order").all();
     assert.deepEqual(habits.map((h) => h.name), [...SIX, "Water", "Stretch"]);
+    for (const h of habits) {
+      assert.equal(h.id, demoHabitId(h.user_id, h.name, h.created_at), h.name);
+      assert.ok(topup.hasShape(h), h.name);
+    }
     for (const h of habits.slice(0, 6)) {
       assert.deepEqual([h.kind, h.target_value, h.unit, h.schedule_kind, h.times_per_week, h.active_days_mask],
         ["binary", 1, null, "daily", 7, 127], h.name);
@@ -499,7 +754,10 @@ describe("seed-demo.js and demo-add-habits.js agree", () => {
       assert.equal(h.client_updated_at, now.toISOString());
       const dates = new Set(entriesOf(seeded, h.id).map((e) => e.date));
       const pattern = /** @type {number[]} */ (PATTERNS[h.name]);
-      for (let i = 0; i < 90; i++) assert.equal(dates.has(addDays("2026-10-15", i - 89)), pattern[i % 30] === 1, `${h.name} day ${i}`);
+      for (let i = 0; i < 90; i++) {
+        const date = addDays("2026-10-15", i - 89);
+        assert.equal(dates.has(date), pattern[patternIndex(date)] === 1, `${h.name} ${date}`);
+      }
     }
   });
 
@@ -620,7 +878,7 @@ describe("a signed-in reviewer across demo-add-habits.js, on the real server (a 
     assert.ok(body.entries.length > 100);
     assert.ok(body.entries.every((e) => ids.has(e.habitId)), "only the new habits' check-ins are new");
     const water = body.entries.filter((e) => e.habitId === byName.Water.id);
-    assert.ok(water.some((e) => e.value === 6 && e.note === "Left my bottle at home"));
+    assert.ok(water.some((e) => e.value < 8 && e.note === "Left my bottle at home"));
     for (const h of [byName.Water, byName.Stretch]) {
       const first = body.entries.filter((e) => e.habitId === h.id).map((e) => e.date).sort()[0];
       assert.ok(h.createdAt.slice(0, 10) < first, `${h.name} created ${h.createdAt}, first check-in ${first}`);
@@ -664,15 +922,86 @@ describe("gate 2: strength (Shared/HabitScore.swift, ported)", () => {
     assert.ok(Math.abs(lost * 100 - 4.98) < 0.005, String(lost));
   });
 
-  it("a full seed: every habit done on at least 25 of the last 30 days scores at least 0.75, on the cap day and the empty day after", () => {
+  it("a full seed on any of 30 days in a row: on seed day and the two days after (before the next run), only Read 30 Minutes and Journal are done on 25 of 30, each at 0.75 or more", () => {
+    const min = { "Read 30 Minutes": 1, "Journal": 1 };
+    for (let k = 0; k < 30; k++) {
+      const day = addDays("2026-10-15", k);
+      const db = scratchDb();
+      seedDemo.seed(db, { token: "g".repeat(48), now: new Date(`${day}T20:00:00.000Z`) });
+      for (const today of [day, addDays(day, 1), addDays(day, 2)]) {
+        for (const r of gate2(db, today).filter((x) => x.done30 >= 25)) {
+          assert.ok(r.name in min, `${day}: ${r.name} done on ${r.done30} of 30`);
+          assert.ok(r.score >= 0.75, `seeded ${day}, ${today}: ${r.name} ${r.score.toFixed(3)} (${r.done30}/30)`);
+          min[r.name] = Math.min(min[r.name], r.score);
+        }
+      }
+      db.close();
+    }
+    // What seed-demo.js's header says (the lowest over seed day and the two days after).
+    assert.ok(min["Read 30 Minutes"] >= 0.81 && min.Journal >= 0.79, JSON.stringify(min));
+  });
+
+  // Checks between the run on UTC `day` and the next: Tokyo at 15:00 that day, Los Angeles at
+  // about noon, and Tokyo at 10:00 the next day (before the 12:50 JST run).
+  const checkTimes = (day) => [["Asia/Tokyo", `${day}T06:00:00.000Z`], ["America/Los_Angeles", `${day}T19:30:00.000Z`],
+    ["Asia/Tokyo", `${addDays(day, 1)}T01:00:00.000Z`]];
+  /** Run the cron for `days` nights after `deployDay`, checking gate 2 between runs; the failures, with the day. */
+  const sixtyNights = (db, deployDay, days, lines) => {
+    const failures = [];
+    for (let k = 1; k <= days; k++) {
+      const day = addDays(deployDay, k);
+      lines.push(...nights(db, day, day));
+      for (const [zone, iso] of checkTimes(day)) {
+        const today = dayIn(new Date(iso), zone);
+        for (const r of gate2(db, today)) {
+          if (r.done30 >= 25 && r.score < 0.75) failures.push(`night ${k} ${zone} ${today}: ${r.name} ${r.score.toFixed(3)} (${r.done30}/30)`);
+        }
+      }
+    }
+    return failures;
+  };
+
+  it("60 nights after the deploy, on production's shape (seeded 2026-09-16, filled before 1.4.1 by hash) for six sets of habit ids: gate 2 holds from the second night on", () => {
+    let held = 0;
+    for (const label of ["p1", "p2", "p3", "p4", "p5", "p6"]) {
+      const db = scratchDb();
+      const deploy = new Date("2026-10-20T10:00:00.000Z");
+      legacyAccount(db, { now: deploy, seedDay: "2026-09-16", label });
+      assert.deepEqual(addOnly.addHabits(db, { now: deploy }).added, ["Water", "Stretch"]);
+      const lines = [];
+      // The first night writes nothing new: the pre-1.4.1 run of the 20th had written through the UTC 20th.
+      const failures = sixtyNights(db, "2026-10-20", 60, lines).filter((f) => !f.startsWith("night 1 "));
+      assert.deepEqual(failures, [], label);
+      held += lines.filter((l) => / held below gate 2/.test(l)).length;
+      db.close();
+    }
+    assert.ok(held > 0, "the hash-picked days made the top-up hold a day below gate 2 somewhere");
+  });
+
+  it("60 nights after a full seed: gate 2 holds every night, nothing is ever held, and every day follows its rule", () => {
     const db = scratchDb();
-    const now = new Date("2026-10-15T09:30:00.000Z");
-    seedDemo.seed(db, { token: "g".repeat(48), now });
-    for (const today of ["2026-10-15", "2026-10-16"]) {
-      const rows = gate2(db, today);
-      const subject = rows.filter((r) => r.done30 >= 25);
-      assert.deepEqual(subject.map((r) => r.name).sort(), ["Journal", "Read 30 Minutes"], today);
-      for (const r of subject) assert.ok(r.score >= 0.75, `${today} ${r.name} ${r.score.toFixed(3)} (${r.done30}/30)`);
+    seedDemo.seed(db, { token: "h".repeat(48), now: new Date("2026-10-20T10:00:00.000Z") });
+    const lines = [];
+    assert.deepEqual(sixtyNights(db, "2026-10-20", 60, lines), []);
+    assert.ok(lines.every((l) => !/ held /.test(l)));
+    assert.deepEqual(offRule(db, "2026-07-23", "2026-12-18"), []);
+  });
+
+  it("a habit whose rule stays under 25 of 30 is not written to 25 (the 29 days before hold 24), and is when they hold 23 or, past the gate already, 25", () => {
+    let day = "2026-11-10";
+    while (!isChecked(PATTERNS["Morning Run"], day)) day = addDays(day, 1);
+    for (const [held, expectWritten] of [[24, false], [23, true], [25, true]]) {
+      const db = scratchDb();
+      seedDemo.seed(db, { token: "i".repeat(48), now: new Date(`${addDays(day, -40)}T20:00:00.000Z`) });
+      nights(db, addDays(day, -39), day); // through the day before `day` (Los Angeles)
+      const run = habitRow(db, "Morning Run").id;
+      // Its 29 days before `day`: `held` done days, the last of them the day before.
+      db.prepare("DELETE FROM habit_entries WHERE habit_id = ? AND date >= ?").run(run, addDays(day, -29));
+      for (let k = 1; k <= held; k++) checkIn(db, run, addDays(day, -k), night(day));
+      const r = topup.topUp(db, { now: night(addDays(day, 1)) }); // the run that writes `day`
+      assert.equal(entriesOf(db, run).some((e) => e.date === day), expectWritten, `${held}: ${r.line}`);
+      if (!expectWritten) assert.match(r.line, /Morning Run \+0 \([^)]*, 1 held below gate 2\)/);
+      db.close();
     }
   });
 

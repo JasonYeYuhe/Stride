@@ -13,14 +13,17 @@
  *   - "Stretch": yes/no, 3 times a week, checked every Monday, Wednesday and Friday.
  * Each gets 90 days of history ending on the entry-day cap (ops/demo-topup.js `entryDayCap`,
  * min(UTC today, America/Los_Angeles today)) and three notes on days it has a check-in (D7:
- * notes only on days with a record; never a value-0 or note-only record). From then on
- * ops/demo-topup.js keeps both current, by the rules in its PATTERNS.
+ * notes only on days with a record; never a value-0 or note-only record). Water's 30-day cycle
+ * is laid down at ops/demo-topup.js's `patternIndex`, the calendar's place, so the top-up, which
+ * keeps both current by the rules in its PATTERNS, carries on where this left off.
  *
  * Why not seed-demo.js. A re-seed deletes the account's sessions and tokens and re-creates every
  * habit under a new id: a reviewer signed in at the time is signed out and loses what is on their
  * device (seed-demo.js header). This script only INSERTs a habit and its check-ins:
  *   - never a session, token, tombstone or user row, and never an existing habit or check-in;
- *     the ids it writes are new upper-case UUIDs, like every id the apps send;
+ *     the ids it writes are new upper-case UUIDs, like every id the apps send: a habit's is
+ *     ops/demo-topup.js's `demoHabitId`, by which the top-up knows it from a reviewer's habit
+ *     of the same name;
  *   - idempotent per (account, name): a habit of that name already in the account, archived or
  *     not, is left alone and the script still exits 0, so a second run adds nothing;
  *   - created_at is written explicitly, CREATED_DAYS_BACK (91) days back: the server sets it only
@@ -34,7 +37,7 @@
  */
 
 const crypto = require("crypto");
-const { DEMO_EMAIL, DAY_MS, PATTERNS, addDays, weekdayOf, entryDayCap } = require("./demo-topup");
+const { DEMO_EMAIL, DAY_MS, PATTERNS, addDays, weekdayOf, patternIndex, entryDayCap, demoHabitId } = require("./demo-topup");
 
 /** Days of history each habit gets, ending on the entry-day cap. */
 const HISTORY_DAYS = 90;
@@ -42,21 +45,25 @@ const HISTORY_DAYS = 90;
 const CREATED_DAYS_BACK = 91;
 
 /**
- * A demo habit: its row, and `day(index, date)` — the check-in for day `index` of the history
- * (0 = the oldest, HISTORY_DAYS − 1 = the cap), or null for none. Each of `notes` is
- * [days back from the cap, text], and goes on the newest check-in on or before that day that has
- * no note yet.
+ * A check-in of a demo habit's history. @typedef {{ date: string, value: number, note: string | null }} DemoRow
+ */
+
+/**
+ * A demo habit: its row, and `day(date)` — the check-in on `date`, or null for none. Each of
+ * `notes` is [pick, text]: the text goes on the newest check-in with no note yet for which
+ * `pick(row, lastDay)` holds (lastDay = the cap), so it says what that day shows wherever the
+ * calendar puts the cycle.
  * @typedef {{
  *   name: string, emoji: string, color: string,
  *   kind: "binary" | "count", target: number, unit: string | null,
  *   schedule: "daily" | "timesPerWeek" | "specificDays", timesPerWeek: number, activeDaysMask: number,
- *   day: (index: number, date: string) => { value: number } | null,
- *   notes: [number, string][],
+ *   day: (date: string) => { value: number } | null,
+ *   notes: [(row: DemoRow, lastDay: string) => boolean, string][],
  * }} DemoHabitDef
  */
 
-/** Water's logged glasses, by position in a 30-day cycle (0 = no check-in that day). The days at
- * 8 or more are ops/demo-topup.js's PATTERNS.Water. */
+/** Water's logged glasses, by place in the 30-day cycle (`patternIndex`; 0 = no check-in that
+ * day). The days at 8 or more are ops/demo-topup.js's PATTERNS.Water. */
 const WATER_VALUES = [8,8,6,8,8,8,0,8,8,7,8,8,10,8,5,8,8,8,8,0,8,8,8,6,8,8,9,8,8,8];
 
 const stretchRule = /** @type {{ weekdays: number[] }} */ (PATTERNS.Stretch);
@@ -67,28 +74,29 @@ const ADDED_HABITS = [
     name: "Water", emoji: "🚰", color: "#007AFF",
     kind: "count", target: 8, unit: "glasses",
     schedule: "daily", timesPerWeek: 7, activeDaysMask: 127,
-    day: (i) => {
-      const value = WATER_VALUES[i % WATER_VALUES.length];
+    day: (date) => {
+      const value = WATER_VALUES[patternIndex(date, WATER_VALUES.length)];
       return value > 0 ? { value } : null;
     },
-    // Days back from the cap: 17 is cycle position 12 (10 glasses), 6 is position 23 (6), 38 is
-    // position 21 (8), whatever the date (day i of the history is position i % 30).
+    // The newest short day (at most 8 days back: the cycle's short days are at most 9 apart),
+    // the newest 10-glass day (one per cycle), and a day of 8 five weeks back or more.
     notes: [
-      [6, "Left my bottle at home"],
-      [17, "Hot day, two extra glasses"],
-      [38, "Herbal tea counts too"],
+      [(row) => row.value < 8, "Left my bottle at home"],
+      [(row) => row.value === 10, "Hot day, two extra glasses"],
+      [(row, lastDay) => row.value === 8 && row.date <= addDays(lastDay, -35), "Herbal tea counts too"],
     ],
   },
   {
     name: "Stretch", emoji: "🤸", color: "#FFCC00",
     kind: "binary", target: 1, unit: null,
     schedule: "timesPerWeek", timesPerWeek: 3, activeDaysMask: 127,
-    day: (_i, date) => (stretchRule.weekdays.includes(weekdayOf(date)) ? { value: 1 } : null),
-    // At least three days apart, so each lands on its own Monday, Wednesday or Friday.
+    day: (date) => (stretchRule.weekdays.includes(weekdayOf(date)) ? { value: 1 } : null),
+    // Days back from the cap, at least three apart, so each lands on its own Monday, Wednesday
+    // or Friday.
     notes: [
-      [1, "Hamstrings feel looser"],
-      [9, "Ten minutes after the run"],
-      [30, "Yoga class instead"],
+      [(row, lastDay) => row.date <= addDays(lastDay, -1), "Hamstrings feel looser"],
+      [(row, lastDay) => row.date <= addDays(lastDay, -9), "Ten minutes after the run"],
+      [(row, lastDay) => row.date <= addDays(lastDay, -30), "Yoga class instead"],
     ],
   },
 ];
@@ -97,20 +105,19 @@ const ADDED_HABITS = [
  * The check-ins `def` gets for HISTORY_DAYS days ending on `lastDay`, oldest first, with its
  * notes placed.
  * @param {DemoHabitDef} def @param {string} lastDay
- * @returns {{ date: string, value: number, note: string | null }[]}
+ * @returns {DemoRow[]}
  */
 function historyOf(def, lastDay) {
-  /** @type {{ date: string, value: number, note: string | null }[]} */
+  /** @type {DemoRow[]} */
   const rows = [];
   for (let i = 0; i < HISTORY_DAYS; i++) {
     const date = addDays(lastDay, i - (HISTORY_DAYS - 1));
-    const entry = def.day(i, date);
+    const entry = def.day(date);
     if (entry && entry.value > 0) rows.push({ date, value: entry.value, note: null });
   }
-  for (const [back, text] of def.notes) {
-    const onOrBefore = addDays(lastDay, -back);
+  for (const [pick, text] of def.notes) {
     for (let i = rows.length - 1; i >= 0; i--) {
-      if (rows[i].date <= onOrBefore && rows[i].note === null) { rows[i].note = text; break; }
+      if (rows[i].note === null && pick(rows[i], lastDay)) { rows[i].note = text; break; }
     }
   }
   return rows;
@@ -130,7 +137,7 @@ function insertDemoHabit(db, userId, def, { now, sortOrder }) {
   const nowIso = now.toISOString();
   const lastDay = entryDayCap(now);
   const createdAt = new Date(now.getTime() - CREATED_DAYS_BACK * DAY_MS).toISOString();
-  const id = crypto.randomUUID().toUpperCase();
+  const id = demoHabitId(userId, def.name, createdAt);
   db.prepare(`
     INSERT INTO habits (id, user_id, name, emoji, color_hex, is_archived, sort_order,
                         reminder_enabled, reminder_hour, reminder_minute, note,

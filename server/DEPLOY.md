@@ -818,10 +818,18 @@ replaces everything on their device. The top-up only adds check-ins — for each
 habit, from the day after its last entry through the entry-day cap (at most 30 days back),
 by that habit's rule:
 
-- a daily habit follows its seed pattern, at a position picked by a hash of habit id + date;
+- a daily habit follows its 30-day pattern in order, each day at its place in a cycle fixed by
+  the calendar (`patternIndex`), where `seed-demo.js` and `demo-add-habits.js` lay it down too.
+  So any 30 days hold exactly the pattern's count, and only Read 30 Minutes (27) and Journal
+  (25) ever reach gate 2's 25 of 30, scoring at least 0.79 wherever the cycle stands. (Until
+  1.4.1 the place was picked by a hash of habit id + date, which let a weaker habit reach 25 of
+  30 by luck and score 0.72-0.75, an exit 4.)
 - "Stretch" (3 times a week) is checked every Monday, Wednesday and Friday, because a per-day
   hash can leave a Monday-to-Sunday week short of three and break its weekly streak;
-- a count habit ("Water") is filled at its target, the only value that counts as done.
+- a count habit ("Water") is filled at its target, the only value that counts as done;
+- a habit whose pattern holds fewer than 25 of 30 is never written on the day that would bring
+  the 30 days ending there up to 25. In order that never happens; it only acts while the
+  hash-picked days from before 1.4.1 are still in the window, the 30 days after the W8 deploy.
 
 The entry-day cap is min(UTC today, America/Los_Angeles today), the same for all three demo
 scripts (RELEASE-1.4.1.md D13): 03:50 UTC is the previous evening in the US, so a UTC date gave
@@ -829,18 +837,27 @@ every US reviewer a check-in for tomorrow. It is idempotent (a second run the sa
 nothing), never deletes, and refuses to run if the account or its seeded habits are missing
 ("run seed-demo.js first"). Two rules keep it from changing what a reviewer did:
 
-- **Un-checked stays un-checked.** It never writes on or before the UTC day of the account's
-  newest entry tombstone. The first version skipped just its own hashed ids, and re-checked a
-  day the reviewer had cleared whenever that check-in had come from `seed-demo.js` or the app.
-  Since the 1.3.1 server an entry tombstone also names the deleted row's habit and day, but
-  rows from before that deploy, a retried deletion and an entry the server no longer held keep
-  NULL, so the account-wide floor stays: it is the one rule that covers every tombstone. Costs
-  at most one day of streak, which the one day of grace absorbs; a re-seed clears the
-  tombstones and the floor with them.
-- **Only habits `seed-demo.js` or `demo-add-habits.js` made**: a name the top-up has a rule for
-  *and* `created_at` before the 30-day window (both back-date it 91 days; the seed before 1.4.1,
-  45), and never a day before the habit's own creation. A reviewer who deletes "Journal" and
-  adds it back gets no invented history.
+- **Un-checked stays un-checked.** An entry tombstone names the deleted row's habit and day
+  (both delete paths, since the 1.3.1 server), and a habit never gets a check-in on or before
+  the newest day un-checked on it — not that day, and not an earlier one the fill would read
+  again because the habit's last entry moved back. Every other habit is filled as usual, so one
+  un-check costs no other habit a day. (The first version skipped just its own hashed ids, and
+  re-checked a day the reviewer had cleared whenever that check-in had come from `seed-demo.js`
+  or the app. Until W8 the floor was account-wide, at the UTC day of the newest deletion; with
+  the cap on the Los Angeles day, that left the reviewer's own day empty on all eight habits.)
+  A tombstone with no habit and day is one whose DELETE removed nothing (a retry, an id the
+  server never held, an entry of a habit deleted in the same push) and sets no floor;
+  production had no tombstones when the 1.3.1 server shipped, so none is older than that. A
+  re-seed clears the tombstones.
+- **Only habits `seed-demo.js` or `demo-add-habits.js` made**, by identity: since 1.4.1 both
+  give a habit the id `demoHabitId(account, name, created_at)`, which no app sends. The six
+  seeded before 1.4.1 (random ids, production's) are recognised by name, age (created before the
+  30-day window) and the one `created_at` that seed run gave all six, until a habit of that name
+  has a demo id (after a re-seed only demo ids count). The habit must also still be what the
+  script made (kind, schedule, target): one a reviewer changes is theirs from then on. Never a
+  day before the habit's own creation. So a reviewer's own "Stretch", "Morning Run" or
+  "Meditate" (template names) from an earlier review, or a "Journal" deleted and added back, gets
+  no invented history.
 
 Daily, not weekly: streaks count back from today with one day of grace, so two days after
 the last check-in every streak is 0 — `scripts/check_demo_account.sh` exit 3. Before a
@@ -864,8 +881,23 @@ sudo /usr/bin/node /root/stride-server/ops/demo-add-habits.js
 #   "0 habit(s) added — Water already there, left alone, Stretch already there, left alone"
 ```
 
-then `scripts/check_demo_account.sh` (gate 2), in the default zone and under
-`TZ=America/Los_Angeles`.
+then `sudo /usr/bin/node /root/stride-server/ops/demo-topup.js --dry-run`, which must name all
+eight habits (`+k`, or `+0 (current)`); "N habit(s) not from the demo scripts left alone" should
+count only the reviewers' own. If one of the original six is missing, its `created_at` is not
+the one the other five share: look at the rows before re-seeding. Do the same on the production
+copy in the rehearsal. Then `scripts/check_demo_account.sh` (gate 2), in the default zone and
+under `TZ=America/Los_Angeles`.
+
+Until the second night after the deploy, every day gate 2 reads was written before it, by the
+hash-picked top-up, so it keeps the small chance of exit 4 it had then (8 of 900 simulated
+accounts, on Morning Run, Meditate, Drink 8 Glasses or Journal at 25 of 30). That is the old
+days, not a fault in the new data, and needs no re-seed. From the second night on, the guard
+above and the in-order fill hold it while the hash-picked days leave the window: simulated for
+900 random sets of habit ids over 40 nights after a deploy, checked six times a day, gate 2
+failed twice (0.748 and 0.749, both in Tokyo before the 12:50 JST run, with hash-picked days
+still in the window). From the 31st night on, a habit whose pattern holds fewer than 25 can no
+longer reach 25 of 30, which leaves Read 30 Minutes and Journal, in order. If the owner wants it
+certain on the deploy day, re-seed instead of adding, while no review is open.
 
 Still re-seed with `seed-demo.js` (`cd /root/stride-server && sudo node seed-demo.js`) if the
 account itself is broken (habits deleted, token rotated) — and only when no review is open. It

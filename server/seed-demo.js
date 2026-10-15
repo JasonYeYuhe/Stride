@@ -18,18 +18,22 @@
  * before writing anything, so no token nobody has seen is ever installed.
  *
  * What it writes. The six habits seeded since 1.0, with their 30-day patterns from
- * ops/demo-topup.js's PATTERNS laid down in order three times, plus ops/demo-add-habits.js's
- * "Water" and "Stretch" through the same insert (`insertDemoHabit`): every column the apps read
- * (kind, target, unit, schedule, …), created_at CREATED_DAYS_BACK (91) days back, updated_at =
- * client_updated_at = now, upper-case ids, and check-ins on the last 90 days up to the entry-day
- * cap, min(UTC today, America/Los_Angeles today) (RELEASE-1.4.1.md D13). The two habits done on
- * at least 25 of the last 30 days, Read 30 Minutes and Journal, score 0.890 and 0.883 on seed day
- * (HabitScoreTests): above gate 2's 0.75, where the 30 days seeded before 1.4.1 scored 0.716 and
- * 0.711.
+ * ops/demo-topup.js's PATTERNS laid down three times, each day at its place in the calendar's
+ * 30-day cycle (`patternIndex`, where the nightly top-up carries on), plus
+ * ops/demo-add-habits.js's "Water" and "Stretch" through the same insert (`insertDemoHabit`):
+ * every column the apps read (kind, target, unit, schedule, …), created_at CREATED_DAYS_BACK (91)
+ * days back, ids from `demoHabitId` (so the top-up knows these habits from a reviewer's),
+ * updated_at = client_updated_at = now, upper-case ids, and check-ins on the last 90 days up to
+ * the entry-day cap, min(UTC today, America/Los_Angeles today) (RELEASE-1.4.1.md D13). Only
+ * Read 30 Minutes and Journal are done on 25 of the last 30 days. On seed day they score at
+ * least 0.86 and 0.79 whatever the date (0.890 and 0.883 where the cycle ends on the pattern's
+ * last day, as HabitScoreTests has it), and while still at 25 of 30 at least 0.81 and 0.82 on
+ * the two empty days before the next run: above gate 2's 0.75, where the 30 days seeded before
+ * 1.4.1 scored 0.716 and 0.711.
  */
 
 const crypto = require("crypto");
-const { DEMO_EMAIL, PATTERNS, entryDayCap } = require("./ops/demo-topup");
+const { DEMO_EMAIL, PATTERNS, patternIndex, entryDayCap } = require("./ops/demo-topup");
 const { HISTORY_DAYS, ADDED_HABITS, insertDemoHabit } = require("./ops/demo-add-habits");
 
 /** One year. */
@@ -38,7 +42,7 @@ const TOKEN_LIFETIME_MS = 365 * 24 * 60 * 60 * 1000;
 /** @typedef {import('./ops/demo-add-habits').DemoHabitDef} DemoHabitDef */
 
 /**
- * A yes/no daily habit checked on the days its 30-day pattern says, in order.
+ * A yes/no daily habit checked on the days its 30-day pattern says, at the calendar's place.
  * @param {string} name @param {string} emoji @param {string} color @returns {DemoHabitDef}
  */
 function patternHabit(name, emoji, color) {
@@ -47,7 +51,7 @@ function patternHabit(name, emoji, color) {
     name, emoji, color,
     kind: "binary", target: 1, unit: null,
     schedule: "daily", timesPerWeek: 7, activeDaysMask: 127,
-    day: (i) => (pattern[i % pattern.length] ? { value: 1 } : null),
+    day: (date) => (pattern[patternIndex(date, pattern.length)] ? { value: 1 } : null),
     notes: [],
   };
 }
