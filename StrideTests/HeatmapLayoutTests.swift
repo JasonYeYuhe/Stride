@@ -152,4 +152,91 @@ final class HeatmapLayoutTests: XCTestCase {
         XCTAssertEqual(HeatmapLayout.cellSize(scaled: 14, availableWidth: .infinity, regular: true), 14)
         XCTAssertEqual(HeatmapLayout.cellSize(scaled: 14, availableWidth: .nan, regular: true), 14)
     }
+
+    // MARK: - Taps (RELEASE-1.4.1.md D5)
+
+    /// The point at the middle of the cell in `column`, `row` at `cell` — where a finger lands.
+    private func centre(column: Int, row: Int, cell: CGFloat) -> CGPoint {
+        let pitch = cell + HeatmapLayout.spacing
+        return CGPoint(x: CGFloat(column) * pitch + cell / 2, y: CGFloat(row) * pitch + cell / 2)
+    }
+
+    /// Every day of the grid, at a phone's 14 pt cell and an iPad's 41 pt one, is the day a tap
+    /// on its cell opens History on — the oldest, padded week and today's included — and the
+    /// empty cells (before the twelve weeks, after today) open nothing.
+    func testATapOnACellIsThatCellsDay() {
+        let c = calendar("America/Chicago", firstWeekday: 1)
+        let columns = assertLayout(c, today: noon(c, 2026, 7, 15))
+        for cell in [CGFloat(14), 41] {
+            for (x, column) in columns.enumerated() {
+                for (y, day) in column.enumerated() {
+                    XCTAssertEqual(HeatmapLayout.day(at: centre(column: x, row: y, cell: cell), in: columns, cell: cell), day,
+                                   "column \(x), row \(y) at \(cell) pt")
+                }
+            }
+        }
+        XCTAssertNil(HeatmapLayout.day(at: centre(column: 0, row: 0, cell: 14), in: columns, cell: 14),
+                     "Sunday before the range is room, not a day")
+        XCTAssertEqual(HeatmapLayout.day(at: centre(column: 12, row: 3, cell: 14), in: columns, cell: 14),
+                       c.startOfDay(for: noon(c, 2026, 7, 15)), "today")
+        XCTAssertNil(HeatmapLayout.day(at: centre(column: 12, row: 4, cell: 14), in: columns, cell: 14), "tomorrow")
+    }
+
+    /// The 3 pt gap after a cell is that cell's — a tap between two cells still opens a day — and
+    /// the edges hold: the first cell's corner, the last row's gap, and nothing past the grid,
+    /// left of it, above it, or at a point that is not a number.
+    func testGapsBelongToTheCellBeforeThemAndNothingOutsideTheGridOpens() {
+        let c = calendar("Europe/Berlin", firstWeekday: 2)
+        // A Sunday: 84 days from a Monday, 12 full columns, every cell a day.
+        let today = noon(c, 2026, 9, 6)
+        let columns = assertLayout(c, today: today)
+        XCTAssertEqual(columns.count, 12)
+        let cell: CGFloat = 14, pitch = cell + HeatmapLayout.spacing
+        XCTAssertEqual(HeatmapLayout.day(at: .zero, in: columns, cell: cell), columns[0][0])
+        // Inside the gap right of column 2, row 4, and the one under it.
+        XCTAssertEqual(HeatmapLayout.day(at: CGPoint(x: 2 * pitch + cell + 1, y: 4 * pitch + 1), in: columns, cell: cell),
+                       columns[2][4])
+        XCTAssertEqual(HeatmapLayout.day(at: CGPoint(x: 2 * pitch + 1, y: 4 * pitch + cell + 1.5), in: columns, cell: cell),
+                       columns[2][4])
+        XCTAssertEqual(HeatmapLayout.day(at: CGPoint(x: 11 * pitch + cell, y: 6 * pitch + cell), in: columns, cell: cell),
+                       columns[11][6], "the last cell's far corner")
+        for outside in [CGPoint(x: 12 * pitch + 1, y: 1), CGPoint(x: 1, y: 7 * pitch + 1), CGPoint(x: -1, y: 1),
+                        CGPoint(x: 1, y: -0.5), CGPoint(x: CGFloat.nan, y: 1), CGPoint(x: 1, y: CGFloat.infinity)] {
+            XCTAssertNil(HeatmapLayout.day(at: outside, in: columns, cell: cell), "\(outside)")
+        }
+        XCTAssertNil(HeatmapLayout.day(at: CGPoint(x: 1, y: 1), in: columns, cell: 0), "no cell measured")
+        XCTAssertNil(HeatmapLayout.day(at: CGPoint(x: 1, y: 1), in: [], cell: cell), "no columns")
+    }
+
+    // MARK: - The one accessibility element (D5)
+
+    /// The grid's VoiceOver summary counts its 84 days — never the padding — and the completed
+    /// ones among them; nothing else.
+    func testTheSummaryCountsTheEightyFourDaysAndTheCompletedOnes() {
+        let c = calendar("Asia/Tokyo", firstWeekday: 1)
+        let today = noon(c, 2026, 9, 16)
+        let columns = assertLayout(c, today: today)
+        XCTAssertEqual(columns.count, 13, "padding on both sides")
+        let none = HeatmapLayout.tally(columns) { _ in false }
+        XCTAssertEqual(none.total, HeatmapLayout.dayCount)
+        XCTAssertEqual(none.completed, 0)
+        XCTAssertEqual(HeatmapLayout.tally(columns) { _ in true }.completed, 84)
+
+        // The last ten days, and one outside the grid that must not count.
+        let lastTen = Set((0..<10).map { c.date(byAdding: .day, value: -$0, to: c.startOfDay(for: today))! })
+        let outside = c.date(byAdding: .day, value: -90, to: c.startOfDay(for: today))!
+        let done = lastTen.union([outside])
+        XCTAssertEqual(HeatmapLayout.tally(columns) { done.contains($0) }.completed, 10)
+        XCTAssertEqual(HeatmapLayout.tally([]) { _ in true }.total, 0)
+    }
+
+    /// What a cell draws: its fill, and the note dot (D5). The fill is the enum M6's hatched
+    /// state extends.
+    func testTheCellModel() {
+        XCTAssertEqual(HeatmapLayout.Cell(completed: true, hasNote: false).fill, .completed)
+        XCTAssertEqual(HeatmapLayout.Cell(completed: false, hasNote: true).fill, .notCompleted)
+        XCTAssertTrue(HeatmapLayout.Cell(completed: false, hasNote: true).hasNote,
+                      "a count day below its target can carry a note")
+        XCTAssertEqual(HeatmapLayout.noteDot, 4)
+    }
 }

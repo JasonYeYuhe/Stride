@@ -2,7 +2,8 @@ import Foundation
 import CoreGraphics
 
 /// The Stats heatmap's geometry, pure (RELEASE-1.4.0.md D2, "Heatmap"): which day goes in which
-/// cell, and how big a cell is. StatsView's `HeatmapGrid` draws it.
+/// cell, and how big a cell is. StatsView's `HeatmapGrid` draws it. Since 1.4.1 (D5) also what a
+/// cell shows, which day a tap lands on, and the grid's one accessibility summary.
 ///
 /// Two defects it replaces:
 /// - **The first column.** The grid split the 84 days into weeks at `firstWeekday` and padded
@@ -83,5 +84,57 @@ enum HeatmapLayout {
     /// 14·cell + 39 for 13 columns.
     static func gridWidth(cell: CGFloat, columns: Int = sizingColumns) -> CGFloat {
         CGFloat(columns + 1) * cell + CGFloat(columns) * spacing
+    }
+
+    // MARK: - Cells, taps and the one accessibility element (RELEASE-1.4.1.md D5)
+
+    /// What a day's cell draws. The fill is an enum, not a flag, so M6's third visual — a hatched
+    /// skipped day — is one more case here rather than a second Bool beside `completed`.
+    struct Cell: Equatable {
+        enum Fill: Equatable {
+            case completed
+            case notCompleted
+        }
+
+        var fill: Fill
+        /// One of the day's check-ins carries a note: a `noteDot` in the cell.
+        var hasNote: Bool
+
+        init(completed: Bool, hasNote: Bool) {
+            fill = completed ? .completed : .notCompleted
+            self.hasNote = hasNote
+        }
+    }
+
+    /// The side of a noted day's dot (D5): 4 pt at every cell size, so it reads as a mark on a
+    /// 41 pt iPad cell and still leaves most of a 14 pt phone cell's colour showing.
+    static let noteDot: CGFloat = 4
+
+    /// The day under `point`, for the grid's one tap gesture (D5: a tap opens History on that
+    /// day, at every width). `point` is in the week columns' own space: x = 0 at the first
+    /// column's leading edge, y = 0 at the top row, as the columns' stack reports a tap — it
+    /// scrolls with them, so the strip's offset never enters. The `spacing` after a cell counts
+    /// as that cell, so a tap between two cells still lands on one; nil outside the grid and on
+    /// an empty cell (before the twelve weeks, or after today).
+    static func day(at point: CGPoint, in columns: [[Date?]], cell: CGFloat) -> Date? {
+        guard cell > 0, cell.isFinite, point.x.isFinite, point.y.isFinite, point.x >= 0, point.y >= 0
+        else { return nil }
+        let pitch = cell + spacing
+        let column = Int(point.x / pitch), row = Int(point.y / pitch)
+        guard column < columns.count, row < 7, row < columns[column].count else { return nil }
+        return columns[column][row]
+    }
+
+    /// The grid's days and how many of them `isCompleted` — what its one accessibility element
+    /// says ("N of 84 days completed", D5), where per-day detail is History's month grid.
+    static func tally(_ columns: [[Date?]], isCompleted: (Date) -> Bool) -> (completed: Int, total: Int) {
+        var completed = 0, total = 0
+        for column in columns {
+            for case let day? in column {
+                total += 1
+                if isCompleted(day) { completed += 1 }
+            }
+        }
+        return (completed, total)
     }
 }
