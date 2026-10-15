@@ -351,11 +351,15 @@ enum SyncReconciler {
         // entry — a walk of the habit's whole history each time — and `habit.records.append` one
         // record at a time, each a whole-relationship write SwiftData diffs: a second device
         // joining a 20,000-entry account spent 51 s on the main actor (rehearsal S12, 1.3.1 slice
-        // review; release/1.3.0 has the same two lines). Same match as before — the first record of
-        // that UTC day no deletion in this pull has reached, a record this pull inserted included —
-        // so a second entry for one day (`duplicate_day`) still lands on the record the first made.
+        // review; release/1.3.0 has the same two lines). The match is among the records of that UTC
+        // day no deletion in this pull has reached, a record this pull inserted included: the one
+        // already going by the entry's id, else the day's first, renamed — never onto an id another
+        // record of the habit already goes by (1.4.1, X1: `SyncDayIndex`). So a second entry for
+        // one day (`duplicate_day`) still lands on the record the first made.
         var days = SyncDayIndex(preloaded: preloaded)
         var missingHabitIssues = Set(report.issues.lazy.filter { $0.reason == .missingHabit }.compactMap(\.id))
+        var duplicateIDIssues = Set(report.issues.lazy.filter { $0.kind == .entry && $0.reason == .duplicateID }
+            .compactMap(\.id))
         for (remoteEntry, row) in zip(response.entries, parsed.rows) {
             guard let entryUUID = row.uuid, let entryDate = row.date, let remoteStamp = row.stamp
             else { continue }   // reported by validate
@@ -380,10 +384,21 @@ enum SyncReconciler {
             // together; matched to X, Y's values went onto the object `removal.commit` then
             // deleted, and the device had no record for the day until a full pull (M2 slice
             // review). Y is inserted instead, and X goes (to the recovery log first if pending).
-            if let existingRecord = days.record(of: habit, onDayOf: entryDate, excluding: removal) {
-                // Align local ID to server ID so full-pull reconciliation won't delete it
-                let realigned = existingRecord.id != entryUUID
-                if realigned { existingRecord.id = entryUUID }
+            switch days.match(entryUUID, of: habit, onDayOf: entryDate, excluding: removal) {
+            case .idTaken:
+                // Another record of the habit already goes by this id, on another of the pull's
+                // days or from an earlier entry of this pull (a second spelling of the id, which
+                // `validate` reported). A second record of one id is what the day match must never
+                // make (X1), so this entry is not applied — and, as for every row the upserts skip,
+                // reported, so a full pull runs no deletion pass on a snapshot it did not apply whole.
+                if duplicateIDIssues.insert(remoteEntry.id).inserted {
+                    report.issues.append(SyncPullIssue(kind: .entry, id: remoteEntry.id, reason: .duplicateID))
+                }
+                continue
+            case .record(let existingRecord, let realigned):
+                // Renamed to the server's id by the match (`realigned`) when it went by another, so
+                // a full pull's reconciliation won't delete it.
+                //
                 // The local-newer guard, at milliseconds, strictly: see the type's comment. Only
                 // against an edit stamp the server actually sent: a server before 2026-09-15 sent
                 // none, and its `createdAt` (the day) says nothing about when the value changed.
@@ -411,7 +426,7 @@ enum SyncReconciler {
                 if existingRecord.value != value { existingRecord.value = value }
                 if existingRecord.updatedAt != remoteStamp { existingRecord.updatedAt = remoteStamp }
                 existingRecord.adoptRemoteState()
-            } else {
+            case .insert:
                 let record = HabitRecord(date: entryDate, note: remoteEntry.note, value: remoteEntry.value ?? 1)
                 record.id = entryUUID
                 // Keep the edit time it was downloaded with. Left at init's Date(), a check-in
@@ -710,11 +725,82 @@ private struct ParsedEntries {
 /// collected before the first entry, so what it touches no longer changes. So is a record outside
 /// the days the pull's entries span (`preload`): no entry can match it, and leaving it out means
 /// its fields are never read.
+///
+/// One id is never put on two records (1.4.1, X1 in RELEASE-1.4.1.md; found by W2's review). Up
+/// to 1.4.0 the match took the day's FIRST record and renamed it onto the entry's id even when
+/// another record of that day already went by it — which 1.3.1–1.4.0 do leave, when the widget's
+/// insert races a Today tap and the push answer's alias is not followed because the device holds
+/// the stored id (`SyncPushResolver`, `takenIDs`). The two records then both went by the server's
+/// id, so no full pull could remove either, and `habit.records` order, which no save keeps,
+/// decided which one took the server's fields (rehearsal M7, M9). Now (`match`):
+/// 1. the day's record already going by the entry's id is the one, never renamed; of several, the
+///    one the day reads (`HabitRecord.outranks`, the record decision 7's merge keeps);
+/// 2. otherwise an id another record of the habit already goes by — on another day the pull
+///    reaches, or one this pull inserted or renamed — is given to no second record, by rename or
+///    insert (`idTaken`), as the resolver follows no alias onto a taken id;
+/// 3. otherwise the day's first record is renamed to it, as before, and a day with none gets a new
+///    record — so a second entry for one day (`duplicate_day`) still lands on the record the first
+///    made.
+///
+/// The ids of (2) are those of the records this index holds. A record outside the pull's days could
+/// go by an entry's id only if it had changed day, which a record does not (a check-in keeps its
+/// day, the server keeps an id on its habit and day, and a restore refuses two records of one id);
+/// the one exception is the 1.2.x day-key migration on a device whose zone had changed since the
+/// check-in (`SharedModelContainer.migrateRecordDayKeysIfNeeded`). Reading those ids would cost a
+/// query per record, the cost `preload` exists to avoid.
 @MainActor
 private struct SyncDayIndex {
+    /// Where a pulled entry goes.
+    enum Match {
+        /// Onto this local record. `realigned`: it went by another id and has just been renamed to
+        /// the entry's (rule 3).
+        case record(HabitRecord, realigned: Bool)
+        /// The entry's day has no local record: the caller inserts one (`add`).
+        case insert
+        /// Another record of the habit already goes by the entry's id (rule 2): the entry is not
+        /// applied.
+        case idTaken
+    }
+
+    /// One habit's records. A class, so a match mutates it in place, never a copy of its maps.
+    private final class Days {
+        var byDay: [Date: [HabitRecord]] = [:]
+        /// How many of the records go by each id. Built the first time an entry of the habit finds
+        /// no record of its day going by its id, so a pull whose entries all land on their own
+        /// records (a synced store's full pull, an echo) reads no other record's id; kept current
+        /// from then on, across renames and inserts.
+        private var ids: [UUID: Int]?
+
+        func append(_ record: HabitRecord, on day: Date) {
+            byDay[day, default: []].append(record)
+            ids?[record.id, default: 0] += 1
+        }
+
+        /// Whether any record here goes by `id`.
+        func goesBy(_ id: UUID) -> Bool {
+            if ids == nil {
+                var counts: [UUID: Int] = [:]
+                for records in byDay.values {
+                    for record in records { counts[record.id, default: 0] += 1 }
+                }
+                ids = counts
+            }
+            return (ids?[id] ?? 0) > 0
+        }
+
+        func rename(_ record: HabitRecord, to id: UUID) {
+            if ids != nil {
+                let old = record.id
+                if let n = ids?[old], n > 1 { ids?[old] = n - 1 } else { ids?[old] = nil }
+                ids?[id, default: 0] += 1
+            }
+            record.id = id
+        }
+    }
+
     /// The records `preload` fetched: only these can be on an entry's day.
     private let candidates: Set<PersistentIdentifier>
-    private var days: [ObjectIdentifier: [Date: [HabitRecord]]] = [:]
+    private var days: [ObjectIdentifier: Days] = [:]
     private var inserted: [(habit: Habit, records: [HabitRecord])] = []
     private var insertedSlot: [ObjectIdentifier: Int] = [:]
 
@@ -736,24 +822,48 @@ private struct SyncDayIndex {
             predicate: #Predicate { $0.date >= start && $0.date < end }))
     }
 
-    /// The first record of `habit` on `date`'s UTC day that `removal` has not reached — one this
-    /// pull inserted included, after the habit's own.
-    mutating func record(of habit: Habit, onDayOf date: Date, excluding removal: SyncLocalRemoval) -> HabitRecord? {
-        let id = ObjectIdentifier(habit)
-        if days[id] == nil {
-            var byDay: [Date: [HabitRecord]] = [:]
-            for record in habit.records where candidates.contains(record.persistentModelID) && !removal.touches(record) {
-                byDay[Self.day(record.date), default: []].append(record)
-            }
-            days[id] = byDay
+    /// Where the entry `entryID` of `habit` on `date`'s UTC day goes, among the records `removal`
+    /// has not reached — those this pull inserted included, after the habit's own. Rule 3's rename
+    /// is made here, so the index knows which ids are in use.
+    mutating func match(_ entryID: UUID, of habit: Habit, onDayOf date: Date,
+                        excluding removal: SyncLocalRemoval) -> Match {
+        let habitDays = self.days(of: habit, excluding: removal)
+        let onDay = habitDays.byDay[Self.day(date)] ?? []
+        var carrying: HabitRecord?
+        for record in onDay where record.id == entryID {
+            if let best = carrying, !record.outranks(best) { continue }
+            carrying = record
         }
-        return days[id]?[Self.day(date)]?.first
+        if let carrying { return .record(carrying, realigned: false) }
+        if habitDays.goesBy(entryID) { return .idTaken }
+        guard let first = onDay.first else { return .insert }
+        habitDays.rename(first, to: entryID)
+        return .record(first, realigned: true)
     }
 
-    /// A record this pull inserts. Call `attachNewRecords` before anything reads `habit.records`.
+    private mutating func days(of habit: Habit, excluding removal: SyncLocalRemoval) -> Days {
+        let key = ObjectIdentifier(habit)
+        if let built = days[key] { return built }
+        let built = Days()
+        for record in habit.records where candidates.contains(record.persistentModelID) && !removal.touches(record) {
+            built.append(record, on: Self.day(record.date))
+        }
+        days[key] = built
+        return built
+    }
+
+    /// A record this pull inserts, after `match` answered `.insert` for it. Call
+    /// `attachNewRecords` before anything reads `habit.records`.
     mutating func add(_ record: HabitRecord, to habit: Habit) {
         let id = ObjectIdentifier(habit)
-        days[id, default: [:]][Self.day(record.date), default: []].append(record)
+        let habitDays: Days
+        if let built = days[id] {
+            habitDays = built
+        } else {
+            habitDays = Days()
+            days[id] = habitDays
+        }
+        habitDays.append(record, on: Self.day(record.date))
         if let slot = insertedSlot[id] {
             inserted[slot].records.append(record)
         } else {
