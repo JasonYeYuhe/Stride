@@ -25,7 +25,11 @@
  *     or more.
  * Counter names:
  *   snake_fallback.<camelKey>  a field() read that found only the snake_case key (per row)
- *   habit_without_kind         a pushed habit with no `kind` key
+ *   habit_without_kind         a pushed habit with no `kind` key (the 1.1 app; since 2026-10-15
+ *                              its push is refused whole, and still counted here per habit)
+ *   legacy_push_refused        a push refused 426 client_update_required because its entries
+ *                              carry no edit stamp (apps <= 1.2.2) or its habits no `kind` (1.1)
+ *                              — routes/sync.js legacyShape: the old devices still trying to sync
  *   lww_refeed.<kind>          a push that lost to a strictly newer edit with different values,
  *                              whose winner was moved back into the feed (routes/sync.js, the
  *                              LWW re-feed; kind = habits | entries | groups). Not a shim

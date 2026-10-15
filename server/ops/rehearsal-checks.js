@@ -175,9 +175,36 @@ async function main() {
     // --- unknown habit -> skipped ---
     const ghost = crypto.randomUUID().toUpperCase();
     const ghostEntry = crypto.randomUUID().toUpperCase();
-    const skip = await call("POST", "/v1/sync/push", { token: session, body: { habits: [], entries: [{ id: ghostEntry, habitId: ghost, date: "2026-09-01", value: 1 }], groups: [] } });
+    // Stamped as every app >= 1.2.3 stamps an entry: a stamp-less entry is a legacy-shaped push now (below).
+    const skip = await call("POST", "/v1/sync/push", { token: session, body: { habits: [], entries: [{ id: ghostEntry, habitId: ghost, date: "2026-09-01", value: 1, createdAt: "2026-09-01T00:00:00.000Z", updatedAt: "2026-09-01T12:00:00.000Z" }], groups: [] } });
     check("entry for an unknown habit -> 200 with skipped.entries", skip.status === 200 && (skip.json?.skipped?.entries || []).includes(ghostEntry),
       JSON.stringify(skip.json));
+
+    // --- legacy-shaped push (an app <= 1.2.2: entries without updatedAt) -> 426, nothing written ---
+    // It also names one of the account's real check-ins for deletion, which must survive.
+    const victim = (p.entries || [])[0];
+    const legacyHabit = (p.habits || [])[0];
+    if (!victim || !legacyHabit) {
+      check("legacy push: the demo account has a habit and a check-in", false, "none pulled");
+    } else {
+      const counts = () => /** @type {any} */ (db.prepare(`SELECT
+        (SELECT COUNT(*) FROM habit_entries e JOIN habits h ON h.id=e.habit_id JOIN users u ON u.id=h.user_id WHERE u.email='demo@stride-review.com') AS entries,
+        (SELECT COUNT(*) FROM deletion_tombstones) AS tombs,
+        (SELECT MAX(e.updated_at) FROM habit_entries e JOIN habits h ON h.id=e.habit_id JOIN users u ON u.id=h.user_id WHERE u.email='demo@stride-review.com') AS emax`).get());
+      const before = counts();
+      const legacy = await call("POST", "/v1/sync/push", { token: session, body: {
+        habits: [], groups: [], deletedHabitIds: [], deletedGroupIds: [], deletedEntryIds: [victim.id],
+        entries: [{ id: crypto.randomUUID().toUpperCase(), habitId: legacyHabit.id, date: "2026-09-02", value: 1, note: null }],
+      } });
+      const after = counts();
+      check("legacy-shaped push (no updatedAt, no header) -> 426 client_update_required, sentence in error",
+        legacy.status === 426 && legacy.json?.code === "client_update_required"
+          && typeof legacy.json?.error === "string" && legacy.json.error.startsWith("This version of Stride"),
+        JSON.stringify({ status: legacy.status, json: legacy.json }));
+      check("…and wrote nothing: no entry added or deleted, no tombstone, no updated_at moved",
+        after.entries === before.entries && after.tombs === before.tombs && after.emax === before.emax,
+        JSON.stringify({ before, after }));
+    }
 
     // --- E2E S4 on a real check-in: uncheck + re-check pushed by 1.3.1, then pulled by each app ---
     // The tombstone must name the row's habit and date exactly as production stores them (seeded

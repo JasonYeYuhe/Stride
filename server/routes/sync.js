@@ -42,6 +42,16 @@ function field(obj, camelKey) {
   return snake;
 }
 
+/** What field() returns, without counting a snake_case read: for a look at a row before the
+ * handler reads it for real, so the `snake_fallback.*` counts stay one per row read. */
+function peekField(obj, camelKey) {
+  if (obj === null || obj === undefined) return undefined;
+  const v = obj[camelKey];
+  if (v !== undefined) return v;
+  const snakeKey = toSnake(camelKey);
+  return snakeKey === camelKey ? undefined : obj[snakeKey];
+}
+
 /*
  * Two clocks per row.
  *
@@ -133,7 +143,9 @@ function wireTimeMs(v) {
  * normalisation before they are compared. For the same reason a habit pushed with no `kind`
  * key is compared only on the fields that app has: `kind`, the schedule fields and `groupId`
  * all arrived together in 1.2.0 (v2), so a 1.1 app (the `habit_without_kind` population) can
- * never hold them, and re-feeding it the winner's would never end. Counted per kind (`lww_refeed.<kind>` in
+ * never hold them, and re-feeding it the winner's would never end. (Since 2026-10-15 that app's
+ * push is refused before it gets here — legacyShape — so every habit compared has `kind`; the
+ * distinction stays so the comparison is right should that refusal ever be lifted.) Counted per kind (`lww_refeed.<kind>` in
  * metrics.js, `refed=` on the request line): a count that keeps climbing for one account is a
  * device that cannot hold the winner, which this reasoning says should not exist.
  */
@@ -345,6 +357,70 @@ function rowId(row) {
   return typeof id === "string" && id !== "" ? id : null;
 }
 
+/*
+ * Legacy-shaped pushes are refused (RELEASE-1.4.1.md O5, option (1'), decided 2026-10-15).
+ *
+ * Production sign-in mail never worked, so no device has ever synced; once it does, every
+ * installed app can sign in and push. Apps up to 1.2.2 (v1.2.0, v1.2.1, v1.2.2) send entries
+ * with no `updatedAt`, and the 1.1 build sends habits with no `kind` (and entries with no stamp
+ * either). Accepted, such an entry is stamped `now`, so it wins every comparison and overwrites
+ * that day's note and value: each full snapshot from an old device reverts, on every sync, the
+ * edits every other device made to the days it holds. A 1.1 habit also resets kind, target,
+ * unit, schedule and group to the defaults. So the whole push is refused before anything in it
+ * is written — habits, entries, groups and the three deletion lists alike — with a 426 whose
+ * sentence is in `error`, which those apps print verbatim (errorBody's header-less shape).
+ *
+ * Why refusing is safe for those apps: every one of them (1.1, 1.2.0–1.2.2) runs
+ * `try await pushLocal(…); try await pullRemote(…)` in one do/catch, and a non-2xx, non-401
+ * answer throws APIError.server(statusCode, body.error) out of the push. The pull never runs, so
+ * the full-pull reconciliation that deletes the local rows a server lacks never meets an account
+ * the push did not fill; the device's habits and check-ins stay exactly as they were. (Those apps
+ * take their deletion queue out of UserDefaults before pushing, consumeDeletedIds, so a deletion
+ * queued on such a device is not sent again: the server keeps that row — the keeping direction.)
+ *
+ * The shape, judged per row that has a usable id (one without is dropped as it always was):
+ *   - an entry whose `updatedAt`, in either casing, is absent or null; or — from an app without
+ *     a valid X-Stride-Client header — one isoOrNull() cannot read: for those apps, exactly the
+ *     entries the upsert below would have stamped `now`;
+ *   - a habit with no `kind` key (`h.kind === undefined`, the `habit_without_kind` test).
+ * Every app from 1.2.3 on sends both, always: 1.2.3 and 1.3.0 build an entry's stamp as
+ * `SyncTimestamp.string(from: record.updatedAt ?? record.date)`, 1.3.1 and 1.4.0 as
+ * `SyncWireStamp.string(from: stamp)` — never nil — and `kind` from `Habit.kind`, a non-optional
+ * String. The header exception is the one way such an app CAN send a stamp Date.parse rejects:
+ * the 1.3.0+ backup restore reads stamps with ISO8601DateFormatter, which accepts a five-digit
+ * year ("10000-01-01T00:00:00Z") that only a hand-edited file holds, and the app pushes it back
+ * in the same form. Refused, that account would stop syncing for good behind an "update Stride"
+ * message no update can clear, so it keeps the old `now` stamp instead. Apps without the header
+ * (≤ 1.2.3) have no restore and stamp only from their own clock or the server's.
+ *
+ * What cannot be classified is answered as before: an empty push, a groups-only push and a
+ * deletions-only push carry no entry and no habit, so nothing in them says which app sent them.
+ * (A 1.2.x device with no check-ins yet pushes habits that have `kind`, so it is accepted until
+ * its first check-in is in its snapshot.) Counted as `legacy_push_refused` per push and
+ * `habit_without_kind` per habit (so that population stays measured), and logged as one line
+ * with the user id and the counts — never an email or a row.
+ */
+const LEGACY_PUSH_MESSAGE =
+  "This version of Stride can no longer sync. Update Stride from the App Store to keep syncing; nothing on this device was changed.";
+
+/**
+ * The rows that make this push legacy-shaped (the comment above), or null when none do.
+ * @param {import('express').Request} req @param {unknown[]} habits @param {unknown[]} entries
+ * @returns {{ entries: number, habits: number } | null}
+ */
+function legacyShape(req, habits, entries) {
+  const headerless = clientInfo(req) === null;
+  let noStamp = 0;
+  for (const e of entries) {
+    if (!rowId(e)) continue;
+    const stamp = peekField(e, "updatedAt");
+    if (stamp === undefined || stamp === null || (headerless && isoOrNull(stamp) === null)) noStamp++;
+  }
+  let noKind = 0;
+  for (const h of habits) if (rowId(h) && /** @type {any} */ (h).kind === undefined) noKind++;
+  return noStamp + noKind > 0 ? { entries: noStamp, habits: noKind } : null;
+}
+
 /**
  * A failure that belongs to one row, not to the request: a constraint SQLite refused (the
  * statement is rolled back, the transaction survives), or a value better-sqlite3 cannot bind
@@ -434,6 +510,18 @@ router.post("/push", (req, res) => {
   }
   const { habits, entries, groups } = lists;
 
+  // Before anything can write or answer otherwise: a legacy-shaped push (the comment above
+  // legacyShape) is refused whole, its deletion lists included.
+  const legacy = legacyShape(req, habits, entries);
+  if (legacy) {
+    metrics.count("legacy_push_refused");
+    if (legacy.habits > 0) metrics.count("habit_without_kind", legacy.habits);
+    console.warn(`[sync] push user=${userId} refused legacy-shaped push: `
+      + `${legacy.entries} entries without updatedAt, ${legacy.habits} habits without kind`);
+    res.locals.syncStats = { user: userId, legacyRefused: legacy };
+    return res.status(426).json(errorBody(req, "client_update_required", LEGACY_PUSH_MESSAGE));
+  }
+
   // Caps only for clients that chunk. A client before 1.3.1 — and 1.3.0, which still pushes a
   // full snapshot — cannot split its push, so a 400 would be exactly as fatal to it as a 413:
   // every sync fails, forever. The 5 MB body limit stays their only ceiling. For a chunking
@@ -506,18 +594,57 @@ router.post("/push", (req, res) => {
         OR habits.group_id IS NOT excluded.group_id)
   `);
 
+  // Notes on a (habit, day) that two devices hold under two ids (RELEASE-1.4.1.md, Data safety 2,
+  // the named exception). A NULL note from the id the row does NOT hold says "this device has no
+  // note", not "clear it": that device checked the day without seeing the stored check-in (a stale
+  // cursor, or both offline), and would otherwise wipe the note the other device wrote, LWW or not.
+  // So the stored note is kept. From the id the row holds, NULL is the owner clearing the note,
+  // and it clears; a non-NULL note from either id is an edit, and the newer one wins as before.
+  // The WHERE compares that same effective note, so a different-id NULL-note push that changes
+  // nothing else writes nothing. It still moves `updated_at` — refeedMismatchedEntry below does
+  // that for every different-id push that changed nothing, so the device takes the stored id —
+  // which is the move this push always made, and stops once the ids agree.
   const upsertEntry = db.prepare(`
     INSERT INTO habit_entries (id, habit_id, date, note, value, created_at, updated_at, client_updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(habit_id, date) DO UPDATE SET
-      note = excluded.note,
+      note = CASE WHEN habit_entries.id <> excluded.id AND excluded.note IS NULL
+                  THEN habit_entries.note ELSE excluded.note END,
       value = excluded.value,
       client_updated_at = excluded.client_updated_at,
       updated_at = excluded.updated_at
     WHERE excluded.client_updated_at >= COALESCE(habit_entries.client_updated_at, habit_entries.updated_at, '')
       AND (habit_entries.client_updated_at IS NOT excluded.client_updated_at
-        OR habit_entries.note IS NOT excluded.note OR habit_entries.value IS NOT excluded.value)
+        OR habit_entries.note IS NOT (CASE WHEN habit_entries.id <> excluded.id AND excluded.note IS NULL
+                                          THEN habit_entries.note ELSE excluded.note END)
+        OR habit_entries.value IS NOT excluded.value)
   `);
+
+  // The push-order hole the CASE above cannot close: the different-id row WITHOUT a note landed
+  // first and is newer, so the older noted row loses the guard and changes nothing — and its note,
+  // which the stored row never had, would be gone. When that happens the note is copied onto the
+  // stored row (only into a NULL note, only from a non-NULL one), and `updated_at` moves so every
+  // device pulls it. The value stays the newer edit's. Only ever keeps.
+  //
+  // The edit stamp moves too, by one millisecond past the stored one, because the merge changes
+  // the row's content and the guard only protects content whose stamp moved. Left as it was, the
+  // device that wrote the no-note row undoes the merge on its next sync whenever it is a 1.2.3 or
+  // 1.3.0 app: those push their whole store before they pull, so that row goes back up under the
+  // stored id, still without the note, at exactly the stored stamp — and at an equal stamp the
+  // guard lets it through, and the stored id's NULL clears. One millisecond on, that echo is
+  // older: it changes nothing and re-feeds the merged row, which its own pull then takes (every
+  // reconciler keeps a local value only when it is strictly newer). An edit made anywhere after
+  // the newer row still wins as before; only one in that same millisecond — or, from a 1.2.3/1.3.0
+  // app, which sends whole seconds, in that same second — now loses to the merge.
+  const adoptMissingNote = db.prepare(`
+    UPDATE habit_entries SET note = ?, client_updated_at = ?, updated_at = ?
+    WHERE habit_id = ? AND date = ? AND id <> ? AND note IS NULL AND ? IS NOT NULL`);
+  /** The stamp a merged note goes out with: just past the stored edit (above).
+   * @param {string} edited @param {string} now */
+  const justAfter = (edited, now) => {
+    const t = Date.parse(edited);
+    return Number.isNaN(t) ? now : new Date(t + 1).toISOString();
+  };
 
   // Two devices that each checked in on the same day hold different ids for one row; the
   // server keeps the first. The other device only adopts the server's id when the row comes
@@ -555,7 +682,7 @@ router.post("/push", (req, res) => {
            active_days_mask, group_id, COALESCE(client_updated_at, updated_at, '') AS edited
     FROM habits WHERE id = ? AND user_id = ?`);
   const storedEntry = db.prepare(
-    "SELECT note, value, COALESCE(client_updated_at, updated_at, '') AS edited FROM habit_entries WHERE habit_id = ? AND date = ?"
+    "SELECT id, note, value, COALESCE(client_updated_at, updated_at, '') AS edited FROM habit_entries WHERE habit_id = ? AND date = ?"
   );
   const storedGroup = db.prepare(
     "SELECT name, color_hex, sort_order, COALESCE(client_updated_at, updated_at, '') AS edited FROM habit_groups WHERE id = ? AND user_id = ?"
@@ -700,9 +827,8 @@ router.post("/push", (req, res) => {
     for (const h of /** @type {any[]} */ (habits)) {
       const id = rowId(h);
       if (!id) { noId++; continue; }
-      // Apps before `kind` existed (1.1) push habits without it, and the upsert below resets
-      // the stored kind/target/unit to defaults: the field-wipe population, never measured.
-      if (h.kind === undefined) metrics.count("habit_without_kind");
+      // A habit with no `kind` (the 1.1 app) never gets here: its push was refused whole, and
+      // counted as `habit_without_kind`, above (legacyShape).
       if (blockedHabits.has(id)) { skip("habits", id, "tombstoned"); continue; }
       if (!h.name) { skip("habits", id, "missing_field"); continue; }
       const num = boundedNumbers(h, PUSH_BOUNDS.habits);
@@ -776,9 +902,9 @@ router.post("/push", (req, res) => {
       const num = boundedNumbers(e, PUSH_BOUNDS.entries);
       if (!num) { skip("entries", id, "invalid_value"); continue; }
       const v = { note: e.note ?? null, value: num.value ?? 1 };
-      // Clients before 1.2.3 send no entry updatedAt; stamping those `now` keeps their
-      // last-push-wins behaviour rather than letting them lose every conflict (and, being
-      // `now`, never re-feeds).
+      // Clients before 1.2.3 send no entry updatedAt, and their pushes are refused (legacyShape).
+      // What still falls back to `now` is a stamp a header-bearing app sent that does not parse
+      // (the hand-edited-restore case there): last push wins for that row, as it always did.
       const edited = isoOrNull(field(e, "updatedAt")) || now;
       try {
         const r = upsertEntry.run(id, entryHabitId, e.date, v.note, v.value,
@@ -787,6 +913,18 @@ router.post("/push", (req, res) => {
         // this account's (checked above), so the row at (habit, day) is too.
         if (r.changes === 0) {
           const stored = /** @type {any} */ (storedEntry.get(entryHabitId, e.date));
+          // The note merge (adoptMissingNote) first, so the re-feed below compares against the row
+          // as it now is: a push that differed only by the note no longer counts as a lost edit,
+          // and one that also lost on value still does; the merge has already moved the row into
+          // the feed. (An empty note is no note to an app — the pull serves '' as null — so it is
+          // not copied.)
+          if (stored && stored.id !== id && stored.note === null && text(v.note) !== null) {
+            const stamp = justAfter(stored.edited, now);
+            if (adoptMissingNote.run(v.note, stamp, now, entryHabitId, e.date, id, v.note).changes > 0) {
+              stored.note = v.note;
+              stored.edited = stamp;
+            }
+          }
           if (stored && stored.edited > edited && !sameValues(entryValues(stored), entryValues(v))) {
             refeedEntry.run(now, entryHabitId, e.date);
             refed.entries++;
