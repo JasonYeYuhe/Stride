@@ -669,10 +669,14 @@ enum HistoryLink {
     }
 
     /// The habit and the day of a history link — the day as a local instant (noon of that date in
-    /// `calendar`), which is what `ShellRequest.history(habitID:day:)` takes — or nil for every URL
-    /// that is not exactly one: this scheme and host, no user, password, port, path or fragment,
-    /// and exactly the two items, each once, a UUID and a real `yyyy-MM-dd` date.
-    static func target(of url: URL, calendar: Calendar) -> (habitID: UUID, day: Date)? {
+    /// `calendar`'s zone), which is what `ShellRequest.history(habitID:day:)` takes — or nil for
+    /// every URL that is not exactly one: this scheme and host, no user, password, port, path or
+    /// fragment, and exactly the two items, each once, a UUID and a real `yyyy-MM-dd` date.
+    ///
+    /// The date is Gregorian, as every day-key is (`HabitCalendar.dayCalendar`, X2): it is read in
+    /// a Gregorian calendar in `calendar`'s zone, never in the device's own calendar.
+    static func target(of url: URL, calendar deviceCalendar: Calendar) -> (habitID: UUID, day: Date)? {
+        let calendar = HabitCalendar.dayCalendar(deviceCalendar)
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               components.scheme?.lowercased() == scheme,
               components.host?.lowercased() == host,
@@ -701,10 +705,10 @@ enum HistoryLink {
     }
 
     /// Exactly four, two and two ASCII digits with dashes, naming a date that exists. Any year
-    /// from 1 (W2 review, "W2-URL-2"): day-keys take their year, month and day from the device's
-    /// calendar (`HabitCalendar.dayKey`), so on a Japanese-calendar device today's key is year 8
-    /// of Reiwa written as 0008-10-15 — the link round-trips through that same calendar in
-    /// `target`, which a 1970 floor refused, leaving every noted widget row there a dead link.
+    /// from 1: W2's review ("W2-URL-2") took the floor out when day-keys still took their year from
+    /// the device's calendar (0008-10-15 on a Japanese-calendar phone). Since X2 every key is
+    /// Gregorian (`HabitCalendar.dayCalendar`); a link an older widget drew with such a year opens
+    /// History on that Gregorian date, which History clamps to the days it offers.
     private static func dateParts(_ text: String) -> (year: Int, month: Int, day: Int)? {
         let scalars = Array(text.unicodeScalars)
         guard scalars.count == 10, scalars[4] == "-", scalars[7] == "-" else { return nil }

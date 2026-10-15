@@ -24,8 +24,9 @@ import SwiftData
 /// the store when the day is picked and after every save (`storedDay`).
 ///
 /// **Days** run from `HabitStats.startDay` (min(creation day, earliest live record)) − 365 d up
-/// to today, never a future day (D8). `createdAt` is never written. Notes go only on days with a
-/// record (D7): a yes/no day once it is checked, a count day once it holds a value. The 500-
+/// to today, never before 2025-01-01 (`window`, X2) and never a future day (D8). `createdAt` is
+/// never written. Notes go only on days with a record (D7): a yes/no day once it is checked, a
+/// count day once it holds a value. The 500-
 /// character cap applies to new input only (`acceptsNoteDraft`): an existing longer note is shown
 /// and kept whole, and a value edit never touches it.
 ///
@@ -759,11 +760,13 @@ struct HabitHistoryView: View {
     // MARK: - Days
 
     /// The days History offers (D8): from min(creation day, earliest live record) − 365 days to
-    /// today, as day numbers. Never a future day.
+    /// today, as day numbers, but never before `HabitCalendar.firstRealDayKey` (2025-01-01, X2):
+    /// a key before it is one a non-Gregorian device wrote, which `DayKeyRepair` takes for a stray
+    /// key and moves, so a backfill must never land there. Never a future day.
     static func window(startDay: Date, today: Date, calendar: Calendar) -> ClosedRange<Int> {
         let last = dayNumber(ofInstant: today, in: calendar)
         let start = min(HabitStats.dayNumber(ofKey: startDay), last)
-        return (start - backdatingDays)...last
+        return min(max(start - backdatingDays, HabitCalendar.firstRealDayNumber), last)...last
     }
 
     /// The day number of a LOCAL instant's date in `calendar` — never taking the instant for a
@@ -773,12 +776,15 @@ struct HabitHistoryView: View {
         HabitStats.dayNumber(ofKey: HabitCalendar.dayKey(forInstant: instant, calendar: calendar))
     }
 
-    /// Noon of a day number's date in `calendar`: an instant on that date in every zone (a DST
-    /// change happens at night), for the grid's and the editor's dates.
+    /// Noon of a day number's date in `calendar`'s zone: an instant on that date in every zone (a
+    /// DST change happens at night), for the grid's and the editor's dates. The key's date is
+    /// Gregorian, so it is read back in a Gregorian calendar (`HabitCalendar.dayCalendar`, X2): in
+    /// the device's own, 2026-10-15 would be Reiwa 2026 on a Japanese-calendar phone.
     static func noon(ofDay day: Int, in calendar: Calendar) -> Date {
         let key = HabitStats.key(ofDay: day)
         let c = HabitCalendar.utc.dateComponents([.year, .month, .day], from: key)
-        return calendar.date(from: DateComponents(year: c.year, month: c.month, day: c.day, hour: 12)) ?? key
+        return HabitCalendar.dayCalendar(calendar).date(from: DateComponents(year: c.year, month: c.month,
+                                                                             day: c.day, hour: 12)) ?? key
     }
 
     /// Noon of the first day of the month containing `instant`, in `calendar`.

@@ -1092,16 +1092,16 @@ final class HistoryLinkTests: XCTestCase {
         }
     }
 
-    /// A device whose system calendar is not Gregorian (Settings → Language & Region → Calendar):
-    /// day-keys take that calendar's year (`HabitCalendar.dayKey`), so the widget writes today as
-    /// 0008-10-15 on a Japanese-calendar phone in Reiwa 8, and as 2569-10-15 on a Buddhist one. The
-    /// link round-trips through the same calendar to noon of the same civil day — 2026-10-15 — and
-    /// re-keys to the widget's own key (W2 review, "W2-URL-2": a 1970 floor rejected year 8, so
-    /// every noted row's link there opened the app on Today).
+    /// A device whose system calendar is not Gregorian (Settings → Language & Region → Calendar).
+    /// Before X2 the widget keyed today as 0008-10-15 on a Japanese-calendar phone in Reiwa 8, and
+    /// as 2569-10-15 on a Buddhist one (W2 review, "W2-URL-2", pinned those keys). Every key is
+    /// Gregorian now (`HabitCalendar.dayCalendar`): the link names 2026-10-15 on both, and opens
+    /// noon of that civil day, which re-keys to the widget's own key.
     func testItRoundTripsOnAJapaneseOrBuddhistCalendarDevice() throws {
         var gregorian = Calendar(identifier: .gregorian)
         gregorian.timeZone = TimeZone(identifier: "Asia/Tokyo")!
-        for (identifier, year) in [(Calendar.Identifier.japanese, "0008"), (.buddhist, "2569")] {
+        for (identifier, year) in [(Calendar.Identifier.japanese, "2026"), (.buddhist, "2026"), (.hebrew, "2026"),
+                                   (.islamicUmmAlQura, "2026"), (.chinese, "2026")] {
             var device = Calendar(identifier: identifier)
             device.timeZone = TimeZone(identifier: "Asia/Tokyo")!
             for hour in [0, 9, 21] {

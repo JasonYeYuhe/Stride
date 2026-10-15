@@ -94,6 +94,7 @@
 		5180D70AA751503357192ED9 /* ShellState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93F4F75995BDDDDD6E82FBF2 /* ShellState.swift */; };
 		51F8069FE3FAA8ABDE0E0F04 /* SyncDeletionQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A03A0804A4B45B28F362FA2 /* SyncDeletionQueue.swift */; };
 		526A767FF73E75CF289F6D54 /* HabitCheckIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADB968D6EC1637C4FCB0926B /* HabitCheckIn.swift */; };
+		52E8D28E56088612B8B8F9F6 /* DayKeyCalendarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAD33B99BB5A3FF23D8FDB18 /* DayKeyCalendarTests.swift */; };
 		53F998AE21294E01537005FF /* ReminderPlan.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F157FDCAEB26F8B19CFC923 /* ReminderPlan.swift */; };
 		53FFEAC882D42685D8518759 /* StatsCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8835383E3F4F875072106E6C /* StatsCache.swift */; };
 		5435FD57822C49CEF3965BE4 /* AppStoreLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEA9E4ACAC192F7EA553298D /* AppStoreLaunch.swift */; };
@@ -439,6 +440,7 @@
 		D2981C8DD76AD702328406DA /* SyncPerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncPerformanceTests.swift; sourceTree = "<group>"; };
 		D5D84E11762AB647CF9AAC3D /* HabitScore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HabitScore.swift; sourceTree = "<group>"; };
 		DA2F1E7DDF3EBA00949CA1F4 /* SyncDelivery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncDelivery.swift; sourceTree = "<group>"; };
+		DAD33B99BB5A3FF23D8FDB18 /* DayKeyCalendarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DayKeyCalendarTests.swift; sourceTree = "<group>"; };
 		DB64C8A8E3871AC27CCB91A6 /* StatsPerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatsPerformanceTests.swift; sourceTree = "<group>"; };
 		DC115BC5A06991EB0E415310 /* SyncTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncTestSupport.swift; sourceTree = "<group>"; };
 		DCBB84E54BC0EC63FD063F7B /* ColorExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColorExtension.swift; sourceTree = "<group>"; };
@@ -642,6 +644,7 @@
 				1F8FF4E330322A974AB7AE18 /* CountHabitTests.swift */,
 				0F6E7BB05532EC926C50A57F /* DataBackupTests.swift */,
 				236C079BC5AADCCE973359EB /* DateHelpersTests.swift */,
+				DAD33B99BB5A3FF23D8FDB18 /* DayKeyCalendarTests.swift */,
 				D288EEDE821222AD59C7BF9F /* FrequencyTests.swift */,
 				3D9FD5D56D18C97078DAD4C5 /* HabitCheckInTests.swift */,
 				047D2DAF3BF47EBEFABF791C /* HabitScoreTests.swift */,
@@ -1035,6 +1038,7 @@
 				191B23287E7BAA5262EB27C6 /* DataBackupTests.swift in Sources */,
 				DF74E8B2A7BEC5AABAB6A91F /* DateHelpers.swift in Sources */,
 				2AA1510563882737EF521243 /* DateHelpersTests.swift in Sources */,
+				52E8D28E56088612B8B8F9F6 /* DayKeyCalendarTests.swift in Sources */,
 				C469689F6F45748C336BAE46 /* DemoData.swift in Sources */,
 				AA79D7EAAAE9D47C30294A1B /* FrequencyTests.swift in Sources */,
 				E83F02CD837080DFA6C5CE7F /* Habit.swift in Sources */,

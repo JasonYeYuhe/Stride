@@ -563,6 +563,55 @@ final class HabitHistoryTests: XCTestCase {
         XCTAssertEqual(try stored(read).count, 0)
     }
 
+    // MARK: - Days on any calendar (X2)
+
+    private func calendar(_ identifier: Calendar.Identifier) -> Calendar {
+        var c = Calendar(identifier: identifier)
+        c.timeZone = TimeZone(identifier: "Asia/Tokyo")!
+        return c
+    }
+
+    private func utcKey(_ y: Int, _ m: Int, _ d: Int) -> Date {
+        HabitCalendar.utc.date(from: DateComponents(year: y, month: m, day: d))!
+    }
+
+    /// History reaches 365 days before the habit's start, but never before 2025-01-01: a key
+    /// before it is one a non-Gregorian device wrote, which the next launch's DayKeyRepair would
+    /// take for a stray key and move (X2; the owner's Q2).
+    func testHistoryNeverOffersADayBefore2025() throws {
+        let tokyo = calendar(.gregorian)
+        let now = try XCTUnwrap(tokyo.date(from: DateComponents(year: 2026, month: 10, day: 15, hour: 12)))
+        let floor = HabitCalendar.firstRealDayNumber
+        XCTAssertEqual(HabitHistoryView.window(startDay: utcKey(2025, 6, 1), today: now, calendar: tokyo).lowerBound, floor)
+        XCTAssertEqual(HabitHistoryView.window(startDay: utcKey(2026, 3, 27), today: now, calendar: tokyo).lowerBound,
+                       HabitStats.dayNumber(ofKey: utcKey(2025, 3, 27)))
+        XCTAssertEqual(HabitHistoryView.window(startDay: utcKey(2026, 3, 27), today: now, calendar: tokyo).upperBound,
+                       HabitStats.dayNumber(ofKey: utcKey(2026, 10, 15)))
+        // A start still at a stray key (not yet repaired) does not open year 8 either.
+        let year8 = HabitStats.dayNumber(ofKey: utcKey(8, 10, 1))
+        XCTAssertEqual(HabitHistoryView.window(startDay: HabitStats.key(ofDay: year8), today: now, calendar: tokyo).lowerBound, floor)
+    }
+
+    /// On a Japanese-, Buddhist- or Hebrew-calendar device the grid's cells and the editor's date
+    /// are the real days: noon of a key's Gregorian date in the device's zone (before X2 it was
+    /// read in the device's calendar — 2026-10-15 as Reiwa 2026), keyed back to itself, inside the
+    /// device-calendar month the grid shows.
+    func testHistorysDaysAreTheRealOnesOnANonGregorianDevice() throws {
+        let gregorian = calendar(.gregorian)
+        let n = HabitStats.dayNumber(ofKey: utcKey(2026, 10, 15))
+        for identifier in [Calendar.Identifier.japanese, .buddhist, .hebrew, .gregorian] {
+            let device = calendar(identifier)
+            let noon = HabitHistoryView.noon(ofDay: n, in: device)
+            XCTAssertEqual(gregorian.dateComponents([.year, .month, .day, .hour], from: noon),
+                           DateComponents(year: 2026, month: 10, day: 15, hour: 12), "\(identifier)")
+            XCTAssertEqual(HabitHistoryView.dayNumber(ofInstant: noon, in: device), n, "\(identifier)")
+            let cells = HabitHistoryView.monthCells(HabitHistoryView.monthStart(containing: noon, in: device), in: device)
+            XCTAssertEqual(cells.filter { $0 == n }.count, 1, "\(identifier)")
+            let days = cells.compactMap { $0 }
+            XCTAssertEqual(days, Array(days[0]...days[days.count - 1]), "\(identifier): consecutive real days")
+        }
+    }
+
     // MARK: - Hosting
 
     /// History alone as the window's root, `width` points wide if given (the screen's otherwise).

@@ -502,9 +502,9 @@ final class HistoryRouteTests: XCTestCase {
         XCTAssertNil(request(HistoryLink.url(habitID: archived.id, dayKey: key(2026, 9, 12))))
     }
 
-    /// A Japanese-calendar device (W2 review, "W2-URL-2"): the widget keys today as year 8 of
-    /// Reiwa, 0008-10-15, and the link opens History on that same day — 2026-10-15 — re-keyed to
-    /// the widget's key.
+    /// A Japanese-calendar device (W2 review, "W2-URL-2"): the widget keyed today as year 8 of
+    /// Reiwa, 0008-10-15, before X2; every key is Gregorian now (`HabitCalendar.dayCalendar`), so
+    /// the link names 2026-10-15 and opens History on that day, re-keyed to the widget's key.
     func testAJapaneseCalendarDevicesLinkOpensThatDay() throws {
         var japanese = Calendar(identifier: .japanese)
         japanese.timeZone = TimeZone(identifier: "Asia/Tokyo")!
@@ -514,7 +514,7 @@ final class HistoryRouteTests: XCTestCase {
         let habit = try habit()
         let widgetKey = WidgetTimelinePlan.dayKey(of: now, in: japanese)
         let url = HistoryLink.url(habitID: habit.id, dayKey: widgetKey)
-        XCTAssertTrue(url.absoluteString.hasSuffix("day=0008-10-15"), url.absoluteString)
+        XCTAssertTrue(url.absoluteString.hasSuffix("day=2026-10-15"), url.absoluteString)
         guard case .history(let id, let day)? = StrideApp.historyRequest(for: url, in: context, now: now, calendar: japanese)
         else { return XCTFail("no history request for \(url)") }
         XCTAssertEqual(id, habit.id)

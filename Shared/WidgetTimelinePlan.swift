@@ -126,8 +126,10 @@ struct WidgetTimelinePlan {
     /// any instant that happens to BE a UTC midnight unchanged. For a real instant in a
     /// negative-offset zone that is the next day — 20:00:00 in New York in summer is
     /// 00:00:00Z tomorrow — so an entry computed at that exact second would describe tomorrow.
+    ///
+    /// Gregorian Y/M/D in `calendar`'s zone (`HabitCalendar.dayCalendar`, X2).
     static func dayKey(of instant: Date, in calendar: Calendar) -> Date {
-        let c = calendar.dateComponents([.year, .month, .day], from: instant)
+        let c = HabitCalendar.dayCalendar(calendar).dateComponents([.year, .month, .day], from: instant)
         return HabitCalendar.utc.date(from: DateComponents(year: c.year, month: c.month, day: c.day))
             ?? HabitCalendar.utc.startOfDay(for: instant)
     }
