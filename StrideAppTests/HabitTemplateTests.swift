@@ -41,6 +41,12 @@ final class HabitTemplateTests: XCTestCase {
     /// The six units W0 put in the catalogs for the templates.
     private static let unitKeys: Set<String> = ["glasses", "min", "steps", "words", "hours", "km"]
 
+    /// The goals a count template may set. Every way to log a count adds exactly 1 (Today's ring
+    /// and "Add 1", History's stepper, the widget, Siri, the reminder's action), so a template's
+    /// goal is one a few taps reach — never Walk 10k Steps' 10,000 — and inside AddHabitView's
+    /// own goal stepper (1...1000), where the user can still change it.
+    private static let tapReachableGoals = 1...10
+
     override func setUp() async throws {
         try await super.setUp()
         let schema = Schema([Habit.self, HabitRecord.self, HabitGroup.self])
@@ -91,7 +97,8 @@ final class HabitTemplateTests: XCTestCase {
 
     // MARK: - The templates
 
-    /// The amounts the names state, and yes/no where there is none.
+    /// The count templates are the ones whose goal a few taps reach; the amounts no tap-by-tap
+    /// count reaches in a day (10,000 steps, 500 words, 30 minutes) stay yes/no, as in 1.4.0.
     func testCountTemplatesCarryTheirGoalAndYesNoTemplatesStayYesNo() throws {
         let goals = Dictionary(uniqueKeysWithValues: HabitTemplateLibrary.templates
             .filter { $0.kind == .count }.map { ($0.name, "\($0.target) \($0.unit ?? "nil")") })
@@ -99,16 +106,21 @@ final class HabitTemplateTests: XCTestCase {
             "Morning Run": "5 km",
             "Drink Water": "8 glasses",
             "Sleep 8hrs": "8 hours",
-            "Read 30min": "30 min",
-            "Walk 10k Steps": "10000 steps",
-            "Write 500 Words": "500 words",
         ])
+        for template in HabitTemplateLibrary.templates where template.kind == .count {
+            XCTAssertTrue(Self.tapReachableGoals.contains(template.target),
+                          "\(template.name): a goal of \(template.target) is past what +1 taps reach in a day")
+        }
+        for name in ["Walk 10k Steps", "Write 500 Words", "Read 30min"] {
+            XCTAssertEqual(try template(name).kind, .binary, "\(name): one check-in completes the day")
+        }
         for template in HabitTemplateLibrary.templates where template.kind == .binary {
             XCTAssertEqual(template.target, 1, template.name)
             XCTAssertNil(template.unit, "\(template.name): a yes/no template has no unit")
         }
-        XCTAssertEqual(Set(HabitTemplateLibrary.templates.compactMap(\.unit)), Self.unitKeys,
-                       "the units are W0's catalog keys, and each one is used")
+        let used = Set(HabitTemplateLibrary.templates.compactMap(\.unit))
+        XCTAssertFalse(used.isEmpty)
+        XCTAssertTrue(used.isSubset(of: Self.unitKeys), "the units are W0's catalog keys: \(used.subtracting(Self.unitKeys))")
     }
 
     /// Every unit is a key the ja catalog translates — and every shipped translation, which the
@@ -129,12 +141,18 @@ final class HabitTemplateTests: XCTestCase {
             for category in HabitTemplateLibrary.categories {
                 XCTAssertNotNil(catalog[category], "\(language): the category “\(category)”")
             }
+            // W0's units, used by a template or not: Walk 10k Steps, Write 500 Words and Read
+            // 30min can take theirs back once a count can be logged by amount.
+            for unit in Self.unitKeys {
+                XCTAssertNotNil(catalog[unit], "\(language): the unit “\(unit)”")
+            }
         }
     }
 
     /// In Japanese, a count template's habit is a count habit with its goal, named and unit-ed in
     /// Japanese — the unit stored as the translation, as AddHabitView's Unit field would hold it,
-    /// never as the catalog key. A yes/no template's habit stays yes/no with no unit.
+    /// never as the catalog key. A yes/no template's habit, Walk 10k Steps' among them, stays
+    /// yes/no with no unit. The row's goal reads as the names do, with no space: "1日8杯".
     func testATemplateAddSavesItsKindTargetAndUnitInTheAppLanguage() throws {
         // A language change hands the reminder actions to the system again: to a recording
         // center here, never the host app's (as AppLocalizedTests).
@@ -152,13 +170,15 @@ final class HabitTemplateTests: XCTestCase {
         manager.selectedLanguage = .japanese
 
         var outcomes: [String: HabitTemplateAdd.Outcome] = [:]
-        for name in ["Drink Water", "Walk 10k Steps", "Meditate"] {
+        let names = ["Drink Water", "Sleep 8hrs", "Walk 10k Steps", "Meditate"]
+        for name in names {
             outcomes[name] = HabitTemplateAdd.add(try template(name), in: context, environment: environment())
         }
 
         let habits = Dictionary(uniqueKeysWithValues: try storedHabits().map { ($0.name, $0) })
-        XCTAssertEqual(Set(habits.keys), ["水を飲む", "1万歩歩く", "瞑想する"], "named in Japanese")
+        XCTAssertEqual(Set(habits.keys), ["水を飲む", "8時間眠る", "1万歩歩く", "瞑想する"], "named in Japanese")
         XCTAssertEqual(outcomes["Drink Water"], habits["水を飲む"].map { .added($0.id) })
+        XCTAssertEqual(outcomes["Sleep 8hrs"], habits["8時間眠る"].map { .added($0.id) })
         XCTAssertEqual(outcomes["Walk 10k Steps"], habits["1万歩歩く"].map { .added($0.id) })
         XCTAssertEqual(outcomes["Meditate"], habits["瞑想する"].map { .added($0.id) })
 
@@ -169,17 +189,26 @@ final class HabitTemplateTests: XCTestCase {
         XCTAssertEqual(water.emoji, "\u{1F4A7}")
         XCTAssertEqual(water.colorHex, "#5AC8FA")
 
-        let steps = try XCTUnwrap(habits["1万歩歩く"])
-        XCTAssertEqual(steps.habitKind, .count)
-        XCTAssertEqual(steps.targetValue, 10_000)
-        XCTAssertEqual(steps.unit, "歩")
+        let sleep = try XCTUnwrap(habits["8時間眠る"])
+        XCTAssertEqual(sleep.habitKind, .count)
+        XCTAssertEqual(sleep.targetValue, 8)
+        XCTAssertEqual(sleep.unit, "時間")
 
-        let meditate = try XCTUnwrap(habits["瞑想する"])
-        XCTAssertEqual(meditate.habitKind, .binary)
-        XCTAssertEqual(meditate.targetValue, 1)
-        XCTAssertNil(meditate.unit)
+        for name in ["1万歩歩く", "瞑想する"] {
+            let habit = try XCTUnwrap(habits[name])
+            XCTAssertEqual(habit.habitKind, .binary, name)
+            XCTAssertEqual(habit.targetValue, 1, name)
+            XCTAssertNil(habit.unit, name)
+        }
 
-        XCTAssertEqual(recorder.events, ["save", "save", "save"])
+        // The rows' goals, as the sheet's caption key resolves them in Japanese.
+        for (name, expected) in [("Drink Water", "1日8杯"), ("Sleep 8hrs", "1日8時間"), ("Morning Run", "1日5km")] {
+            let picked = try template(name)
+            let targetValue = picked.target, unit = try XCTUnwrap(picked.displayUnit)
+            XCTAssertEqual(appLocalized("\(targetValue) \(unit) a day"), expected, name)
+        }
+
+        XCTAssertEqual(recorder.events, Array(repeating: "save", count: names.count))
         XCTAssertFalse(context.hasChanges)
     }
 
@@ -193,7 +222,7 @@ final class HabitTemplateTests: XCTestCase {
 
         let row = try await element(labeled: addLabel(water), in: window)
         let targetValue = water.target, unit = try XCTUnwrap(water.displayUnit)
-        XCTAssertEqual(row.accessibilityValue, appLocalized("\(targetValue) \(unit)"),
+        XCTAssertEqual(row.accessibilityValue, appLocalized("\(targetValue) \(unit) a day"),
                        "the row speaks the goal it creates")
         XCTAssertTrue(row.accessibilityActivate(), "the row's tap")
         XCTAssertTrue(row.accessibilityActivate(), "a second tap before the sheet is gone")

@@ -19,8 +19,8 @@ struct HabitTemplate: Identifiable {
     let kind: HabitKind
     /// A count template's daily goal (`Habit.targetValue`); 1, and unused, for yes/no.
     let target: Int
-    /// A count template's unit as a catalog key ("glasses", "min", "steps", "words", "hours",
-    /// "km"), never shown or saved as it is: see `displayUnit`. nil for yes/no.
+    /// A count template's unit as a catalog key (one of W0's template units: "km", "glasses",
+    /// "hours" are in use), never shown or saved as it is: see `displayUnit`. nil for yes/no.
     let unit: String?
 
     init(name: String, emoji: String, colorHex: String, category: String,
@@ -63,8 +63,13 @@ enum HabitTemplateLibrary {
         "Creative",
     ]
 
-    /// Count templates are the ones whose habit is an amount: the name states it ("Read 30min",
-    /// "Walk 10k Steps"), or it is a distance (Morning Run). The rest stay yes/no.
+    /// Count templates are the ones whose goal a few taps reach: Morning Run 5 km, Drink Water 8
+    /// glasses, Sleep 8hrs 8 hours. Every way the app logs a count adds exactly 1 — Today's ring
+    /// and its "Add 1", History's stepper, the widget, Siri and the reminder's action — and
+    /// nothing enters an amount or completes the day at once. So Walk 10k Steps (10,000 taps a
+    /// day, past AddHabitView's 1...1000 goal stepper too), Write 500 Words (500) and Read 30min
+    /// (30) stay yes/no, as they were in 1.4.0: one check-in completes the day. They can become
+    /// count templates once a count habit can be logged by amount.
     static let templates: [HabitTemplate] = [
         // Health & Fitness
         HabitTemplate(name: "Morning Run", emoji: "\u{1F3C3}", colorHex: "#34C759", category: "Health & Fitness",
@@ -78,8 +83,7 @@ enum HabitTemplateLibrary {
         HabitTemplate(name: "Take Vitamins", emoji: "\u{1F48A}", colorHex: "#FF3B30", category: "Health & Fitness"),
 
         // Learning
-        HabitTemplate(name: "Read 30min", emoji: "\u{1F4DA}", colorHex: "#007AFF", category: "Learning",
-                      kind: .count, target: 30, unit: "min"),
+        HabitTemplate(name: "Read 30min", emoji: "\u{1F4DA}", colorHex: "#007AFF", category: "Learning"),
         HabitTemplate(name: "Study", emoji: "\u{1F4D6}", colorHex: "#AF52DE", category: "Learning"),
         HabitTemplate(name: "Practice Language", emoji: "\u{1F310}", colorHex: "#5AC8FA", category: "Learning"),
         HabitTemplate(name: "Write Journal", emoji: "\u{270D}\u{FE0F}", colorHex: "#FFCC00", category: "Learning"),
@@ -93,8 +97,7 @@ enum HabitTemplateLibrary {
         // Wellness
         HabitTemplate(name: "Gratitude", emoji: "\u{1F64F}", colorHex: "#FF9500", category: "Wellness"),
         HabitTemplate(name: "Stretch", emoji: "\u{1F938}", colorHex: "#FF2D55", category: "Wellness"),
-        HabitTemplate(name: "Walk 10k Steps", emoji: "\u{1F6B6}", colorHex: "#34C759", category: "Wellness",
-                      kind: .count, target: 10_000, unit: "steps"),
+        HabitTemplate(name: "Walk 10k Steps", emoji: "\u{1F6B6}", colorHex: "#34C759", category: "Wellness"),
         HabitTemplate(name: "Eat Healthy", emoji: "\u{1F957}", colorHex: "#34C759", category: "Wellness"),
         HabitTemplate(name: "No Sugar", emoji: "\u{1F6AB}", colorHex: "#FF3B30", category: "Wellness"),
         HabitTemplate(name: "Skincare", emoji: "\u{1F9F4}", colorHex: "#FF2D55", category: "Wellness"),
@@ -102,8 +105,7 @@ enum HabitTemplateLibrary {
         // Creative
         HabitTemplate(name: "Draw", emoji: "\u{1F3A8}", colorHex: "#FF2D55", category: "Creative"),
         HabitTemplate(name: "Play Music", emoji: "\u{1F3B8}", colorHex: "#AF52DE", category: "Creative"),
-        HabitTemplate(name: "Write 500 Words", emoji: "\u{270F}\u{FE0F}", colorHex: "#007AFF", category: "Creative",
-                      kind: .count, target: 500, unit: "words"),
+        HabitTemplate(name: "Write 500 Words", emoji: "\u{270F}\u{FE0F}", colorHex: "#007AFF", category: "Creative"),
         HabitTemplate(name: "Photography", emoji: "\u{1F4F8}", colorHex: "#FF9500", category: "Creative"),
     ]
 }
@@ -243,13 +245,15 @@ struct HabitTemplatesView: View {
         }
     }
 
-    /// A count template's daily goal, "8 glasses", in the app's language; nil for yes/no. Through
-    /// local names, so the key is "%lld %@" (AddHabitView's daily goal), translated in every
-    /// catalog.
+    /// A count template's daily goal, "8 glasses a day", in the app's language; nil for yes/no.
+    /// Its own key, "%lld %@ a day", not AddHabitView's "%lld %@": that one also carries the free
+    /// text a user types as a unit, and stays spaced, while here the unit is one of the catalog's
+    /// and each language writes the goal as its template names do — Japanese "1日8杯", as
+    /// "8時間眠る", never "8 杯". Through local names, so the scan reads the key.
     private func goalText(_ template: HabitTemplate) -> Text? {
         guard template.kind == .count, let unit = template.displayUnit else { return nil }
         let targetValue = template.target
-        return Text("\(targetValue) \(unit)")
+        return Text("\(targetValue) \(unit) a day")
     }
 
     private func templateRow(_ template: HabitTemplate) -> some View {
