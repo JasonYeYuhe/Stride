@@ -33,22 +33,32 @@
 #      (StrideApp.swift, LaunchWindowSize), which sets that frame.
 #   Only a capture that passes 4 and 5 is moved to <out.png>; a rejected one stays in the temp
 #   dir, whose path is printed.
+#   Before any of that, after 1, the running instance must be a DEBUG build: its executable (or
+#   its Stride.debug.dylib) holds LaunchWindowSize's text, the probe mac_variant/build.sh's
+#   preflight uses. The Release variant (build.sh --release) has the same bundle id, so
+#   `open -b` can start it; it is a production client with no -windowSize and no demo data,
+#   and capturing it is refused.
 #
-# The variant, sized for capture (quit any running instance first: `--args` reach only a new
-# process):
-#     open -b yyh.stride.habittracker.mactest --args -windowSize 1440x900
+# The Debug variant, sized for capture, launched BY PATH (quit any running instance first:
+# `--args` reach only a new process; and not `open -b`, which may start the Release variant):
+#     open "$HOME/Library/Caches/Stride-build/mac-variant/DerivedData/Build/Products/Debug/Stride.app" --args -windowSize 1440x900
+# (that is build.sh's default root; with STRIDE_MAC_VARIANT_ROOT, the app under that root).
 # The Mac App Store takes 1280×800, 1440×900, 2560×1600 or 2880×1800 (README "Store screenshots").
 #
 # Exit status: 0 captured; 1 capture failed or blank; 2 usage; 3 the variant is not running or has
-# no on-screen window; 4 refused (not frontmost, the real app is running, more than one
-# instance, an unknown --window-id); 5 wrong pixel size.
+# no on-screen window; 4 refused (not a Debug build, not frontmost, the real app is running, more
+# than one instance, an unknown --window-id); 5 wrong pixel size.
 #
 # Environment:
-#   TMPDIR   where the helper is compiled and the capture first lands (mktemp -d)
+#   TMPDIR                    where the helper is compiled and the capture first lands (mktemp -d)
+#   STRIDE_MAC_VARIANT_ROOT   only for the launch command it prints (build.sh's root)
 set -euo pipefail
 
 VARIANT_ID="yyh.stride.habittracker.mactest"
 REAL_ID="yyh.stride.habittracker"
+# The Debug variant build.sh builds, and the text only DEBUG code holds (build.sh DEBUG_ONLY_PROBE).
+DEBUG_APP="${STRIDE_MAC_VARIANT_ROOT:-$HOME/Library/Caches/Stride-build/mac-variant}/DerivedData/Build/Products/Debug/Stride.app"
+DEBUG_ONLY_PROBE="[LaunchWindowSize]"
 
 usage() { awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; }
 
@@ -216,8 +226,9 @@ case "$status" in
     0) ;;
     3)
         if [[ "${instances:-0}" == "0" ]]; then
-            echo "✗ $VARIANT_ID is not running. This script launches nothing; start it yourself:"
-            echo "    open -b $VARIANT_ID --args -windowSize 1440x900"
+            echo "✗ $VARIANT_ID is not running. This script launches nothing; start the Debug variant"
+            echo "  yourself, by its path (\`open -b\` may start the Release variant, a production client):"
+            echo "    open \"$DEBUG_APP\" --args -windowSize 1440x900"
         else
             echo "✗ $VARIANT_ID (pid $pid) has no on-screen window: minimized, closed, or on another Space."
         fi
@@ -226,7 +237,30 @@ case "$status" in
     *) echo "✗ the window lookup failed (status $status):"; printf '%s\n' "$found" | sed 's/^/    /'; exit 1 ;;
 esac
 
-echo "==> $VARIANT_ID: pid $pid, $(value path)"
+app_path="$(value path)"
+echo "==> $VARIANT_ID: pid $pid, $app_path"
+
+# The Debug variant only. The Release variant shares the bundle id and the container, talks to
+# production, and has no -windowSize: the screenshot pass must never attach to it.
+exe_name=""
+# PlistBuddy prints "File Doesn't Exist, Will Create" on stdout for a missing file, so look first.
+if [[ -f "$app_path/Contents/Info.plist" ]]; then
+    exe_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_path/Contents/Info.plist" 2>/dev/null || true)"
+fi
+exe="$app_path/Contents/MacOS/${exe_name:-Stride}"
+debug_build=0
+for bin in "$exe" "$exe.debug.dylib"; do
+    if [[ -f "$bin" ]] && grep -a -q -F -- "$DEBUG_ONLY_PROBE" "$bin"; then debug_build=1; break; fi
+done
+if [[ $debug_build -ne 1 ]]; then
+    echo "✗ refusing: the running variant has no DEBUG-only code (no \"$DEBUG_ONLY_PROBE\" in $exe"
+    echo "  or its debug dylib). It is the Release variant, a production client without -windowSize"
+    echo "  or demo data, or a Debug build older than -windowSize. Quit it (⌘Q), then launch the"
+    echo "  Debug variant by its path, rebuilt with build.sh if it is old:"
+    echo "    open \"$DEBUG_APP\" --args -windowSize 1440x900"
+    exit 4
+fi
+echo "    build: Debug (\"$DEBUG_ONLY_PROBE\" compiled in, so -windowSize works)"
 echo "    frontmost: $(value frontmost) (pid $(value frontmost_pid))"
 echo "    on-screen windows (largest first; points):"
 printf '%s\n' "$windows" | sed 's/^/      /'

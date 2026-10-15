@@ -1,10 +1,14 @@
 #!/bin/bash
-# The macOS test variant of Stride: a StrideMac Debug build that cannot touch the real store.
+# The macOS test variant of Stride: a StrideMac build that cannot touch the real store.
 #
-#   scripts/mac_variant/build.sh [extra xcodebuild args...]   build it, then preflight it
+#   scripts/mac_variant/build.sh [extra xcodebuild args...]   build it (Debug), then preflight it
+#   scripts/mac_variant/build.sh --release [extra args...]    the same in the Release configuration
 #   scripts/mac_variant/build.sh --entitlements-only          generate and check the entitlements
-#   scripts/mac_variant/build.sh --preflight [<app>]          re-check a built variant (default:
-#                                                             the one this script builds)
+#   scripts/mac_variant/build.sh --preflight [<app>]          re-check a built Debug variant
+#                                                             (default: the one this script builds)
+#   scripts/mac_variant/build.sh --preflight --release [<app>]   the same for a Release variant
+# The options go in any order. --preflight takes at most one app path and --entitlements-only none;
+# anything else with either is refused (exit 2), never ignored.
 #
 # NEVER RUN the shipping StrideMac (bundle yyh.stride.habittracker) on this Mac, and never run
 # this variant before its preflight has passed: the owner's real Stride store lives at
@@ -28,8 +32,10 @@
 #   - Its own bundle id, yyh.stride.habittracker.mactest, so it gets its own sandbox container
 #     (~/Library/Containers/yyh.stride.habittracker.mactest/), its own keychain items and its own
 #     notification permission. PRODUCT_NAME stays "Stride", so LaunchServices knows two
-#     Stride.app bundles: launch the variant by explicit path or `open -b <variant id>`, NEVER
-#     `open -a Stride`, which may pick the shipping app.
+#     Stride.app bundles: launch the variant by its explicit path, NEVER `open -a Stride`, which
+#     may pick the shipping app. Not `open -b <variant id>` either since 1.4.1: the Debug and the
+#     Release variant (--release) share the id, so it may start the Release one, a production
+#     client.
 #   - Ad-hoc signing (CODE_SIGN_IDENTITY=-, Manual, no team): no keychain, so it builds with the
 #     screen locked, and no provisioning profile — so it may carry no com.apple.developer.*
 #     entitlement (AMFI refuses to launch an ad-hoc binary that does).
@@ -51,13 +57,31 @@
 #     build still passes, because showing that bug is what the panel checks are for).
 # Then it prints how to launch and what to check after the launch. It never launches anything.
 #
+# --release (1.4.1, RELEASE-1.4.1.md W7, for gate 12 and P1 step 6): the Release configuration,
+# with everything above unchanged — still the variant id, still STRIDE_MAC_VARIANT (so the store is
+# still forced into the variant's container: the flag is what does that, not DEBUG), still ad-hoc
+# signed with the generated entitlements, and the same preflight. What Release changes:
+#   - DEBUG is not defined. The settings check requires it absent (and -Onone absent), and the
+#     preflight reads the built binary: no Stride.debug.dylib, no DEBUG-only code (the
+#     `-windowSize` handler's text is the probe), so `-demo`, `-demoScenario`, `-paywall`,
+#     `-statsScrollTo`, `-scrollTo`, `-syncStatus` and `-windowSize` do nothing;
+#   - it is a PRODUCTION client: APIClient.defaultBaseURL is https://stride-api.colorarchive.me in
+#     every non-DEBUG build (APIClient.swift), and the preflight requires that URL in the binary
+#     and http://localhost:3002 absent. Every sign-in on it creates or uses a real account, so it
+#     signs in only with the owner's plus-address <owner>+stride-smoke@gmail.com, never the owner's
+#     primary address or the demo account, and a delete-account follows a session check that the
+#     account is exactly that address (RELEASE-1.4.1.md decision 4). Sentry stays off (the flag).
+# Its default root is its own (~/Library/Caches/Stride-build/mac-variant-release), so a Release
+# build never makes the Debug root's next build cold, and the reverse.
+#
 # Environment:
 #   STRIDE_MAC_VARIANT_ROOT   everything this writes: entitlements, derived data, build log
-#                             (default ~/Library/Caches/Stride-build/mac-variant, persistent, so a
-#                             rebuild is incremental; refused under ~/Documents, which is
-#                             iCloud-synced). Not $TMPDIR, the default until 1.4.1: macOS purges it
-#                             on low disk. Give a build that must outlive the next one (the old
-#                             version of an in-place upgrade gate) its own root.
+#                             (default ~/Library/Caches/Stride-build/mac-variant, or
+#                             …/mac-variant-release with --release; persistent, so a rebuild is
+#                             incremental; refused under ~/Documents, which is iCloud-synced). Not
+#                             $TMPDIR, the default until 1.4.1: macOS purges it on low disk. Give a
+#                             build that must outlive the next one (the old version of an in-place
+#                             upgrade gate) its own root.
 #   STRIDE_SPM_DIR            the shared Swift package checkout (scripts/ci/build_cache.sh)
 # Anything else on the command line goes to xcodebuild. Swift packages come from the shared
 # checkout unless those args name -clonedSourcePackagesDirPath. Two builds into one root wait for
@@ -72,8 +96,55 @@ VARIANT_ID="yyh.stride.habittracker.mactest"
 REAL_ID="yyh.stride.habittracker"
 SHIPPING_ENTITLEMENTS="$PROJECT_DIR/StrideMac/StrideMac.entitlements"
 PLISTBUDDY=/usr/libexec/PlistBuddy
+# APIClient.defaultBaseURL (Stride/Sources/Services/APIClient.swift): DEBUG, then every other build.
+LOCAL_API="http://localhost:3002"
+PRODUCTION_API="https://stride-api.colorarchive.me"
+# Text that exists only in DEBUG code: LaunchWindowSize's messages (StrideApp.swift, `#if DEBUG`).
+# Long enough to be a real string in the binary; Swift keeps literals of up to 15 bytes, such as
+# "-demo" or "-windowSize", inside the instructions, where no text search finds them.
+DEBUG_ONLY_PROBE="[LaunchWindowSize]"
 
-ROOT="${STRIDE_MAC_VARIANT_ROOT:-$HOME/Library/Caches/Stride-build/mac-variant}"
+MODE=build
+CONFIG=Debug
+PREFLIGHT_APP=""
+XCB_ARGS=()
+set_mode() {
+    [[ "$MODE" == build || "$MODE" == "$1" ]] || { echo "✗ --preflight and --entitlements-only are two different runs; pick one"; exit 2; }
+    MODE="$1"
+}
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --entitlements-only) set_mode entitlements; shift ;;
+        --preflight) set_mode preflight; shift ;;
+        --release) CONFIG=Release; shift ;;
+        -configuration|-configuration=*)
+            echo "✗ no -configuration: the variant is Debug, or Release with --release"; exit 2 ;;
+        -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
+        *) XCB_ARGS+=("$1"); shift ;;
+    esac
+done
+# Only a build passes the rest to xcodebuild. --preflight's app path is whichever leftover is not an
+# option, wherever it stands: it used to be taken only straight after --preflight, so
+# `--preflight --release <app>` put <app> among the xcodebuild arguments, which a preflight never
+# reads, and checked the default app instead of the one about to be launched.
+if [[ "$MODE" == preflight && ${#XCB_ARGS[@]} -gt 0 ]]; then
+    if [[ ${#XCB_ARGS[@]} -eq 1 && -n "${XCB_ARGS[0]}" && "${XCB_ARGS[0]}" != -* ]]; then
+        PREFLIGHT_APP="${XCB_ARGS[0]}"
+        XCB_ARGS=()
+    else
+        # An empty path too: `--preflight "$APP"` with APP unset must not check the default app.
+        echo "✗ --preflight takes one app path at most (and --release); got: '${XCB_ARGS[*]}'"; exit 2
+    fi
+fi
+if [[ "$MODE" == entitlements && ${#XCB_ARGS[@]} -gt 0 ]]; then
+    echo "✗ --entitlements-only takes no other argument; got: ${XCB_ARGS[*]}"; exit 2
+fi
+
+if [[ "$CONFIG" == Release ]]; then
+    ROOT="${STRIDE_MAC_VARIANT_ROOT:-$HOME/Library/Caches/Stride-build/mac-variant-release}"
+else
+    ROOT="${STRIDE_MAC_VARIANT_ROOT:-$HOME/Library/Caches/Stride-build/mac-variant}"
+fi
 case "$ROOT" in
     /*) ;;
     *) echo "✗ STRIDE_MAC_VARIANT_ROOT must be an absolute path (got $ROOT)"; exit 2 ;;
@@ -86,20 +157,7 @@ case "$ROOT" in
 esac
 ENTITLEMENTS="$ROOT/StrideMacVariant.entitlements"
 DERIVED="$ROOT/DerivedData"
-APP_DEFAULT="$DERIVED/Build/Products/Debug/Stride.app"
-
-MODE=build
-PREFLIGHT_APP=""
-XCB_ARGS=()
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --entitlements-only) MODE=entitlements; shift ;;
-        --preflight) MODE=preflight; shift
-                     if [[ $# -gt 0 && "$1" != -* ]]; then PREFLIGHT_APP="$1"; shift; fi ;;
-        -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
-        *) XCB_ARGS+=("$1"); shift ;;
-    esac
-done
+APP_DEFAULT="$DERIVED/Build/Products/$CONFIG/Stride.app"
 
 # The top-level keys of a plist file, one per line. Not `plutil -extract`: it splits key paths on
 # the dots in "com.apple.security.application-groups" (scripts/sim_e2e/README.md, Gotchas).
@@ -140,6 +198,54 @@ generate_entitlements() {
     fi
 }
 
+# binary_has <text> <file>... — whether any of the files holds the text, byte for byte.
+binary_has() {
+    local text="$1" f
+    shift
+    for f in "$@"; do
+        [[ -f "$f" ]] && grep -a -q -F -- "$text" "$f" && return 0
+    done
+    return 1
+}
+
+# check_configuration <app> — what the built code says about its configuration and its server:
+# the executable, and a Debug build's Stride.debug.dylib, where Xcode puts a Debug app's code.
+# Release (--release): no debug dylib, no DEBUG-only code, the production API and not the local
+# one. Debug: the local API; the production one means the build is not what was asked for. Prints
+# ✓/⚠/✗ lines; returns 1 on a ✗.
+check_configuration() {
+    local app="$1" exe bins failed=0
+    exe="$("$PLISTBUDDY" -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist" 2>/dev/null || true)"
+    exe="$app/Contents/MacOS/${exe:-Stride}"
+    if [[ ! -f "$exe" ]]; then echo "    ✗ no executable at $exe"; return 1; fi
+    bins=("$exe")
+    [[ -f "$exe.debug.dylib" ]] && bins+=("$exe.debug.dylib")
+    if [[ "$CONFIG" == Release ]]; then
+        if [[ -f "$exe.debug.dylib" ]]; then
+            echo "    ✗ $(basename "$exe").debug.dylib present: a Debug build's layout"; failed=1
+        elif binary_has "$DEBUG_ONLY_PROBE" "${bins[@]}"; then
+            echo "    ✗ DEBUG-only code is compiled in (\"$DEBUG_ONLY_PROBE\" found): not a Release build"; failed=1
+        else
+            echo "    ✓ Release: no DEBUG-only code (no \"$DEBUG_ONLY_PROBE\", no debug dylib), so -demo, -paywall, -statsScrollTo, -scrollTo, -syncStatus and -windowSize do nothing"
+        fi
+        if binary_has "$LOCAL_API" "${bins[@]}"; then echo "    ✗ the binary holds $LOCAL_API, the DEBUG server"; failed=1; fi
+        if binary_has "$PRODUCTION_API" "${bins[@]}"; then
+            echo "    ✓ a PRODUCTION client: $PRODUCTION_API (APIClient.defaultBaseURL)"
+        else
+            echo "    ✗ $PRODUCTION_API not found in the binary: cannot tell which server it talks to"; failed=1
+        fi
+    else
+        if binary_has "$LOCAL_API" "${bins[@]}"; then
+            echo "    ✓ Debug: talks to $LOCAL_API, a local server"
+        elif binary_has "$PRODUCTION_API" "${bins[@]}"; then
+            echo "    ✗ this build talks to production ($PRODUCTION_API): not a Debug build. Preflight it with --release, whose sign-in rules apply"; failed=1
+        else
+            echo "    ⚠ neither $LOCAL_API nor $PRODUCTION_API found in the binary: which server it talks to is unknown"
+        fi
+    fi
+    return $failed
+}
+
 # ---- 3. preflight: what codesign says the built app is --------------------------------------
 preflight() {
     local app="$1" bid sig ents keys bad failed=0
@@ -167,18 +273,36 @@ preflight() {
         echo "    ✗ codesign shows no entitlements for $app (unsigned?)"
         failed=1
     fi
+    check_configuration "$app" || failed=1
     if [[ $failed -ne 0 ]]; then
         echo "✗ PREFLIGHT FAILED: do not launch $app."
         return 1
     fi
-    echo "✓ Preflight passed."
+    echo "✓ Preflight passed ($CONFIG)."
+    if [[ "$CONFIG" == Release ]]; then
+        cat <<EOF
+
+THIS IS A PRODUCTION CLIENT. It talks to $PRODUCTION_API, so a sign-in creates or uses a real
+account (RELEASE-1.4.1.md decision 4):
+  - sign in only with the owner's plus-address <owner>+stride-smoke@gmail.com, by token paste (no
+    universal link: the variant carries no associated domains); never the owner's primary address,
+    never the demo account;
+  - before any delete-account, GET /v1/auth/session with the same token, and delete only if
+    user.email is exactly that address;
+  - at most one request-link per sitting (3 per 15 min per IP, shared with every device here).
+-demo and -windowSize do not exist in Release: no demo data, no screenshot frame. Sentry stays off.
+It shares the Debug variant's bundle id and container (store, defaults, Keychain service): sign
+out before switching between the two.
+EOF
+    fi
     cat <<EOF
 
-Launch it (only this way — by its path or its bundle id; NEVER \`open -a Stride\`, which can start
-the shipping app on the owner's real store; and no -demo until the checks below have passed):
+Launch it only by its path, and no -demo until the checks below have passed:
     open "$app"
-    open -b $VARIANT_ID          # once LaunchServices has registered the bundle
     open "$app" --args -tab 2    # launch arguments go after --args
+NEVER \`open -a Stride\`, which can start the shipping app on the owner's real store. Not
+\`open -b $VARIANT_ID\` either: the Debug and the Release variant share
+that id, so it may start the Release one, a production client.
 
 Right after the first launch, before any UI action:
     log show --last 5m --style compact --predicate 'subsystem == "$REAL_ID" AND category == "ModelContainer"' | grep 'outside the App Group'
@@ -222,7 +346,8 @@ spm_cache_args "$PROJECT_DIR" "${XCB_ARGS[@]+"${XCB_ARGS[@]}"}" || exit 1
 
 # The overrides, passed to -showBuildSettings and to the build alike. On the command line they
 # apply to every target the scheme builds (StrideMac and its Swift packages); a package ignores
-# the ones it has no use for. '$(inherited)' keeps the Debug configuration's DEBUG.
+# the ones it has no use for. '$(inherited)' keeps the configuration's own conditions: Debug's
+# DEBUG, none in Release. The same overrides in both: Release changes only -configuration.
 OVERRIDES=(
     "PRODUCT_BUNDLE_IDENTIFIER=$VARIANT_ID"
     'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) STRIDE_MAC_VARIANT'
@@ -232,7 +357,7 @@ OVERRIDES=(
     "PROVISIONING_PROFILE_SPECIFIER="
     "CODE_SIGN_ENTITLEMENTS=$ENTITLEMENTS"
 )
-XCB=(-project "$PROJECT_DIR/Stride.xcodeproj" -scheme StrideMac -configuration Debug
+XCB=(-project "$PROJECT_DIR/Stride.xcodeproj" -scheme StrideMac -configuration "$CONFIG"
      -destination 'platform=macOS' -derivedDataPath "$DERIVED"
      "${SPM_ARGS[@]+"${SPM_ARGS[@]}"}")
 LOG="$ROOT/build.log"
@@ -254,13 +379,22 @@ bad=0
 [[ "$(setting PRODUCT_BUNDLE_IDENTIFIER)" == "$VARIANT_ID" ]] || { echo "✗ PRODUCT_BUNDLE_IDENTIFIER resolves to '$(setting PRODUCT_BUNDLE_IDENTIFIER)'"; bad=1; }
 [[ "$(setting PRODUCT_NAME)" == "Stride" ]] || { echo "✗ PRODUCT_NAME resolves to '$(setting PRODUCT_NAME)', not Stride"; bad=1; }
 [[ " $conds " == *" STRIDE_MAC_VARIANT "* ]] || { echo "✗ SWIFT_ACTIVE_COMPILATION_CONDITIONS '$conds' lacks STRIDE_MAC_VARIANT"; bad=1; }
-[[ " $conds " == *" DEBUG "* ]] || { echo "✗ SWIFT_ACTIVE_COMPILATION_CONDITIONS '$conds' lacks DEBUG (\$(inherited) did not expand)"; bad=1; }
+[[ "$(setting CONFIGURATION)" == "$CONFIG" ]] || { echo "✗ CONFIGURATION resolves to '$(setting CONFIGURATION)', not $CONFIG"; bad=1; }
+if [[ "$CONFIG" == Release ]]; then
+    # Release must compile DEBUG out: DEBUG is what points APIClient at localhost and keeps the
+    # launch flags (-demo erases the store it opens). STRIDE_MAC_VARIANT, checked above, is what
+    # keeps the store in the variant's container, in both configurations.
+    [[ " $conds " != *" DEBUG "* ]] || { echo "✗ SWIFT_ACTIVE_COMPILATION_CONDITIONS '$conds' defines DEBUG in Release"; bad=1; }
+    [[ "$(setting SWIFT_OPTIMIZATION_LEVEL)" != "-Onone" ]] || { echo "✗ SWIFT_OPTIMIZATION_LEVEL is -Onone in Release"; bad=1; }
+else
+    [[ " $conds " == *" DEBUG "* ]] || { echo "✗ SWIFT_ACTIVE_COMPILATION_CONDITIONS '$conds' lacks DEBUG (\$(inherited) did not expand)"; bad=1; }
+fi
 [[ "$(setting CODE_SIGN_ENTITLEMENTS)" == "$ENTITLEMENTS" ]] || { echo "✗ CODE_SIGN_ENTITLEMENTS resolves to '$(setting CODE_SIGN_ENTITLEMENTS)'"; bad=1; }
 [[ $bad -eq 0 ]] || { echo "  ($SETTINGS)"; exit 1; }
-echo "    StrideMac: $VARIANT_ID, PRODUCT_NAME Stride, conditions '$conds', ad-hoc, generated entitlements"
+echo "    StrideMac $CONFIG: $VARIANT_ID, PRODUCT_NAME Stride, conditions '$conds', optimization $(setting SWIFT_OPTIMIZATION_LEVEL), ad-hoc, generated entitlements"
 
 # ---- the build -----------------------------------------------------------------------------
-echo "==> Building StrideMac Debug as $VARIANT_ID into $DERIVED (log: $LOG)"
+echo "==> Building StrideMac $CONFIG as $VARIANT_ID into $DERIVED (log: $LOG)"
 if ! xcodebuild build "${XCB[@]}" "${OVERRIDES[@]}" "${XCB_ARGS[@]+"${XCB_ARGS[@]}"}" >"$LOG" 2>&1; then
     grep -E "error:" "$LOG" | head -20 | sed 's/^/    /' || true
     echo "✗ Build failed. Full log: $LOG"

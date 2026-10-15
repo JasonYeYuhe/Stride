@@ -103,6 +103,31 @@
 				<string>1C8F.1</string>
 			</array>
 		</dict>
+		<!-- C617.1 (1.4.1; the reason was missing from 1.4.0): DataExportService.removeExportFiles
+		     reads the creation and content-modification dates (URLResourceKey .creationDateKey,
+		     .contentModificationDateKey) of the app's own export directories in its tmp, inside the
+		     app's container, to spare the exports of the last 10 minutes after an erase. Nothing
+		     else reads a file timestamp, and none leaves the device. -->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>C617.1</string>
+			</array>
+		</dict>
+		<!-- 35F9.1 (1.4.1; missing from 1.3.1 and 1.4.0): StoreOpenRetry in
+		     Shared/SharedModelContainer.swift measures the time spent retrying the store's open
+		     with ProcessInfo.systemUptime, a monotonic clock for elapsed time within the app. The
+		     value is never stored or sent. -->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>35F9.1</string>
+			</array>
+		</dict>
 	</array>
 </dict>
 </plist>
