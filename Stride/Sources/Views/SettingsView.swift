@@ -1019,6 +1019,9 @@ struct SettingsView: View {
                         Text("Upgrade to Pro")
                             .font(.headline)
                             .foregroundStyle(.primary)
+                        // The paywall's three rows, in one line (RELEASE-1.4.1.md D11); every
+                        // catalog words it with the rows' own titles. Pinned by
+                        // LocalizationSourceScanTests.testProClaimsNameExactlyD11sSet.
                         Text("Habit groups, advanced analytics & weekly review")
                             .font(.caption)
                             .foregroundStyle(.secondary)

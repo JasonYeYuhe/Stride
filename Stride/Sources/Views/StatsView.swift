@@ -142,7 +142,8 @@ struct StatsView: View {
                                 } else {
                                     // Exactly what Advanced Analytics holds (D11). Weekly Review
                                     // is Pro too, but it is not behind this card: its toolbar
-                                    // button sells it.
+                                    // button sells it. The paywall's row says the same
+                                    // (LocalizationSourceScanTests.testProClaimsNameExactlyD11sSet).
                                     ProLockedCard(
                                         title: "Advanced Analytics",
                                         message: "Insights, the 8-week trend, the strength chart and your top 5 streaks"

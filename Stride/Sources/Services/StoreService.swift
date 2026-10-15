@@ -432,11 +432,17 @@ struct ProPaywallView: View {
                     }
                     .padding(.top, 20)
 
-                    // Features (everything else — habits, reminders, widgets,
-                    // sync, quantitative & flexible habits — is free)
+                    // Features: exactly what Pro is (RELEASE-1.4.1.md D11), the same three things
+                    // as Settings' upsell and the store's STRIDE PRO block, and the same Advanced
+                    // Analytics sentence as Statistics' locked card. "Your top 5 streaks", never
+                    // "your best streaks": the free detail card keeps its Best Streak tile.
+                    // Everything else — habits, reminders, widgets, sync, measurable and flexible
+                    // habits, the Strength tile, History — is free.
+                    // LocalizationSourceScanTests.testProClaimsNameExactlyD11sSet pins the rows.
                     VStack(alignment: .leading, spacing: 16) {
                         ProFeatureRow(icon: "folder.fill", color: .blue, title: "Habit Groups", subtitle: "Organize habits into collapsible groups")
-                        ProFeatureRow(icon: "chart.line.uptrend.xyaxis", color: .green, title: "Advanced Analytics", subtitle: "8-week trends, insights & weekly review")
+                        ProFeatureRow(icon: "chart.line.uptrend.xyaxis", color: .green, title: "Advanced Analytics", subtitle: "Insights, the 8-week trend, the strength chart and your top 5 streaks")
+                        ProFeatureRow(icon: "calendar.badge.clock", color: .orange, title: "Weekly Review", subtitle: "A look back at how your week went")
                     }
                     .padding(.horizontal, 24)
 
