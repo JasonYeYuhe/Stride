@@ -1621,13 +1621,12 @@ extension Scenarios {
                      "\(describe(full)); Read: \(readDay.summary); Water: \(waterDay.summary)")
     }
 
-    // M7 — the same-id pair (finding (a), SYNC-1). When the pull after a push like M6's reaches T
-    // first, the reconciler's day match renames T onto the server's id although A's W already
-    // carries it, and gives T the row's fields: A holds two delivered records that are both W.
-    // That rename is made here by hand — the day match takes whichever record comes first in
-    // `habit.records`, an order no save keeps — and the rest is the engine's. A note edit of
-    // Read's day and a merge-only write of Water's must not tombstone W: it is the id of the
-    // record they keep.
+    // M7 — the same-id pair (finding (a), SYNC-1). When the pull after a push like M6's reached T
+    // first, 1.3.1–1.4.0's day match renamed T onto the server's id although A's W already carried
+    // it, and gave T the row's fields: A held two delivered records that are both W. 1.4.1's match
+    // no longer makes the pair (X1, M9), but stores those builds wrote can hold one, so it is made
+    // here by hand and the rest is the engine's. A note edit of Read's day and a merge-only write of
+    // Water's must not tombstone W: it is the id of the record they keep.
     func mergeOfTwoRecordsWithOneID() async throws {
         let account = try Account.create()
         let a = Device131("A", account: account), b = Device131("B", account: account)
@@ -1730,5 +1729,119 @@ extension Scenarios {
         report.check("…and still after A's full pull",
                      isSynced(full) && day.isOne(note: nil, value: 1) && calm,
                      "\(describe(full)); \(day.summary)")
+    }
+}
+
+// MARK: - M4 (1.4.1): the day match never puts one id on two records (X1)
+
+extension Scenarios {
+    // M9 — W2 review's X1: the engine itself making M7's same-id pair. A, between syncs, gains two
+    // records of each of six past days (the widget's insert racing a Today tap), each pair appended
+    // in the other order from the last. One chunk carries both records of every day, sorted by day and
+    // id, so each server row takes the id that sorts first and the other record lands on it with an
+    // alias A does not follow: A already holds that id. The pull after the push brings each row
+    // back. The day match used to rename the day's FIRST record onto the row's id, so on every day
+    // where `habit.records` listed the other record first, two records went by one id, and no full
+    // pull could remove either. It lands on the record going by the id instead: no id is on two
+    // records, and A's full pull removes the other (delivered, absent), so the server, A and B each
+    // end with one record of every day.
+    func dayMatchNeverPutsOneIDOnTwoRecords() async throws {
+        let account = try Account.create()
+        let a = Device131("A", account: account), b = Device131("B", account: account)
+        defer { a.remove(); b.remove() }
+        let read = a.habit("Read")
+        try a.save()
+        guard isSynced(await a.sync()), isSynced(await b.sync()) else { throw Missing(description: "the first syncs") }
+
+        let days = Array(2...7)
+        var kept: [Int: UUID] = [:]   // the id each day's server row takes: the one that sorts first
+        for (n, day) in days.enumerated() {
+            let suffix = String(UUID().uuidString.suffix(12))
+            let low = HabitRecord(date: Scenario.day(day)), high = HabitRecord(date: Scenario.day(day))
+            low.id = try unwrap(UUID(uuidString: "00000000-0000-4000-8000-\(suffix)"), "a low id")
+            high.id = try unwrap(UUID(uuidString: "FFFFFFFF-FFFF-4FFF-BFFF-\(suffix)"), "a high id")
+            read.records.append(contentsOf: n.isMultiple(of: 2) ? [high, low] : [low, high])
+            kept[day] = low.id
+        }
+        try a.save()
+        let mark = a.transport.mark()
+        let pushed = await a.sync()
+        let ex = a.transport.since(mark)
+        let sent = totalPushed(ex)
+        var states: [Int: DayState] = [:]
+        for day in days { states[day] = try await dayState(account, a, b, habit: read.id, day: day) }
+        let onePerDay = days.allSatisfy { day in
+            guard let state = states[day], let id = kept[day] else { return false }
+            return state.server.map { SyncReconciler.canonicalID($0.id) } == [id.uuidString]
+        }
+        let pendingA = try a.pendingCount()
+        report.check("setup: one chunk delivers both records of six days; the server keeps one row of each, under the id that sorts first",
+                     isSynced(pushed) && sent.entries == 2 * days.count && onePerDay && pendingA == 0,
+                     "\(describe(pushed)); \(describe(ex)); pending \(pendingA)")
+
+        let doubled = days.filter { day in
+            guard let records = states[day]?.a else { return true }
+            return Set(records.map(\.id)).count < records.count
+        }
+        let onTheRow = days.allSatisfy { day in
+            guard let records = states[day]?.a, let id = kept[day] else { return false }
+            return records.filter { $0.id == id }.count == 1
+        }
+        report.check("…and the pull after the push puts no id on two records: each day's row lands on the record already going by its id",
+                     doubled.isEmpty && onTheRow,
+                     "days whose two records went by one id: \(doubled); "
+                        + days.map { "day \($0): \(states[$0]?.summary ?? "missing")" }.joined(separator: "; "))
+
+        let bSynced = await b.sync()
+        a.cursor = nil   // the next sync is a full pull, with its absence pass
+        let full = await a.sync()
+        for day in days { states[day] = try await dayState(account, a, b, habit: read.id, day: day) }
+        let whole = days.filter { states[$0]?.isOne(note: nil, value: 1) != true }
+        let calm = try settled(a, b)
+        report.check("…and after B's sync and A's full pull, the server, A and B each hold one record of every day, under the server's id; nothing pending, queued or archived",
+                     isSynced(bSynced) && isSynced(full) && whole.isEmpty && calm,
+                     "\(describe(full)); days not one record everywhere: \(whole); "
+                        + whole.map { "day \($0): \(states[$0]?.summary ?? "missing")" }.joined(separator: "; "))
+    }
+
+    // M10 — X1 review: a pull onto M7's same-id pair. A holds two delivered records of Water's day
+    // 11 under the server's id (made by hand, as in M7: stores 1.3.1–1.4.0 wrote can hold one), both
+    // at 5 glasses. B lowers the day to 3 and syncs; A's incremental pull brings the row back. The day
+    // match landed on one record of the pair alone, so the other kept 5 and, outranking (the larger
+    // value), was what A's day read, with nothing pending to correct it. Every record of the id takes
+    // the row now, so A reads 3, as the server and B do.
+    func pullOntoASameIDPair() async throws {
+        let account = try Account.create()
+        let a = Device131("A", account: account), b = Device131("B", account: account)
+        defer { a.remove(); b.remove() }
+        let (_, water, _, bWater) = try await twoHabits(a, b)
+        try b.history(bWater, day: 11, value: 5, note: "from B")
+        guard isSynced(await b.sync()), isSynced(await a.sync()) else { throw Missing(description: "B's day, pulled by A") }
+        let w = try unwrap(storedRecords(a, day: 11).first, "A's day 11")
+        let twin = HabitRecord(date: Scenario.day(11), note: w.note, value: w.value)
+        twin.id = w.id
+        twin.updatedAt = w.updatedAt
+        twin.adoptRemoteState()
+        water.records.append(twin)
+        try a.save()
+        let before = try storedRecords(a, day: 11)
+        report.check("setup: A holds two delivered records of Water's day, both under the server's id, at 5",
+                     before.count == 2 && Set(before.map(\.id)).count == 1
+                        && before.allSatisfy { $0.value == 5 && $0.hasBeenDelivered && !$0.isPending },
+                     before.map { "\($0.id.uuidString.prefix(8)) v\($0.value)" }.joined(separator: ", "))
+
+        try b.history(bWater, day: 11, value: 3)   // lowered on B
+        let bSynced = await b.sync()
+        let aSynced = await a.sync()   // incremental: brings the row back at 3
+        let state = try await dayState(account, a, b, habit: water.id, day: 11)
+        let reads = water.record(on: Scenario.day(11))?.value
+        let row = state.server.first
+        let calm = try settled(a, b)
+        report.check("…and A's pull of B's lower value lands on both: A's day reads 3, as the server and B do; nothing pending",
+                     isSynced(bSynced) && isSynced(aSynced) && reads == 3
+                        && state.server.count == 1 && (row?.value ?? 1) == 3 && row?.note == "from B"
+                        && state.a.count == 2 && state.a.allSatisfy { $0.value == 3 && $0.note == "from B" }
+                        && state.b.count == 1 && state.b.first?.value == 3 && calm,
+                     "A reads \(reads.map { "\($0)" } ?? "nothing"); \(state.summary)")
     }
 }
