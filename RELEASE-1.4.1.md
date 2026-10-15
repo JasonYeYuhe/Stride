@@ -919,6 +919,43 @@ go per action.
   strength numbers were recomputed independently.
 - 2026-10-15, #8 + #9 merged into main and deployed (DEPLOY 5 steps, rehearsal 32/32); main merged
   into m4 (31f23e8). Mac 1.4.0 went IN_REVIEW.
+- 2026-10-15, wave A merged (W8 d2f6cd7, X1 1f9ec40, W5 4702f9f, W3 163efe4, W4 7703331), each implemented
+  in its own worktree, reviewed by 2 lenses, findings verified and fixed (17 confirmed, 1 refuted).
+  - Integrated gates on 7703331:
+    - xcodegen drift clean; iOS and Mac builds green;
+    - StrideTests 670 (+2 known skips) in two zones;
+    - hosted 311, plus 12 skipped: StoreKitStatusTests' 11 cases (Xcode 27.0 + iOS 26.5 SKTestSession
+      bug FB22774836) and one more;
+    - server 559; rehearsal 102/0/1.
+  - W3: Statistics reads StatsCache. A heatmap tap, the grid's VoiceOver action and the "Edit
+    history" button (`stats.editHistory`) open History. The Strength tile replaces Total;
+    StrengthCard and BestStreaksCard are added; ProLockedCard copy follows D11.
+    - Open: run the a11y sweep with the new anchors (gate 8). The Mac heatmap has no pointer or
+      hover state (gate 10).
+  - W4: HabitHistoryView (D6–D8), the Description field, Today rows read StatsCache with the
+    past-day filter, collapsedGroups is per device, decision 8's footers are in, and menu Export
+    checks its own window. New key: "No habits had started by this day."
+    - Open (owner, Q5): a pre-existing crash if another context deletes a whole habit while Today
+      shows it. No production path does this today.
+  - W5: ProStatus (D12) with the pure mirror; Settings plan/renewal/Manage/billing/lapsed rows; the
+    habit delete is saved, rolled back on failure, then tombstoned; badge after a grant. The
+    Configuration.storekit version format is fixed. `run_hosted_tests.sh` now lists skips and
+    never reads them as passes.
+    - Open: SKTestSession on an iOS 18.5 device (Q4). D11's paywall row and Settings upsell are
+      left for the D11 lockstep commit.
+  - W8: demo-add-habits.js (add-only Water/Stretch, 90 days), the seed and top-up get the same
+    shapes, LA-day cap, node tests.
+    - Open: the owner's deploy once no review is open, and gate 2's residual (Q3). The LA cap means
+      a Tokyo-morning demo check reads low; check in the Tokyo afternoon or under the LA zone.
+  - X1: a pull never puts one id on two local records (it prefers the record carrying the id and
+    never renames onto a taken id). Same-id pairs left by 1.3.1–1.4.0 heal on W2's merge at the next
+    write to that day.
+  - X2 (investigation): docs/X2-non-gregorian-day-keys.md.
+    - Every build since 1.2.0 writes wrong keys on non-Gregorian devices (th_TH, fa_IR, ar_SA by
+      default).
+    - Production has 0 out-of-window rows (only the demo account has data).
+    - Owner decisions: Q1, a server date guard now; Q2, the client fix and migration as W10 in
+      1.4.1, with History's floor capped at 2025-01-01.
 - 2026-10-15, W2 done (f141fe4 write path, 20b4dde cache/widget/rehearsal, 692e411 review fixes):
   - Setters with the day merge and persistentModelID matching; HabitEntryCommit with an undo
     journal. Today's writes and both confirm alerts.
