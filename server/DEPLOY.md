@@ -296,6 +296,14 @@ unless you know nothing else sends as it.
 
 #### The Resend side: DNS passing proves nothing about sending
 
+**Fixed 2026-10-15.** Stride now sends as `hello@stride.colorarchive.me` from its own Resend team
+("u-tokyo", region us-east-1), with its own `RESEND_API_KEY`, so it no longer shares a key or a
+quota with ColorArchive. The return path is Resend's current CNAME setup: `send.stride` and
+`rsend.stride` are CNAMEs to `send.forge.rmta.net` / `rsend.forge.rmta.net`. `check_email_auth.sh`
+accepts it, as well as the older SES MX/TXT form. To rotate the key, the owner runs
+`scripts/ops/set_resend_key.sh` (hidden input, test send, automatic rollback); an agent never
+handles the key. The history below is why the checks exist.
+
 On 2026-10-12 both sign-in attempts in the retained logs answered 500 with
 `Resend validation_error: The stride.colorarchive.me domain is not verified`, while every
 record in the table above was still present and `check_email_auth.sh` passed. What the
@@ -365,8 +373,9 @@ editing `.env` run `sudo pm2 restart stride-server --update-env` before trusting
 - `FRONTEND_ORIGIN` — the origin this process answers on: CORS allowlist and the host in
   magic-link emails (default `https://stride-api.colorarchive.me`, see `origins.js`; the old
   default had no DNS record).
-- `RESEND_API_KEY` — magic-link email delivery. Shared with ColorArchive (see
-  [The Resend side](#the-resend-side-dns-passing-proves-nothing-about-sending)).
+- `RESEND_API_KEY` — magic-link email delivery, Stride's own Resend team since 2026-10-15
+  ([The Resend side](#the-resend-side-dns-passing-proves-nothing-about-sending)). Rotate it with
+  `scripts/ops/set_resend_key.sh`, run by the owner.
 - `FROM_EMAIL` — the magic link's sender. Its domain must be **verified in the Resend account
   that `RESEND_API_KEY` belongs to**, or every sign-in fails. The default in `email.js`
   (`hello@strideapp.me`) is not a domain in that account either; production always sets this.
