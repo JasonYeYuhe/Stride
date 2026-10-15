@@ -1803,4 +1803,45 @@ extension Scenarios {
                      "\(describe(full)); days not one record everywhere: \(whole); "
                         + whole.map { "day \($0): \(states[$0]?.summary ?? "missing")" }.joined(separator: "; "))
     }
+
+    // M10 — X1 review: a pull onto M7's same-id pair. A holds two delivered records of Water's day
+    // 11 under the server's id (made by hand, as in M7: stores 1.3.1–1.4.0 wrote can hold one), both
+    // at 5 glasses. B lowers the day to 3 and syncs; A's incremental pull brings the row back. The day
+    // match landed on one record of the pair alone, so the other kept 5 and, outranking (the larger
+    // value), was what A's day read, with nothing pending to correct it. Every record of the id takes
+    // the row now, so A reads 3, as the server and B do.
+    func pullOntoASameIDPair() async throws {
+        let account = try Account.create()
+        let a = Device131("A", account: account), b = Device131("B", account: account)
+        defer { a.remove(); b.remove() }
+        let (_, water, _, bWater) = try await twoHabits(a, b)
+        try b.history(bWater, day: 11, value: 5, note: "from B")
+        guard isSynced(await b.sync()), isSynced(await a.sync()) else { throw Missing(description: "B's day, pulled by A") }
+        let w = try unwrap(storedRecords(a, day: 11).first, "A's day 11")
+        let twin = HabitRecord(date: Scenario.day(11), note: w.note, value: w.value)
+        twin.id = w.id
+        twin.updatedAt = w.updatedAt
+        twin.adoptRemoteState()
+        water.records.append(twin)
+        try a.save()
+        let before = try storedRecords(a, day: 11)
+        report.check("setup: A holds two delivered records of Water's day, both under the server's id, at 5",
+                     before.count == 2 && Set(before.map(\.id)).count == 1
+                        && before.allSatisfy { $0.value == 5 && $0.hasBeenDelivered && !$0.isPending },
+                     before.map { "\($0.id.uuidString.prefix(8)) v\($0.value)" }.joined(separator: ", "))
+
+        try b.history(bWater, day: 11, value: 3)   // lowered on B
+        let bSynced = await b.sync()
+        let aSynced = await a.sync()   // incremental: brings the row back at 3
+        let state = try await dayState(account, a, b, habit: water.id, day: 11)
+        let reads = water.record(on: Scenario.day(11))?.value
+        let row = state.server.first
+        let calm = try settled(a, b)
+        report.check("…and A's pull of B's lower value lands on both: A's day reads 3, as the server and B do; nothing pending",
+                     isSynced(bSynced) && isSynced(aSynced) && reads == 3
+                        && state.server.count == 1 && (row?.value ?? 1) == 3 && row?.note == "from B"
+                        && state.a.count == 2 && state.a.allSatisfy { $0.value == 3 && $0.note == "from B" }
+                        && state.b.count == 1 && state.b.first?.value == 3 && calm,
+                     "A reads \(reads.map { "\($0)" } ?? "nothing"); \(state.summary)")
+    }
 }

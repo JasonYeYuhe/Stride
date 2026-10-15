@@ -1101,38 +1101,112 @@ final class SyncReconcileTests: XCTestCase {
     }
 
     /// A pair 1.3.1–1.4.0 already left on a day, two records under the server's id, gets no third
-    /// record, and the pull lands on the one the day reads (`HabitRecord.outranks`, the record
-    /// decision 7's merge keeps), so the day shows the server's value. The merge removes the pair
-    /// on the day's next write (rehearsal M7).
-    func testAPullOntoASameIDPairLandsOnTheRecordTheDayReads() throws {
-        for largerFirst in [true, false] {
-            try tearDownStore()
-            let habit = Habit(name: "Water")
-            habit.habitKind = .count
-            habit.targetValue = 8
-            context.insert(habit)
-            delivered(habit)
-            let larger = HabitRecord(date: dayKey(2026, 9, 15), value: 8)
-            let smaller = HabitRecord(date: dayKey(2026, 9, 15), value: 2)
-            smaller.id = larger.id
-            for record in [larger, smaller] {
-                record.updatedAt = date(early)
-                delivered(record)
+    /// record, and both records take the row: they are one server row, and the day reads whichever
+    /// outranks (`HabitRecord.outranks`, largest value first), so the day shows the server's value
+    /// whether the pull raised it or lowered it below either record's (X1 review: the pull used to
+    /// land on the outranking record alone, and a lowered value left the day reading the other's).
+    /// The merge removes the pair on the day's next write (rehearsal M7). A full pull keeps both:
+    /// each goes by an id the snapshot holds.
+    func testAPullOntoASameIDPairLandsOnBothRecords() throws {
+        for pulled in [1.0, 3.0, 9.0] {   // below both, between, above both
+            for largerFirst in [true, false] {
+                for isFullPull in [false, true] {
+                    try tearDownStore()
+                    let habit = Habit(name: "Water")
+                    habit.habitKind = .count
+                    habit.targetValue = 8
+                    context.insert(habit)
+                    delivered(habit)
+                    let larger = HabitRecord(date: dayKey(2026, 9, 15), value: 8)
+                    let smaller = HabitRecord(date: dayKey(2026, 9, 15), note: "smaller's", value: 2)
+                    smaller.id = larger.id
+                    for record in [larger, smaller] {
+                        record.updatedAt = date(early)
+                        delivered(record)
+                    }
+                    habit.records = largerFirst ? [larger, smaller] : [smaller, larger]
+                    try context.save()
+                    let serverID = larger.id
+                    let label = "pulled \(pulled), larger first: \(largerFirst), full pull: \(isFullPull)"
+
+                    let report = try SyncReconciler.apply(
+                        pull(habits: [remoteHabit(habit.id.uuidString, name: "Water")],
+                             entries: [remoteEntry(serverID.uuidString.lowercased(), habit: habit.id.uuidString,
+                                                   date: "2026-09-15", note: "server", value: pulled, updatedAt: late)]),
+                        to: context, isFullPull: isFullPull)
+
+                    let records = try context.fetch(FetchDescriptor<HabitRecord>())
+                    XCTAssertEqual(records.count, 2, "\(label): no third record, none deleted")
+                    for record in records {
+                        XCTAssertEqual(record.id, serverID, label)
+                        XCTAssertEqual(record.value, pulled, "\(label): every record of the id takes the row")
+                        XCTAssertEqual(record.note, "server", label)
+                        XCTAssertEqual(record.updatedAt, date(late), label)
+                        XCTAssertFalse(record.isPending, label)
+                    }
+                    XCTAssertEqual(try XCTUnwrap(habit.record(on: dayKey(2026, 9, 15))).value, pulled,
+                                   "\(label): so the day reads the server's value")
+                    XCTAssertEqual(report.applied.entries, 1, "\(label): one entry, counted once")
+                    // The habit's own row, older than the local habit, is the only one kept.
+                    XCTAssertFalse(report.keptLocalNewer.contains { $0.kind == .entry }, label)
+                    XCTAssertTrue(report.issues.isEmpty, label)
+                }
             }
-            habit.records = largerFirst ? [larger, smaller] : [smaller, larger]
-            try context.save()
-            let label = "larger first: \(largerFirst)"
+        }
+    }
 
-            let report = try SyncReconciler.apply(
-                pull(entries: [remoteEntry(larger.id.uuidString.lowercased(), habit: habit.id.uuidString,
-                                           date: "2026-09-15", value: 3, updatedAt: late)]),
-                to: context, isFullPull: false)
+    /// Of a same-id pair, each record's own stamp decides for it: one edited here since it was
+    /// delivered keeps its value, pending, and goes up with the next push, while the other takes
+    /// the row. The entry counts once: as kept when any record's newer value stays, as applied when
+    /// any record took it.
+    func testEachRecordOfASameIDPairKeepsItsOwnNewerEdit() throws {
+        for bothEdited in [false, true] {
+            for editedFirst in [true, false] {
+                try tearDownStore()
+                let habit = Habit(name: "Water")
+                habit.habitKind = .count
+                habit.targetValue = 8
+                context.insert(habit)
+                delivered(habit)
+                let edited = HabitRecord(date: dayKey(2026, 9, 15), value: 2)
+                let other = HabitRecord(date: dayKey(2026, 9, 15), value: 8)
+                other.id = edited.id
+                for record in [edited, other] {
+                    record.updatedAt = date(early)
+                    delivered(record)
+                }
+                habit.records = editedFirst ? [edited, other] : [other, edited]
+                edited.value = 6
+                edited.touch()   // edited here after it was delivered
+                if bothEdited {
+                    other.value = 7
+                    other.touch()
+                }
+                try context.save()
+                let id = edited.id
+                let label = "both edited: \(bothEdited), edited first: \(editedFirst)"
 
-            XCTAssertEqual(larger.value, 3, "\(label): the record the day read takes the row")
-            XCTAssertEqual(smaller.value, 2, label)
-            XCTAssertEqual(max(larger.value, smaller.value), 3, "\(label): so the day reads the server's value")
-            XCTAssertEqual(try context.fetchCount(FetchDescriptor<HabitRecord>()), 2, "\(label): no third record")
-            XCTAssertEqual(report.applied.entries, 1, label)
+                let report = try SyncReconciler.apply(
+                    pull(entries: [remoteEntry(id.uuidString, habit: habit.id.uuidString, date: "2026-09-15",
+                                               value: 1, updatedAt: late)]),
+                    to: context, isFullPull: false)
+
+                XCTAssertEqual(report.keptLocalNewer, [SyncRowRef(kind: .entry, id: id.uuidString)],
+                               "\(label): reported once")
+                XCTAssertEqual(edited.value, 6, label)
+                XCTAssertTrue(edited.isPending, "\(label): goes up with the next push")
+                if bothEdited {
+                    XCTAssertEqual(other.value, 7, label)
+                    XCTAssertTrue(other.isPending, label)
+                    XCTAssertEqual(report.applied.entries, 0, label)
+                } else {
+                    XCTAssertEqual(other.value, 1, "\(label): the record not edited here takes the row")
+                    XCTAssertEqual(other.updatedAt, date(late), label)
+                    XCTAssertFalse(other.isPending, label)
+                    XCTAssertEqual(report.applied.entries, 1, label)
+                }
+                XCTAssertEqual(try context.fetchCount(FetchDescriptor<HabitRecord>()), 2, "\(label): no third record")
+            }
         }
     }
 

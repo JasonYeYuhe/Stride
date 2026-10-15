@@ -50,6 +50,7 @@ func main() async -> Int32 {
         ("M8 merge while in flight", scenarios.mergeWhileTheDuplicateIsInFlight),
         // X1: the day match never puts one id on two records.
         ("M9 day match, id in use", scenarios.dayMatchNeverPutsOneIDOnTwoRecords),
+        ("M10 pull onto a same-id pair", scenarios.pullOntoASameIDPair),
         // Last: its sweep takes every tombstone in the throwaway database.
         ("S24 migrated marks, no list", scenarios.migratedMarksWithNoList),
     ]

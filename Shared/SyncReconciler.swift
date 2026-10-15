@@ -352,10 +352,11 @@ enum SyncReconciler {
         // record at a time, each a whole-relationship write SwiftData diffs: a second device
         // joining a 20,000-entry account spent 51 s on the main actor (rehearsal S12, 1.3.1 slice
         // review; release/1.3.0 has the same two lines). The match is among the records of that UTC
-        // day no deletion in this pull has reached, a record this pull inserted included: the one
-        // already going by the entry's id, else the day's first, renamed — never onto an id another
-        // record of the habit already goes by (1.4.1, X1: `SyncDayIndex`). So a second entry for
-        // one day (`duplicate_day`) still lands on the record the first made.
+        // day no deletion in this pull has reached, a record this pull inserted included: those
+        // already going by the entry's id (every one of a pair 1.3.1–1.4.0 left), else the day's
+        // first, renamed — never onto an id another record of the habit already goes by (1.4.1,
+        // X1: `SyncDayIndex`). So a second entry for one day (`duplicate_day`) still lands on the
+        // record the first made.
         var days = SyncDayIndex(preloaded: preloaded)
         var missingHabitIssues = Set(report.issues.lazy.filter { $0.reason == .missingHabit }.compactMap(\.id))
         var duplicateIDIssues = Set(report.issues.lazy.filter { $0.kind == .entry && $0.reason == .duplicateID }
@@ -395,37 +396,53 @@ enum SyncReconciler {
                     report.issues.append(SyncPullIssue(kind: .entry, id: remoteEntry.id, reason: .duplicateID))
                 }
                 continue
-            case .record(let existingRecord, let realigned):
+            case .records(let existingRecords, let realigned):
                 // Renamed to the server's id by the match (`realigned`) when it went by another, so
                 // a full pull's reconciliation won't delete it.
                 //
-                // The local-newer guard, at milliseconds, strictly: see the type's comment. Only
-                // against an edit stamp the server actually sent: a server before 2026-09-15 sent
-                // none, and its `createdAt` (the day) says nothing about when the value changed.
-                //
-                // Under a new id, only for a value that still has to go up: pending, or held,
-                // which the hold decides (review data-safety-3). A record delivered at its current
-                // stamp that the server now holds under another id, with an older stamp, was
-                // deleted there and its day added again (another device untapped and re-tapped
-                // it, or took a count to zero and back). An incremental pull brings X's tombstone
-                // and inserts Y: delete wins. A full pull brings no tombstone, and keeping the
-                // "newer" local value under Y left a record neither pending nor equal to the
-                // server's, on this device alone, until the day was edited again.
-                if remoteEntry.updatedAt != nil, SyncTimestamp.isNewer(existingRecord.stamp, than: remoteStamp),
-                   !realigned || existingRecord.isPending || existingRecord.isHeld {
-                    report.keptLocalNewer.append(SyncRowRef(kind: .entry, id: entryUUID.uuidString))
-                    continue
+                // Every record of the day going by the id takes the row (X1 review): a pair
+                // 1.3.1–1.4.0 left is one server row, and the day reads whichever outranks, so a
+                // pulled value written onto one of them alone showed the other's when it was lower.
+                // Each record's own stamp decides for it; the entry counts once, as applied when
+                // any record took it, as kept when any record's newer value stays.
+                var applied = false, keptLocal = false
+                for existingRecord in existingRecords {
+                    // The local-newer guard, at milliseconds, strictly: see the type's comment.
+                    // Only against an edit stamp the server actually sent: a server before
+                    // 2026-09-15 sent none, and its `createdAt` (the day) says nothing about when
+                    // the value changed.
+                    //
+                    // Under a new id, only for a value that still has to go up: pending, or held,
+                    // which the hold decides (review data-safety-3). A record delivered at its
+                    // current stamp that the server now holds under another id, with an older
+                    // stamp, was deleted there and its day added again (another device untapped
+                    // and re-tapped it, or took a count to zero and back). An incremental pull
+                    // brings X's tombstone and inserts Y: delete wins. A full pull brings no
+                    // tombstone, and keeping the "newer" local value under Y left a record
+                    // neither pending nor equal to the server's, on this device alone, until the
+                    // day was edited again.
+                    if remoteEntry.updatedAt != nil, SyncTimestamp.isNewer(existingRecord.stamp, than: remoteStamp),
+                       !realigned || existingRecord.isPending || existingRecord.isHeld {
+                        keptLocal = true
+                        continue
+                    }
+                    // Only what differs is written. Most entries a pull brings are rows this device
+                    // already holds as they are — its own push echoed back through the cursor's
+                    // 60 s overlap, a full pull of a synced store — and SwiftData counts every
+                    // assignment as a change, equal or not: the save then rewrote every such row
+                    // (most of the time a full pull onto a synced 54,750-entry store took, M2
+                    // large-account work).
+                    if existingRecord.note != remoteEntry.note { existingRecord.note = remoteEntry.note }
+                    let value = remoteEntry.value ?? 1
+                    if existingRecord.value != value { existingRecord.value = value }
+                    if existingRecord.updatedAt != remoteStamp { existingRecord.updatedAt = remoteStamp }
+                    existingRecord.adoptRemoteState()
+                    applied = true
                 }
-                // Only what differs is written. Most entries a pull brings are rows this device
-                // already holds as they are — its own push echoed back through the cursor's 60 s
-                // overlap, a full pull of a synced store — and SwiftData counts every assignment as
-                // a change, equal or not: the save then rewrote every such row (most of the time a
-                // full pull onto a synced 54,750-entry store took, M2 large-account work).
-                if existingRecord.note != remoteEntry.note { existingRecord.note = remoteEntry.note }
-                let value = remoteEntry.value ?? 1
-                if existingRecord.value != value { existingRecord.value = value }
-                if existingRecord.updatedAt != remoteStamp { existingRecord.updatedAt = remoteStamp }
-                existingRecord.adoptRemoteState()
+                if keptLocal {
+                    report.keptLocalNewer.append(SyncRowRef(kind: .entry, id: entryUUID.uuidString))
+                }
+                guard applied else { continue }
             case .insert:
                 let record = HabitRecord(date: entryDate, note: remoteEntry.note, value: remoteEntry.value ?? 1)
                 record.id = entryUUID
@@ -733,8 +750,11 @@ private struct ParsedEntries {
 /// the stored id (`SyncPushResolver`, `takenIDs`). The two records then both went by the server's
 /// id, so no full pull could remove either, and `habit.records` order, which no save keeps,
 /// decided which one took the server's fields (rehearsal M7, M9). Now (`match`):
-/// 1. the day's record already going by the entry's id is the one, never renamed; of several, the
-///    one the day reads (`HabitRecord.outranks`, the record decision 7's merge keeps);
+/// 1. the day's records already going by the entry's id are the ones, never renamed. Of a pair
+///    1.3.1–1.4.0 left, every one takes the entry, as `SyncPushResolver.resolve` updates every
+///    row of a canonical id: they are one server row, and the day reads whichever outranks
+///    (`HabitRecord.outranks`, largest value first), so a pull that lowered the value onto one
+///    of them alone left the day reading the other's old one;
 /// 2. otherwise an id another record of the habit already goes by — on another day the pull
 ///    reaches, or one this pull inserted or renamed — is given to no second record, by rename or
 ///    insert (`idTaken`), as the resolver follows no alias onto a taken id;
@@ -752,9 +772,10 @@ private struct ParsedEntries {
 private struct SyncDayIndex {
     /// Where a pulled entry goes.
     enum Match {
-        /// Onto this local record. `realigned`: it went by another id and has just been renamed to
-        /// the entry's (rule 3).
-        case record(HabitRecord, realigned: Bool)
+        /// Onto these local records: every record of the day going by the entry's id (rule 1), or
+        /// the day's first, renamed (rule 3; `realigned`, the one record went by another id and has
+        /// just been renamed to the entry's). Never empty.
+        case records([HabitRecord], realigned: Bool)
         /// The entry's day has no local record: the caller inserts one (`add`).
         case insert
         /// Another record of the habit already goes by the entry's id (rule 2): the entry is not
@@ -829,16 +850,12 @@ private struct SyncDayIndex {
                         excluding removal: SyncLocalRemoval) -> Match {
         let habitDays = self.days(of: habit, excluding: removal)
         let onDay = habitDays.byDay[Self.day(date)] ?? []
-        var carrying: HabitRecord?
-        for record in onDay where record.id == entryID {
-            if let best = carrying, !record.outranks(best) { continue }
-            carrying = record
-        }
-        if let carrying { return .record(carrying, realigned: false) }
+        let carrying = onDay.filter { $0.id == entryID }
+        if !carrying.isEmpty { return .records(carrying, realigned: false) }
         if habitDays.goesBy(entryID) { return .idTaken }
         guard let first = onDay.first else { return .insert }
         habitDays.rename(first, to: entryID)
-        return .record(first, realigned: true)
+        return .records([first], realigned: true)
     }
 
     private mutating func days(of habit: Habit, excluding removal: SyncLocalRemoval) -> Days {
