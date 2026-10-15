@@ -1,5 +1,9 @@
 import SwiftUI
 import SwiftData
+import OSLog
+#if canImport(Sentry)
+import Sentry
+#endif
 
 // MARK: - Template Model
 
@@ -10,11 +14,37 @@ struct HabitTemplate: Identifiable {
     let emoji: String
     let colorHex: String
     let category: String
+    /// What the habit is created as (RELEASE-1.4.1.md D15): a count template starts with its
+    /// daily goal and unit set, as AddHabitView's Measurable type saves them.
+    let kind: HabitKind
+    /// A count template's daily goal (`Habit.targetValue`); 1, and unused, for yes/no.
+    let target: Int
+    /// A count template's unit as a catalog key ("glasses", "min", "steps", "words", "hours",
+    /// "km"), never shown or saved as it is: see `displayUnit`. nil for yes/no.
+    let unit: String?
+
+    init(name: String, emoji: String, colorHex: String, category: String,
+         kind: HabitKind = .binary, target: Int = 1, unit: String? = nil) {
+        self.name = name
+        self.emoji = emoji
+        self.colorHex = colorHex
+        self.category = category
+        self.kind = kind
+        self.target = target
+        self.unit = unit
+    }
 
     /// The name in the app's language — also what the created habit is called, so a Japanese
     /// user picking "Drink Water" gets a habit named in Japanese.
     @MainActor
     var displayName: String { appLocalized(String.LocalizationValue(name)) }
+
+    /// The unit in the app's language, and what the created habit's `unit` holds. `Habit.unit` is
+    /// the free text AddHabitView's Unit field saves and every screen shows as it is ("3/8
+    /// glasses"), so it is stored translated, as the name is: a Japanese user's water habit reads
+    /// "3/8 杯", not "3/8 glasses".
+    @MainActor
+    var displayUnit: String? { unit.map { appLocalized(String.LocalizationValue($0)) } }
 }
 
 // MARK: - Template Data
@@ -33,17 +63,23 @@ enum HabitTemplateLibrary {
         "Creative",
     ]
 
+    /// Count templates are the ones whose habit is an amount: the name states it ("Read 30min",
+    /// "Walk 10k Steps"), or it is a distance (Morning Run). The rest stay yes/no.
     static let templates: [HabitTemplate] = [
         // Health & Fitness
-        HabitTemplate(name: "Morning Run", emoji: "\u{1F3C3}", colorHex: "#34C759", category: "Health & Fitness"),
-        HabitTemplate(name: "Drink Water", emoji: "\u{1F4A7}", colorHex: "#5AC8FA", category: "Health & Fitness"),
+        HabitTemplate(name: "Morning Run", emoji: "\u{1F3C3}", colorHex: "#34C759", category: "Health & Fitness",
+                      kind: .count, target: 5, unit: "km"),
+        HabitTemplate(name: "Drink Water", emoji: "\u{1F4A7}", colorHex: "#5AC8FA", category: "Health & Fitness",
+                      kind: .count, target: 8, unit: "glasses"),
         HabitTemplate(name: "Meditate", emoji: "\u{1F9D8}", colorHex: "#AF52DE", category: "Health & Fitness"),
         HabitTemplate(name: "Exercise", emoji: "\u{1F3CB}\u{FE0F}", colorHex: "#FF9500", category: "Health & Fitness"),
-        HabitTemplate(name: "Sleep 8hrs", emoji: "\u{1F4A4}", colorHex: "#007AFF", category: "Health & Fitness"),
+        HabitTemplate(name: "Sleep 8hrs", emoji: "\u{1F4A4}", colorHex: "#007AFF", category: "Health & Fitness",
+                      kind: .count, target: 8, unit: "hours"),
         HabitTemplate(name: "Take Vitamins", emoji: "\u{1F48A}", colorHex: "#FF3B30", category: "Health & Fitness"),
 
         // Learning
-        HabitTemplate(name: "Read 30min", emoji: "\u{1F4DA}", colorHex: "#007AFF", category: "Learning"),
+        HabitTemplate(name: "Read 30min", emoji: "\u{1F4DA}", colorHex: "#007AFF", category: "Learning",
+                      kind: .count, target: 30, unit: "min"),
         HabitTemplate(name: "Study", emoji: "\u{1F4D6}", colorHex: "#AF52DE", category: "Learning"),
         HabitTemplate(name: "Practice Language", emoji: "\u{1F310}", colorHex: "#5AC8FA", category: "Learning"),
         HabitTemplate(name: "Write Journal", emoji: "\u{270D}\u{FE0F}", colorHex: "#FFCC00", category: "Learning"),
@@ -57,7 +93,8 @@ enum HabitTemplateLibrary {
         // Wellness
         HabitTemplate(name: "Gratitude", emoji: "\u{1F64F}", colorHex: "#FF9500", category: "Wellness"),
         HabitTemplate(name: "Stretch", emoji: "\u{1F938}", colorHex: "#FF2D55", category: "Wellness"),
-        HabitTemplate(name: "Walk 10k Steps", emoji: "\u{1F6B6}", colorHex: "#34C759", category: "Wellness"),
+        HabitTemplate(name: "Walk 10k Steps", emoji: "\u{1F6B6}", colorHex: "#34C759", category: "Wellness",
+                      kind: .count, target: 10_000, unit: "steps"),
         HabitTemplate(name: "Eat Healthy", emoji: "\u{1F957}", colorHex: "#34C759", category: "Wellness"),
         HabitTemplate(name: "No Sugar", emoji: "\u{1F6AB}", colorHex: "#FF3B30", category: "Wellness"),
         HabitTemplate(name: "Skincare", emoji: "\u{1F9F4}", colorHex: "#FF2D55", category: "Wellness"),
@@ -65,18 +102,90 @@ enum HabitTemplateLibrary {
         // Creative
         HabitTemplate(name: "Draw", emoji: "\u{1F3A8}", colorHex: "#FF2D55", category: "Creative"),
         HabitTemplate(name: "Play Music", emoji: "\u{1F3B8}", colorHex: "#AF52DE", category: "Creative"),
-        HabitTemplate(name: "Write 500 Words", emoji: "\u{270F}\u{FE0F}", colorHex: "#007AFF", category: "Creative"),
+        HabitTemplate(name: "Write 500 Words", emoji: "\u{270F}\u{FE0F}", colorHex: "#007AFF", category: "Creative",
+                      kind: .count, target: 500, unit: "words"),
         HabitTemplate(name: "Photography", emoji: "\u{1F4F8}", colorHex: "#FF9500", category: "Creative"),
     ]
+}
+
+// MARK: - Adding a template's habit
+
+/// A template's habit, inserted and saved (RELEASE-1.4.1.md D15).
+///
+/// It used to `try? save()` and dismiss either way: a failed save closed the sheet as if the habit
+/// had been added, and left the insert pending in mainContext — which autosaves, and which sync
+/// saves on — to land later, or never, with nothing said. Now a failed save takes the new habit
+/// back out (only it: `rollback()` would also throw away whatever else mainContext holds unsaved,
+/// as AddHabitView's `createGroup` reasons) and the caller says so.
+@MainActor
+enum HabitTemplateAdd {
+    enum Outcome: Equatable {
+        /// Saved; the new habit's id.
+        case added(UUID)
+        /// Nothing added: the habit is out of the context again, and nothing else was touched.
+        case saveFailed
+    }
+
+    /// The save, as a value, so the hosted tests make it fail.
+    struct Environment {
+        var save: @MainActor (ModelContext) throws -> Void
+
+        /// The app's own.
+        static var live: Environment { Environment(save: { try $0.save() }) }
+    }
+
+    private static let logger = Logger(subsystem: "yyh.stride.habittracker", category: "Templates")
+
+    static func add(_ template: HabitTemplate, in context: ModelContext,
+                    environment: Environment = .live) -> Outcome {
+        let habit = Habit(name: template.displayName, emoji: template.emoji, colorHex: template.colorHex)
+        habit.habitKind = template.kind
+        if template.kind == .count {
+            habit.targetValue = Double(template.target)
+            habit.unit = template.displayUnit
+        }
+        context.insert(habit)
+        do {
+            try environment.save(context)
+            return .added(habit.id)
+        } catch {
+            context.delete(habit)
+            report(error)
+            return .saveFailed
+        }
+    }
+
+    /// Domain and code only, as HabitEntryCommit reports a failed save: Core Data's own error
+    /// carries the store's path and the objects in `userInfo`. A no-op under XCTest for Sentry.
+    private static func report(_ error: Error) {
+        let ns = error as NSError
+        logger.error("template add: the save failed (\(ns.domain, privacy: .public) \(ns.code, privacy: .public)); nothing was added")
+        #if canImport(Sentry)
+        _ = SentrySDK.capture(error: NSError(domain: ns.domain, code: ns.code)) { scope in
+            scope.setTag(value: "save", key: "template.step")
+        }
+        #endif
+    }
 }
 
 // MARK: - Templates View
 
 struct HabitTemplatesView: View {
+    /// Runs after a template's habit is saved, before this sheet dismisses itself: AddHabitView
+    /// passes its own `dismiss`, so picking a template there closes both sheets. Never on a
+    /// failed save.
+    var onAdded: () -> Void = {}
+
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    /// nil: the app's own save (`HabitTemplateAdd.Environment.live`); the hosted tests inject one.
+    @Environment(\.habitTemplateAdd) private var injectedAdd
 
     @State private var searchText = ""
+    @State private var showSaveError = false
+    /// A habit was added and the sheet is going: a second tap during the dismissal must not add
+    /// the template again, or call `onAdded` twice.
+    @State private var didAdd = false
 
     /// 36 at the default text size; grows with the emoji so large Dynamic Type sizes don't
     /// truncate it to an ellipsis.
@@ -126,11 +235,26 @@ struct HabitTemplatesView: View {
                     ContentUnavailableView.search(text: searchText)
                 }
             }
+            .alert("Save Failed", isPresented: $showSaveError) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Unable to save your habit. Please try again.")
+            }
         }
     }
 
+    /// A count template's daily goal, "8 glasses", in the app's language; nil for yes/no. Through
+    /// local names, so the key is "%lld %@" (AddHabitView's daily goal), translated in every
+    /// catalog.
+    private func goalText(_ template: HabitTemplate) -> Text? {
+        guard template.kind == .count, let unit = template.displayUnit else { return nil }
+        let targetValue = template.target
+        return Text("\(targetValue) \(unit)")
+    }
+
     private func templateRow(_ template: HabitTemplate) -> some View {
-        Button {
+        let goal = goalText(template)
+        return Button {
             addHabit(from: template)
         } label: {
             HStack(spacing: 12) {
@@ -138,9 +262,16 @@ struct HabitTemplatesView: View {
                     .font(.title2)
                     .frame(width: emojiWidth)
 
-                Text(template.displayName)
-                    .font(.body.weight(.medium))
-                    .foregroundStyle(.primary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(template.displayName)
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(.primary)
+                    if let goal {
+                        goal
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
 
                 Spacer()
 
@@ -152,24 +283,39 @@ struct HabitTemplatesView: View {
         }
         .buttonStyle(.plain)
         // Overriding the label drops the merged children, so VoiceOver stops leading every row
-        // with the emoji's Unicode name and the trailing plus glyph.
+        // with the emoji's Unicode name and the trailing plus glyph. The goal is the value.
         .accessibilityLabel("Add \(template.displayName)")
+        .accessibilityValue(goal ?? Text(verbatim: ""))
     }
 
     private func addHabit(from template: HabitTemplate) {
-        let habit = Habit(
-            name: template.displayName,
-            emoji: template.emoji,
-            colorHex: template.colorHex
-        )
-        modelContext.insert(habit)
-        try? modelContext.save()
+        guard !didAdd else { return }
+        switch HabitTemplateAdd.add(template, in: modelContext, environment: injectedAdd ?? .live) {
+        case .added:
+            didAdd = true
+            #if os(iOS)
+            let generator = UINotificationFeedbackGenerator()
+            generator.notificationOccurred(.success)
+            #endif
+            onAdded()
+            dismiss()
+        case .saveFailed:
+            showSaveError = true
+        }
+    }
+}
 
-        #if os(iOS)
-        let generator = UINotificationFeedbackGenerator()
-        generator.notificationOccurred(.success)
-        #endif
+// MARK: - The save environment
 
-        dismiss()
+/// The `HabitTemplateAdd.Environment` the templates sheet saves with: nil means the app's own
+/// (`.live`). The hosted tests put a recording one in, which they can make fail.
+private struct HabitTemplateAddKey: EnvironmentKey {
+    static var defaultValue: HabitTemplateAdd.Environment? { nil }
+}
+
+extension EnvironmentValues {
+    var habitTemplateAdd: HabitTemplateAdd.Environment? {
+        get { self[HabitTemplateAddKey.self] }
+        set { self[HabitTemplateAddKey.self] = newValue }
     }
 }
