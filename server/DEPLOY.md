@@ -815,25 +815,62 @@ rm "$TMPDIR/check.db"                          # it holds every user's email
 timer**: it deletes the demo account's sessions and magic-link tokens and re-creates its
 habits under new ids, so a scheduled run during a review signs the reviewer out and
 replaces everything on their device. The top-up only adds check-ins — for each seeded
-habit, from the day after its last entry through today (UTC, at most 30 days back),
-following that habit's seed pattern by a hash of habit id + date. It is idempotent (a second
-run the same day adds nothing), never deletes, and refuses to run if the account or its
-seeded habits are missing ("run seed-demo.js first"). Two rules keep it from changing what a
-reviewer did:
+habit, from the day after its last entry through the entry-day cap (at most 30 days back),
+by that habit's rule:
+
+- a daily habit follows its seed pattern, at a position picked by a hash of habit id + date;
+- "Stretch" (3 times a week) is checked every Monday, Wednesday and Friday, because a per-day
+  hash can leave a Monday-to-Sunday week short of three and break its weekly streak;
+- a count habit ("Water") is filled at its target, the only value that counts as done.
+
+The entry-day cap is min(UTC today, America/Los_Angeles today), the same for all three demo
+scripts (RELEASE-1.4.1.md D13): 03:50 UTC is the previous evening in the US, so a UTC date gave
+every US reviewer a check-in for tomorrow. It is idempotent (a second run the same day adds
+nothing), never deletes, and refuses to run if the account or its seeded habits are missing
+("run seed-demo.js first"). Two rules keep it from changing what a reviewer did:
 
 - **Un-checked stays un-checked.** It never writes on or before the UTC day of the account's
-  newest entry tombstone. A tombstone names only the entry id, so the first version, which
-  skipped just its own hashed ids, re-checked a day the reviewer had cleared whenever that
-  check-in had come from `seed-demo.js` or the app. Costs at most one day of streak, which the
-  one day of grace absorbs; a re-seed clears the tombstones and the floor with them.
-- **Only habits `seed-demo.js` made**: a seeded name *and* `created_at` before the 30-day
-  window (the seed back-dates it 45 days), and never a day before the habit's own creation.
-  A reviewer who deletes "Journal" and adds it back gets no invented history.
+  newest entry tombstone. The first version skipped just its own hashed ids, and re-checked a
+  day the reviewer had cleared whenever that check-in had come from `seed-demo.js` or the app.
+  Since the 1.3.1 server an entry tombstone also names the deleted row's habit and day, but
+  rows from before that deploy, a retried deletion and an entry the server no longer held keep
+  NULL, so the account-wide floor stays: it is the one rule that covers every tombstone. Costs
+  at most one day of streak, which the one day of grace absorbs; a re-seed clears the
+  tombstones and the floor with them.
+- **Only habits `seed-demo.js` or `demo-add-habits.js` made**: a name the top-up has a rule for
+  *and* `created_at` before the 30-day window (both back-date it 91 days; the seed before 1.4.1,
+  45), and never a day before the habit's own creation. A reviewer who deletes "Journal" and
+  adds it back gets no invented history.
 
 Daily, not weekly: streaks count back from today with one day of grace, so two days after
 the last check-in every streak is 0 — `scripts/check_demo_account.sh` exit 3. Before a
-submission, run it once by hand and then the check. Still re-seed with `seed-demo.js` if the
-account itself is broken (habits deleted, token rotated) — and only when no review is open.
+submission, run it once by hand and then the check. In a zone ahead of UTC (Tokyo), between
+local midnight and the next run (12:50 JST) the newest check-in is the day before yesterday:
+daily streaks read 0 and strength ends on an empty yesterday. Run the check in the
+afternoon there, and under `TZ=America/Los_Angeles`.
+
+**Adding habits to the live account:** [`ops/demo-add-habits.js`](ops/demo-add-habits.js)
+(1.4.1: "Water", a count habit of 8 glasses, and "Stretch", 3 times a week, each with 90 days of
+history ending on the cap and three notes). It only inserts: no session, token, tombstone or
+existing row is touched, so a signed-in reviewer stays signed in and gets both habits on their
+next sync. A habit whose name the account already has is left alone, and the script still exits
+0. Run it once by hand, in the W8 deploy after the rehearsal, and only while no review is open:
+
+```bash
+sudo /usr/bin/node /root/stride-server/ops/demo-add-habits.js --dry-run
+#   [demo-add-habits] …Z DRY RUN 2 habit(s) added — Water +84 check-ins (<first>..<cap>), Stretch +<n> check-ins (…)
+sudo /usr/bin/node /root/stride-server/ops/demo-add-habits.js
+#   the same without DRY RUN, plus the notes and created dates; a second run says
+#   "0 habit(s) added — Water already there, left alone, Stretch already there, left alone"
+```
+
+then `scripts/check_demo_account.sh` (gate 2), in the default zone and under
+`TZ=America/Los_Angeles`.
+
+Still re-seed with `seed-demo.js` (`cd /root/stride-server && sudo node seed-demo.js`) if the
+account itself is broken (habits deleted, token rotated) — and only when no review is open. It
+installs `DEMO_TOKEN` from `.env` and never prints it; without `DEMO_TOKEN` it refuses, unless
+`--print-token` asks it to generate one and print it.
 
 ### VM snapshots
 
