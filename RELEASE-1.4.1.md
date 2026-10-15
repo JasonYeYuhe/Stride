@@ -910,6 +910,33 @@ go per action.
 
 - 2026-10-14: Plan drafted from four read-only mappers (spec, client, server, ops) at 376e69b. The
   strength numbers were recomputed independently.
+- 2026-10-15, W1 done (dbd1df9 goldens, 338f36e implementation, 52088f1 review fixes):
+  - HabitStats, HabitScore and the delegating aggregates are in; the widget makes one RowInput
+    per habit and carries hasNote; demo_check reports strength.
+  - Parity: 1,129 golden values; only the 57 NAMED FIX entries flipped.
+  - StrideTests 600 (2 known skips) in Tokyo and under TZ=America/Los_Angeles. Builds are green.
+  - Review: 5 findings, 4 confirmed and fixed (the widget's "now" streak counted tomorrow's
+    times-per-week record; wrapper cost).
+  - Carried forward:
+    - **Per-call wrapper cost.** One aggregate wrapper call costs ~2.5 ms against 1.4.0's
+      1.0–1.7 ms (-O, 730 records). The extra is D2's store check. So any render that asks many
+      questions builds one `habit.makeStats(today:)` per habit, or reads StatsCache:
+      - W3: TrendCard, insights, ShareStreakView;
+      - W4: TodayView's "x/y this week" (:560, :598) and WeeklyReviewView (today ~270 ms for 10
+        habits × 730 records against 113 ms);
+      - W5: SettingsView.swift:355.
+    - **Crash safety (W2).** A record deleted and saved by another context faults on any
+      attribute read (id, date) unless this context read it since. So `HabitCheckIn.liveRecord`
+      and every new setter match `habit.records` to the store by `persistentModelID` before they
+      read `date`, as `HabitStats.LiveRecords.persistentIDs` does. This is pre-existing in 1.4.0's
+      `liveRecord`.
+    - **Records order is not stable across a save.** "First match" was never deterministic;
+      decision 7's merge uses `HabitRecord.outranks` (largest value, newest stamp, larger id).
+    - **Parity rule clarified.** `isCompletedOn` equals HabitStats' per-day answer on every day
+      up to today. Days after today, and the second-context fixture, are the exceptions (D2's
+      named fixes).
+    - **Perf bounds can trip on a heavily loaded machine.** Check the load before treating a
+      PERF failure as a regression.
 - 2026-10-15:
   - Codex (gpt-6-astra, read-only) and Gemini 3.8 Flash High (agy) were consulted on the open
     decisions, and every claim was fact-checked against the code by 8 read-only agents. The
