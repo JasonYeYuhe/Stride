@@ -179,12 +179,62 @@ class UsageErrorTests(ReleaseTestCase):
                      ["finish", "1.4.1", "--platform", "IOS"],
                      ["cancle", "1.4.1"],
                      ["cancel"],
-                     []):
+                     [],
+                     # An argument the command does not take. Each of these used to fall into the
+                     # build-number slot or past it, leave `platforms` at both, and act on both.
+                     ["cancel", "1.4.1", "--platform=MAC_OS"],
+                     ["cancel", "1.4.1", "MAC_OS"],
+                     ["cancel", "1.4.1", "-p", "MAC_OS"],
+                     ["cancel", "1.4.1", "--plaform", "MAC_OS"],
+                     ["release", "1.4.1", "--plaform", "IOS"],
+                     ["release", "1.4.1", "--platform=MAC_OS"],
+                     ["prepare", "1.4.1", "IOS"],
+                     ["show", "1.4.1", "extra"],
+                     ["finish", "1.4.1", "23", "--platform=IOS"],
+                     ["finish", "1.4.1", "23", "MAC_OS"],
+                     ["finish", "1.4.1", "--platform", "IOS", "23", "MAC_OS"],
+                     ["--platform=IOS", "finish", "1.4.1", "23"],
+                     ["cancel", "1.4.1", "--help"],
+                     # A platform where the version or the build belongs.
+                     ["finish", "1.4.1", "MAC_OS"],
+                     ["cancel", "MAC_OS"],
+                     ["release", "--platform", "IOS", "IOS"]):
             with self.subTest(argv=argv):
                 FAKE.reset()
                 code, _ = self.run_main(*argv)
                 self.assertEqual(code, 1)
                 self.assertEqual(FAKE.calls, [], "no ASC call for a usage error")
+
+    def test_platform_with_an_equals_sign_cancels_neither_platform(self):
+        # The review's reproduction: iOS waiting for review, the Mac in review. Until the W7 review
+        # this exited 0 after cancelling BOTH submissions.
+        FAKE.add_version("IOS", "1.4.1", "WAITING_FOR_REVIEW")
+        FAKE.add_version("MAC_OS", "1.4.1", "IN_REVIEW")
+        FAKE.add_submission("IOS", "WAITING_FOR_REVIEW", "IOS-1.4.1")
+        FAKE.add_submission("MAC_OS", "IN_REVIEW", "MAC_OS-1.4.1")
+
+        code, out = self.run_main("cancel", "1.4.1", "--platform=MAC_OS")
+
+        self.assertEqual(code, 1)
+        self.assertEqual(FAKE.calls, [])
+        self.assertEqual(self.cancelled_submissions(), [])
+        self.assertEqual(FAKE.versions["IOS"]["appStoreState"], "WAITING_FOR_REVIEW")
+        self.assertEqual(FAKE.versions["MAC_OS"]["appStoreState"], "IN_REVIEW")
+        self.assertIn("--platform MAC_OS", out, "says how to write it")
+
+    def test_every_documented_form_is_accepted(self):
+        for argv in (["show", "1.4.1"],
+                     ["prepare", "1.4.1"],
+                     ["cancel", "1.4.1"],
+                     ["release", "1.4.1"],
+                     ["finish", "1.4.1", "23"],
+                     ["finish", "1.2.1", "15"],
+                     ["finish", "1.4.1", "23.1"]):
+            with self.subTest(argv=argv):
+                self.assertIsNone(release.usage_error(list(argv)))
+        args = ["finish", "1.4.0", "22", "--platform", "IOS"]
+        self.assertEqual(release.parse_platform(args), ["IOS"])
+        self.assertIsNone(release.usage_error(args))
 
 
 class CancelTests(ReleaseTestCase):

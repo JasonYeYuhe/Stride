@@ -174,7 +174,9 @@ Release and App Store:
 - `upload_dsyms.sh <archive>…` — keep an archive's dSYMs and upload them to Sentry.
 - `release.py prepare|finish|release|cancel|show <version> [build] [--platform IOS|MAC_OS]` —
   ASC version records, What's New in six locales, attach the build, submit, release, pull out of
-  review; idempotent per platform. `--platform` limits every command but `show` to one platform.
+  review; idempotent per platform. `--platform` limits every command but `show` to one platform;
+  write it as two words. Any other argument (`--platform=MAC_OS`, a misspelt option, a bare
+  `MAC_OS`, one too many) is refused before any ASC call.
   `python3 -I scripts/test_release.py` tests its parsing and the platform filter offline.
 - `push_metadata.py` — push `metadata/` to ASC; run it in the same submission as any
   description change.

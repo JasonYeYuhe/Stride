@@ -9,6 +9,10 @@
     scripts/release.py finish  1.4.0 22 --platform IOS   # one platform only
                                          # (prepare/finish/release/cancel; show reports both)
 
+Nothing else is accepted: `--platform` is written as two words, and an argument the command does
+not take (`--platform=MAC_OS`, `-p MAC_OS`, a bare `MAC_OS`, a misspelt option) is refused before
+anything reaches App Store Connect.
+
 Versions are created with releaseType MANUAL: an approved version waits in
 PENDING_DEVELOPER_RELEASE until `release` is run. It used to be AFTER_APPROVAL, so an
 approval could publish a build before anyone had tapped a sign-in link on a real device —
@@ -21,7 +25,7 @@ Chrome. Every step here is re-runnable: it looks for the object first and only
 creates what is missing, so a half-finished release is fixed by running it again.
 """
 
-import sys, time
+import re, sys, time
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 import asc_api as a
 
@@ -567,6 +571,47 @@ def parse_platform(args):
     return platforms
 
 
+# The positional arguments each command takes, the command included: exactly these.
+ARITY = {"show": 2, "prepare": 2, "cancel": 2, "release": 2, "finish": 3}
+# A version string or a build number: one to three dot-separated integers (CFBundleShortVersionString
+# and CFBundleVersion).
+DOTTED_NUMBER = re.compile(r"[0-9]+(\.[0-9]+){0,2}")
+
+
+def usage_error(args):
+    """Why `args`, with `--platform` already taken out, is not a command line; None if it is one.
+
+    Every argument has to be accounted for. Until the 1.4.1 W7 review only the exact
+    `--platform <value>` pair was taken out and nothing else was checked, so
+    `cancel 1.4.1 --platform=MAC_OS`, `--plaform MAC_OS`, `-p MAC_OS` or a bare `MAC_OS` landed in
+    the build-number slot or past it. cancel and release never read that slot and finish read only
+    the build there, so `platforms` stayed at both: the command pulled an iOS review in progress
+    out of review, released iOS too, or submitted the Mac before its gate. None of those App Store
+    Connect writes can be undone: a release is public, and a cancelled review starts over.
+    """
+    options = [x for x in args if x.startswith("-")]
+    if options:
+        if options[0].startswith("--platform="):
+            value = options[0].split("=", 1)[1]
+            return f"write `--platform {value}`, two words, not {options[0]!r}"
+        return f"unknown option {options[0]!r}: the only option is `--platform IOS|MAC_OS`"
+    if not args:
+        return "no command"
+    cmd = args[0]
+    if cmd not in ARITY:
+        return f"unknown command {cmd!r}"
+    if cmd == "finish" and len(args) == 2:
+        return "finish needs a build number"
+    if len(args) != ARITY[cmd]:
+        takes = "a version and a build number" if cmd == "finish" else "a version"
+        got = " ".join(args[1:]) or "nothing"
+        return f"{cmd} takes {takes} and nothing else; got: {got}"
+    for label, value in zip(("version", "build number"), args[1:]):
+        if not DOTTED_NUMBER.fullmatch(value):
+            return f"{value!r} is not a {label}: one to three dot-separated integers"
+    return None
+
+
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
     # `--platform IOS|MAC_OS` limits prepare/finish/release/cancel to one platform. Added for
@@ -574,19 +619,16 @@ def main(argv=None):
     # finish used to submit every platform that had a version record. `cancel` honours it since
     # 1.4.1: it used to pull every platform's submission of the version out of review, so
     # cancelling the Mac submission to swap its build also cancelled an iOS review in progress.
-    # `show` reports every platform either way. Checked before anything reaches the network.
+    # `show` reports every platform either way. The whole command line is checked before anything
+    # reaches the network (usage_error).
     platforms = parse_platform(args)
     if platforms is None:
-        print(f"--platform takes one of {PLATFORMS}, once"); return 1
-    cmd = args[0] if len(args) > 0 else "show"
-    version_string = args[1] if len(args) > 1 else None
-    build_number = args[2] if len(args) > 2 else None
-    if not version_string:
-        print(__doc__); return 1
-    if cmd not in ("show", "prepare", "cancel", "release", "finish"):
-        print(__doc__); return 1
-    if cmd == "finish" and not build_number:
-        print("finish needs a build number"); return 1
+        print(f"--platform takes one of {PLATFORMS}, once, as `--platform <value>`"); return 1
+    problem = usage_error(args)
+    if problem:
+        print(f"{problem}\n{__doc__}"); return 1
+    cmd, version_string = args[0], args[1]
+    build_number = args[2] if cmd == "finish" else None
     app_id = a.find_app()
 
     if cmd == "show":

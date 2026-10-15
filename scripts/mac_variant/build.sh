@@ -4,9 +4,11 @@
 #   scripts/mac_variant/build.sh [extra xcodebuild args...]   build it (Debug), then preflight it
 #   scripts/mac_variant/build.sh --release [extra args...]    the same in the Release configuration
 #   scripts/mac_variant/build.sh --entitlements-only          generate and check the entitlements
-#   scripts/mac_variant/build.sh --preflight [<app>]          re-check a built variant (default:
-#                                                             the one this script builds; add
-#                                                             --release for a Release variant)
+#   scripts/mac_variant/build.sh --preflight [<app>]          re-check a built Debug variant
+#                                                             (default: the one this script builds)
+#   scripts/mac_variant/build.sh --preflight --release [<app>]   the same for a Release variant
+# The options go in any order. --preflight takes at most one app path and --entitlements-only none;
+# anything else with either is refused (exit 2), never ignored.
 #
 # NEVER RUN the shipping StrideMac (bundle yyh.stride.habittracker) on this Mac, and never run
 # this variant before its preflight has passed: the owner's real Stride store lives at
@@ -30,8 +32,10 @@
 #   - Its own bundle id, yyh.stride.habittracker.mactest, so it gets its own sandbox container
 #     (~/Library/Containers/yyh.stride.habittracker.mactest/), its own keychain items and its own
 #     notification permission. PRODUCT_NAME stays "Stride", so LaunchServices knows two
-#     Stride.app bundles: launch the variant by explicit path or `open -b <variant id>`, NEVER
-#     `open -a Stride`, which may pick the shipping app.
+#     Stride.app bundles: launch the variant by its explicit path, NEVER `open -a Stride`, which
+#     may pick the shipping app. Not `open -b <variant id>` either since 1.4.1: the Debug and the
+#     Release variant (--release) share the id, so it may start the Release one, a production
+#     client.
 #   - Ad-hoc signing (CODE_SIGN_IDENTITY=-, Manual, no team): no keychain, so it builds with the
 #     screen locked, and no provisioning profile — so it may carry no com.apple.developer.*
 #     entitlement (AMFI refuses to launch an ad-hoc binary that does).
@@ -104,11 +108,14 @@ MODE=build
 CONFIG=Debug
 PREFLIGHT_APP=""
 XCB_ARGS=()
+set_mode() {
+    [[ "$MODE" == build || "$MODE" == "$1" ]] || { echo "✗ --preflight and --entitlements-only are two different runs; pick one"; exit 2; }
+    MODE="$1"
+}
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --entitlements-only) MODE=entitlements; shift ;;
-        --preflight) MODE=preflight; shift
-                     if [[ $# -gt 0 && "$1" != -* ]]; then PREFLIGHT_APP="$1"; shift; fi ;;
+        --entitlements-only) set_mode entitlements; shift ;;
+        --preflight) set_mode preflight; shift ;;
         --release) CONFIG=Release; shift ;;
         -configuration|-configuration=*)
             echo "✗ no -configuration: the variant is Debug, or Release with --release"; exit 2 ;;
@@ -116,6 +123,22 @@ while [[ $# -gt 0 ]]; do
         *) XCB_ARGS+=("$1"); shift ;;
     esac
 done
+# Only a build passes the rest to xcodebuild. --preflight's app path is whichever leftover is not an
+# option, wherever it stands: it used to be taken only straight after --preflight, so
+# `--preflight --release <app>` put <app> among the xcodebuild arguments, which a preflight never
+# reads, and checked the default app instead of the one about to be launched.
+if [[ "$MODE" == preflight && ${#XCB_ARGS[@]} -gt 0 ]]; then
+    if [[ ${#XCB_ARGS[@]} -eq 1 && -n "${XCB_ARGS[0]}" && "${XCB_ARGS[0]}" != -* ]]; then
+        PREFLIGHT_APP="${XCB_ARGS[0]}"
+        XCB_ARGS=()
+    else
+        # An empty path too: `--preflight "$APP"` with APP unset must not check the default app.
+        echo "✗ --preflight takes one app path at most (and --release); got: '${XCB_ARGS[*]}'"; exit 2
+    fi
+fi
+if [[ "$MODE" == entitlements && ${#XCB_ARGS[@]} -gt 0 ]]; then
+    echo "✗ --entitlements-only takes no other argument; got: ${XCB_ARGS[*]}"; exit 2
+fi
 
 if [[ "$CONFIG" == Release ]]; then
     ROOT="${STRIDE_MAC_VARIANT_ROOT:-$HOME/Library/Caches/Stride-build/mac-variant-release}"
@@ -274,13 +297,12 @@ EOF
     fi
     cat <<EOF
 
-Launch it (only this way — by its path or its bundle id; NEVER \`open -a Stride\`, which can start
-the shipping app on the owner's real store; and no -demo until the checks below have passed):
+Launch it only by its path, and no -demo until the checks below have passed:
     open "$app"
-    open -b $VARIANT_ID          # once LaunchServices has registered the bundle
     open "$app" --args -tab 2    # launch arguments go after --args
-The Debug and the Release variant share the bundle id: while both are built, \`open -b\` may start
-either (Release talks to production), so launch by path.
+NEVER \`open -a Stride\`, which can start the shipping app on the owner's real store. Not
+\`open -b $VARIANT_ID\` either: the Debug and the Release variant share
+that id, so it may start the Release one, a production client.
 
 Right after the first launch, before any UI action:
     log show --last 5m --style compact --predicate 'subsystem == "$REAL_ID" AND category == "ModelContainer"' | grep 'outside the App Group'

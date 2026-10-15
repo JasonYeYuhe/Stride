@@ -60,8 +60,12 @@ scripts/mac_variant/build.sh                       # build + preflight; prints t
 scripts/mac_variant/build.sh --release             # the same, Release configuration (below)
 scripts/mac_variant/build.sh --entitlements-only   # just generate and check the entitlements
 scripts/mac_variant/build.sh --preflight [<app>]   # re-check a built variant before launching it
-scripts/mac_variant/build.sh --preflight --release # re-check the Release variant
+scripts/mac_variant/build.sh --preflight --release [<app>]   # the same for a Release variant
 ```
+
+The options go in any order (`--preflight <app> --release` is the same check). `--preflight`
+takes one app path at most and `--entitlements-only` none: anything else with either is refused
+with exit 2, never ignored.
 
 Everything goes under `$STRIDE_MAC_VARIANT_ROOT` (default
 `~/Library/Caches/Stride-build/mac-variant`, persistent so a rebuild is incremental; a root under
@@ -85,12 +89,16 @@ version of the Mac in-place upgrade gate, gets its own root
   `Stride.debug.dylib`): Debug must hold `http://localhost:3002`, and a Debug preflight of a build
   that holds the production URL instead fails. The Release checks are below.
 
-**Launch** only by path or bundle id:
+**Launch** only by path:
 
 ```bash
-open "<root>/DerivedData/Build/Products/Debug/Stride.app"            # or: open -b yyh.stride.habittracker.mactest
+open "<root>/DerivedData/Build/Products/Debug/Stride.app"
 open "<root>/DerivedData/Build/Products/Debug/Stride.app" --args -tab 2
 ```
+
+Never `open -a Stride`. Not `open -b yyh.stride.habittracker.mactest` either: once a Release
+variant has been built, LaunchServices knows two bundles with that id, and it may start the
+Release one, a production client ([Release](#release---release)).
 
 **Right after the first launch, before any UI action and before any `-demo`:**
 
@@ -147,8 +155,9 @@ check above. The launch and the first-launch checks are the same.
   like the Debug root), so neither configuration makes the other's next build cold.
   `STRIDE_MAC_VARIANT_ROOT` overrides it as for Debug.
 - **Both variants have the same bundle id.** While a Debug and a Release variant are both built,
-  `open -b yyh.stride.habittracker.mactest` (this README's screenshot recipe included) may start
-  either one, and the Release one is a production client. Launch by path then. Both also share
+  `open -b yyh.stride.habittracker.mactest` may start either one, and the Release one is a
+  production client. So every launch in this README is by path, and `capture.sh` refuses a
+  running variant that is not a Debug build. Both also share
   one container, `~/Library/Containers/yyh.stride.habittracker.mactest/`, so the same store,
   defaults and Keychain service: a session signed in on one is signed in on the other, and a
   Debug session check against the local server answers no user and deletes a production token.
@@ -179,12 +188,14 @@ The Mac App Store slot (`APP_DESKTOP`) takes only exact 16:10 sizes: 1280×800, 
 **Size the window** with the DEBUG launch flag `-windowSize <W>x<H>` (RELEASE-1.4.1.md W0;
 `LaunchWindowSize` in StrideApp.swift). It sets the main window's frame, title bar included, in
 points, once per process, so a 1440×900 frame on a 2x display (the owner's 4K display at 2x) is
-the 2880×1800 the slot takes. It exists only in DEBUG builds, which the variant always is, and
-iOS ignores it. `--args` reach only a new process, so quit a running variant first:
+the 2880×1800 the slot takes. It exists only in DEBUG builds, so screenshots come from the Debug
+variant (the Release one, `--release`, has no `-windowSize`), and iOS ignores it. `--args` reach
+only a new process, so quit a running variant first, then launch the Debug variant by its path
+(never `-a Stride`, and not `-b`, which may start the Release variant):
 
 ```bash
 osascript -e 'if application id "yyh.stride.habittracker.mactest" is running then tell application id "yyh.stride.habittracker.mactest" to quit'
-open -b yyh.stride.habittracker.mactest --args -windowSize 1440x900   # by bundle id, never -a Stride
+open "$HOME/Library/Caches/Stride-build/mac-variant/DerivedData/Build/Products/Debug/Stride.app" --args -windowSize 1440x900
 ```
 
 **Capture** with `capture.sh`. It launches, activates and quits nothing. It finds the variant by
@@ -202,6 +213,9 @@ Before it captures, it checks:
 
 - exactly one variant instance is running;
 - nothing runs as the real `yyh.stride.habittracker`;
+- that instance is a Debug build: its executable or `Stride.debug.dylib` holds DEBUG-only code
+  (`LaunchWindowSize`'s text, the probe `build.sh` uses). The Release variant has the same
+  bundle id, and is a production client without `-windowSize`;
 - the variant is the frontmost app, so the window has active chrome.
 
 Then it runs `screencapture -x -o -l <window id>`, where `-o` drops the shadow so the image is the
@@ -211,7 +225,9 @@ window's frame exactly. It keeps the capture only if:
 - it is exactly 2880×1800 px (`sips`), or the `--size` given.
 
 A rejected capture stays in a temp directory, whose path is printed. Exit status: 0 captured,
-1 failed or blank, 2 usage, 3 not running or no on-screen window, 4 refused, 5 wrong size.
+1 failed or blank, 2 usage, 3 not running or no on-screen window, 4 refused (not a Debug build,
+not frontmost, the real app running, more than one instance, an unknown `--window-id`), 5 wrong
+size.
 
 **Screen Recording.** A blank or failed capture almost always means the app running the script
 (Terminal, iTerm or the Claude app) has no Screen Recording permission. `capture.sh` prints how
