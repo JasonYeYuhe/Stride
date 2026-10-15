@@ -89,15 +89,22 @@ The owner took every recommendation ("全部按推荐的做"). The consult and i
 
    Order: deployed after A, with #8, once both are in `main` (a trial merge is clean; the
    merged server suite passes 516/516), by DEPLOY.md's 5 steps, with a go.
-7. **Same-day duplicates merge on write (D4).**
+7. **Same-day duplicates merge on write (D4).** *Amended 2026-10-15 by W2's review (data safety):*
+   a merge deletes the duplicates **on this device only and queues no tombstone**, and marks the
+   kept record `needsResend` at its own stamp (undone on a failed save). The server keeps one row per
+   (habit, day), applies deletions first and blocks a tombstoned id for good, so a tombstone for a
+   duplicate could only ever delete the day's one row (rehearsal M6–M8 lost the day on the old
+   rule). An un-check of a day still tombstones each of its ids once. The test line below now reads
+   "[2,8] → setValue(3) leaves one record of 3 and no tombstone".
    - On a day with more than one live record, each setter keeps the record D2 reads: the
      largest value, then the newest stamp.
    - It moves any other non-empty note onto that record, or returns `.needsConfirmation` when
      two differ.
    - It deletes the others and returns all their ids for tombstones.
    - `tap` acts on the same kept record.
-   - Tests: [2,8] → `setValue(3)` leaves one record of 3 and one tombstone, in both orders; a
-     yes/no day with two records → `setChecked(false)` leaves none and two tombstones.
+   - Tests: [2,8] → `setValue(3)` leaves one record of 3 and no tombstone (amended), in both
+     orders; a yes/no day with two records → `setChecked(false)` leaves none and two tombstones
+     (one when they share an id).
 8. **Editing a habit's target or schedule re-scores its whole history** (no schema change in
    1.4.1).
    - Edit mode's Goal and Frequency footers say so: "Changes apply to your whole history,
@@ -910,6 +917,37 @@ go per action.
 
 - 2026-10-14: Plan drafted from four read-only mappers (spec, client, server, ops) at 376e69b. The
   strength numbers were recomputed independently.
+- 2026-10-15, #8 + #9 merged into main and deployed (DEPLOY 5 steps, rehearsal 32/32); main merged
+  into m4 (31f23e8). Mac 1.4.0 went IN_REVIEW.
+- 2026-10-15, W2 done (f141fe4 write path, 20b4dde cache/widget/rehearsal, 692e411 review fixes):
+  - Setters with the day merge and persistentModelID matching; HabitEntryCommit with an undo
+    journal. Today's writes and both confirm alerts.
+  - StatsCache: process-level didSave, sibling-context merge, .habitDataChanged, day and zone
+    triggers, scene activation. The widget's noted yes/no rows are a Link to History.
+  - The route is `stride://history?habit=<UUID>&day=<yyyy-MM-dd>`, kept apart from sign-in. It is
+    presented only when the window has nothing else up.
+  - Gates: StrideTests 632 (2 known skips) in two zones; hosted 280; rehearsal 97/0/1, including M1–M5
+    and M6–M8 for the merge.
+  - Review: 7 findings, 6 confirmed and fixed. The critical one is decision 7's tombstones (amended
+    above).
+  - Deviations:
+    - D3's fingerprint drops the newest record stamp and record identities (82 ms → 0.3 ms per warm
+      read of 50 × 1,095). Record changes are still caught through the save mapping.
+    - The setters re-read the day's stored fields before writing (`adoptStoredFields`), because
+      mainContext does not see other contexts' saves.
+    - SettingsView's habit delete is reverted to its pre-W2 order; W5 does the reorder with a rollback
+      on a failed save and a hosted test.
+  - New items:
+    - **X1 (sync, 1.4.1).** `SyncDayIndex.record(of:onDayOf:)` (Shared/SyncReconciler.swift) renames
+      the day's first record to the server's id even when another local record already holds that
+      id, which creates same-id duplicates. It should prefer the record carrying the entry's id and
+      never rename onto a taken id (as SyncPushResolver's `takenIDs`).
+    - **X2 (pre-existing, data correctness).** Day keys take Y/M/D from `Calendar.current` (and
+      `appCalendar` keeps its identifier). On a device whose system calendar is Japanese or Buddhist
+      (Thailand's region default), records are stored and synced as year 0008 or 2569.
+      SyncDelivery's 1970–2069 year parse, `DataBackup.dayKey` and `NotificationRouter.day(from:)`
+      bound years too. Fixing it needs a Gregorian day-key calendar plus a key migration (local and
+      server). Investigation first, then an owner decision.
 - 2026-10-15, W1 done (dbd1df9 goldens, 338f36e implementation, 52088f1 review fixes):
   - HabitStats, HabitScore and the delegating aggregates are in; the widget makes one RowInput
     per habit and carries hasNote; demo_check reports strength.
