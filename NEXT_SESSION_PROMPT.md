@@ -25,7 +25,7 @@
 
 1. **P1 magic-link（第一件事）**：先问我两件事：选项 A（只改 `FROM_EMAIL=Stride <stride@colorarchive.org>`）的 go，以及 O5（≤1.2.2 旧客户端缺 `updatedAt` 的处理，默认选 (2)）。再确认会话 4c69e79f 还在不在：在的话，由它提交、开 PR、改 `.env`、部署，你只做验证；不在的话，按计划里的 fallback 走，仍要我点头。生产环境的每一步都要我点头。
 2. **P2 Mac 1.4.0**：`release.py show 1.4.0`。如果是 PENDING_DEVELOPER_RELEASE，直接 `release.py release 1.4.0 --platform MAC_OS`（我已经同意）。然后按顺序：在 m3 上勾选文档、等 CI 绿、`gh pr ready 7`、`gh pr merge 7 --merge`（merge commit，不要 squash），最后打 tag `v1.4.0`。
-3. **P3a + P4，和我一起做**：Mac 商店截图预演，加上 13 条 Mac 界面清单。先让我删掉 `build/Debug/Stride.app`（那是真实 bundle id 的旧 Debug 包）。测试版只用路径或 `open -b yyh.stride.habittracker.mactest` 启动，构建放在 `~/Library/Caches/Stride-build/mac-variant`。截图最终要上传到 Mac 1.4.1 的版本记录（P3b，在 W3 和 W5 之后）。
+3. **P3a + P4，和我一起做**：Mac 商店截图预演，加上 13 条 Mac 界面清单。先让我删掉 `build/Debug/Stride.app`（那是真实 bundle id 的旧 Debug 包）。测试版只按路径启动（不要用 `open -b`：Debug 和 Release 两个测试版 bundle id 相同，Release 版连的是生产服务器），构建放在 `~/Library/Caches/Stride-build/mac-variant`。截图最终要上传到 Mac 1.4.1 的版本记录（P3b，在 W3 和 W5 之后）。
 4. **O1–O12**：一次性列给我，每条带默认值，我回一行就行。
 5. **W0 → W1 → W2 → W3/W4**，W5–W8 并行，最后 W9。每个工作流有独占的文件，测试写在计划里。W9 之前做一次全分支审查：Gemini（agy，一次性副本）加 Claude 对抗视角。
 

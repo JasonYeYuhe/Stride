@@ -246,8 +246,9 @@ git-ignored (.gitignore:7) and registered with LaunchServices. A launch or compu
 name "Stride" could open it on the owner's real store (mac_variant/README.md:8-11, :48).
 - The owner moves it to the Trash (it is under `~/Documents`).
 - Assert that `mdfind "kMDItemCFBundleIdentifier == 'yyh.stride.habittracker'"` returns nothing.
-- Launch the variant only by path or with `open -b yyh.stride.habittracker.mactest` from Bash,
-  never with `open_application` or by app name.
+- Launch the variant only by its path from Bash (never `open -b`: the Debug and Release variants
+  share the bundle id, and the Release one is a production client), never with `open_application`
+  or by app name.
 - Before every computer-use action, check that the frontmost app's bundle id is `…mactest`.
 
 **P3a. Next session, no W0 dependency:** a capture rehearsal plus P4, on a variant built from
@@ -919,6 +920,33 @@ go per action.
   strength numbers were recomputed independently.
 - 2026-10-15, #8 + #9 merged into main and deployed (DEPLOY 5 steps, rehearsal 32/32); main merged
   into m4 (31f23e8). Mac 1.4.0 went IN_REVIEW.
+- 2026-10-16, wave B merged (W7 c39d4d8, W6 a094ca2, D11 172fdab); 8 review findings confirmed and
+  fixed, 2 refuted.
+  - W6: templates carry kind, target and unit. A failed add says so. A pick closes New Habit too:
+    W6 wired AddHabitView's `onAdded` itself (W4 was already merged).
+    - Count templates are only those reachable by tapping (Morning Run 5 km, Drink Water 8
+      glasses, Sleep 8 hrs). Walk 10k Steps, Write 500 Words and Read 30min stay yes/no until a
+      count can be logged by amount.
+    - New key "%lld %@ a day".
+  - W7:
+    - Export names are yyyy-MM-dd-HHmmss.
+    - Privacy reasons C617.1 + 35F9.1 (app) and 35F9.1 (widget); verify_archive.sh checks them.
+    - `release.py cancel --platform`.
+    - ship.sh is retired: it refuses to run.
+    - `mac_variant/build.sh --release` builds into the persistent root
+      ~/Library/Caches/Stride-build/mac-variant-release. It is a production client, so sign-in
+      only with the owner's plus-address (decision 4), and launch by path only.
+    - Before any Mac screenshot, rebuild the default Debug variant: it is still 1.4.0 without
+      `-windowSize`, and capture.sh refuses it.
+  - D11: paywall rows, the Settings upsell, ProLockedCard and the 6 STRIDE PRO blocks name exactly
+    D11's set. The STATISTICS paragraph gains strength and "fix past days".
+    - Tests `testProClaimsNameExactlyD11sSet` and `testStoreDescriptionsSellD11sProSet` are W9's
+      grep gate.
+    - en-US and es-ES descriptions are within 8–12 characters of 4000.
+    - Open for W9/owner: store copy uses different feature names than the app's catalog (es
+      Estadísticas avanzadas vs Análisis avanzado, ja 週次レビュー vs 週間レビュー, ko 고급 통계 vs
+      고급 분석, zh-Hans 高级统计 vs 高级分析, zh-Hant 深入分析卡片 vs 洞察); the review notes; the ASC IAP
+      read-back.
 - 2026-10-15, wave A merged (W8 d2f6cd7, X1 1f9ec40, W5 4702f9f, W3 163efe4, W4 7703331), each implemented
   in its own worktree, reviewed by 2 lenses, findings verified and fixed (17 confirmed, 1 refuted).
   - Integrated gates on 7703331:
