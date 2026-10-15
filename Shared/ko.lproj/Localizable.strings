@@ -374,6 +374,7 @@
 "Request failed" = "요청에 실패했습니다";
 "Please log in again" = "다시 로그인해 주세요";
 "Invalid server response" = "서버 응답이 올바르지 않습니다";
+"Stride couldn't send the login email right now. This is a problem on our side, not with your email address. Your habits are safe on this device. Please try again later." = "지금은 Stride에서 로그인 이메일을 보낼 수 없습니다. 이메일 주소의 문제가 아니라 Stride 측의 문제입니다. 습관 데이터는 이 기기에 안전하게 보관되어 있습니다. 잠시 후 다시 시도해 주세요.";
 
 /* Siri & Shortcuts: AppShortcut short titles (the tiles in the Shortcuts app). They had no entry
    in any catalog until the source scan learned `shortTitle:`. */

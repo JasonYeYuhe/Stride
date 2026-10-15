@@ -53,6 +53,32 @@ final class AuthServiceTests: XCTestCase {
         XCTAssertEqual(server.requests.first?.json?["token"] as? String, "magic-123")
     }
 
+    /// What the login sheet acts on after Send Login Link: `.sent` moves on to "Check your
+    /// email"; `.emailUnavailable` — the body production answered for every sign-in from
+    /// 2026-10-12, its sending domain unverified at Resend — stays on the email step with this
+    /// build's own sentence and Contact Support; anything else stays with the reason.
+    func testRequestMagicLinkSaysWhetherTheEmailWentAndWhoseProblemItIs() async {
+        let auth = makeAuth()
+        let sentence = "Stride couldn't send the login email right now. This is a problem on our side, not with your email address. Please try again later."
+        server.on("POST", "/v1/auth/request-link", respond: .init(
+            status: 500, body: #"{"error":"\#(sentence)","code":"login_email_unavailable","message":"\#(sentence)"}"#))
+        let unavailable = await auth.requestMagicLink(email: "a@example.com")
+        XCTAssertEqual(unavailable, .emailUnavailable)
+        XCTAssertEqual(auth.error, appLocalized("Stride couldn't send the login email right now. This is a problem on our side, not with your email address. Your habits are safe on this device. Please try again later."))
+        XCTAssertFalse(auth.isLoading)
+
+        server.on("POST", "/v1/auth/request-link", respond: .init(status: 400, body: #"{"error":"Invalid email"}"#))
+        let failed = await auth.requestMagicLink(email: "a@example")
+        XCTAssertEqual(failed, .failed)
+        XCTAssertEqual(auth.error, "Invalid email")
+
+        server.on("POST", "/v1/auth/request-link", respond: .ok(#"{"ok":true}"#))
+        let sent = await auth.requestMagicLink(email: "a@example.com")
+        XCTAssertEqual(sent, .sent)
+        XCTAssertNil(auth.error)
+        XCTAssertNil(tokens.read(), "asking for a link signs nothing in")
+    }
+
     /// Logout clears the token and ends the sync session even when the server cannot be reached
     /// — otherwise an offline logout leaves the old token in the Keychain and a sync in flight
     /// writing for an account that is gone. (Since 1.3.1 it no longer resets the cursor: the

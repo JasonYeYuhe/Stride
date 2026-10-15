@@ -11,6 +11,11 @@ struct LoginView: View {
     @State private var verificationToken = ""
     @State private var step: LoginStep = .email
     @State private var showSuccess = false
+    /// The last Send Login Link failed on Stride's side (`.emailUnavailable`): its error gets
+    /// Contact Support under it. It used to read "Failed to send login link" and nothing else,
+    /// while every sign-in failed that way (the production outage found 2026-10-12).
+    @State private var emailUnavailable = false
+    @FocusState private var emailFieldFocused: Bool
 
     /// `prefilledEmail`: what the email field starts with — the account a "Sign in again" row
     /// asks for (`SignInAgainFlow.loginEmail`), where the field used to start empty (E2E S9
@@ -45,6 +50,8 @@ struct LoginView: View {
             // Each step replaces the whole panel, which destroys the subtree holding
             // VoiceOver focus: without these the user hears nothing at all.
             .onChange(of: step) { _, newStep in
+                // Whatever error the next step shows is that step's own, not a failed send's.
+                emailUnavailable = false
                 AccessibilityNotification.Announcement(Self.announcement(for: newStep)).post()
             }
             .onChange(of: auth.error) { _, newError in
@@ -96,6 +103,10 @@ struct LoginView: View {
                     // Red text is the only cue that this is an error, and VoiceOver
                     // does not convey color.
                     .accessibilityLabel(Text("Error: \(error)"))
+                if emailUnavailable {
+                    Link("Contact Support", destination: StoreUnavailableView.supportURL)
+                        .font(.caption)
+                }
             }
 
             Spacer()
@@ -128,11 +139,17 @@ struct LoginView: View {
                 .textInputAutocapitalization(.never)
                 .keyboardType(.emailAddress)
                 #endif
+                .focused($emailFieldFocused)
 
             Button {
+                // The address is typed. With the keyboard still up, this panel (which does not
+                // scroll) has no height left, and the three-line "couldn't send" error showed as
+                // one truncated line: the part saying whose problem it is was cut off.
+                emailFieldFocused = false
                 Task {
-                    let sent = await auth.requestMagicLink(email: email)
-                    if sent { step = .checkInbox }
+                    let outcome = await auth.requestMagicLink(email: email)
+                    emailUnavailable = outcome == .emailUnavailable
+                    if outcome == .sent { step = .checkInbox }
                 }
             } label: {
                 if auth.isLoading {

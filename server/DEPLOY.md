@@ -294,6 +294,61 @@ sender and DKIM always aligns:
 root's `p=none` and missing SPF belong to whatever else uses `colorarchive.me`; leave them
 unless you know nothing else sends as it.
 
+#### The Resend side: DNS passing proves nothing about sending
+
+On 2026-10-12 both sign-in attempts in the retained logs answered 500 with
+`Resend validation_error: The stride.colorarchive.me domain is not verified`, while every
+record in the table above was still present and `check_email_auth.sh` passed. What the
+investigation on 2026-10-13 found:
+
+- Stride's `RESEND_API_KEY` is the **same key as ColorArchive's** (compared by hash with
+  `/root/ColorArchive/server/.env`), unchanged since at least June. That Resend account has
+  exactly one domain, `colorarchive.org` (verified, region ap-northeast-1, added 2026-04-10).
+  `stride.colorarchive.me` is not in it at all, so the DKIM key published above belongs to no
+  domain that this key can send from.
+- Resend's retained log (2026-09-15 to 10-13, 332 sends) has every send from
+  `colorarchive.org` and none from Stride. In `stride.db`, none of the four non-demo accounts
+  (created 2026-04-20 to 10-12) has ever synced a habit or appears in `user_clients`.
+- Until `441b809` (the 1.3.1 server), a refused send still answered `{ok:true}`: the app said
+  "Check your email" and nothing came, with no log line. Since then it is a 500 and a
+  `request-link error:` line, which still reaches nobody until `SENTRY_DSN` is set.
+
+So check Resend itself after any change to `RESEND_API_KEY`, `FROM_EMAIL`, the Resend
+account or this DNS. In a root shell on the host (`sudo -i`: `azureuser` cannot even `cd`
+into `/root`). Neither command prints the key, and each **exits 1 on failure**, with the
+reason on stderr:
+
+```bash
+cd /root/stride-server
+# 1. Is FROM_EMAIL's domain in the key's account, and verified? (Needs a full-access key; a
+#    sending-only key answers restricted_api_key, so use 2. alone.)
+node -e '
+  require("dotenv").config();
+  const from = (process.env.FROM_EMAIL || "").replace(/^.*@/, "").replace(/>.*$/, "").trim();
+  new (require("resend").Resend)(process.env.RESEND_API_KEY).domains.list().then(({ data, error }) => {
+    if (error) { console.error("cannot list domains:", error.name, error.message); process.exitCode = 1; return; }
+    const d = data.data.find((x) => x.name === from);
+    const line = `FROM domain ${from} -> ${d ? d.status : "NOT IN THIS RESEND ACCOUNT"}`;
+    if (d && d.status === "verified") console.log(line);
+    else { console.error(line); process.exitCode = 1; }
+    console.log("account:", data.data.map((x) => `${x.name}=${x.status}`).join(", "));
+  });'
+#   FROM domain <domain> -> verified
+#   (2026-10-13: "FROM domain stride.colorarchive.me -> NOT IN THIS RESEND ACCOUNT",
+#    "account: colorarchive.org=verified")
+# 2. Send one magic-link email through email.js itself to Resend's test sink, which accepts
+#    it without delivering it anywhere (domain verification still applies).
+node -e '
+  require("dotenv").config();
+  require("./email").sendMagicLinkEmail("delivered@resend.dev",
+    { loginUrl: "https://stride-api.colorarchive.me/", expiresInMinutes: 15 })
+    .then(() => console.log("sent"), (e) => { console.error("NOT sent:", e.message); process.exitCode = 1; });'
+#   sent
+```
+
+`node -e` reads `.env` itself. The running process read it at its last restart, so after
+editing `.env` run `sudo pm2 restart stride-server --update-env` before trusting either.
+
 ## Ports
 
 - ColorArchive: 3001
@@ -310,7 +365,11 @@ unless you know nothing else sends as it.
 - `FRONTEND_ORIGIN` — the origin this process answers on: CORS allowlist and the host in
   magic-link emails (default `https://stride-api.colorarchive.me`, see `origins.js`; the old
   default had no DNS record).
-- `RESEND_API_KEY` — magic-link email delivery.
+- `RESEND_API_KEY` — magic-link email delivery. Shared with ColorArchive (see
+  [The Resend side](#the-resend-side-dns-passing-proves-nothing-about-sending)).
+- `FROM_EMAIL` — the magic link's sender. Its domain must be **verified in the Resend account
+  that `RESEND_API_KEY` belongs to**, or every sign-in fails. The default in `email.js`
+  (`hello@strideapp.me`) is not a domain in that account either; production always sets this.
 - `DEMO_TOKEN` — App Review demo account login token, consumed by `seed-demo.js`.
   Mirrored into the ASC App Review sign-in fields; rotate in both places at once.
 - `SENTRY_DSN` — optional for the server, which reports errors to Sentry when it is set;
@@ -391,21 +450,27 @@ adds nothing to Sentry events.
    curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3002/health   # 200
    ```
 
-4. Send a test event through the same init options and scrubbers the server uses:
+4. Send a test event through the same init options and scrubbers the server uses, in a root
+   shell (`sudo -i`; `azureuser` cannot `cd` into `/root`):
 
    ```bash
-   cd /root/stride-server && sudo node -e '
+   cd /root/stride-server && node -e '
      require("dotenv").config();
      const Sentry = require("@sentry/node");
      Sentry.init(require("./lib/sentryScrub").sentryInitOptions(process.env));
      Sentry.captureMessage("stride-server: test event", { level: "info", tags: { area: "deploy-check" } });
-     Sentry.flush(10000).then((ok) => console.log(ok ? "sent" : "NOT sent (flush timed out)"));'
+     Sentry.flush(10000).then((ok) => {
+       if (ok) console.log("sent");
+       // exit, not exitCode: the request still waiting on a stuck ingest keeps node running.
+       else { console.error("NOT sent (flush timed out)"); process.exit(1); }
+     });'
    ```
 
-   It prints `sent`, and within a minute the issue *stride-server: test event* appears in the
-   project with `environment: production` — resolve it. The next 04:10 restore drill also
-   starts sending its cron check-in (monitor `stride-restore-drill`, see
-   [Restore drill](#restore-drill)); check it shows up the next morning.
+   It prints `sent` (a failure goes to stderr and exits 1), and within a minute the issue
+   *stride-server: test event* appears in the project with `environment: production` —
+   resolve it. The next 04:10 restore drill also starts sending its cron check-in (monitor
+   `stride-restore-drill`, see [Restore drill](#restore-drill)); check it shows up the next
+   morning.
 
 Until the DSN is set nothing is sent anywhere: `Sentry.init` and the magic-link report are
 both behind `if (process.env.SENTRY_DSN)`, and a failed request-link is only a
@@ -434,6 +499,7 @@ handler — so every gate below is ≥ 1.3.1, and 1.3.0 is treated exactly like 
 | 409 | `snapshot_required` | header ≥ 1.3.1 | Support asked this account to re-upload everything ([below](#per-account-re-upload)). One-shot. |
 | 409 | `cursor_expired` | header ≥ 1.3.1 | Pull `since` older than 355 days (365 − 10 grace). The app does a full pull. |
 | 413 | — | everyone | Body over 5 MB. |
+| 426 | `client_update_required` | in practice apps ≤ 1.2.2 and 1.1 (no header) | A legacy-shaped push ([below](#legacy-shaped-pushes)): an entry with no `updatedAt` or a habit with no `kind`. Refused whole; nothing in it is written. |
 | 429 | `rate_limited` | everyone | Over 60 sync requests/min for the account, or over 100 per 15 min from one IP without a session; `Retry-After`. |
 | 503 | `sync_paused` | everyone | The [pause switch](#pausing-sync) is on; `Retry-After`. |
 
@@ -452,6 +518,43 @@ would lose on that device to its own local :18.300. Pushed stamps are stored the
 whatever their precision (`…:18Z` becomes `…:18.000Z`), so the edit-time comparison — a string
 comparison — stays chronological across old and new apps. An older app's edit is only as
 precise as its string: 1.2.3's :18.900 is stored as :18.000 and loses to 1.3.1's :18.400.
+
+<a id="legacy-shaped-pushes"></a>**Legacy-shaped pushes (426, from 2026-10-15).** Apps ≤ 1.2.2 send entries with no
+`updatedAt`, and 1.1 sends habits with no `kind`. Accepted, such an entry was stamped "now", won
+every comparison, and each full snapshot from that device reverted the notes and values other
+devices had written to the days it holds (a 1.1 habit also reset kind, target, unit, schedule and
+group). So a push is refused with `426 client_update_required` when any row with an id is one of:
+an entry whose `updatedAt` (either casing) is absent or `null` — or, without a valid header, does
+not parse — or a habit with no `kind` key. The check runs before anything is written: habits,
+entries, groups and all three deletion lists are left as they were. Without a header the sentence
+("This version of Stride can no longer sync. Update Stride from the App Store…") is in `error`,
+which those apps print in the Settings footer; every one of them pushes before it pulls inside one
+`do`/`catch`, so a refused push never reaches the full-pull reconciliation that deletes local
+rows. Every app from 1.2.3 on always sends
+both fields (a stamp from 1.3.0+ that does not parse — only a hand-edited backup has one — keeps
+the old "now" stamp instead of a refusal no update could clear). An empty, groups-only or
+deletions-only push says nothing about the app and is answered as before; a 1.2.x device with
+habits and no check-ins yet is accepted until its first check-in. One thing the device does lose:
+those apps take their deletion queue out before pushing, so a deletion queued on one is not sent
+again (the server keeps the row). Counted as `legacy_push_refused` per push and
+`habit_without_kind` per habit, and logged as `[sync] push user=<id> refused legacy-shaped push:
+<n> entries without updatedAt, <m> habits without kind`, with `legacyRefused=entries:<n>,habits:<m>`
+on the request line.
+
+**Notes on a day held under two ids.** Entries conflict on (habit, day), so two devices that
+checked a day before either pulled the other's hold one row under two ids. Two rules keep the note
+(RELEASE-1.4.1.md, Data safety 2):
+- A push from the id the row does **not** hold with a `NULL` note keeps the stored note — that
+  device has none, it did not clear one; the value is still last-writer-wins. From the id the row
+  holds, `NULL` clears the note (the owner removed it), and a non-`NULL` note from either id is an
+  edit: the newer one wins.
+- When the newer row without a note landed first, the older noted row loses the guard and would
+  change nothing; instead its note is copied onto the stored row (only into a `NULL` note, only
+  from a non-`NULL` one), the row's edit stamp moves one millisecond past the stored one, and it
+  re-feeds. The millisecond is what stops a 1.2.3 / 1.3.0 device, which pushes its whole store
+  before it pulls, from re-sending the no-note row at the stored stamp and clearing the note with
+  the stored id's `NULL`; one millisecond older, that echo changes nothing and its pull takes the
+  merged row. The value stays the newer edit's.
 
 **The LWW re-feed.** A push that loses to a stored edit is still `applied`. When the stored
 edit is strictly newer *and* the values differ (as an app would hold them), the push moves
@@ -848,7 +951,8 @@ cd /root/stride-server && sudo node ops/usage-report.js [--days N] [--db path]
 
 Active accounts by client version over 7 / 28 / 56 days, the legacy (no header) and < 1.3.1
 cohorts, and counter totals by UTC day: `snake_fallback.*` (the snake_case shim),
-`habit_without_kind`, `mount.*` (hits on the legacy `/sync`, `/auth`, `/habits` mounts),
+`habit_without_kind`, `legacy_push_refused` (pushes refused 426 for their shape — the ≤ 1.2.2 / 1.1
+devices still trying to sync), `mount.*` (hits on the legacy `/sync`, `/auth`, `/habits` mounts),
 `client.*`, and `lww_refeed.*` (the LWW re-feed — not a shim counter; it should stay small, and
 one that climbs every day is a device that cannot hold the winner). It opens the database read-only and runs no migrations, so it is safe on the live
 host or on a copy. The process flushes its counters hourly and on SIGTERM, so the report

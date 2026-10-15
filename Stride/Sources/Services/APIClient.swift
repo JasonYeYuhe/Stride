@@ -384,6 +384,26 @@ enum APIError: LocalizedError {
             }
         }
     }
+
+    /// "Send Login Link" failed because Stride could not send the email, not because of the
+    /// address or the connection: the server's `login_email_unavailable` (its mail provider
+    /// refused the send — on 2026-10-12, an unverified sending domain), or any 5xx, such as
+    /// nginx's 502 page while the server is down, which carries no code. Retrying soon will not
+    /// help and the user can do nothing about it, so the login sheet says so and offers
+    /// Contact Support (`LoginView`).
+    static func isLoginEmailUnavailable(_ error: Error) -> Bool {
+        guard case .server(let status, let code, _)? = error as? APIError else { return false }
+        return code == "login_email_unavailable" || status >= 500
+    }
+
+    /// The login sheet's text for a failed "Send Login Link": this build's own translated
+    /// sentence when Stride could not send the email (the server's is English only, and from
+    /// nginx there is none — "Request failed"), otherwise `displayMessage`.
+    @MainActor
+    static func loginLinkMessage(for error: Error) -> String {
+        guard isLoginEmailUnavailable(error) else { return displayMessage(for: error) }
+        return appLocalized("Stride couldn't send the login email right now. This is a problem on our side, not with your email address. Your habits are safe on this device. Please try again later.")
+    }
 }
 
 // Sync request/response models live in Shared/SyncModels.swift so the reconciliation

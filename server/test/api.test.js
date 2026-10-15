@@ -86,6 +86,29 @@ async function api(method, urlPath, { body, token, query } = {}) {
   return { status: res.status, json };
 }
 
+/**
+ * A push body as every app from 1.2.3 on sends it: each habit with its `kind`, each entry with
+ * its edit stamp. The server refuses a push lacking either (routes/sync.js legacyShape — the
+ * ≤ 1.2.2 and 1.1 apps; test/legacy-guard.test.js), and the tests written before that guard
+ * build their pushes through this. A habit gets the server's own default kind, "binary"; an
+ * entry gets now — what a just-edited record carries, and what the server used to stamp a
+ * stamp-less entry with, so those tests keep meaning what they meant. A field the test sets, in
+ * either casing, is kept, and a row that is not an object is passed through untouched.
+ */
+function asApp(body) {
+  const now = new Date().toISOString();
+  const isObj = (r) => typeof r === "object" && r !== null && !Array.isArray(r);
+  return {
+    ...body,
+    ...(Array.isArray(body.habits) ? {
+      habits: body.habits.map((h) => (isObj(h) && !("kind" in h) ? { ...h, kind: "binary" } : h)),
+    } : {}),
+    ...(Array.isArray(body.entries) ? {
+      entries: body.entries.map((e) => (isObj(e) && !("updatedAt" in e) && !("updated_at" in e) ? { ...e, updatedAt: now } : e)),
+    } : {}),
+  };
+}
+
 /** Wait until the server responds on /health */
 // 8s was too tight: on a loaded machine (or a slow CI box) node takes longer
 // than that just to require express, and the whole suite then fails with a
@@ -674,7 +697,7 @@ describe("Sync", () => {
   it("POST /v1/sync/push upserts habits and entries", async () => {
     const { status, json } = await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [
           {
             id: pushedHabitId,
@@ -694,7 +717,7 @@ describe("Sync", () => {
         ],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
     assert.equal(status, 200);
     assert.equal(json.ok, true);
@@ -730,12 +753,12 @@ describe("Sync", () => {
     // First push a habit
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: deleteHabitId, name: "Will delete", sortOrder: 0 }],
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     // Then push a delete
@@ -763,7 +786,7 @@ describe("Sync", () => {
 
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{
           id: habitId,
           name: "Reminder habit",
@@ -784,7 +807,7 @@ describe("Sync", () => {
         }],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     const pull = await api("GET", "/v1/sync/pull", { token });
@@ -811,12 +834,12 @@ describe("Sync", () => {
     // Push a habit + entry
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Will be tombstoned", sortOrder: 0 }],
         entries: [{ id: entryId, habitId: habitId, date: "2025-09-01" }],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     // Record a "since" timestamp before deletion
@@ -852,12 +875,12 @@ describe("Sync", () => {
     // Push habit via sync
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "ID conflict habit", sortOrder: 0 }],
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     // Create entry via CRUD route (gets its own ID)
@@ -869,12 +892,12 @@ describe("Sync", () => {
     // Now push same date via sync with a different ID — ON CONFLICT(habit_id,date) keeps existing
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [],
         entries: [{ id: pushEntryId, habitId, date: "2025-10-10", note: "from push" }],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     // Full pull: the date should still have exactly one entry
@@ -897,12 +920,12 @@ describe("Sync", () => {
     // Push with both the habit data AND a delete for it — delete should win
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Ghost", sortOrder: 0 }],
         entries: [],
         deletedHabitIds: [habitId],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     const pull = await api("GET", "/v1/sync/pull", { token });
@@ -1429,7 +1452,7 @@ describe("Sync: cross-user isolation", () => {
     habitAId = crypto.randomUUID();
     await api("POST", "/v1/sync/push", {
       token: userAToken,
-      body: {
+      body: asApp({
         habits: [{ id: habitAId, name: "User A Habit", emoji: "🏃", colorHex: "#FF0000",
                    isArchived: false, sortOrder: 0, reminderEnabled: false,
                    reminderHour: 20, reminderMinute: 0, note: null,
@@ -1437,7 +1460,7 @@ describe("Sync: cross-user isolation", () => {
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
   });
 
@@ -1453,7 +1476,7 @@ describe("Sync: cross-user isolation", () => {
   it("user B cannot overwrite user A habit via sync push", async () => {
     await api("POST", "/v1/sync/push", {
       token: userBToken,
-      body: {
+      body: asApp({
         habits: [{ id: habitAId, name: "HIJACKED", emoji: "💀", colorHex: "#000000",
                    isArchived: false, sortOrder: 0, reminderEnabled: false,
                    reminderHour: 20, reminderMinute: 0, note: null,
@@ -1461,7 +1484,7 @@ describe("Sync: cross-user isolation", () => {
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     const habit = db.prepare("SELECT name FROM habits WHERE id = ?").get(habitAId);
@@ -1568,7 +1591,7 @@ describe("CJK and Unicode support", () => {
     const habitId = crypto.randomUUID();
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{
           id: habitId,
           name: "毎日瞑想する",
@@ -1580,7 +1603,7 @@ describe("CJK and Unicode support", () => {
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     const pull = await api("GET", "/v1/sync/pull", { token });
@@ -1828,7 +1851,7 @@ describe("Sync: archived habit round-trip", () => {
     const habitId = crypto.randomUUID();
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{
           id: habitId,
           name: "Archived habit",
@@ -1840,7 +1863,7 @@ describe("Sync: archived habit round-trip", () => {
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     const pull = await api("GET", "/v1/sync/pull", { token });
@@ -2112,12 +2135,12 @@ describe("Sync: edge cases", () => {
     // Push the same habit in both arrays simultaneously
     const { status, json } = await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: conflictHabitId, name: "Conflict habit", sortOrder: 0 }],
         entries: [],
         deletedHabitIds: [conflictHabitId],
         deletedEntryIds: [],
-      },
+      }),
     });
     assert.equal(status, 200);
     assert.equal(json.ok, true);
@@ -2135,12 +2158,12 @@ describe("Sync: edge cases", () => {
     // Push an entry referencing a habit that was never created
     const { status, json } = await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [],
         entries: [{ id: orphanEntryId, habitId: ghostHabitId, date: "2025-10-01" }],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
     assert.equal(status, 200);
     assert.equal(json.ok, true);
@@ -2556,12 +2579,12 @@ describe("Sync: sortOrder round-trip via push/pull", () => {
     const habitId = crypto.randomUUID();
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Sort-order habit", sortOrder: 7 }],
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     const { json } = await api("GET", "/v1/sync/pull", { token });
@@ -3193,12 +3216,12 @@ describe("Sync pull incremental: entry note included in ?since response", () => 
 
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Note test habit", sortOrder: 0 }],
         entries: [{ id: entryId, habitId, date: "2025-07-15", note: "my entry note" }],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     const { status, json } = await api("GET", "/v1/sync/pull", {
@@ -3305,23 +3328,23 @@ describe("Sync push: entry note update via re-push", () => {
     // First push: entry with note "original"
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Note update habit", sortOrder: 0 }],
         entries: [{ id: entryId, habitId, date: "2025-12-10", note: "original note" }],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     // Second push: same habit+date with updated note (ON CONFLICT DO UPDATE SET note = excluded.note)
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [],
         entries: [{ id: crypto.randomUUID(), habitId, date: "2025-12-10", note: "updated note" }],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     const pull = await api("GET", "/v1/sync/pull", { token });
@@ -3386,12 +3409,12 @@ describe("Sync: full pull returns habit and entry notes", () => {
     const habitId = crypto.randomUUID();
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Noted habit", sortOrder: 0, note: "my habit note" }],
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     const { status, json } = await api("GET", "/v1/sync/pull", { token });
@@ -3406,12 +3429,12 @@ describe("Sync: full pull returns habit and entry notes", () => {
     const entryId = crypto.randomUUID();
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Entry-note habit", sortOrder: 1 }],
         entries: [{ id: entryId, habitId, date: "2025-08-01", note: "entry note text" }],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     const { status, json } = await api("GET", "/v1/sync/pull", { token });
@@ -3470,12 +3493,12 @@ describe("Sync push: entry for non-owned habit is silently skipped", () => {
     habitAId = crypto.randomUUID();
     await api("POST", "/v1/sync/push", {
       token: userAToken,
-      body: {
+      body: asApp({
         habits: [{ id: habitAId, name: "User A habit", sortOrder: 0 }],
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
   });
 
@@ -3493,12 +3516,12 @@ describe("Sync push: entry for non-owned habit is silently skipped", () => {
     const entryId = crypto.randomUUID();
     const { status, json } = await api("POST", "/v1/sync/push", {
       token: userBToken,
-      body: {
+      body: asApp({
         habits: [],
         entries: [{ id: entryId, habitId: habitAId, date: "2025-08-02", note: null }],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
     assert.equal(status, 200);
     assert.equal(json.ok, true);
@@ -3659,12 +3682,12 @@ describe("Sync push: cross-user entry deletion isolation", () => {
     // Create user A's habit and entry via sync push
     await api("POST", "/v1/sync/push", {
       token: userAToken,
-      body: {
+      body: asApp({
         habits: [{ id: habitAId, name: "User A habit", sortOrder: 0 }],
         entries: [{ id: entryAId, habitId: habitAId, date: "2025-06-15" }],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
   });
 
@@ -3747,12 +3770,12 @@ describe("Sync: full pull returns empty deletion arrays even when tombstones exi
     const entryId = crypto.randomUUID();
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Will be deleted", sortOrder: 0 }],
         entries: [{ id: entryId, habitId, date: "2025-07-04" }],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
     await api("POST", "/v1/sync/push", {
       token,
@@ -3797,12 +3820,12 @@ describe("Sync: ?since=empty string falls through to full pull", () => {
     habitId = crypto.randomUUID();
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Full pull fallback habit", sortOrder: 0 }],
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
   });
 
@@ -3842,12 +3865,12 @@ describe("CRUD GET /habits/:id/entries: note field included", () => {
     // Push a habit + entry with a note via sync
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Note entry habit", sortOrder: 0 }],
         entries: [{ id: entryId, habitId, date: "2025-11-01", note: "crud note check" }],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
   });
 
@@ -3891,12 +3914,12 @@ describe("CRUD GET /habits/:id/entries: note field in date range query", () => {
     // Push habit + entry with note via sync
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Range note habit", sortOrder: 0 }],
         entries: [{ id: crypto.randomUUID(), habitId, date: "2025-09-15", note: "range note" }],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
   });
 
@@ -4018,12 +4041,12 @@ describe("Sync push: entry for self-deleted habit is silently dropped", () => {
     // Push a habit, then delete it
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Soon deleted", sortOrder: 0 }],
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
     await api("POST", "/v1/sync/push", {
       token,
@@ -4034,12 +4057,12 @@ describe("Sync push: entry for self-deleted habit is silently dropped", () => {
     const staleEntryId = crypto.randomUUID();
     const { status, json } = await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [],
         entries: [{ id: staleEntryId, habitId, date: "2025-06-01" }],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
     assert.equal(status, 200);
     assert.equal(json.ok, true, "should return ok:true even with stale entry for deleted habit");
@@ -4552,7 +4575,7 @@ describe("Sync push: malformed habit with null name is silently skipped", () => 
     const validId = crypto.randomUUID();
     const { status, json } = await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [
           { id: nullNameId, name: null, sortOrder: 0 },
           { id: validId, name: "Valid habit after null", sortOrder: 1 },
@@ -4560,7 +4583,7 @@ describe("Sync push: malformed habit with null name is silently skipped", () => 
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
     assert.equal(status, 200);
     assert.equal(json.ok, true);
@@ -4575,7 +4598,7 @@ describe("Sync push: malformed habit with null name is silently skipped", () => 
     const validId = crypto.randomUUID();
     const { status, json } = await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [
           { name: "No id habit", sortOrder: 0 },
           { id: validId, name: "After no-id habit", sortOrder: 1 },
@@ -4583,7 +4606,7 @@ describe("Sync push: malformed habit with null name is silently skipped", () => 
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
     assert.equal(status, 200);
     assert.equal(json.ok, true);
@@ -4620,7 +4643,7 @@ describe("Sync push: malformed entry with null date is silently skipped", () => 
 
     const { status, json } = await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Test habit for null date entry", sortOrder: 0 }],
         entries: [
           { id: nullDateEntryId, habitId, date: null },
@@ -4628,7 +4651,7 @@ describe("Sync push: malformed entry with null date is silently skipped", () => 
         ],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
     assert.equal(status, 200);
     assert.equal(json.ok, true);
@@ -4665,12 +4688,12 @@ describe("Sync pull incremental: habit note included in ?since response", () => 
 
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Habit note incremental test", sortOrder: 0, note: "incremental habit note" }],
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     const { status, json } = await api("GET", "/v1/sync/pull", {
@@ -4712,23 +4735,23 @@ describe("Sync push: habit note update via re-push", () => {
 
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Note update habit", sortOrder: 0, note: "original note", updatedAt: now }],
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     const later = new Date(Date.now() + 1000).toISOString();
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Note update habit", sortOrder: 0, note: "updated note", updatedAt: later }],
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     const { status, json } = await api("GET", "/v1/sync/pull", { token });
@@ -4880,7 +4903,7 @@ describe("CRUD DELETE habit-with-entries: no individual entry tombstones in sync
     // Create habit + entries via sync push
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Tombstone entry test", sortOrder: 0 }],
         entries: [
           { id: entry1Id, habitId, date: "2026-01-10" },
@@ -4888,7 +4911,7 @@ describe("CRUD DELETE habit-with-entries: no individual entry tombstones in sync
         ],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     const sinceBeforeDelete = new Date(Date.now() - 500).toISOString();
@@ -4933,7 +4956,7 @@ describe("Stats: completionRate rounds to 3 decimal places", () => {
     // Push habit with createdAt = 6 days ago so effectiveStart = 6 days ago (7-day window)
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Rate rounding test", createdAt: sixDaysAgo, updatedAt: sixDaysAgo }],
         entries: [
           { id: crypto.randomUUID(), habitId, date: yesterday },
@@ -4941,7 +4964,7 @@ describe("Stats: completionRate rounds to 3 decimal places", () => {
         ],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     const { status, json } = await api("GET", `/v1/habits/${habitId}/stats`, { token });
@@ -4976,12 +4999,12 @@ describe("Sync pull ?since: strict > boundary — habit with updated_at === sinc
 
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Boundary habit", updatedAt }],
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     // Pull with since = the row's stored change time — strict > means this habit should NOT
@@ -5022,23 +5045,23 @@ describe("Sync push: createdAt preserved on re-push (ON CONFLICT does not update
     // First push: establish createdAt
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "CreatedAt test", createdAt: originalCreatedAt, updatedAt: originalCreatedAt }],
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     // Second push: same id, different name and newer createdAt
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Updated name", createdAt: newerCreatedAt, updatedAt: new Date().toISOString() }],
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     // Full pull: verify createdAt is still the original
@@ -5077,12 +5100,12 @@ describe("Sync push: omitting updatedAt uses server time (habit visible in subse
     // Push habit without providing updatedAt — server should assign current time
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "No updatedAt test" }],
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     // Incremental pull since 1s before push — habit should appear (server-assigned updated_at)
@@ -5119,18 +5142,18 @@ describe("Sync push: entry with null habitId is silently skipped", () => {
     // First push the habit
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Habit for null-habitId test", sortOrder: 0 }],
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     // Push entries: one with null habitId (should be skipped), one valid
     const { status, json } = await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [],
         entries: [
           { id: badEntryId, habitId: null, date: "2026-03-01" },
@@ -5138,7 +5161,7 @@ describe("Sync push: entry with null habitId is silently skipped", () => {
         ],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     assert.equal(status, 200);
@@ -5178,23 +5201,23 @@ describe("Sync push: entry in both entries[] and deletedEntryIds[] — delete wi
     // Push habit first
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Conflict-resolution test habit", sortOrder: 0 }],
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     // Push entry in BOTH entries[] and deletedEntryIds[] simultaneously (offline conflict)
     const { status, json } = await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [],
         entries: [{ id: entryId, habitId, date: "2026-04-01" }],
         deletedHabitIds: [],
         deletedEntryIds: [entryId],
-      },
+      }),
     });
 
     assert.equal(status, 200);
@@ -5238,7 +5261,7 @@ describe("Sync push deletedHabitIds: cascade-deletes entries, only habit tombsto
     // Push habit with entries
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Habit to delete via push", sortOrder: 0 }],
         entries: [
           { id: entry1Id, habitId, date: "2026-02-01" },
@@ -5246,7 +5269,7 @@ describe("Sync push deletedHabitIds: cascade-deletes entries, only habit tombsto
         ],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     // Verify entries exist before deletion
@@ -5378,12 +5401,12 @@ describe("Sync push + pull: empty-string note normalizes to null", () => {
   it("push note:'' stored as empty string; pull returns note:null via || normalization", async () => {
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Empty note sync", note: "" }],
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     // DB should store ""
@@ -5478,12 +5501,12 @@ describe("Sync push: empty-string emoji falls back to default ⭐", () => {
   it("habit pushed with emoji:'' is stored with default ⭐", async () => {
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Sync emoji fallback", emoji: "", colorHex: "#FF0000" }],
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     const pull = await api("GET", "/v1/sync/pull", { token });
@@ -5516,12 +5539,12 @@ describe("Sync push: empty-string colorHex falls back to default #34C759", () =>
   it("habit pushed with colorHex:'' is stored with default #34C759", async () => {
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Sync colorHex fallback", emoji: "🏃", colorHex: "" }],
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     const pull = await api("GET", "/v1/sync/pull", { token });
@@ -5556,12 +5579,12 @@ describe("Sync: entry note update visible in incremental pull (updated_at)", () 
     // Initial push: habit + entry with "original" note
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Note update sync test", sortOrder: 0 }],
         entries: [{ id: entryId, habitId, date: "2025-11-05", note: "original note" }],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     // Wait briefly to ensure the second push's updated_at is strictly > sinceAfterFirstPush
@@ -5572,12 +5595,12 @@ describe("Sync: entry note update visible in incremental pull (updated_at)", () 
     // Re-push the same habit+date with an updated note (ON CONFLICT triggers updated_at)
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [],
         entries: [{ id: crypto.randomUUID(), habitId, date: "2025-11-05", note: "updated note" }],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     // Incremental pull: only changes since after the first push
@@ -5861,12 +5884,12 @@ describe("Sync push: entry with cross-user habitId is silently skipped", () => {
     habitAId = crypto.randomUUID();
     await api("POST", "/v1/sync/push", {
       token: userAToken,
-      body: {
+      body: asApp({
         habits: [{ id: habitAId, name: "User A habit", sortOrder: 0 }],
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
   });
 
@@ -5884,12 +5907,12 @@ describe("Sync push: entry with cross-user habitId is silently skipped", () => {
     entryBId = crypto.randomUUID();
     const { status, json } = await api("POST", "/v1/sync/push", {
       token: userBToken,
-      body: {
+      body: asApp({
         habits: [],
         entries: [{ id: entryBId, habitId: habitAId, date: "2026-01-15" }],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
     // Push succeeds (200) but entry is silently skipped
     assert.equal(status, 200);
@@ -5920,12 +5943,12 @@ describe("Sync push: habit with sortOrder=0 preserved on re-push", () => {
     const habitId = crypto.randomUUID();
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "First habit", sortOrder: 0 }],
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     const { json } = await api("GET", "/v1/sync/pull", { token });
@@ -5999,7 +6022,7 @@ describe("Sync push: reminderHour=0 (midnight) preserved via full pull", () => {
     const habitId = crypto.randomUUID();
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{
           id: habitId,
           name: "Midnight reminder habit",
@@ -6008,7 +6031,7 @@ describe("Sync push: reminderHour=0 (midnight) preserved via full pull", () => {
           reminderMinute: 30,
         }],
         entries: [], deletedHabitIds: [], deletedEntryIds: [],
-      },
+      }),
     });
 
     const pull = await api("GET", "/v1/sync/pull", { token });
@@ -6042,7 +6065,7 @@ describe("Sync push: omitted reminderHour defaults to 20 in pull", () => {
     const habitId = crypto.randomUUID();
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{
           id: habitId,
           name: "Default hour habit",
@@ -6051,7 +6074,7 @@ describe("Sync push: omitted reminderHour defaults to 20 in pull", () => {
           reminderMinute: 15,
         }],
         entries: [], deletedHabitIds: [], deletedEntryIds: [],
-      },
+      }),
     });
 
     const pull = await api("GET", "/v1/sync/pull", { token });
@@ -6194,12 +6217,12 @@ describe("Sync push: reminderEnabled toggle false → true via re-push", () => {
     // First push: reminderEnabled false
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Reminder toggle habit", reminderEnabled: false, reminderHour: 8, reminderMinute: 0 }],
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     const before = await api("GET", "/v1/sync/pull", { token });
@@ -6210,12 +6233,12 @@ describe("Sync push: reminderEnabled toggle false → true via re-push", () => {
     // Re-push: toggle reminderEnabled to true
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Reminder toggle habit", reminderEnabled: true, reminderHour: 8, reminderMinute: 0 }],
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     const after = await api("GET", "/v1/sync/pull", { token });
@@ -6249,7 +6272,7 @@ describe("Sync push: tombstoned habit is not resurrected by stale push from anot
     // Push habit, then delete it (tombstone recorded)
     await api("POST", "/v1/sync/push", {
       token,
-      body: { habits: [{ id: habitId, name: "Ghost Habit", sortOrder: 0 }], entries: [], deletedHabitIds: [], deletedEntryIds: [] },
+      body: asApp({ habits: [{ id: habitId, name: "Ghost Habit", sortOrder: 0 }], entries: [], deletedHabitIds: [], deletedEntryIds: [] }),
     });
     await api("POST", "/v1/sync/push", {
       token,
@@ -6259,7 +6282,7 @@ describe("Sync push: tombstoned habit is not resurrected by stale push from anot
     // Stale device B re-pushes the habit without knowing it was deleted
     await api("POST", "/v1/sync/push", {
       token,
-      body: { habits: [{ id: habitId, name: "Ghost Habit", sortOrder: 0 }], entries: [], deletedHabitIds: [], deletedEntryIds: [] },
+      body: asApp({ habits: [{ id: habitId, name: "Ghost Habit", sortOrder: 0 }], entries: [], deletedHabitIds: [], deletedEntryIds: [] }),
     });
 
     const pull = await api("GET", "/v1/sync/pull", { token });
@@ -6272,7 +6295,7 @@ describe("Sync push: tombstoned habit is not resurrected by stale push from anot
 
     await api("POST", "/v1/sync/push", {
       token,
-      body: { habits: [{ id: habitId, name: "Ghost Habit 2", sortOrder: 0 }], entries: [], deletedHabitIds: [], deletedEntryIds: [] },
+      body: asApp({ habits: [{ id: habitId, name: "Ghost Habit 2", sortOrder: 0 }], entries: [], deletedHabitIds: [], deletedEntryIds: [] }),
     });
     const beforeDelete = new Date(Date.now() - 1000).toISOString();
     await api("POST", "/v1/sync/push", {
@@ -6283,7 +6306,7 @@ describe("Sync push: tombstoned habit is not resurrected by stale push from anot
     // Stale re-push
     await api("POST", "/v1/sync/push", {
       token,
-      body: { habits: [{ id: habitId, name: "Ghost Habit 2", sortOrder: 0 }], entries: [], deletedHabitIds: [], deletedEntryIds: [] },
+      body: asApp({ habits: [{ id: habitId, name: "Ghost Habit 2", sortOrder: 0 }], entries: [], deletedHabitIds: [], deletedEntryIds: [] }),
     });
 
     const incremental = await api("GET", `/v1/sync/pull?since=${beforeDelete}`, { token });
@@ -6315,11 +6338,11 @@ describe("Sync push: tombstoned entry is not resurrected by stale push from anot
     // Push habit + entry, then tombstone the entry
     await api("POST", "/v1/sync/push", {
       token,
-      body: { habits: [{ id: habitId, name: "Active Habit", sortOrder: 0 }], entries: [], deletedHabitIds: [], deletedEntryIds: [] },
+      body: asApp({ habits: [{ id: habitId, name: "Active Habit", sortOrder: 0 }], entries: [], deletedHabitIds: [], deletedEntryIds: [] }),
     });
     await api("POST", "/v1/sync/push", {
       token,
-      body: { habits: [], entries: [{ id: entryId, habitId, date: "2025-07-15" }], deletedHabitIds: [], deletedEntryIds: [] },
+      body: asApp({ habits: [], entries: [{ id: entryId, habitId, date: "2025-07-15" }], deletedHabitIds: [], deletedEntryIds: [] }),
     });
     await api("POST", "/v1/sync/push", {
       token,
@@ -6329,7 +6352,7 @@ describe("Sync push: tombstoned entry is not resurrected by stale push from anot
     // Stale device re-pushes the entry
     await api("POST", "/v1/sync/push", {
       token,
-      body: { habits: [], entries: [{ id: entryId, habitId, date: "2025-07-15" }], deletedHabitIds: [], deletedEntryIds: [] },
+      body: asApp({ habits: [], entries: [{ id: entryId, habitId, date: "2025-07-15" }], deletedHabitIds: [], deletedEntryIds: [] }),
     });
 
     const pull = await api("GET", "/v1/sync/pull", { token });
@@ -6364,12 +6387,12 @@ describe("Sync pull incremental: tombstone deleted_at === since is not returned 
     // Push habit + entry
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Boundary tombstone habit", sortOrder: 0 }],
         entries: [{ id: entryId, habitId, date: "2025-11-01" }],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     // Delete the habit via sync push — server creates tombstone with current time
@@ -6421,12 +6444,12 @@ describe("Sync pull incremental: tombstones are user-scoped (cross-user isolatio
     // User A pushes a habit + entry
     await api("POST", "/v1/sync/push", {
       token: userAToken,
-      body: {
+      body: asApp({
         habits: [{ id: habitAId, name: "User A habit to delete", sortOrder: 0 }],
         entries: [{ id: entryAId, habitId: habitAId, date: "2025-12-01" }],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
   });
 
@@ -6508,12 +6531,12 @@ describe("Sync push: entry with note:'' normalizes to null in pull response", ()
   it("push entry with note:'' stores empty string in DB; pull normalizes to null", async () => {
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Entry empty-note habit", sortOrder: 0 }],
         entries: [{ id: entryId, habitId, date: "2026-01-10", note: "" }],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     // DB should store empty string as-is (e.note ?? null keeps "")
@@ -6555,23 +6578,23 @@ describe("Sync push: entry for a habit deleted in same push is silently skipped"
     // First push: create the habit
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "Habit to be deleted", sortOrder: 0 }],
         entries: [],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     // Second push: delete the habit AND send an entry for it in the same request
     const { status, json } = await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [],
         entries: [{ id: entryId, habitId, date: "2026-02-15" }],
         deletedHabitIds: [habitId],
         deletedEntryIds: [],
-      },
+      }),
     });
     assert.equal(status, 200);
     assert.equal(json.ok, true);
@@ -6621,12 +6644,12 @@ describe("Sync push: entry note with CJK characters is preserved round-trip", ()
 
     await api("POST", "/v1/sync/push", {
       token,
-      body: {
+      body: asApp({
         habits: [{ id: habitId, name: "CJK entry note habit", sortOrder: 0 }],
         entries: [{ id: entryId, habitId, date: "2026-03-01", note: cjkNote }],
         deletedHabitIds: [],
         deletedEntryIds: [],
-      },
+      }),
     });
 
     const pull = await api("GET", "/v1/sync/pull", { token });
@@ -7188,7 +7211,7 @@ describe("Sync push: habit_id in both deletedHabitIds and habits[] of same push 
     };
     const { status, json } = await api("POST", "/v1/sync/push", {
       token: userToken,
-      body: pushBody,
+      body: asApp(pushBody),
     });
     assert.equal(status, 200, "push succeeds (200)");
     assert.equal(json.ok, true);
@@ -7302,7 +7325,7 @@ describe("Sync push: habit with name='' is silently skipped (server-side !h.name
     // Distinct from POST /habits which returns 400 for missing/empty name.
     const { status, json } = await api("POST", "/v1/sync/push", {
       token: userToken,
-      body: {
+      body: asApp({
         habits: [{
           id: blankNameId,
           name: "",
@@ -7310,7 +7333,7 @@ describe("Sync push: habit with name='' is silently skipped (server-side !h.name
           colorHex: "#888888",
           sortOrder: 0,
         }],
-      },
+      }),
     });
     assert.equal(status, 200, "push silently succeeds (no 4xx) for invalid rows");
     assert.equal(json.ok, true);
@@ -7396,7 +7419,7 @@ describe("Sync push LWW: stale device cannot clobber a newer edit", () => {
   const T3 = "2026-12-01T00:00:00.000Z";
   const h = (name, updatedAt) => ({
     id: habitId, name, emoji: "⭐", colorHex: "#34C759",
-    isArchived: false, sortOrder: 0, createdAt: T1, updatedAt,
+    isArchived: false, sortOrder: 0, kind: "binary", createdAt: T1, updatedAt,
   });
 
   it("newer push applies, then an older push is ignored", async () => {
@@ -7452,7 +7475,7 @@ describe("Sync v2 fields round-trip (count habit, schedule, group, entry value)"
         groupId,
         createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-06-01T00:00:00.000Z" }],
       entries: [{ id: crypto.randomUUID(), habitId, date: "2026-06-05", value: 5,
-        createdAt: "2026-06-05T00:00:00.000Z" }],
+        createdAt: "2026-06-05T00:00:00.000Z", updatedAt: "2026-06-05T12:00:00.000Z" }],
     }});
     assert.equal(push.status, 200);
 
@@ -7520,21 +7543,39 @@ describe("Wire-format contract: snake_case payload from shipped (<=1.2.1) client
     db.prepare("DELETE FROM users WHERE id = ?").run(userId);
   });
 
-  it("stores the check-in instead of silently dropping it (the data-loss bug)", async () => {
+  const snapshot121 = () => ({
+    groups: [{ id: groupId, name: "Health", color_hex: "#FF0000", sort_order: 2,
+      created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z" }],
+    habits: [{ id: habitId, name: "Morning Run", emoji: "\u{1F3C3}", color_hex: "#FF3B30",
+      is_archived: false, sort_order: 3,
+      reminder_enabled: true, reminder_hour: 7, reminder_minute: 30, note: "keep it up",
+      kind: "count", target_value: 5, unit: "km",
+      schedule_kind: "specificDays", times_per_week: 3, active_days_mask: 42,
+      group_id: groupId,
+      created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-06-01T00:00:00.000Z" }],
+    entries: [{ id: entryId, habit_id: habitId, date: "2026-06-05", value: 5,
+      created_at: "2026-06-05T00:00:00.000Z" }],
+    deleted_habit_ids: [], deleted_entry_ids: [], deleted_group_ids: [],
+  });
+
+  it("a snapshot holding a check-in is refused whole: its entries carry no edit stamp (legacyShape)", async () => {
+    const push = await api("POST", "/v1/sync/push", { token, body: snapshot121() });
+    assert.equal(push.status, 426);
+    assert.equal(push.json.code, "client_update_required");
+    assert.match(push.json.error, /Update Stride/, "the sentence, in `error`: 1.2.1 prints it verbatim");
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM habits WHERE user_id = ?").get(userId).n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM habit_groups WHERE user_id = ?").get(userId).n, 0);
+  });
+
+  it("stores the snapshot of a device with no check-in yet, and a stamped snake_case check-in (the data-loss bug)", async () => {
+    const { entries, ...noCheckIns } = snapshot121();
+    assert.equal((await api("POST", "/v1/sync/push", { token, body: noCheckIns })).status, 200);
+    // No shipped app sends a snake_case entry WITH a stamp (1.2.3, the first to stamp entries,
+    // encodes camelCase), but field() reads every key in either casing, and this is the
+    // check-in the !e.habitId guard used to drop.
     const push = await api("POST", "/v1/sync/push", { token, body: {
-      groups: [{ id: groupId, name: "Health", color_hex: "#FF0000", sort_order: 2,
-        created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z" }],
-      habits: [{ id: habitId, name: "Morning Run", emoji: "\u{1F3C3}", color_hex: "#FF3B30",
-        is_archived: false, sort_order: 3,
-        reminder_enabled: true, reminder_hour: 7, reminder_minute: 30, note: "keep it up",
-        kind: "count", target_value: 5, unit: "km",
-        schedule_kind: "specificDays", times_per_week: 3, active_days_mask: 42,
-        group_id: groupId,
-        created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-06-01T00:00:00.000Z" }],
-      entries: [{ id: entryId, habit_id: habitId, date: "2026-06-05", value: 5,
-        created_at: "2026-06-05T00:00:00.000Z" }],
-      deleted_habit_ids: [], deleted_entry_ids: [], deleted_group_ids: [],
-    }});
+      entries: [{ ...entries[0], updated_at: "2026-06-05T00:00:00.000Z" }],
+    } });
     assert.equal(push.status, 200);
 
     const pull = await api("GET", "/v1/sync/pull", { token });
@@ -7574,7 +7615,7 @@ describe("Wire-format contract: snake_case payload from shipped (<=1.2.1) client
     assert.ok(!pull.json.habits.some((x) => x.id === habitId), "habit deleted on server");
   });
 
-  it("still accepts the camelCase form that fixed (>=1.2.2) clients send", async () => {
+  it("still accepts the camelCase form that fixed (>=1.2.2) clients send, once entries are stamped (1.2.3)", async () => {
     const id = crypto.randomUUID().toUpperCase();
     const eid = crypto.randomUUID().toUpperCase();
     const push = await api("POST", "/v1/sync/push", { token, body: {
@@ -7583,7 +7624,7 @@ describe("Wire-format contract: snake_case payload from shipped (<=1.2.1) client
         timesPerWeek: 7, activeDaysMask: 127,
         createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-06-01T00:00:00.000Z" }],
       entries: [{ id: eid, habitId: id, date: "2026-06-06", value: 1,
-        createdAt: "2026-06-06T00:00:00.000Z" }],
+        createdAt: "2026-06-06T00:00:00.000Z", updatedAt: "2026-06-06T00:00:00.000Z" }],
     }});
     assert.equal(push.status, 200);
     const pull = await api("GET", "/v1/sync/pull", { token });
@@ -7630,7 +7671,7 @@ describe("Sync body limit: a large full-snapshot push is accepted", () => {
     for (let i = 0; i < 365; i++) {
       const d = new Date(start.getTime() + i * 86400000).toISOString().slice(0, 10);
       entries.push({ id: crypto.randomUUID().toUpperCase(), habitId, date: d, value: 1,
-        createdAt: `${d}T00:00:00.000Z` });
+        createdAt: `${d}T00:00:00.000Z`, updatedAt: `${d}T00:00:00.000Z` });
     }
     const body = {
       habits: [{ id: habitId, name: "Morning Run", emoji: "\u{1F3C3}", colorHex: "#FF3B30",
@@ -7733,8 +7774,8 @@ describe("Id canonicalisation: stored ids are upper case, like the apps'", () =>
         kind: "binary", targetValue: 1, scheduleKind: "daily", timesPerWeek: 7, activeDaysMask: 127,
         groupId: groupId.toUpperCase(), createdAt: "2026-09-01T00:00:00.000Z", updatedAt: "2026-09-10T00:00:00.000Z" }],
       entries: [
-        { id: entryA.toUpperCase(), habitId: H, date: "2026-09-01", value: 1, createdAt: "2026-09-01T08:00:00.000Z" },
-        { id: entryB.toUpperCase(), habitId: H, date: "2026-09-02", value: 1, createdAt: "2026-09-02T08:00:00.000Z" },
+        { id: entryA.toUpperCase(), habitId: H, date: "2026-09-01", value: 1, createdAt: "2026-09-01T08:00:00.000Z", updatedAt: "2026-09-10T00:00:00.000Z" },
+        { id: entryB.toUpperCase(), habitId: H, date: "2026-09-02", value: 1, createdAt: "2026-09-02T08:00:00.000Z", updatedAt: "2026-09-10T00:00:00.000Z" },
       ],
       groups: [{ id: groupId.toUpperCase(), name: "Morning", sortOrder: 0,
         createdAt: "2026-09-01T00:00:00.000Z", updatedAt: "2026-09-10T00:00:00.000Z" }],
@@ -7836,10 +7877,11 @@ describe("Sync: last write wins by edit time; the change feed runs on server tim
     assert.equal((await pull()).entries.find((x) => x.date === "2026-09-10").value, 9);
   });
 
-  it("apps before 1.2.3 send no entry updatedAt and keep last-push-wins", async () => {
+  it("apps before 1.2.3 send no entry updatedAt: refused, where they used to win by being last", async () => {
     const id = (await pull()).entries.find((x) => x.date === "2026-09-10").id;
-    await push({ entries: [entry(id, "2026-09-10", 3)] });
-    assert.equal((await pull()).entries.find((x) => x.date === "2026-09-10").value, 3);
+    const r = await push({ entries: [entry(id, "2026-09-10", 3)] });
+    assert.equal(r.status, 426, "was 200, and the 3 overwrote the newer 9 (routes/sync.js legacyShape)");
+    assert.equal((await pull()).entries.find((x) => x.date === "2026-09-10").value, 9);
   });
 
   it("an edit made offline and pushed later reaches a device that synced in between", async () => {
@@ -8592,7 +8634,9 @@ describe("M0 row caps (1.3.1+) and payload validation (everyone)", () => {
   after(() => m0.cleanup(u.userId));
 
   const ids = (n) => Array.from({ length: n }, () => m0.uuid());
-  const orphanEntries = (n) => ids(n).map((id) => ({ id, habitId: "NO-SUCH-HABIT", date: "2026-01-01" }));
+  const orphanEntries = (n) => ids(n).map((id) => ({
+    id, habitId: "NO-SUCH-HABIT", date: "2026-01-01", updatedAt: "2026-01-01T12:00:00.000Z",
+  }));
 
   it("a 1.3.1 chunk over a cap is 400 too_many_rows, naming the limits", async () => {
     const cases = [
@@ -9108,7 +9152,7 @@ describe("M0 usage counters from real requests, flushed on SIGTERM (second serve
   const CLIENT = `ios/1.3.1(${BUILD})`;
   const NAMES = [
     "snake_fallback.colorHex", "snake_fallback.sortOrder", "snake_fallback.habitId",
-    "snake_fallback.deletedEntryIds", "habit_without_kind",
+    "snake_fallback.deletedEntryIds", "habit_without_kind", "legacy_push_refused",
     "mount./sync", "mount./auth", "mount./habits", "mount./v1/habits", `client.${CLIENT}`,
   ];
   const totals = () => Object.fromEntries(NAMES.map((n) =>
@@ -9120,12 +9164,21 @@ describe("M0 usage counters from real requests, flushed on SIGTERM (second serve
     before0 = totals();
     proc = await m0.spawnServer(PORT2, {});
     proc.stdout.on("data", (d) => { stdout += d; });
-    const HID = m0.uuid();
-    // A <= 1.2.1-shaped push: snake_case keys, no header, and a habit with no `kind`.
-    const push = await m0.req("POST", "/sync/push", { token: u.token, base: BASE2, body: {
+    const HID = m0.uuid(), HID2 = m0.uuid();
+    // A 1.1-shaped push: snake_case keys, no header, a habit with no `kind` and an entry with no
+    // stamp. Refused whole (routes/sync.js legacyShape), and still counted: the habit, the
+    // refusal, the mount, and the deletion list it parsed before refusing.
+    const refused = await m0.req("POST", "/sync/push", { token: u.token, base: BASE2, body: {
       habits: [{ id: HID, name: "Old app", color_hex: "#FF0000", sort_order: 2 }],
       entries: [{ id: m0.uuid(), habit_id: HID, date: "2026-09-20" }],
       deleted_entry_ids: [],
+    } });
+    assert.equal(refused.status, 426);
+    // A snake_case push the guard accepts: the habit has its `kind` (every app from 1.2.0), and
+    // the entry a snake_case stamp no shipped app writes but the shim reads like every key.
+    const push = await m0.req("POST", "/v1/sync/push", { token: u.token, base: BASE2, body: {
+      habits: [{ id: HID2, name: "Old app", color_hex: "#FF0000", sort_order: 2, kind: "binary" }],
+      entries: [{ id: m0.uuid(), habit_id: HID2, date: "2026-09-20", updated_at: "2026-09-20T12:00:00Z" }],
     } });
     assert.equal(push.status, 200);
     assert.equal(push.json.applied.entries, 1, "snake_case still applies");
@@ -9140,11 +9193,11 @@ describe("M0 usage counters from real requests, flushed on SIGTERM (second serve
   });
   after(async () => { await m0.stopServer(proc); m0.cleanup(u.userId); });
 
-  it("counts snake_case fallbacks per key, habits without kind, and legacy-mount hits", () => {
+  it("counts snake_case fallbacks per key, habits without kind, refused pushes, and legacy-mount hits", () => {
     const delta = Object.fromEntries(NAMES.map((n) => [n, after0[n] - before0[n]]));
     assert.deepEqual(delta, {
       "snake_fallback.colorHex": 1, "snake_fallback.sortOrder": 1, "snake_fallback.habitId": 1,
-      "snake_fallback.deletedEntryIds": 1, "habit_without_kind": 1,
+      "snake_fallback.deletedEntryIds": 1, "habit_without_kind": 1, "legacy_push_refused": 1,
       "mount./sync": 1, "mount./auth": 1, "mount./habits": 1, "mount./v1/habits": 1,
       [`client.${CLIENT}`]: 3,
     });
@@ -9163,7 +9216,8 @@ describe("M0 usage counters from real requests, flushed on SIGTERM (second serve
     assert.equal(hours.reduce((n, b) => n + (b[`client.${CLIENT}`] ?? 0), 0), 3);
     assert.equal(flushed.userClients, 2);
     assert.match(stdout, new RegExp(`GET /v1/sync/pull 200 \\d+ms client=ios/1\\.3\\.1\\(${BUILD}\\) sync user=`));
-    assert.match(stdout, /POST \/sync\/push 200 \d+ms client=- sync user=/);
+    assert.match(stdout, /POST \/sync\/push 426 \d+ms client=- sync user=\d+ legacyRefused=entries:1,habits:1(\s|$)/);
+    assert.match(stdout, /POST \/v1\/sync\/push 200 \d+ms client=- sync user=/);
   });
 
   it("ops/usage-report.js runs against this database and shows the cohort and the counters", async () => {
@@ -9680,7 +9734,7 @@ describe("Sentry end to end: a real magic-link failure reaches a (local, fake) S
       body: JSON.stringify({ email: EMAIL }),
     });
     assert.equal(res.status, 500);
-    assert.deepEqual(await res.json(), { error: "Failed to send login link" });
+    assert.equal((await res.json()).code, "login_email_unavailable"); // the whole body: the Resend describe below
 
     const isEvent = (e) => e.text.split("\n").some((l) => /^\{"type":"event"/.test(l));
     const deadline = Date.now() + 15000;
@@ -9840,9 +9894,14 @@ describe("Magic link: a failed Resend send is a 500, not {ok:true} (email.js)", 
 
   it("Resend answers 422 → request-link answers 500, and the log names the Resend error, not the address", async () => {
     reply = { status: 422, body: { name: "validation_error", message: "The stride.colorarchive.me domain is not verified." } };
-    const r = await m0.req("POST", "/v1/auth/request-link", { base: `http://localhost:${PORT2}`, body: { email: EMAIL } });
+    // As 1.3.0, which sends X-Stride-Client and prints `error` verbatim: the sentence must be in
+    // `error` whatever the header says (errorBody would have put the code there). 1.3.1 prints
+    // `message`; an app that knows `code` shows its own text. (Production, 2026-10-12: every
+    // sign-in failed this way, and the app said only "Failed to send login link".)
+    const r = await m0.req("POST", "/v1/auth/request-link", { base: `http://localhost:${PORT2}`, body: { email: EMAIL }, client: m0.V130 });
     assert.equal(r.status, 500);
-    assert.deepEqual(r.json, { error: "Failed to send login link" });
+    const sentence = "Stride couldn't send the login email right now. This is a problem on our side, not with your email address. Please try again later.";
+    assert.deepEqual(r.json, { error: sentence, code: "login_email_unavailable", message: sentence });
     await m0.sleep(200);
     assert.match(stderr, /Resend validation_error: The stride\.colorarchive\.me domain is not verified\./);
     assert.ok(!stderr.includes(EMAIL), "the recipient's address must not be logged");
@@ -10094,20 +10153,21 @@ describe("M2 LWW re-feed: the winner goes back to the device that lost", () => {
       assert.equal(db.prepare("SELECT group_id FROM habits WHERE id = ?").get(H3).group_id, G);
     });
 
-    it("a 1.1 habit (no kind, schedule or group) is compared only on what that app holds", async () => {
+    it("a 1.1 habit (no kind, schedule or group) is refused whole, so it neither re-feeds nor resets the winner", async () => {
+      // It used to be compared only on what that app holds (habitValues' v2Fields); its push is
+      // now refused before any comparison (routes/sync.js legacyShape), a differing name included.
       const H4 = m0.uuid();
       await m0.push(u.token, { habits: [m0.habit(H4, { kind: "count", targetValue: 12, updatedAt: "2026-09-25T10:00:55.700Z" })] });
       const before = m0.clocks(u.userId);
       await m0.sleep(5);
       const old = { id: H4, name: "Water", emoji: "\u{1F4A7}", colorHex: "#007AFF", isArchived: false, sortOrder: 0,
         reminderEnabled: false, reminderHour: 20, reminderMinute: 0, createdAt: "2026-09-01T00:00:00Z", updatedAt: "2026-09-25T10:00:55Z" };
-      assert.equal((await api("POST", "/v1/sync/push", { token: u.token, body: { habits: [old], entries: [] } })).status, 200);
-      assert.deepEqual(m0.clocks(u.userId), before, "it can never hold kind: re-feeding it would never end");
-
-      // A difference it does hold (the name) still re-feeds.
-      assert.equal((await api("POST", "/v1/sync/push", { token: u.token, body: { habits: [{ ...old, name: "Old name" }], entries: [] } })).status, 200);
-      assert.notEqual(m0.clocks(u.userId)[`h:${H4}`], before[`h:${H4}`]);
-      assert.equal(db.prepare("SELECT kind, target_value FROM habits WHERE id = ?").get(H4).kind, "count", "and the winner is untouched");
+      for (const habit of [old, { ...old, name: "Old name" }, { ...old, name: "Newer", updatedAt: "2026-09-26T00:00:00Z" }]) {
+        assert.equal((await api("POST", "/v1/sync/push", { token: u.token, body: { habits: [habit], entries: [] } })).status, 426);
+      }
+      assert.deepEqual(m0.clocks(u.userId), before);
+      assert.deepEqual({ ...db.prepare("SELECT name, kind, target_value FROM habits WHERE id = ?").get(H4) },
+        { name: "Water", kind: "count", target_value: 12 }, "and the winner is untouched");
     });
   });
 
