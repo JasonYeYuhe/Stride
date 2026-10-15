@@ -2,9 +2,9 @@ import XCTest
 import SwiftData
 import Foundation
 
-/// Golden values of TODAY's `Habit` statistics on the fixtures of RELEASE-1.4.1.md Data safety 3,
-/// committed before W1 switches `Habit`'s aggregates to `HabitStats` (D2). Commit 1 is green on
-/// the 1.4.0 methods; commit 2 may change only the values marked `.named`.
+/// Golden values of the 1.4.0 `Habit` statistics on the fixtures of RELEASE-1.4.1.md Data
+/// safety 3, committed before W1 switched `Habit`'s aggregates to `HabitStats` (D2). Commit 1
+/// was green on the 1.4.0 methods; commit 2 changed only the values marked `.named`.
 ///
 /// **How the goldens were made.** Each fixture ran once through the current methods in
 /// Asia/Tokyo, America/Los_Angeles and UTC, and the answers are pasted below as literals: nothing
@@ -13,9 +13,9 @@ import Foundation
 /// at a time named the fix behind every value that changes, and the `becomes:` literals are that
 /// model's answers with all five fixes on.
 ///
-/// **The switch.** `asserted(_:)` returns `today`. Commit 2 changes it to `commit2 ?? today`,
-/// which flips exactly the `.named` values (each has a `NAMED FIX` comment) and nothing else.
-/// Commit 2 also checks `HabitStats` itself on these fixtures:
+/// **The switch.** `asserted(_:)` returned `today` in commit 1. Commit 2 changed it to
+/// `commit2 ?? today`, which flips exactly the `.named` values (each has a `NAMED FIX` comment)
+/// and nothing else. Commit 2 also checks `HabitStats` itself on these fixtures:
 /// - its per-day answer equals `Habit.isCompletedOn` / `loggedValue` on every day, except on rows
 ///   that carry `stats:`. Those are a deletion saved by another context, which only the store's
 ///   ids can see, and days after today, which `HabitStats` ignores while the direct per-day
@@ -92,9 +92,9 @@ final class HabitStatsParityTests: XCTestCase {
         }
     }
 
-    /// THE switch. Commit 1 asserts today's values. Commit 2 changes this body to
+    /// THE switch. Commit 1 asserted today's values. Commit 2 changed this body to
     /// `golden.commit2 ?? golden.today`, and nothing else in the goldens.
-    private func asserted<Value>(_ golden: Golden<Value>) -> Value { golden.today }
+    private func asserted<Value>(_ golden: Golden<Value>) -> Value { golden.commit2 ?? golden.today }
 
     // MARK: - Golden shapes
 
@@ -855,6 +855,10 @@ final class HabitStatsParityTests: XCTestCase {
             let rate = h.completionRate(days: 30)
             let perWeekday = h.completionsPerWeekday().values.reduce(0, +)
             let tomorrow = h.isCompletedOn(Self.add(1, today))
+            let stats = HabitStats(habit: h, liveRecordIDs: HabitStats.liveRecordIDs(of: [h], in: f.context),
+                                   calendar: .current, today: today)
+            let statsTomorrow = StatsDay(stats.isCompleted(on: Self.add(1, today)), stats.loggedValue(on: Self.add(1, today)))
+            let ranges = stats.bestStreakRanges
             guard Self.processToday() == today else { continue }   // midnight passed: run it again
             // NAMED FIX (D2: records after today ignored): becomes 3 in commit 2
             XCTAssertEqual(best, asserted(Golden<Int>.named(.afterToday, today: 4, becomes: 3)), "bestStreak()")
@@ -865,7 +869,9 @@ final class HabitStatsParityTests: XCTestCase {
                            "completionsPerWeekday(), summed over the weekdays")
             // HabitStats' own answer for tomorrow in commit 2: StatsDay(false, 0)
             XCTAssertEqual(tomorrow, asserted(Golden<Bool>.same(true)), "isCompletedOn(tomorrow), a direct lookup")
-            print("PARITY tomorrow: 5 golden values checked (zone \(TimeZone.current.identifier))")
+            XCTAssertEqual(statsTomorrow, StatsDay(false, 0), "HabitStats' answer for tomorrow: ignored")
+            XCTAssertEqual(ranges.first?.length ?? 0, best, "bestStreakRanges.first?.length == bestStreak()")
+            print("PARITY tomorrow: 7 golden values checked (zone \(TimeZone.current.identifier))")
             return
         }
         XCTFail("the day changed twice during the test")
@@ -888,6 +894,9 @@ final class HabitStatsParityTests: XCTestCase {
         let f = try make(0)
         let h = f.habit
         var checked = 0
+        // `HabitStats` itself, from the store's live ids, as of the fixture's today.
+        let stats = HabitStats(habit: h, liveRecordIDs: HabitStats.liveRecordIDs(of: [h], in: f.context),
+                               calendar: .current, today: f.today)
 
         XCTAssertEqual(e.days.map(\.day), f.rangeDays, "\(f.name): one row per fixture day", file: file, line: line)
         for row in e.days {
@@ -900,6 +909,22 @@ final class HabitStatsParityTests: XCTestCase {
             XCTAssertEqual(h.weeklyCompletions(containing: d), want.week, "\(at) weeklyCompletions(containing:)",
                            file: file, line: line)
             checked += 6
+            // HabitStats' per-day answer equals Habit's direct lookups, except where a row says
+            // what only HabitStats gets right (`stats:`).
+            let statsWant = row.stats ?? StatsDay(want.done, want.value)
+            XCTAssertEqual(stats.isCompleted(on: d), statsWant.done, "\(at) HabitStats.isCompleted(on:)", file: file, line: line)
+            XCTAssertEqual(stats.loggedValue(on: d), statsWant.value, accuracy: 1e-9, "\(at) HabitStats.loggedValue(on:)",
+                           file: file, line: line)
+            XCTAssertEqual(stats.currentStreak(asOf: d), want.streak, "\(at) HabitStats.currentStreak(asOf:)",
+                           file: file, line: line)
+            XCTAssertEqual(stats.weeklyCompletions(containing: d), want.week, "\(at) HabitStats.weeklyCompletions(containing:)",
+                           file: file, line: line)
+            checked += 4
+            if row.stats == nil {
+                XCTAssertEqual(stats.progress(on: d), want.progress, accuracy: 1e-9, "\(at) HabitStats.progress(on:)",
+                               file: file, line: line)
+                checked += 1
+            }
         }
 
         XCTAssertEqual(e.weeks.map(\.monday), f.mondays, "\(f.name): one row per fixture week", file: file, line: line)
@@ -910,7 +935,9 @@ final class HabitStatsParityTests: XCTestCase {
         }
 
         XCTAssertEqual(h.bestStreak(), asserted(e.best), "\(f.name) bestStreak()", file: file, line: line)
-        checked += 1
+        XCTAssertEqual(stats.bestStreakRanges.first?.length ?? 0, h.bestStreak(),
+                       "\(f.name) bestStreakRanges.first?.length == bestStreak()", file: file, line: line)
+        checked += 2
 
         XCTAssertEqual(e.rates.map { [$0.from, $0.to] }, f.rateRanges.map { [$0.0, $0.1] },
                        "\(f.name): one row per fixture range", file: file, line: line)
@@ -940,7 +967,10 @@ final class HabitStatsParityTests: XCTestCase {
             XCTAssertEqual(h.isCompletedOn(instant), want.done, "\(at) isCompletedOn", file: file, line: line)
             XCTAssertEqual(h.loggedValue(on: instant), want.value, accuracy: 1e-9, "\(at) loggedValue", file: file, line: line)
             XCTAssertEqual(h.currentStreak(from: instant), want.streak, "\(at) currentStreak(from:)", file: file, line: line)
-            checked += 3
+            XCTAssertEqual(stats.isCompleted(on: instant), want.done, "\(at) HabitStats.isCompleted(on:)", file: file, line: line)
+            XCTAssertEqual(stats.currentStreak(asOf: instant), want.streak, "\(at) HabitStats.currentStreak(asOf:)",
+                           file: file, line: line)
+            checked += 5
         }
 
         checked += try checkThirtyDayRate(make, f, e.thirtyDay, file: file, line: line)

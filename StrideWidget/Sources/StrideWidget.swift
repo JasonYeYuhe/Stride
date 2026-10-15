@@ -199,7 +199,7 @@ struct HabitTimelineProvider: TimelineProvider {
             )
             let habits = try context.fetch(descriptor)
             return .plan(WidgetTimelinePlan(now: now, calendar: .current,
-                                            rows: habits.map(WidgetTimelinePlan.RowInput.init)))
+                                            rows: WidgetTimelinePlan.rowInputs(for: habits, in: context, now: now, calendar: .current)))
         } catch {
             return .failed
         }

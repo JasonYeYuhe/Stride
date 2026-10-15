@@ -123,12 +123,37 @@ final class Habit {
         }
     }
 
-    /// The record for a given day, if any.
-    func record(on date: Date) -> HabitRecord? {
-        records.first { HabitCalendar.record($0.date, isOnSameDayAs: date) }
+    // MARK: - Per-day lookups (direct: they never build a HabitStats)
+
+    /// Whether `record` counts for this habit's per-day lookups: not deleted, and not a ghost —
+    /// the record a deletion saved in this context leaves behind in `records`, with no context
+    /// (HabitCheckIn.liveRecord; the same filter as SyncCopies.live). A habit that is not in a
+    /// context has no store to have deleted anything from, so all its records count.
+    ///
+    /// A deletion saved by ANOTHER context or process still looks live here; only the store can
+    /// tell (`HabitStats.liveRecords(of:)`), so the aggregates ask it and these lookups do not.
+    private func countsForLookups(_ record: HabitRecord, habitHasContext: Bool) -> Bool {
+        !record.isDeleted && (record.modelContext != nil || !habitHasContext)
     }
 
-    /// Amount logged on a day (0 if none). For binary habits a check-in is 1.
+    /// The record for a given day, if any: of several on one day, the one D2 reads — the
+    /// largest value, then the newest stamp (`HabitRecord.outranks`).
+    func record(on date: Date) -> HabitRecord? {
+        // `HabitCalendar.dayKey(for: date)` and `startOfKey(record.date)`, as whole days (exact
+        // for day-keys, and no Calendar call per record).
+        let day = HabitStats.dayNumber(of: date, in: .current)
+        let hasContext = modelContext != nil
+        var best: HabitRecord?
+        for record in records
+        where HabitStats.dayNumber(ofKey: record.date) == day && countsForLookups(record, habitHasContext: hasContext) {
+            if let current = best, !record.outranks(current) { continue }
+            best = record
+        }
+        return best
+    }
+
+    /// Amount logged on a day (0 if none): the day's largest value. For binary habits a check-in
+    /// is 1.
     func loggedValue(on date: Date) -> Double {
         record(on: date)?.value ?? 0
     }
@@ -147,21 +172,15 @@ final class Habit {
     func isCompletedOn(_ date: Date) -> Bool {
         switch habitKind {
         case .binary:
-            return record(on: date) != nil
+            // Any live record checks a yes/no day, so the first one found answers: no need to
+            // look on for the one `record(on:)` would pick.
+            let day = HabitStats.dayNumber(of: date, in: .current)
+            let hasContext = modelContext != nil
+            return records.contains {
+                HabitStats.dayNumber(ofKey: $0.date) == day && countsForLookups($0, habitHasContext: hasContext)
+            }
         case .count:
             return loggedValue(on: date) >= targetValue && targetValue > 0
-        }
-    }
-
-    /// Day-keys that count as "completed" for streak/rate purposes — for count
-    /// habits only days that met the target qualify.
-    private func completedDayKeys() -> Set<Date> {
-        switch habitKind {
-        case .binary:
-            return Set(records.map { HabitCalendar.startOfKey($0.date) })
-        case .count:
-            return Set(records.filter { $0.value >= targetValue && targetValue > 0 }
-                .map { HabitCalendar.startOfKey($0.date) })
         }
     }
 
@@ -180,85 +199,37 @@ final class Habit {
     /// Unit label for the current streak ("day" for daily/specificDays, "week" for timesPerWeek).
     var streakUnit: String { schedule == .timesPerWeek ? "week" : "day" }
 
+    // MARK: - Aggregates (each call builds one HabitStats, D2)
+
+    /// A fresh `HabitStats` for this habit, from the live record ids its own context's store
+    /// holds. `HabitStats` says what it computes and which 1.4.0 answers it fixes.
+    ///
+    /// **Cost, per call:** one store count over this habit's records (`HabitStats.liveRecords`;
+    /// the exact set only after another context's unmerged deletion), one pass over `records`,
+    /// then the aggregate asked for — measured 2026-10-15 (-Onone, a warm 730-record habit) at
+    /// about 4 ms a call, against 1.4.0's 1.3 ms for `completionRate(from:to:)` and 27 ms for
+    /// `currentStreak` (its Calendar walk). Views that read aggregates per render, or one per
+    /// row, read the app's `StatsCache` instead (D3); code asking several questions at once
+    /// builds one with this and asks it. A habit that is in no context counts every record
+    /// (there is no store to ask).
+    func makeStats(today: Date = Date(), calendar: Calendar = .current) -> HabitStats {
+        HabitStats(habit: self, live: HabitStats.liveRecords(of: self), calendar: calendar, today: today)
+    }
+
+    /// The streak as of `referenceDate`, with the grace for an unfinished day (or week). Records
+    /// dated after the real today are ignored.
     func currentStreak(from referenceDate: Date = Date()) -> Int {
-        if schedule == .timesPerWeek { return currentWeeklyStreak(from: referenceDate) }
-
-        let calendar = HabitCalendar.utc
-        let completed = completedDayKeys()
-        guard !completed.isEmpty, let earliest = completed.min() else { return 0 }
-
-        let today = HabitCalendar.dayKey(for: referenceDate)
-        var day = today
-        // Grace: if today isn't done yet, evaluate the streak ending yesterday.
-        if !completed.contains(day) {
-            guard let y = calendar.date(byAdding: .day, value: -1, to: day) else { return 0 }
-            day = y
-        }
-
-        var streak = 0
-        while day >= earliest {
-            if isScheduled(on: day) {
-                if completed.contains(day) {
-                    streak += 1
-                } else {
-                    break // a scheduled day that's incomplete ends the streak
-                }
-            }
-            // unscheduled (rest) days are skipped — they neither count nor break
-            guard let prev = calendar.date(byAdding: .day, value: -1, to: day) else { break }
-            day = prev
-        }
-        return streak
+        makeStats().currentStreak(asOf: referenceDate)
     }
 
-    // MARK: - Weekly (timesPerWeek) helpers
-
-    /// Monday-anchored start (as a day-key) of the week containing `date`.
-    private func weekStart(for date: Date) -> Date {
-        let cal = HabitCalendar.utc
-        let key = HabitCalendar.dayKey(for: date)
-        let weekday = cal.component(.weekday, from: key) // 1=Sun…7=Sat
-        let daysFromMonday = (weekday + 5) % 7           // Mon→0, Sun→6
-        return cal.date(byAdding: .day, value: -daysFromMonday, to: key) ?? key
-    }
-
-    /// Count of completed days in the week starting at `start`.
+    /// Count of completed days in the 7 days from `start` (a Monday).
     func weeklyCompletions(weekStarting start: Date) -> Int {
-        let cal = HabitCalendar.utc
-        guard let end = cal.date(byAdding: .day, value: 6, to: start) else { return 0 }
-        return completedDayKeys().filter { $0 >= start && $0 <= end }.count
+        makeStats().weeklyCompletions(weekStarting: start)
     }
 
     /// Completions in the week containing `date` (for "3/5 this week" display).
     func weeklyCompletions(containing date: Date = Date()) -> Int {
-        weeklyCompletions(weekStarting: weekStart(for: date))
-    }
-
-    private func currentWeeklyStreak(from referenceDate: Date) -> Int {
-        let cal = HabitCalendar.utc
-        let completed = completedDayKeys()
-        guard !completed.isEmpty, let earliest = completed.min() else { return 0 }
-        let target = max(1, timesPerWeek)
-        let earliestWeek = weekStart(for: earliest)
-
-        var week = weekStart(for: referenceDate)
-        // Grace: the current (in-progress) week not yet meeting target doesn't break the streak.
-        if weeklyCompletions(weekStarting: week) < target {
-            guard let prev = cal.date(byAdding: .day, value: -7, to: week) else { return 0 }
-            week = prev
-        }
-
-        var streak = 0
-        while week >= earliestWeek {
-            if weeklyCompletions(weekStarting: week) >= target {
-                streak += 1
-            } else {
-                break
-            }
-            guard let prev = cal.date(byAdding: .day, value: -7, to: week) else { break }
-            week = prev
-        }
-        return streak
+        makeStats().weeklyCompletions(containing: date)
     }
 
     /// Longest run ever, by the same rules as `currentStreak`: in weeks for a times-per-week
@@ -270,135 +241,38 @@ final class Habit {
     /// 1" next to "Current Streak 18 days", and a 3-times-a-week habit had its best counted in days
     /// while its current streak was in weeks.
     func bestStreak() -> Int {
-        if schedule == .timesPerWeek { return bestWeeklyStreak() }
-
-        let calendar = HabitCalendar.utc
-        let completed = completedDayKeys()
-        guard let first = completed.min(), let last = completed.max() else { return 0 }
-
-        var best = 0
-        var run = 0
-        var day = first
-        while day <= last {
-            if isScheduled(on: day) {
-                if completed.contains(day) {
-                    run += 1
-                    best = max(best, run)
-                } else {
-                    run = 0
-                }
-            }
-            guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
-            day = next
-        }
-        return best
+        makeStats().bestStreak
     }
 
-    private func bestWeeklyStreak() -> Int {
-        let cal = HabitCalendar.utc
-        let completed = completedDayKeys()
-        guard let first = completed.min(), let last = completed.max() else { return 0 }
-        let target = max(1, timesPerWeek)
-
-        var best = 0
-        var run = 0
-        var week = weekStart(for: first)
-        let lastWeek = weekStart(for: last)
-        while week <= lastWeek {
-            if weeklyCompletions(weekStarting: week) >= target {
-                run += 1
-                best = max(best, run)
-            } else {
-                run = 0
-            }
-            guard let next = cal.date(byAdding: .day, value: 7, to: week) else { break }
-            week = next
-        }
-        return best
-    }
-
+    /// The rate over the last `days` days ending today.
     func completionRate(days: Int = 30) -> Double {
-        let calendar = HabitCalendar.utc
-        let today = HabitCalendar.dayKey(for: Date())
-        guard let startDate = calendar.date(byAdding: .day, value: -(days - 1), to: today) else { return 0 }
-        return completionRate(from: startDate, to: today)
+        makeStats().completionRate(days: days)
     }
 
-    /// Completion rate over an inclusive date range, clamped to the habit's creation date and to
-    /// `now` — a day that hasn't happened yet is never counted as missed.
+    /// Completion rate over an inclusive date range, clamped to the habit's start —
+    /// min(creation day, earliest live record) (D8) — and to `now`: a day that hasn't happened
+    /// yet is never counted as missed, and the rate never passes 100 %.
     ///
     /// - Daily and specific days: completed scheduled days ÷ scheduled days, so rest days don't
     ///   drag it down.
-    /// - Times per week: how much of each week's goal was met ÷ the goal. See `weeklyGoalRate`.
+    /// - Times per week: how much of each week's goal was met ÷ the goal.
     ///
     /// The `now` clamp fixes the Pro 8-week trend, which passes each week's Sunday as the end —
     /// including the current week's, which is in the future — so the days still to come were
     /// scored as misses: a daily habit done every day showed its last bar at 14% on a Monday.
-    func completionRate(from start: Date, to end: Date, now: Date = Date()) -> Double {
-        let calendar = HabitCalendar.utc
-        let endKey = min(HabitCalendar.dayKey(for: end), HabitCalendar.dayKey(for: now))
-        let startKey = HabitCalendar.dayKey(for: start)
-        let creationDate = HabitCalendar.dayKey(for: createdAt)
-        let effectiveStart = max(startKey, creationDate)
-        guard effectiveStart <= endKey else { return 0 }
-
-        if schedule == .timesPerWeek {
-            return weeklyGoalRate(from: effectiveStart, to: endKey)
-        }
-
-        var expectedDays = 0
-        var day = effectiveStart
-        while day <= endKey {
-            if isScheduled(on: day) { expectedDays += 1 }
-            guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
-            day = next
-        }
-        guard expectedDays > 0 else { return 0 }
-
-        let completedDays = completedDayKeys().filter { $0 >= effectiveStart && $0 <= endKey && isScheduled(on: $0) }.count
-        return Double(completedDays) / Double(expectedDays)
-    }
-
-    /// The rate for a times-per-week goal: for each Monday-anchored week the range touches, the
-    /// share of the goal that falls inside the range is expected, and the week's completions (up to
-    /// the end of the range) are credited against it, capped at that share.
     ///
-    /// This habit used to be scored like a daily one — every day "scheduled" — so a goal of N days
-    /// a week could never exceed N/7: "Run, 3 times a week", done every single week, read 43%.
-    /// Completions are counted across the whole week rather than only the days inside the range
-    /// because the goal belongs to the week: three runs on Mon/Wed/Fri meet it even when the range
-    /// starts on that week's Saturday.
-    private func weeklyGoalRate(from startKey: Date, to endKey: Date) -> Double {
-        let cal = HabitCalendar.utc
-        let goal = Double(max(1, timesPerWeek))
-        let completed = completedDayKeys()
-
-        var earned = 0.0
-        var expected = 0.0
-        var week = weekStart(for: startKey)
-        while week <= endKey {
-            guard let weekEnd = cal.date(byAdding: .day, value: 6, to: week) else { break }
-            let first = max(week, startKey)
-            let last = min(weekEnd, endKey)
-            let daysInRange = (cal.dateComponents([.day], from: first, to: last).day ?? 0) + 1
-            let share = goal * Double(daysInRange) / 7
-            let done = Double(completed.filter { $0 >= week && $0 <= last }.count)
-            earned += min(done, share)
-            expected += share
-            guard let next = cal.date(byAdding: .day, value: 7, to: week) else { break }
-            week = next
-        }
-        return expected > 0 ? earned / expected : 0
+    /// The times-per-week habit used to be scored like a daily one — every day "scheduled" — so
+    /// a goal of N days a week could never exceed N/7: "Run, 3 times a week", done every single
+    /// week, read 43%. Completions are counted across the whole week rather than only the days
+    /// inside the range because the goal belongs to the week: three runs on Mon/Wed/Fri meet it
+    /// even when the range starts on that week's Saturday.
+    func completionRate(from start: Date, to end: Date, now: Date = Date()) -> Double {
+        makeStats(today: now).completionRate(from: start, to: end)
     }
 
+    /// Completed days per weekday (1 = Sunday … 7 = Saturday).
     func completionsPerWeekday() -> [Int: Int] {
-        let calendar = HabitCalendar.utc
-        var counts: [Int: Int] = [:]
-        for record in records {
-            let weekday = calendar.component(.weekday, from: HabitCalendar.startOfKey(record.date))
-            counts[weekday, default: 0] += 1
-        }
-        return counts
+        makeStats().completionsPerWeekday
     }
 }
 
@@ -439,6 +313,15 @@ final class HabitRecord {
     /// Millisecond-floored; see `Habit.touch()`.
     func touch() {
         updatedAt = SyncTimestamp.nextStamp(after: stamp)
+    }
+
+    /// Of two live records on one day, whether this is the one D2 reads (and 2026-10-15
+    /// decision 7 keeps when it merges the day): the larger value, then the newer stamp, then —
+    /// only so that every device picks the same one — the larger id.
+    func outranks(_ other: HabitRecord) -> Bool {
+        if value != other.value { return value > other.value }
+        if stamp != other.stamp { return stamp > other.stamp }
+        return id.uuidString > other.id.uuidString
     }
 }
 
