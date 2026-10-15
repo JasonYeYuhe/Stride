@@ -294,6 +294,61 @@ sender and DKIM always aligns:
 root's `p=none` and missing SPF belong to whatever else uses `colorarchive.me`; leave them
 unless you know nothing else sends as it.
 
+#### The Resend side: DNS passing proves nothing about sending
+
+On 2026-10-12 both sign-in attempts in the retained logs answered 500 with
+`Resend validation_error: The stride.colorarchive.me domain is not verified`, while every
+record in the table above was still present and `check_email_auth.sh` passed. What the
+investigation on 2026-10-13 found:
+
+- Stride's `RESEND_API_KEY` is the **same key as ColorArchive's** (compared by hash with
+  `/root/ColorArchive/server/.env`), unchanged since at least June. That Resend account has
+  exactly one domain, `colorarchive.org` (verified, region ap-northeast-1, added 2026-04-10).
+  `stride.colorarchive.me` is not in it at all, so the DKIM key published above belongs to no
+  domain that this key can send from.
+- Resend's retained log (2026-09-15 to 10-13, 332 sends) has every send from
+  `colorarchive.org` and none from Stride. In `stride.db`, none of the four non-demo accounts
+  (created 2026-04-20 to 10-12) has ever synced a habit or appears in `user_clients`.
+- Until `441b809` (the 1.3.1 server), a refused send still answered `{ok:true}`: the app said
+  "Check your email" and nothing came, with no log line. Since then it is a 500 and a
+  `request-link error:` line, which still reaches nobody until `SENTRY_DSN` is set.
+
+So check Resend itself after any change to `RESEND_API_KEY`, `FROM_EMAIL`, the Resend
+account or this DNS. In a root shell on the host (`sudo -i`: `azureuser` cannot even `cd`
+into `/root`). Neither command prints the key, and each **exits 1 on failure**, with the
+reason on stderr:
+
+```bash
+cd /root/stride-server
+# 1. Is FROM_EMAIL's domain in the key's account, and verified? (Needs a full-access key; a
+#    sending-only key answers restricted_api_key, so use 2. alone.)
+node -e '
+  require("dotenv").config();
+  const from = (process.env.FROM_EMAIL || "").replace(/^.*@/, "").replace(/>.*$/, "").trim();
+  new (require("resend").Resend)(process.env.RESEND_API_KEY).domains.list().then(({ data, error }) => {
+    if (error) { console.error("cannot list domains:", error.name, error.message); process.exitCode = 1; return; }
+    const d = data.data.find((x) => x.name === from);
+    const line = `FROM domain ${from} -> ${d ? d.status : "NOT IN THIS RESEND ACCOUNT"}`;
+    if (d && d.status === "verified") console.log(line);
+    else { console.error(line); process.exitCode = 1; }
+    console.log("account:", data.data.map((x) => `${x.name}=${x.status}`).join(", "));
+  });'
+#   FROM domain <domain> -> verified
+#   (2026-10-13: "FROM domain stride.colorarchive.me -> NOT IN THIS RESEND ACCOUNT",
+#    "account: colorarchive.org=verified")
+# 2. Send one magic-link email through email.js itself to Resend's test sink, which accepts
+#    it without delivering it anywhere (domain verification still applies).
+node -e '
+  require("dotenv").config();
+  require("./email").sendMagicLinkEmail("delivered@resend.dev",
+    { loginUrl: "https://stride-api.colorarchive.me/", expiresInMinutes: 15 })
+    .then(() => console.log("sent"), (e) => { console.error("NOT sent:", e.message); process.exitCode = 1; });'
+#   sent
+```
+
+`node -e` reads `.env` itself. The running process read it at its last restart, so after
+editing `.env` run `sudo pm2 restart stride-server --update-env` before trusting either.
+
 ## Ports
 
 - ColorArchive: 3001
@@ -310,7 +365,11 @@ unless you know nothing else sends as it.
 - `FRONTEND_ORIGIN` — the origin this process answers on: CORS allowlist and the host in
   magic-link emails (default `https://stride-api.colorarchive.me`, see `origins.js`; the old
   default had no DNS record).
-- `RESEND_API_KEY` — magic-link email delivery.
+- `RESEND_API_KEY` — magic-link email delivery. Shared with ColorArchive (see
+  [The Resend side](#the-resend-side-dns-passing-proves-nothing-about-sending)).
+- `FROM_EMAIL` — the magic link's sender. Its domain must be **verified in the Resend account
+  that `RESEND_API_KEY` belongs to**, or every sign-in fails. The default in `email.js`
+  (`hello@strideapp.me`) is not a domain in that account either; production always sets this.
 - `DEMO_TOKEN` — App Review demo account login token, consumed by `seed-demo.js`.
   Mirrored into the ASC App Review sign-in fields; rotate in both places at once.
 - `SENTRY_DSN` — optional for the server, which reports errors to Sentry when it is set;
@@ -391,21 +450,27 @@ adds nothing to Sentry events.
    curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3002/health   # 200
    ```
 
-4. Send a test event through the same init options and scrubbers the server uses:
+4. Send a test event through the same init options and scrubbers the server uses, in a root
+   shell (`sudo -i`; `azureuser` cannot `cd` into `/root`):
 
    ```bash
-   cd /root/stride-server && sudo node -e '
+   cd /root/stride-server && node -e '
      require("dotenv").config();
      const Sentry = require("@sentry/node");
      Sentry.init(require("./lib/sentryScrub").sentryInitOptions(process.env));
      Sentry.captureMessage("stride-server: test event", { level: "info", tags: { area: "deploy-check" } });
-     Sentry.flush(10000).then((ok) => console.log(ok ? "sent" : "NOT sent (flush timed out)"));'
+     Sentry.flush(10000).then((ok) => {
+       if (ok) console.log("sent");
+       // exit, not exitCode: the request still waiting on a stuck ingest keeps node running.
+       else { console.error("NOT sent (flush timed out)"); process.exit(1); }
+     });'
    ```
 
-   It prints `sent`, and within a minute the issue *stride-server: test event* appears in the
-   project with `environment: production` — resolve it. The next 04:10 restore drill also
-   starts sending its cron check-in (monitor `stride-restore-drill`, see
-   [Restore drill](#restore-drill)); check it shows up the next morning.
+   It prints `sent` (a failure goes to stderr and exits 1), and within a minute the issue
+   *stride-server: test event* appears in the project with `environment: production` —
+   resolve it. The next 04:10 restore drill also starts sending its cron check-in (monitor
+   `stride-restore-drill`, see [Restore drill](#restore-drill)); check it shows up the next
+   morning.
 
 Until the DSN is set nothing is sent anywhere: `Sentry.init` and the magic-link report are
 both behind `if (process.env.SENTRY_DSN)`, and a failed request-link is only a

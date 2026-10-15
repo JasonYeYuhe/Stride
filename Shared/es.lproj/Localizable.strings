@@ -374,6 +374,7 @@
 "Request failed" = "La solicitud falló";
 "Please log in again" = "Vuelve a iniciar sesión";
 "Invalid server response" = "Respuesta del servidor no válida";
+"Stride couldn't send the login email right now. This is a problem on our side, not with your email address. Your habits are safe on this device. Please try again later." = "Stride no puede enviar el correo de acceso en este momento. El problema es nuestro, no de tu dirección de correo. Tus hábitos están a salvo en este dispositivo. Inténtalo de nuevo más tarde.";
 
 /* Siri & Shortcuts: AppShortcut short titles (the tiles in the Shortcuts app). They had no entry
    in any catalog until the source scan learned `shortTitle:`. */
