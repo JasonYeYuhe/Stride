@@ -23,6 +23,18 @@ import StoreKitTest
 /// forever. So `setUp` checks that the session took effect — the product's subscription group is
 /// the configuration's own `stride_pro`, which the App Store's never is — and that it starts with
 /// no entitlement, and every StoreKit call that can raise a dialog runs under a time limit.
+///
+/// **So the gate's own run is on an older runtime** (RELEASE-1.4.1.md gate 4), and a skip there
+/// fails it (scripts/ci/run_hosted_tests.sh, "Skips"):
+///
+///     STRIDE_HOSTED_ALL=1 STRIDE_HOSTED_NO_SKIPS=StoreKitStatusTests,StoreKitConfigurationLoadTests \
+///       scripts/ci/run_hosted_tests.sh <an iOS 18.5 simulator> \
+///       -only-testing:StrideAppTests/StoreKitStatusTests -only-testing:StrideAppTests/StoreKitConfigurationLoadTests
+///
+/// On iOS 18.5 all of them run and pass (2026-10-15, Xcode 27.0). Until then they had never run
+/// anywhere: Configuration.storekit's hand-written `"version" : 2`, not the `{major, minor}`
+/// object Xcode writes, made the session load nothing there — no error, no products — so they
+/// skipped on every runtime (W5-SK-1; StoreServiceTests now pins the format on every runtime).
 @MainActor
 final class StoreKitStatusTests: XCTestCase {
 
@@ -34,6 +46,10 @@ final class StoreKitStatusTests: XCTestCase {
     /// Configuration.storekit's subscription group id. Only a session that loaded the file
     /// reports it; the App Store's group id is a number.
     private static let configurationGroupID = "stride_pro"
+    /// How long a StoreKit change may take to show. It only bounds a failure: on a Mac loaded by
+    /// parallel builds (load average 79, 2026-10-15) a session change took most of 15 s to apply,
+    /// and one `Transaction.updates` delivery took longer.
+    private static let patience: Duration = .seconds(30)
 
     override func setUp() async throws {
         try await super.setUp()
@@ -49,17 +65,26 @@ final class StoreKitStatusTests: XCTestCase {
     /// Skips (the class doc says why) unless the session's configuration is what StoreKit
     /// answers from, and it starts with nothing bought.
     private func requireAWorkingSession() async throws {
-        let products = try? await completing("loading the products", within: 15) {
-            try await Product.products(for: [StrideProduct.monthlyPro.rawValue])
+        let products: [Product]
+        do {
+            products = try await completing("loading the products", within: 15) {
+                try await Product.products(for: [StrideProduct.monthlyPro.rawValue])
+            }
+        } catch let skip as XCTSkip {
+            throw skip
+        } catch {
+            throw XCTSkip("SKTestSession did not take effect on this simulator: Product.products(for:) threw \(error).")
         }
-        let group = products?.first?.subscription?.subscriptionGroupID
+        let group = products.first?.subscription?.subscriptionGroupID
         guard group == Self.configurationGroupID else {
+            let os = ProcessInfo.processInfo.operatingSystemVersionString
             throw XCTSkip("""
-                SKTestSession did not take effect on this simulator: \(monthlyID) came back with \
-                subscription group \(group ?? "none"), not Configuration.storekit's \
-                "\(Self.configurationGroupID)", so StoreKit is answering from the sandbox App Store \
-                (iOS 26.3+ simulator bug, FB22774836: every session write fails with \
-                SKInternalErrorDomain Code=3). Run these on an iOS 26.2 or earlier runtime.
+                SKTestSession did not take effect on this simulator (\(os)): \(monthlyID) came back \
+                as \(products.count) product(s) with subscription group \(group ?? "none"), not \
+                Configuration.storekit's "\(Self.configurationGroupID)", so StoreKit is not answering \
+                from the session (iOS 26.3+ simulators: FB22774836, every session write fails with \
+                SKInternalErrorDomain Code=3, and the sandbox App Store answers instead). Gate 4 runs \
+                these on an iOS 18.5 simulator with STRIDE_HOSTED_NO_SKIPS (the class doc).
                 """)
         }
         await store.refreshPurchasedProducts()
@@ -106,7 +131,7 @@ final class StoreKitStatusTests: XCTestCase {
     /// `body`'s result, or a skip once `seconds` pass: a StoreKit call that does not come back is
     /// waiting on a dialog nobody will answer (the class doc), and the hosted gate must not wait
     /// with it. A task group cannot be used: it waits for every child, the hung one included.
-    private func completing<T: Sendable>(_ what: String, within seconds: Int = 20,
+    private func completing<T: Sendable>(_ what: String, within seconds: Int = 30,
                                          _ body: @escaping @MainActor () async throws -> T) async throws -> T {
         let result: Result<T, Error>? = await withCheckedContinuation { continuation in
             let once = ResumeOnce()
@@ -130,7 +155,7 @@ final class StoreKitStatusTests: XCTestCase {
 
     /// StoreKit applies a session change (an expiry, a refund, a renewal) on its own queue:
     /// refreshes until `condition` holds, or fails after `timeout`.
-    private func refresh(until condition: () -> Bool, timeout: Duration = .seconds(15),
+    private func refresh(until condition: () -> Bool, timeout: Duration = StoreKitStatusTests.patience,
                          _ what: String, file: StaticString = #filePath, line: UInt = #line) async {
         let deadline = ContinuousClock.now + timeout
         repeat {
@@ -186,13 +211,13 @@ final class StoreKitStatusTests: XCTestCase {
             return true
         }
 
-        let deadline = ContinuousClock.now + .seconds(15)
+        let deadline = ContinuousClock.now + Self.patience
         while ContinuousClock.now < deadline {
             if case .active = store.proStatus { break }
             try await Task.sleep(for: .milliseconds(100))
         }
         guard case .active(let productID, _, _) = store.proStatus else {
-            return XCTFail("after an outside purchase: \(store.proStatus)")
+            return XCTFail("after an outside purchase: \(store.proStatus), isPro \(store.isPro), session transactions \(session.allTransactions().map(\.productIdentifier))")
         }
         XCTAssertEqual(productID, monthlyID)
         XCTAssertTrue(store.isPro)
@@ -297,7 +322,8 @@ final class StoreKitStatusTests: XCTestCase {
 
     // MARK: - Billing retry, grace period
 
-    /// Billing retry with no grace period: the payment row and Manage, never lapsed.
+    /// Billing retry with no grace period: no entitlement while Apple retries, so the payment row,
+    /// Manage and Restore — never lapsed.
     func testBillingRetryShowsThePaymentRow() async throws {
         session.shouldEnterBillingRetryOnRenewal = true
         _ = try await buy(.monthlyPro)
@@ -309,8 +335,8 @@ final class StoreKitStatusTests: XCTestCase {
         guard case .billingIssue(let productID, let graceUntil) = store.proStatus else { return }
         XCTAssertEqual(productID, monthlyID)
         XCTAssertNil(graceUntil, "no grace period")
-        XCTAssertTrue(rows.contains(.billingIssue))
-        XCTAssertTrue(rows.contains(.manage))
+        XCTAssertFalse(store.isPro, "billing retry without a grace period is not entitled")
+        XCTAssertEqual(rows, [.plan(.subscription(productID: monthlyID), nil), .billingIssue, .manage, .restore])
         XCTAssertFalse(rows.contains { if case .lapsed = $0 { return true } else { return false } })
     }
 

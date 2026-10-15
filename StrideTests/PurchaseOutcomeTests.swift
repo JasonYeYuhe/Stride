@@ -206,11 +206,38 @@ final class PurchaseOutcomeTests: XCTestCase {
         XCTAssertEqual(rows(.lifetime(subscriptionStillRenews: false), isPro: false), [.upgrade, .restore])
     }
 
+    /// Grace (entitled): the payment row and Manage. Billing retry (not entitled): those, plus
+    /// Restore, the way back for a purchase this device has not seen (W5-SK-2).
     func testBillingRetryAndGraceShowThePaymentRowAndManage() {
         XCTAssertEqual(rows(.billingIssue(productID: monthly, graceUntil: later), isPro: true),
                        [.unlocked, .plan(.subscription(productID: monthly), .expires(later)), .billingIssue, .manage])
         XCTAssertEqual(rows(.billingIssue(productID: monthly, graceUntil: nil), isPro: false),
-                       [.plan(.subscription(productID: monthly), nil), .billingIssue, .manage])
+                       [.plan(.subscription(productID: monthly), nil), .billingIssue, .manage, .restore])
+    }
+
+    /// Lifetime bought on another device, its entitlement not on this one yet, while the old
+    /// subscription is in billing retry: the payment row, and Restore to fetch the Lifetime.
+    func testLifetimeBoughtElsewhereDuringABillingRetryCanBeRestored() {
+        let resolved = resolve([], [status(monthly, .inBillingRetryPeriod, expires: earlier, renews: true)])
+        XCTAssertEqual(resolved, .billingIssue(productID: monthly, graceUntil: nil))
+        XCTAssertEqual(rows(resolved, isPro: false),
+                       [.plan(.subscription(productID: monthly), nil), .billingIssue, .manage, .restore])
+    }
+
+    /// Restore Purchases is in every set of rows without the entitlement (as Settings had it
+    /// before 1.4.1, whenever !isPro), and in none with it.
+    func testRestoreShowsExactlyWhenProIsNotEntitled() {
+        let statuses: [ProStatus] = [
+            .never, .lapsed(expiredOn: earlier),
+            .lifetime(subscriptionStillRenews: false), .lifetime(subscriptionStillRenews: true),
+            .active(productID: monthly, renewsOn: renewal, willAutoRenew: true),
+            .active(productID: monthly, renewsOn: nil, willAutoRenew: nil),
+            .billingIssue(productID: monthly, graceUntil: nil), .billingIssue(productID: yearly, graceUntil: later),
+        ]
+        for status in statuses {
+            XCTAssertEqual(rows(status, isPro: false).last, .restore, "not entitled, \(status)")
+            XCTAssertFalse(rows(status, isPro: true).contains(.restore), "entitled, \(status)")
+        }
     }
 
     /// "Lifetime with a renewing subscription shows the Manage row"; plain Lifetime has none.

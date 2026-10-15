@@ -216,6 +216,13 @@ enum ProSettingsRow: Hashable {
     /// whose status says nothing Pro-shaped sees "All features unlocked", never "ended"; a user
     /// with no entitlement is never told Pro is active (a billing retry is the one non-entitled
     /// Pro state).
+    ///
+    /// Every set without the entitlement ends with Restore Purchases, as Settings had it before
+    /// 1.4.1: it is the way back for a purchase this device has not seen (Lifetime bought on
+    /// another device while a subscription is in billing retry, a renewal whose entitlement
+    /// failed verification). A billing retry gets Manage for the payment and Restore, but not the
+    /// upsell: the plan row already names the user's subscription, and the payment, not another
+    /// purchase, is what brings Pro back (any locked feature still opens the paywall).
     static func rows(for status: ProStatus, isPro: Bool) -> [ProSettingsRow] {
         switch status {
         case .lifetime(let stillRenews):
@@ -227,7 +234,7 @@ enum ProSettingsRow: Hashable {
             return [.unlocked, .plan(.subscription(productID: productID), dateLine(renewsOn, willAutoRenew)), .manage]
         case .billingIssue(let productID, let graceUntil):
             let plan = ProSettingsRow.plan(.subscription(productID: productID), graceUntil.map(DateLine.expires))
-            return isPro ? [.unlocked, plan, .billingIssue, .manage] : [plan, .billingIssue, .manage]
+            return isPro ? [.unlocked, plan, .billingIssue, .manage] : [plan, .billingIssue, .manage, .restore]
         case .lapsed(let endedOn):
             return isPro ? [.unlocked] : [.lapsed(endedOn: endedOn), .restore]
         case .never:
