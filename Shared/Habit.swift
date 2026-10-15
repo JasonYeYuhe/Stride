@@ -201,19 +201,28 @@ final class Habit {
 
     // MARK: - Aggregates (each call builds one HabitStats, D2)
 
-    /// A fresh `HabitStats` for this habit, from the live record ids its own context's store
-    /// holds. `HabitStats` says what it computes and which 1.4.0 answers it fixes.
+    /// A fresh `HabitStats` for this habit's aggregates, from the live records its own context's
+    /// store holds (`HabitStats.forAggregates`). `HabitStats` says what it computes and which
+    /// 1.4.0 answers it fixes. It reads no note and no record stamp (`readsNotesAndStamps` is
+    /// off), so `hasNote(on:)` and `latestLiveRecordStamp` are not for it: StatsCache and the
+    /// widget build their own, full ones.
     ///
-    /// **Cost, per call:** one store count over this habit's records (`HabitStats.liveRecords`;
-    /// the exact set only after another context's unmerged deletion), one pass over `records`,
-    /// then the aggregate asked for — measured 2026-10-15 (-Onone, a warm 730-record habit) at
-    /// about 4 ms a call, against 1.4.0's 1.3 ms for `completionRate(from:to:)` and 27 ms for
-    /// `currentStreak` (its Calendar walk). Views that read aggregates per render, or one per
-    /// row, read the app's `StatsCache` instead (D3); code asking several questions at once
-    /// builds one with this and asks it. A habit that is in no context counts every record
-    /// (there is no store to ask).
+    /// **Cost, per call** — what every aggregate wrapper below pays: one store count over this
+    /// habit's records (`HabitStats.liveRecords`; the exact set only after another context's
+    /// unmerged deletion), one pass reading each live record's day and value, then the aggregate
+    /// asked for. Measured 2026-10-15 at -O (`swiftc -O` over Shared/, M-series Mac under load, a
+    /// warm 730-record daily yes/no habit), 1.4.0's methods at -O beside it:
+    /// `completionRate(from:to:)` over a week 2.5 ms against 1.0 ms, `currentStreak()` 2.5 ms
+    /// against 1.7 ms. About 1 ms of each call is the store count, the price of seeing a deletion
+    /// another context or process saved (D2), which 1.4.0 never paid; the rest is about 1.4.0's
+    /// own pass. (Debug: 3.2 ms against 1.3 ms, and 3.8 ms against 2.0 ms. StatsPerformanceTests
+    /// bounds the ratio.) So a view that reads aggregates per render, or one per row, reads the
+    /// app's `StatsCache` instead (D3), and code asking several questions of one habit builds ONE
+    /// with this and asks it — never one wrapper call per question: Weekly Review's body makes
+    /// about 11 rate calls per habit. A habit that is in no context counts every record (there
+    /// is no store to ask).
     func makeStats(today: Date = Date(), calendar: Calendar = .current) -> HabitStats {
-        HabitStats(habit: self, live: HabitStats.liveRecords(of: self), calendar: calendar, today: today)
+        HabitStats.forAggregates(of: self, calendar: calendar, today: today)
     }
 
     /// The streak as of `referenceDate`, with the grace for an unfinished day (or week). Records

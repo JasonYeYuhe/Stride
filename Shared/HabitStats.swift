@@ -22,12 +22,13 @@ import SwiftData
 ///   `loggedValue` alike (2026-10-15 decision 7 keeps the record this reads).
 ///
 /// **Shape.** The initializer makes one pass over the records and builds only the live
-/// completed-day set and the values by day (plus the noted days and the two fingerprint inputs
-/// below, in the same pass). Streaks, ranges, the rate and the weekday counts are computed on
-/// first access; the strength series only when a strength accessor is read, through
-/// `HabitScore` (D9). Every per-day question reads the set — any as-of day is answered from it,
-/// never by rescanning records. Days are held as whole days since 1970-01-01 (a day-key is UTC
-/// midnight, so the arithmetic is exact and needs no `Calendar`).
+/// completed-day set and the values by day (plus, unless `readsNotesAndStamps` is off as in
+/// `Habit.makeStats`, the noted days and the newest record stamp, in the same pass). Streaks,
+/// ranges, the rate and the weekday counts are computed on first access; the strength series
+/// only when a strength accessor is read, through `HabitScore` (D9). Every per-day question
+/// reads the set — any as-of day is answered from it, never by rescanning records. Days are
+/// held as whole days since 1970-01-01 (a day-key is UTC midnight, so the arithmetic is exact
+/// and needs no `Calendar`).
 ///
 /// Shared/ rules: a pure value — no `appLocalized`/`appCalendar` (the caller passes a
 /// `Calendar`), no UIKit/AppKit, no user-facing text. It also compiles into the widget,
@@ -73,16 +74,25 @@ final class HabitStats {
     /// The largest live value logged on each day number. Nothing after `today`.
     private let values: [Int: Double]
     /// Days whose live records include a non-empty note (the widget's noted row, D7; the
-    /// heatmap's note dot, D5). Nothing after `today`.
+    /// heatmap's note dot, D5). Nothing after `today`. Empty unless `readsNotesAndStamps`.
     private let noted: Set<Int>
     private let todayNumber: Int
+
+    /// Whether the initializer read each live record's note and stamp: `hasNote(on:)` and
+    /// `latestLiveRecordStamp` answer only then. `Habit`'s aggregate wrappers (`Habit.makeStats`)
+    /// ask neither and skip both reads, which were about a quarter of every wrapper call.
+    let readsNotesAndStamps: Bool
 
     /// Every live record counted, including any dated after `today` — StatsCache's fingerprint
     /// input (D3).
     let liveRecordCount: Int
     /// The newest `stamp` among the live records, including any dated after `today` — the other
-    /// fingerprint input from the records (D3).
-    let latestLiveRecordStamp: Date?
+    /// fingerprint input from the records (D3). Only when `readsNotesAndStamps`.
+    var latestLiveRecordStamp: Date? {
+        assert(readsNotesAndStamps, "built without stamps (Habit.makeStats): use a full HabitStats")
+        return latestStamp
+    }
+    private let latestStamp: Date?
 
     /// Which of a habit's records count. Only the store decides what is live (D2): a deletion
     /// saved by another context or process leaves a record that looks live in `habit.records`.
@@ -102,20 +112,12 @@ final class HabitStats {
     ///   - records: the habit's records as loaded (may include ghosts).
     ///   - live: which of them count (`LiveRecords`).
     ///   - today: any instant of the day the answers are relative to; keyed with `calendar`.
-    init(records: [HabitRecord], live: LiveRecords, kind: HabitKind, targetValue: Double,
-         schedule: HabitSchedule, timesPerWeek: Int, activeDaysMask: Int, createdAt: Date,
-         calendar: Calendar, today: Date) {
-        self.kind = kind
-        self.targetValue = targetValue
-        self.schedule = schedule
-        self.timesPerWeek = timesPerWeek
-        self.activeDaysMask = activeDaysMask
-        self.createdAt = createdAt
-        self.calendar = calendar
-        let todayNumber = Self.dayNumber(of: today, in: calendar)
-        self.todayNumber = todayNumber
-        self.today = Self.key(ofDay: todayNumber)
-
+    ///   - readsNotesAndStamps: also read each live record's note and stamp, for `hasNote(on:)`
+    ///     and `latestLiveRecordStamp` (StatsCache's fingerprint and note dot, the widget's
+    ///     noted row). Only `Habit.makeStats` turns it off.
+    convenience init(records: [HabitRecord], live: LiveRecords, kind: HabitKind, targetValue: Double,
+                     schedule: HabitSchedule, timesPerWeek: Int, activeDaysMask: Int, createdAt: Date,
+                     calendar: Calendar, today: Date, readsNotesAndStamps: Bool = true) {
         let counts: (HabitRecord) -> Bool
         switch live {
         case .ids(let ids): counts = { !$0.isDeleted && ids.contains($0.id) }
@@ -123,16 +125,38 @@ final class HabitStats {
         case .attached: counts = { !$0.isDeleted && $0.modelContext != nil }
         case .all: counts = { !$0.isDeleted }
         }
+        self.init(counting: records, where: counts, kind: kind, targetValue: targetValue, schedule: schedule,
+                  timesPerWeek: timesPerWeek, activeDaysMask: activeDaysMask, createdAt: createdAt,
+                  calendar: calendar, today: today, readsNotesAndStamps: readsNotesAndStamps)
+    }
+
+    /// The one pass. `counts` nil: every record passed is live (the caller has filtered them).
+    private init(counting records: [HabitRecord], where counts: ((HabitRecord) -> Bool)?, kind: HabitKind,
+                 targetValue: Double, schedule: HabitSchedule, timesPerWeek: Int, activeDaysMask: Int,
+                 createdAt: Date, calendar: Calendar, today: Date, readsNotesAndStamps: Bool) {
+        self.kind = kind
+        self.targetValue = targetValue
+        self.schedule = schedule
+        self.timesPerWeek = timesPerWeek
+        self.activeDaysMask = activeDaysMask
+        self.createdAt = createdAt
+        self.calendar = calendar
+        self.readsNotesAndStamps = readsNotesAndStamps
+        let todayNumber = Self.dayNumber(of: today, in: calendar)
+        self.todayNumber = todayNumber
+        self.today = Self.key(ofDay: todayNumber)
 
         var values: [Int: Double] = [:]
         values.reserveCapacity(records.count)
         var noted = Set<Int>()
         var count = 0
         var latest: Date?
-        for record in records where counts(record) {
+        for record in records where counts?(record) ?? true {
             count += 1
-            let stamp = record.stamp
-            if latest.map({ stamp > $0 }) ?? true { latest = stamp }
+            if readsNotesAndStamps {
+                let stamp = record.stamp
+                if latest.map({ stamp > $0 }) ?? true { latest = stamp }
+            }
             let day = Self.dayNumber(ofKey: record.date)
             guard day <= todayNumber else { continue }
             let value = record.value
@@ -141,7 +165,7 @@ final class HabitStats {
             } else {
                 values[day] = value
             }
-            if let note = record.note, !note.isEmpty { noted.insert(day) }
+            if readsNotesAndStamps, let note = record.note, !note.isEmpty { noted.insert(day) }
         }
         let completed: Set<Int>
         switch kind {
@@ -155,7 +179,7 @@ final class HabitStats {
         self.completed = completed
         self.noted = noted
         self.liveRecordCount = count
-        self.latestLiveRecordStamp = latest
+        self.latestStamp = latest
     }
 
     /// - Parameters:
@@ -170,11 +194,35 @@ final class HabitStats {
     }
 
     /// The habit's own fields, read once.
-    convenience init(habit: Habit, live: LiveRecords, calendar: Calendar = .current, today: Date = Date()) {
+    convenience init(habit: Habit, live: LiveRecords, calendar: Calendar = .current, today: Date = Date(),
+                     readsNotesAndStamps: Bool = true) {
         self.init(records: habit.records, live: live, kind: habit.habitKind,
                   targetValue: habit.targetValue, schedule: habit.schedule,
                   timesPerWeek: habit.timesPerWeek, activeDaysMask: habit.activeDaysMask,
-                  createdAt: habit.createdAt, calendar: calendar, today: today)
+                  createdAt: habit.createdAt, calendar: calendar, today: today,
+                  readsNotesAndStamps: readsNotesAndStamps)
+    }
+
+    /// `Habit.makeStats`'s build, for the aggregates: the store asked once about this habit's
+    /// records (`liveRecords(of:)`), the records it was asked about counted without being read
+    /// again when it holds them all, and no note or stamp read (`readsNotesAndStamps` off).
+    static func forAggregates(of habit: Habit, calendar: Calendar, today: Date) -> HabitStats {
+        let (candidates, live) = liveAnswer(of: habit)
+        let records: [HabitRecord], counts: ((HabitRecord) -> Bool)?
+        switch live {
+        case .attached:
+            // The store holds every candidate, and a candidate is neither deleted nor a
+            // same-context ghost: they are exactly the live records.
+            records = candidates; counts = nil
+        case .persistentIDs(let ids):
+            records = candidates; counts = { ids.contains($0.persistentModelID) }
+        case .all, .ids:
+            return HabitStats(habit: habit, live: live, calendar: calendar, today: today, readsNotesAndStamps: false)
+        }
+        return HabitStats(counting: records, where: counts, kind: habit.habitKind, targetValue: habit.targetValue,
+                          schedule: habit.schedule, timesPerWeek: habit.timesPerWeek,
+                          activeDaysMask: habit.activeDaysMask, createdAt: habit.createdAt,
+                          calendar: calendar, today: today, readsNotesAndStamps: false)
     }
 
     /// The habit's own fields, read once, counting `liveRecordIDs`.
@@ -249,26 +297,32 @@ final class HabitStats {
     /// Which of ONE habit's records the store holds as live, as cheaply as the store can say:
     /// a count first — almost always every candidate is there, and `.attached` says so without
     /// reading any record — and only when the store holds fewer (a deletion saved by another
-    /// context, not merged here), the exact set. `Habit`'s aggregate wrappers call it once per
-    /// call (measured 2026-10-15, Debug, a warm 730-record habit: the count 0.9 ms, against
-    /// 10 ms for `liveRecordIDs(of:in:)`'s fetch).
+    /// context, not merged here), the exact set. `Habit`'s aggregate wrappers ask it once per
+    /// call, through `forAggregates` (measured 2026-10-15, Debug, a warm 730-record habit: the
+    /// count 0.9 ms, against 10 ms for `liveRecordIDs(of:in:)`'s fetch; about 1 ms at -O).
     static func liveRecords(of habit: Habit) -> LiveRecords {
-        guard let context = habit.modelContext else { return .all }
-        let candidates = candidates(of: [habit])
+        liveAnswer(of: habit).live
+    }
+
+    /// `liveRecords(of:)`'s answer, and the candidates it asked the store about (empty for `.all`).
+    private static func liveAnswer(of habit: Habit) -> (candidates: [HabitRecord], live: LiveRecords) {
+        guard let context = habit.modelContext else { return ([], .all) }
+        let records = habit.records.filter { !$0.isDeleted && $0.modelContext != nil }
+        let candidates = records.map(\.persistentModelID)
         let pieces = chunks(candidates)
         var held = 0
         for chunk in pieces {
             let descriptor = FetchDescriptor<HabitRecord>(predicate: #Predicate { chunk.contains($0.persistentModelID) })
-            guard let n = try? context.fetchCount(descriptor) else { return .attached }   // the best local answer
+            guard let n = try? context.fetchCount(descriptor) else { return (records, .attached) }   // the best local answer
             held += n
         }
-        guard held < candidates.count else { return .attached }
+        guard held < candidates.count else { return (records, .attached) }
         var live = Set<PersistentIdentifier>()
         for chunk in pieces {
             guard let stored = stored(chunk, in: context) else { live.formUnion(chunk); continue }
             for record in stored { live.insert(record.persistentModelID) }
         }
-        return .persistentIDs(live)
+        return (records, .persistentIDs(live))
     }
 
     // MARK: Day numbers
@@ -342,9 +396,11 @@ final class HabitStats {
         }
     }
 
-    /// Whether one of the day's live records carries a non-empty note.
+    /// Whether one of the day's live records carries a non-empty note. Only when
+    /// `readsNotesAndStamps` (never from `Habit.makeStats`).
     func hasNote(on day: Date) -> Bool {
-        noted.contains(dayNumber(of: day))
+        assert(readsNotesAndStamps, "built without notes (Habit.makeStats): use a full HabitStats")
+        return noted.contains(dayNumber(of: day))
     }
 
     /// Whether the habit is expected on `day` (`Habit.isScheduled(on:)`'s rule).
@@ -414,24 +470,42 @@ final class HabitStats {
         return streak
     }
 
-    private func weeklyStreak(asOf reference: Int) -> Int {
+    /// The streak a `HabitStats` built with `today: day` shows: `currentStreak(asOf: day)` with
+    /// every record dated after `day` left out.
+    ///
+    /// The two differ only for times-per-week, and only when `day` is before `today`:
+    /// `currentStreak(asOf:)` counts `day`'s whole week through `today`, as 1.4.0 counted a past
+    /// as-of day's week through the real today (frozen by the parity goldens), so a check-in
+    /// later in that week counts. The widget's "now" entry asks this of stats built through
+    /// tomorrow (`WidgetTimelinePlan.lastDayKey`): a check-in dated tomorrow must not count today,
+    /// just as the app's `Habit.currentStreak()` leaves it out.
+    func currentStreak(asIfToday day: Date) -> Int {
+        let n = dayNumber(of: day)
+        guard schedule == .timesPerWeek, n < todayNumber else { return currentStreak(asOf: day) }
+        return weeklyStreak(asOf: n, through: n)
+    }
+
+    /// - Parameter horizon: the last day whose completions count (the default: through `today`).
+    private func weeklyStreak(asOf reference: Int, through horizon: Int = .max) -> Int {
         guard let earliest = sortedCompleted.first else { return 0 }
         let target = max(1, timesPerWeek)
         let earliestWeek = Self.monday(ofWeekContaining: earliest)
         var week = Self.monday(ofWeekContaining: reference)
         // Grace: the in-progress week not yet meeting the target doesn't break the streak.
-        if completions(inWeekStarting: week) < target { week -= 7 }
+        if completions(inWeekStarting: week, through: horizon) < target { week -= 7 }
         var streak = 0
         while week >= earliestWeek {
-            guard completions(inWeekStarting: week) >= target else { break }
+            guard completions(inWeekStarting: week, through: horizon) >= target else { break }
             streak += 1
             week -= 7
         }
         return streak
     }
 
-    private func completions(inWeekStarting monday: Int) -> Int {
-        (monday...(monday + 6)).reduce(0) { $0 + (completed.contains($1) ? 1 : 0) }
+    private func completions(inWeekStarting monday: Int, through horizon: Int = .max) -> Int {
+        let last = min(monday + 6, horizon)
+        guard monday <= last else { return 0 }
+        return (monday...last).reduce(0) { $0 + (completed.contains($1) ? 1 : 0) }
     }
 
     /// Every run, oldest first, by the rules of `currentStreak`: scheduled days for daily and

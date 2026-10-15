@@ -317,6 +317,173 @@ final class StatsMathTests: XCTestCase {
         XCTAssertEqual(WidgetTimelinePlan.lastDayKey(now: now, calendar: utc), day(6, 11))
     }
 
+    /// W1 review (W1-widget-tpw-tomorrow-leak): a 3×/week habit with a check-in dated TOMORROW in
+    /// this week. Weeks of 06-01 and 06-08 met (Mon/Wed/Fri); this week Mon 06-15 and Tue 06-16
+    /// done, and Thu 06-18 already holds a record (synced from a device in UTC+9, or the demo
+    /// top-up's UTC day). It is Wed 06-17, 20:00 in Los Angeles. The app's Today row shows 2/3
+    /// and a 2-week streak (the grace; tomorrow is ignored), so the widget's "now" entry must
+    /// show 2 as well, not 3 — while its midnight entry, which describes Thursday, counts it.
+    func testTheWidgetsNowEntryIgnoresATimesPerWeekCheckInDatedTomorrow() throws {
+        var la = Calendar(identifier: .gregorian)
+        la.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        let h = habit(.timesPerWeek, timesPerWeek: 3)
+        checkIn(h, on: monWedFri(weeks: 2) + [day(6, 15), day(6, 16), day(6, 18)])
+        try context.save()
+
+        let now = la.date(from: DateComponents(year: 2026, month: 6, day: 17, hour: 20))!
+        let plan = WidgetTimelinePlan(now: now, calendar: la,
+                                      rows: WidgetTimelinePlan.rowInputs(for: [h], in: context, now: now, calendar: la))
+        XCTAssertEqual(plan.entries.map(\.dayKey), [day(6, 17), day(6, 18)])
+        let appStreak = h.makeStats(today: now, calendar: la).currentStreak()
+        XCTAssertEqual(appStreak, 2, "precondition: the app ignores tomorrow's check-in and keeps the grace")
+        XCTAssertEqual(h.makeStats(today: now, calendar: la).weeklyCompletions(containing: now), 2, "2/3 this week")
+        XCTAssertEqual(plan.entries[0].rows[0].streak, appStreak, "the widget's now entry agrees with the app (was 3)")
+        XCTAssertEqual(plan.entries[1].rows[0].streak, 3, "the midnight entry counts Thursday: the week is met")
+        XCTAssertEqual(plan.entries[1].rows[0].streak, h.makeStats(today: day(6, 18), calendar: la).currentStreak())
+        XCTAssertEqual(plan.entries.map { $0.rows[0].isCompleted }, [false, true])
+    }
+
+    /// The same disagreement checked against the app's real clock: the widget's now entry equals
+    /// `Habit.currentStreak()` (Today, Settings, Siri) in whatever zone and weekday the run is.
+    /// A 2×/week habit met (Mon, Tue) in the three weeks before this one, done today, and done
+    /// tomorrow: whenever tomorrow is in this week, it would tip this week to met.
+    func testTheWidgetsNowEntryAgreesWithTheAppsStreakToday() throws {
+        for _ in 0..<2 {
+            let now = Date()
+            let todayKey = WidgetTimelinePlan.dayKey(of: now, in: .current)
+            let tomorrowKey = utc.date(byAdding: .day, value: 1, to: todayKey)!
+            let monday = HabitStats.key(ofDay: HabitStats.monday(ofWeekContaining: HabitStats.dayNumber(ofKey: todayKey)))
+            let h = habit(.timesPerWeek, timesPerWeek: 2)
+            h.createdAt = utc.date(byAdding: .day, value: -60, to: todayKey)!
+            let earlier = (1...3).flatMap { w in [0, 1].map { utc.date(byAdding: .day, value: $0 - 7 * w, to: monday)! } }
+            checkIn(h, on: earlier + [todayKey, tomorrowKey])
+            try context.save()
+
+            let plan = WidgetTimelinePlan(now: now, calendar: .current,
+                                          rows: WidgetTimelinePlan.rowInputs(for: [h], in: context, now: now, calendar: .current))
+            let app = h.currentStreak()
+            let appTomorrow = h.makeStats(today: tomorrowKey).currentStreak()
+            guard WidgetTimelinePlan.dayKey(of: Date(), in: .current) == todayKey else { continue }   // midnight passed
+            XCTAssertEqual(plan.entries[0].rows[0].streak, app, "the widget's now entry equals Habit.currentStreak()")
+            XCTAssertEqual(plan.entries[1].rows[0].streak, appTomorrow, "the midnight entry, as the app will show tomorrow")
+            if HabitStats.monday(ofWeekContaining: HabitStats.dayNumber(ofKey: tomorrowKey)) == HabitStats.dayNumber(ofKey: monday) {
+                XCTAssertEqual(app, 3, "this week is not met through today: the grace keeps the three weeks before")
+                XCTAssertEqual(plan.entries[1].rows[0].streak, 4, "tomorrow meets this week")
+            }
+            return
+        }
+        XCTFail("the day changed twice during the test")
+    }
+
+    /// `currentStreak(asIfToday:)` answers exactly what a `HabitStats` built with that `today`
+    /// answers, on every day of a window and for every schedule — the widget asks it of stats
+    /// built through tomorrow. (`currentStreak(asOf:)` keeps 1.4.0's rule of counting a past
+    /// as-of day's whole week through `today`, so it differs for times-per-week.)
+    func testStreakAsIfTodayEqualsAFreshBuildThroughThatDay() throws {
+        for schedule in HabitSchedule.allCases {
+            let h = habit(schedule, timesPerWeek: 3, activeDays: monWedFriMask)
+            // Gaps, rest-day check-ins and a met week ending mid-week, over five weeks.
+            let days = [1, 3, 5, 8, 9, 10, 12, 15, 17, 18, 22, 23, 24, 25, 29, 30].map { day(6, $0) }
+                + [day(7, 1), day(7, 2), day(7, 3)]
+            checkIn(h, on: days)
+            try context.save()
+            let live = HabitStats.liveRecordIDs(of: [h], in: context)
+            let through = HabitStats(habit: h, liveRecordIDs: live, calendar: utc, today: day(7, 3))
+            var differs = 0
+            for offset in 0..<36 {
+                let d = utc.date(byAdding: .day, value: offset, to: day(5, 29))!
+                let fresh = HabitStats(habit: h, liveRecordIDs: live, calendar: utc, today: d).currentStreak()
+                XCTAssertEqual(through.currentStreak(asIfToday: d), fresh, "\(schedule) as if today were \(d)")
+                if through.currentStreak(asOf: d) != fresh { differs += 1 }
+            }
+            if schedule == .timesPerWeek {
+                XCTAssertGreaterThan(differs, 0, "precondition: the as-of streak counts the rest of a past week")
+            } else {
+                XCTAssertEqual(differs, 0, "\(schedule): the walk only looks back, so both agree")
+            }
+        }
+    }
+
+    // MARK: - The wrappers' build (W1 review: W1-PERF-1, W1-consumers-1)
+
+    /// `Habit.makeStats` (every aggregate wrapper's build) skips the note and stamp reads, and
+    /// counts the store's candidates instead of filtering the records twice. Its answers equal a
+    /// full build from the store's ids, for both kinds, on a habit with a same-context ghost, a
+    /// noted day, a same-day duplicate and a record dated after today, and on one with a deletion
+    /// saved by another context plus a pending insert (the store's exact path).
+    func testTheWrappersBuildAnswersAsAFullBuild() throws {
+        func compare(_ h: Habit, _ label: String) {
+            let today = day(6, 14)
+            let lean = h.makeStats(today: today, calendar: utc)
+            let full = HabitStats(habit: h, liveRecordIDs: HabitStats.liveRecordIDs(of: [h], in: context),
+                                  calendar: utc, today: today)
+            XCTAssertFalse(lean.readsNotesAndStamps, label)
+            XCTAssertTrue(full.readsNotesAndStamps, label)
+            XCTAssertEqual(lean.completedDayKeys, full.completedDayKeys, label)
+            XCTAssertEqual(lean.valuesByDay, full.valuesByDay, label)
+            XCTAssertEqual(lean.liveRecordCount, full.liveRecordCount, label)
+            XCTAssertEqual(lean.startDay, full.startDay, label)
+            XCTAssertEqual(lean.currentStreak(), full.currentStreak(), label)
+            XCTAssertEqual(lean.bestStreakRanges, full.bestStreakRanges, label)
+            XCTAssertEqual(lean.completionRate(days: 30), full.completionRate(days: 30), accuracy: 1e-12, label)
+            XCTAssertEqual(lean.completionsPerWeekday, full.completionsPerWeekday, label)
+            XCTAssertEqual(lean.strength, full.strength, accuracy: 1e-12, label)
+        }
+        for kind in HabitKind.allCases {
+            let a = habit(.daily)
+            a.habitKind = kind
+            a.targetValue = kind == .count ? 4 : 1
+            for d in 1...12 {
+                a.records.append(HabitRecord(date: day(6, d), note: d == 4 ? "noted" : nil, value: Double(d % 5 + 1)))
+            }
+            a.records.append(HabitRecord(date: day(6, 6), value: 9))   // a same-day duplicate
+            a.records.append(HabitRecord(date: day(6, 20)))             // after today
+            try context.save()
+            context.delete(try XCTUnwrap(a.records.first { $0.date == day(6, 2) }))
+            try context.save()                                          // a same-context ghost stays in `records`
+            XCTAssertTrue(a.records.contains { $0.modelContext == nil }, "precondition: a ghost")
+            guard case .attached = HabitStats.liveRecords(of: a) else { return XCTFail("\(kind): expected .attached") }
+            compare(a, "\(kind), ghost")
+            let lean = a.makeStats(today: day(6, 14), calendar: utc)
+            XCTAssertNil(lean.valuesByDay[day(6, 2)], "\(kind): the ghost")
+            XCTAssertEqual(lean.valuesByDay[day(6, 6)], 9, "\(kind): the day's largest value")
+            XCTAssertEqual(lean.liveRecordCount, 13, "\(kind): 14 records, less the ghost")
+            let full = HabitStats(habit: a, liveRecordIDs: HabitStats.liveRecordIDs(of: [a], in: context),
+                                  calendar: utc, today: day(6, 14))
+            XCTAssertTrue(full.hasNote(on: day(6, 4)), "\(kind): a full build reads the note")
+            XCTAssertNotNil(full.latestLiveRecordStamp, "\(kind)")
+        }
+
+        // Built for both kinds first: nothing may be saved here once a deletion elsewhere is
+        // unmerged and a record is pending.
+        let bs = HabitKind.allCases.map { kind -> Habit in
+            let b = habit(.daily)
+            b.habitKind = kind
+            b.targetValue = kind == .count ? 2 : 1
+            for d in 1...5 { b.records.append(HabitRecord(date: day(6, d), value: 2)) }
+            return b
+        }
+        try context.save()
+        let other = ModelContext(container)
+        for b in bs {
+            for r in b.records { _ = (r.id, r.date, r.value, r.updatedAt, r.note) }   // read, as a rendered list has them
+            let goneID = try XCTUnwrap(b.records.first { $0.date == day(6, 3) }).id
+            let gone = try other.fetch(FetchDescriptor<HabitRecord>(predicate: #Predicate { $0.id == goneID }))
+            other.delete(try XCTUnwrap(gone.first))
+        }
+        try other.save()                                                // deleted elsewhere, unmerged here
+        for b in bs {
+            b.records.append(HabitRecord(date: day(6, 6), value: 2))     // pending, unsaved
+            guard case .persistentIDs = HabitStats.liveRecords(of: b) else {
+                return XCTFail("\(b.habitKind): expected the store's exact set")
+            }
+            compare(b, "\(b.habitKind), deleted elsewhere + pending")
+            let lean = b.makeStats(today: day(6, 14), calendar: utc)
+            XCTAssertEqual(lean.completedDayKeys, Set([1, 2, 4, 5, 6].map { day(6, $0) }), "\(b.habitKind)")
+            XCTAssertEqual(lean.liveRecordCount, 5, "\(b.habitKind)")
+        }
+    }
+
     // MARK: - Best streak ranges
 
     private func range(_ s: Date, _ e: Date, _ length: Int, current: Bool = false) -> HabitStats.StreakRange {

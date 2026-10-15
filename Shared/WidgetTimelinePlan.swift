@@ -153,8 +153,11 @@ struct WidgetTimelinePlan {
 
 extension WidgetTimelinePlan {
     /// The last habit-day a plan made at `now` describes: its midnight entry's. One `HabitStats`
-    /// per habit with this as its `today` answers both entries' day-keys — a record dated
-    /// tomorrow (the demo top-up dates by UTC, D13) counts once tomorrow's entry shows.
+    /// per habit with this as its `today` answers both entries' day-keys, each as if it were
+    /// today (`HabitStats.currentStreak(asIfToday:)`): a record dated tomorrow (the demo top-up
+    /// dates by UTC, D13; a device in a zone already on the next day) counts once tomorrow's
+    /// entry shows, and not before — not even in a times-per-week habit's week, which the app's
+    /// `Habit.currentStreak()` would leave it out of too.
     static func lastDayKey(now: Date, calendar: Calendar) -> Date {
         dayKey(of: nextLocalMidnight(after: now, calendar: calendar), in: calendar)
     }
@@ -178,7 +181,8 @@ extension WidgetTimelinePlan {
 
 extension WidgetTimelinePlan.RowInput {
     /// A habit's row, answered from one `HabitStats` (built through the plan's last day-key,
-    /// `WidgetTimelinePlan.lastDayKey`). Captures `stats` only, never the model object.
+    /// `WidgetTimelinePlan.lastDayKey`): each day-key as if it were today, so the "now" entry
+    /// counts nothing dated after it. Captures `stats` only, never the model object.
     init(_ habit: Habit, stats: HabitStats) {
         self.init(habitId: habit.id.uuidString,
                   name: habit.name,
@@ -189,7 +193,7 @@ extension WidgetTimelinePlan.RowInput {
                   status: { dayKey in
                       WidgetTimelinePlan.Status(isCompleted: stats.isCompleted(on: dayKey),
                                                 progress: stats.progress(on: dayKey),
-                                                streak: stats.currentStreak(asOf: dayKey),
+                                                streak: stats.currentStreak(asIfToday: dayKey),
                                                 hasNote: stats.hasNote(on: dayKey))
                   })
     }
