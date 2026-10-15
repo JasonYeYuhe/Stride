@@ -1,8 +1,13 @@
 import SwiftUI
 import SwiftData
+import StoreKit
+import OSLog
 import UniformTypeIdentifiers
 import UserNotifications
 import WidgetKit
+#if canImport(Sentry)
+import Sentry
+#endif
 
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
@@ -55,6 +60,9 @@ struct SettingsView: View {
 
     // Store
     @State private var showingPaywall = false
+    /// Manage Subscription on iOS: `manageSubscriptionsSheet` (the Mac opens Apple's page instead,
+    /// `SubscriptionManagement.manageRoute`).
+    @State private var showingManageSubscriptions = false
     @State private var showingLogin = false
     /// "Sign in again to keep syncing" in the Account section: the row's tap and its login sheet,
     /// as Today's (E2E S9). The sheet hangs on the List: the sign-in ends the row.
@@ -126,58 +134,14 @@ struct SettingsView: View {
                     .accessibilityElement(children: .combine)
                 }
 
-                // Stride Pro
-                if !store.isPro {
-                    Section {
-                        Button {
-                            showingPaywall = true
-                        } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: "crown.fill")
-                                    .font(.title2)
-                                    .foregroundStyle(.yellow)
-                                    .accessibilityHidden(true)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Upgrade to Pro")
-                                        .font(.headline)
-                                        .foregroundStyle(.primary)
-                                    Text("Habit groups, advanced analytics & weekly review")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .accessibilityHidden(true)
-                            }
-                            .padding(.vertical, 4)
-                        }
-                        .buttonStyle(.plain)
-
-                        // Discoverable restore path: a returning buyer whose entitlement
-                        // isn't detected can recover Pro without opening the paywall.
-                        Button("Restore Purchases") {
-                            Task { await store.restorePurchases() }
-                        }
-                    }
-                } else {
-                    Section {
-                        HStack(spacing: 12) {
-                            Image(systemName: "crown.fill")
-                                .font(.title2)
-                                .foregroundStyle(.yellow)
-                                .accessibilityHidden(true)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Stride Pro")
-                                    .font(.headline)
-                                Text("All features unlocked")
-                                    .font(.caption)
-                                    .foregroundStyle(.green)
-                            }
-                        }
-                        .padding(.vertical, 4)
-                        .accessibilityElement(children: .combine)
+                // Stride Pro: the rows `ProSettingsRow.rows` lists for the status and the
+                // entitlement (RELEASE-1.4.1.md D12) — the upsell, the plan and its renewal date,
+                // a payment problem, a subscription still renewing beside Lifetime, or when Pro
+                // ended. No Redeem Code: no offer code ships in 1.4.1 (O9,
+                // `SubscriptionManagement.showsRedeemCode`).
+                Section {
+                    ForEach(ProSettingsRow.rows(for: store.proStatus, isPro: store.isPro), id: \.self) { row in
+                        proRow(row)
                     }
                 }
 
@@ -343,16 +307,24 @@ struct SettingsView: View {
                         Text("No habits yet")
                             .foregroundStyle(.secondary)
                     } else {
+                        // One HabitStats per habit, from StatsCache (D3), not a wrapper call per
+                        // row and render (W1's carried item: each `currentStreak()` is a store
+                        // count plus a pass over the records, and Settings redraws on every sync
+                        // tick and entitlement refresh). The count is of live records: a check-in
+                        // another context deleted no longer counts.
+                        let stats = activeHabitStats
                         ForEach(activeHabits) { habit in
+                            let habitStats = stats[habit.id]
                             HStack {
                                 Text(habit.emoji)
                                 Text(habit.name)
                                 Spacer()
                                 VStack(alignment: .trailing, spacing: 2) {
-                                    Text("\(habit.records.count) check-ins")
+                                    let count = habitStats?.liveRecordCount ?? habit.records.count
+                                    Text("\(count) check-ins")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
-                                    let streak = habit.currentStreak()
+                                    let streak = habitStats?.currentStreak() ?? habit.currentStreak()
                                     if streak > 0 {
                                         HStack(spacing: 2) {
                                             Image(systemName: "flame.fill")
@@ -633,21 +605,11 @@ struct SettingsView: View {
                 }
                 Button("Delete", role: .destructive) {
                     if let habit = habitToDelete {
-                        let habitID = habit.id
-                        SyncService.shared.trackDeletedHabit(habit.id.uuidString)
-                        for record in habit.records {
-                            SyncService.shared.trackDeletedEntry(record.id.uuidString)
-                        }
-                        modelContext.delete(habit)
-                        do {
-                            try modelContext.save()
-                            // Its repeating reminder outlived it: "💪 Gym — Time to work on your
-                            // habit!" every morning, with no row left to open and turn it off.
-                            NotificationService.shared.removeHabitReminder(for: habitID)
-                        } catch {
-                            #if DEBUG
-                            print("Failed to save after delete: \(error)")
-                            #endif
+                        // Saved first, tombstoned only after, rolled back on a failure
+                        // (`SettingsHabitDeletion`). A failure used to be printed in DEBUG and
+                        // nothing else, with the delete left pending and its tombstones queued.
+                        if SettingsHabitDeletion.delete(habit, in: modelContext) == .saveFailed {
+                            showSaveError = true
                         }
                         habitToDelete = nil
                     }
@@ -660,6 +622,16 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showingPaywall) {
                 ProPaywallView()
+            }
+            #if os(iOS)
+            .manageSubscriptionsSheet(isPresented: $showingManageSubscriptions)
+            #endif
+            // A plan changed or cancelled in Apple's sheet comes back as no transaction (turning
+            // off auto-renew is not one), and nothing else re-reads the status while Settings
+            // stays up: read it again when the sheet closes.
+            .onChange(of: showingManageSubscriptions) { _, showing in
+                guard !showing else { return }
+                Task { await store.refreshPurchasedProducts() }
             }
             .sheet(isPresented: $showingLogin) {
                 LoginView()
@@ -1028,6 +1000,172 @@ struct SettingsView: View {
             + Text("The recovered edits on this device are erased too. Export them first if you might need them.")
     }
 
+    // MARK: - Stride Pro (D12)
+
+    /// One row of the Stride Pro section, worded (`ProSettingsRow`).
+    @ViewBuilder
+    private func proRow(_ row: ProSettingsRow) -> some View {
+        switch row {
+        case .upgrade:
+            Button {
+                showingPaywall = true
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "crown.fill")
+                        .font(.title2)
+                        .foregroundStyle(.yellow)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Upgrade to Pro")
+                            .font(.headline)
+                            .foregroundStyle(.primary)
+                        Text("Habit groups, advanced analytics & weekly review")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                }
+                .padding(.vertical, 4)
+            }
+            .buttonStyle(.plain)
+        case .restore:
+            // Discoverable restore path: a returning buyer whose entitlement isn't detected can
+            // recover Pro without opening the paywall.
+            Button("Restore Purchases") {
+                Task { await store.restorePurchases() }
+            }
+        case .unlocked:
+            HStack(spacing: 12) {
+                Image(systemName: "crown.fill")
+                    .font(.title2)
+                    .foregroundStyle(.yellow)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Stride Pro")
+                        .font(.headline)
+                    Text("All features unlocked")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                }
+            }
+            .padding(.vertical, 4)
+            .accessibilityElement(children: .combine)
+        case .plan(let plan, let line):
+            VStack(alignment: .leading, spacing: 2) {
+                LabeledContent("Plan") { planName(plan) }
+                if let line {
+                    planDateLine(line)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityElement(children: .combine)
+        case .billingIssue:
+            Label {
+                Text("Payment problem — update your payment method")
+                    .fixedSize(horizontal: false, vertical: true)
+            } icon: {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+            }
+        case .stillRenews:
+            Label {
+                Text("A subscription still renews")
+                    .fixedSize(horizontal: false, vertical: true)
+            } icon: {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .foregroundStyle(.orange)
+            }
+        case .manage:
+            manageSubscriptionRow
+        case .lapsed(let endedOn):
+            // One row (D12): what happened and the way back, which is the paywall.
+            let dateLabel = Self.proDate(endedOn)
+            Button {
+                showingPaywall = true
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "crown")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    Text("Pro ended on \(dateLabel)")
+                        .foregroundStyle(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Text("Resubscribe")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.green)
+                }
+                .padding(.vertical, 4)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    /// Manage Subscription: Apple's sheet in the app on iOS; Apple's page on the Mac, where the
+    /// sheet does not exist, and for the iPhone app on a Mac (`SubscriptionManagement`).
+    @ViewBuilder
+    private var manageSubscriptionRow: some View {
+        switch SubscriptionManagement.manageRoute(on: .current) {
+        case .sheet:
+            Button {
+                showingManageSubscriptions = true
+            } label: {
+                Label("Manage Subscription", systemImage: "creditcard")
+            }
+        case .url(let url):
+            Link(destination: url) {
+                Label("Manage Subscription", systemImage: "creditcard")
+            }
+        }
+    }
+
+    /// The plan row's value: the plan's name, as the paywall names it.
+    private func planName(_ plan: ProSettingsRow.Plan) -> Text {
+        switch plan {
+        case .lifetime:
+            return Text("Lifetime")
+        case .subscription(let productID):
+            switch StrideProduct(rawValue: productID) {
+            case .monthlyPro: return Text("Monthly")
+            case .yearlyPro: return Text("Yearly")
+            case .lifetimePro: return Text("Lifetime")
+            case nil: return Text("Stride Pro")
+            }
+        }
+    }
+
+    /// Two whole sentences, so each is one key.
+    private func planDateLine(_ line: ProSettingsRow.DateLine) -> Text {
+        switch line {
+        case .renews(let date):
+            let dateLabel = Self.proDate(date)
+            return Text("Renews on \(dateLabel)")
+        case .expires(let date):
+            let dateLabel = Self.proDate(date)
+            return Text("Expires on \(dateLabel)")
+        }
+    }
+
+    /// A subscription date — an instant, not a day-key, so in the device's zone — in the picked
+    /// language.
+    @MainActor
+    private static func proDate(_ date: Date) -> String {
+        date.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted).locale(appLocale))
+    }
+
+    /// The Active Habits rows' stats, by habit: one StatsCache read for all of them.
+    private var activeHabitStats: [UUID: HabitStats] {
+        let habits = activeHabits
+        return Dictionary(zip(habits.map(\.id), StatsCache.shared.stats(for: habits)),
+                          uniquingKeysWith: { first, _ in first })
+    }
+
     // MARK: - Notification Logic
 
     private func handleReminderToggle(_ enabled: Bool) {
@@ -1039,8 +1177,10 @@ struct SettingsView: View {
                     notificationDenied = false
                     // Per-habit reminders that arrived by sync or restore, or were saved while
                     // permission was undecided, were passed over by the launch pass; schedule
-                    // them now rather than at the next cold launch, which can be days away.
-                    NotificationService.shared.scheduleAllHabitReminders(modelContainer: modelContext.container)
+                    // them now rather than at the next cold launch, which can be days away. And
+                    // the badge, which needed the permission too and otherwise waited for the
+                    // next save, activation or midnight (Mac checklist item 12).
+                    NotificationService.shared.permissionGranted(schedulingExistingIn: modelContext.container)
                 } else {
                     let status = await NotificationService.shared.checkPermission()
                     if status == .denied {
@@ -1340,6 +1480,94 @@ struct SettingsAccountState: Equatable {
         make(signedIn: auth.isLoggedIn, email: auth.userEmail,
              needsSignInAgain: sync.needsReauth || auth.sessionExpired,
              reauthEmail: SignInAgainFlow.accountEmail(auth: auth, sync: sync), syncError: sync.syncError)
+    }
+}
+
+// MARK: - Delete Habit
+
+/// Settings' Delete Habit (RELEASE-1.4.1.md D4, the one non-check-in write it names; W5).
+///
+/// It used to queue the habit's tombstone and one per record, then delete and save, and on a
+/// failed save only print in DEBUG. The tombstones were then queued for a habit still in the
+/// store — the next sync deleted it on the server and, by its echo, on every other device — and
+/// the deletion stayed pending in mainContext, which autosaves and which sync saves on, so it
+/// could land later with nothing to say so. Now, in order:
+/// 1. Anything else mainContext holds unsaved is saved first, so the rollback in step 3 takes
+///    back this deletion and nothing else. If that save fails, nothing is deleted and nothing is
+///    rolled back: those changes stay pending, as they were.
+/// 2. The tombstones' ids are read from the store, not from `habit.records`: a record another
+///    context deleted and saved faults on any attribute read (W1, "Crash safety").
+/// 3. Delete and save. If the save fails, `rollback()`: the habit and its records are back, and
+///    nothing is pending.
+/// 4. Only after the save: the habit's tombstone, its records' tombstones, and its reminder.
+@MainActor
+enum SettingsHabitDeletion {
+    enum Outcome: Equatable {
+        case deleted
+        /// Nothing deleted, nothing queued; the store is as it was.
+        case saveFailed
+    }
+
+    /// Everything outside the context's own objects, as values, so the hosted tests make a save
+    /// fail and record the tombstones without touching the host app's queue or reminders.
+    struct Environment {
+        var save: @MainActor (ModelContext) throws -> Void
+        var trackDeletedHabit: @MainActor (String) -> Void
+        var trackDeletedEntry: @MainActor (String) -> Void
+        var removeReminder: @MainActor (UUID) -> Void
+
+        /// The app's own.
+        static var live: Environment {
+            Environment(
+                save: { try $0.save() },
+                trackDeletedHabit: { SyncService.shared.trackDeletedHabit($0) },
+                trackDeletedEntry: { SyncService.shared.trackDeletedEntry($0) },
+                // Its repeating reminder outlived it: "💪 Gym — Time to work on your habit!"
+                // every morning, with no row left to open and turn it off.
+                removeReminder: { NotificationService.shared.removeHabitReminder(for: $0) })
+        }
+    }
+
+    private static let logger = Logger(subsystem: "yyh.stride.habittracker", category: "Settings")
+
+    @discardableResult
+    static func delete(_ habit: Habit, in context: ModelContext, environment: Environment = .live) -> Outcome {
+        if context.hasChanges {
+            do {
+                try environment.save(context)
+            } catch {
+                report(error, step: "pending")
+                return .saveFailed
+            }
+        }
+
+        let habitID = habit.id
+        let entryIDs = HabitStats.liveRecordIDs(of: [habit], in: context).map(\.uuidString).sorted()
+        context.delete(habit)
+        do {
+            try environment.save(context)
+        } catch {
+            context.rollback()
+            report(error, step: "delete")
+            return .saveFailed
+        }
+
+        environment.trackDeletedHabit(habitID.uuidString)
+        for id in entryIDs { environment.trackDeletedEntry(id) }
+        environment.removeReminder(habitID)
+        return .deleted
+    }
+
+    /// Domain and code only, as HabitEntryCommit reports a failed save: Core Data's own error
+    /// carries the store's path and the objects in `userInfo`. A no-op under XCTest for Sentry.
+    private static func report(_ error: Error, step: String) {
+        let ns = error as NSError
+        logger.error("habit delete: the \(step, privacy: .public) save failed (\(ns.domain, privacy: .public) \(ns.code, privacy: .public)); nothing was deleted")
+        #if canImport(Sentry)
+        _ = SentrySDK.capture(error: NSError(domain: ns.domain, code: ns.code)) { scope in
+            scope.setTag(value: step, key: "habitdelete.step")
+        }
+        #endif
     }
 }
 
