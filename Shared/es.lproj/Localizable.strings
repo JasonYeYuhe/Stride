@@ -593,3 +593,11 @@
    user does not want combined. It puts the saved note back, unchanged, and then closes History,
    picks the other day, or makes the change that was asked for. */
 "Discard Changes" = "Descartar cambios";
+
+/* 1.4.1 W6 */
+
+/* Habit Templates (D15): the caption under a count template's name, and what VoiceOver reads as
+   the row's value — its daily goal: the number, then one of the "Template units (D15)" entries
+   ("8 glasses a day", "5 km a day", "8 hours a day"). Write the number and unit as this language's
+   template names write them ("Sleep 8hrs", "Read 30min"). */
+"%lld %@ a day" = "%lld %@ al día";

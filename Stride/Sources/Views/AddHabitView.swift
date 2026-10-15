@@ -279,7 +279,9 @@ struct AddHabitView: View {
             }
         }
         .sheet(isPresented: $showingTemplates) {
-            HabitTemplatesView()
+            // A picked template is the new habit (D15): this sheet closes with the templates
+            // sheet, instead of staying up behind it to save a second, hand-made habit.
+            HabitTemplatesView(onAdded: { dismiss() })
         }
         .alert("Save Failed", isPresented: $showSaveError) {
             Button("OK", role: .cancel) {}
