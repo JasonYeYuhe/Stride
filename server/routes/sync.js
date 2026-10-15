@@ -207,7 +207,9 @@ const sameValues = (a, b) => a.length === b.length && a.every((x, i) => x === b[
  *               unknown_habit     an entry whose habit this server does not have at all (e.g.
  *                                 the habit's own chunk has not landed yet) — retry
  *               invalid_value     a number no app can produce: not finite, out of range, or a
- *                                 fraction where an app sends a whole number (PUSH_BOUNDS below)
+ *                                 fraction where an app sends a whole number (PUSH_BOUNDS below);
+ *                                 or an entry date that is not a real Gregorian day in the window
+ *                                 (entryDateOk below; apps >= 1.3.1 only, older ones get a 426)
  *                                 — never applies as sent; quarantine it, do not retry
  *             The two not_owned reasons are ids that exist under another account. With 1.3.1's
  *             account isolation (the store has one owner; there is no "keep this device's
@@ -421,6 +423,94 @@ function legacyShape(req, habits, entries) {
   return noStamp + noKind > 0 ? { entries: noStamp, habits: noKind } : null;
 }
 
+/*
+ * Entry dates must be real Gregorian days near today (X2: docs/X2-non-gregorian-day-keys.md on
+ * m4/1.4.1, sections 5(c) and 5(d)).
+ *
+ * Every shipped build since 1.2.0 builds a check-in's day key with the device's own calendar
+ * and writes it with a Gregorian formatter. On a device whose system calendar is not Gregorian
+ * (th_TH, fa_IR, ps_AF and ar_SA default to one), 2026-10-15 goes out as "0008-10-15"
+ * (Japanese), "2569-10-15" (Buddhist), "1448-05-04" (Umm al-Qura), "5787-02-04" (Hebrew) and so
+ * on. This server used to store whatever arrived ("2026-02-30" too) and serve it to every device
+ * on the account: a Gregorian device there never shows those check-ins (they are years away from
+ * today), the same real day becomes two rows, and once that device has pulled one such row its
+ * own backups no longer restore (DataBackup accepts 1970–2100 only). The app fix re-keys them on
+ * the device (X2 5(a), 5(b)); the server's part is that no new one gets in. Rows already stored
+ * are not rewritten — only the device knows which calendar wrote them — and pull is not filtered
+ * (an app <= 1.3.0 deletes whatever a full pull lacks).
+ *
+ * An entry date is accepted when it is canonical YYYY-MM-DD (ASCII digits, zero-padded), a real
+ * day (it survives a round trip through Date.UTC, which "2026-02-30" does not), and within
+ * [ENTRY_DATE_FLOOR, server UTC today + ENTRY_DATE_LEAD_DAYS]. The floor is over a year before
+ * Stride's first commit (2026-03-27). The lead covers UTC+14, whose today is at most one UTC day
+ * ahead, with a day to spare. The window, not a plausibility range, is what catches Ethiopic
+ * Amete Mihret ("2019-02-05") and Indian ("1948-07-23") keys; 1970–2100 would let both through.
+ * A missing date is `missing_field`, as before.
+ *
+ * What a refused date does to the push depends on what the app does with the answer:
+ *   - An app >= 1.3.1 (a valid X-Stride-Client): that entry alone is skipped as `invalid_value`,
+ *     and the rest of the push applies. Those apps hold an invalid_value row
+ *     (SyncAnswers.rowAction -> .hold(.invalidValue)): kept on the device, never acknowledged —
+ *     so their full-pull rule cannot delete it — not re-sent until it is edited, and listed in
+ *     Settings as "A value the server doesn't accept". A new reason code would not do: a reason
+ *     the app does not know keeps the row pending, re-sent on every sync forever.
+ *   - Every other app — no header (1.2.3; the entry pushes of apps <= 1.2.2 are already refused by
+ *     legacyShape) and 1.3.0, which sends the header but none of the 1.3.1 contract: the WHOLE
+ *     push is refused, 426 client_update_required, before anything in it is written. A row-level
+ *     skip would cost them the row: they read only `ok`, and their next full pull (the first sync
+ *     after sign-in, or after a restore) deletes every local check-in the server does not hold
+ *     (v1.2.3 / v1.3.0 Shared/SyncReconciler.swift, `if isFullPull`). The 426 is safe for the
+ *     reason legacyShape's is: v1.2.3 and v1.3.0 SyncService.sync run `try await pushLocal(…)`
+ *     then `pullRemote(…)` in one do/catch, a non-2xx throws out of the push, so the pull never
+ *     runs, and the deletion queue is acknowledged only after a push succeeds. The device keeps
+ *     everything, shows the sentence (1.2.3 prints `error`, 1.3.0 `message` — errorBody), and
+ *     syncs again once it is on 1.4.0, which holds those rows instead.
+ * Counted as `invalid_entry_date` per refused entry, in either path, and
+ * `entry_date_push_refused` per refused push; logged as one line with the user id and the count —
+ * never a date, an id or an email.
+ */
+const ENTRY_DATE_FLOOR = "2025-01-01";
+const ENTRY_DATE_LEAD_DAYS = 2;
+const ENTRY_DATE_MESSAGE =
+  "Stride can't sync some dates on this device. Update Stride from the App Store to keep syncing; nothing on this device was changed.";
+const DAY_KEY = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/** The last day an entry may name: the server's UTC today plus the lead, as YYYY-MM-DD. Read
+ * once per push, so every entry in it is judged against the same day. @param {number} [nowMs] */
+function entryDateCeiling(nowMs = Date.now()) {
+  return new Date(nowMs + ENTRY_DATE_LEAD_DAYS * 86400000).toISOString().slice(0, 10);
+}
+
+/**
+ * Whether a pushed entry date is one this server accepts (the comment above).
+ * @param {unknown} date @param {string} ceiling from entryDateCeiling()
+ */
+function entryDateOk(date, ceiling) {
+  if (typeof date !== "string") return false;
+  const m = DAY_KEY.exec(date);
+  if (!m) return false;
+  // Date.UTC reads years 0–99 as 1900–1999, so "0008-10-15" fails the round trip as well; the
+  // window would refuse it either way.
+  const day = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  if (Number.isNaN(day.getTime()) || day.toISOString().slice(0, 10) !== date) return false;
+  return date >= ENTRY_DATE_FLOOR && date <= ceiling;
+}
+
+/**
+ * How many of a push's entries name a day entryDateOk refuses: rows with a usable id and a date
+ * (one without either is dropped or `missing_field`, as before).
+ * @param {unknown[]} entries @param {string} ceiling
+ */
+function badEntryDates(entries, ceiling) {
+  let n = 0;
+  for (const e of entries) {
+    if (!rowId(e)) continue;
+    const date = /** @type {any} */ (e).date;
+    if (date && !entryDateOk(date, ceiling)) n++;
+  }
+  return n;
+}
+
 /**
  * A failure that belongs to one row, not to the request: a constraint SQLite refused (the
  * statement is rolled back, the transaction survives), or a value better-sqlite3 cannot bind
@@ -520,6 +610,22 @@ router.post("/push", (req, res) => {
       + `${legacy.entries} entries without updatedAt, ${legacy.habits} habits without kind`);
     res.locals.syncStats = { user: userId, legacyRefused: legacy };
     return res.status(426).json(errorBody(req, "client_update_required", LEGACY_PUSH_MESSAGE));
+  }
+
+  // Also before anything is written: an app before 1.3.1 that sends an entry dated outside the
+  // window, or on no real day, is refused whole (the comment above entryDateOk). From 1.3.1 the
+  // entry alone is skipped as invalid_value, in the loop below.
+  const dateCeiling = entryDateCeiling();
+  if (!clientAtLeast(req, "1.3.1")) {
+    const bad = badEntryDates(entries, dateCeiling);
+    if (bad > 0) {
+      metrics.count("entry_date_push_refused");
+      metrics.count("invalid_entry_date", bad);
+      console.warn(`[sync] push user=${userId} refused push: `
+        + `${bad} entry dates not a real day in ${ENTRY_DATE_FLOOR}..${dateCeiling}`);
+      res.locals.syncStats = { user: userId, dateRefused: bad };
+      return res.status(426).json(errorBody(req, "client_update_required", ENTRY_DATE_MESSAGE));
+    }
   }
 
   // Caps only for clients that chunk. A client before 1.3.1 — and 1.3.0, which still pushes a
@@ -752,6 +858,8 @@ router.post("/push", (req, res) => {
   // before 1.3.1) wrote a line per row. So the id is quoted and cut, and only the first few
   // rows per request get a line; the rest are counted (`reasons` on the request line).
   let rowErrors = 0;
+  /** Entries skipped as invalid_value for their date (entryDateOk), counted after the commit. */
+  let badDates = 0;
   /** @param {"habits"|"entries"|"groups"} kind @param {string} id @param {any} err */
   const skipRowError = (kind, id, err) => {
     if (++rowErrors <= MAX_ROW_ERROR_LOG_LINES) {
@@ -901,6 +1009,9 @@ router.post("/push", (req, res) => {
       // After the habit checks: an entry of a deleted habit is dropped, whatever its value.
       const num = boundedNumbers(e, PUSH_BOUNDS.entries);
       if (!num) { skip("entries", id, "invalid_value"); continue; }
+      // A day outside the window, or no real day (entryDateOk). Only an app >= 1.3.1 gets here
+      // with one — any other app's push was refused whole above — and it holds the row.
+      if (!entryDateOk(e.date, dateCeiling)) { badDates++; skip("entries", id, "invalid_value"); continue; }
       const v = { note: e.note ?? null, value: num.value ?? 1 };
       // Clients before 1.2.3 send no entry updatedAt, and their pushes are refused (legacyShape).
       // What still falls back to `now` is a stamp a header-bearing app sent that does not parse
@@ -953,6 +1064,11 @@ router.post("/push", (req, res) => {
   for (const kind of /** @type {const} */ (["habits", "entries", "groups"])) {
     if (refed[kind] > 0) metrics.count(`lww_refeed.${kind}`, refed[kind]);
   }
+  if (badDates > 0) {
+    metrics.count("invalid_entry_date", badDates);
+    console.warn(`[sync] push user=${userId} skipped ${badDates} entries as invalid_value: `
+      + `date not a real day in ${ENTRY_DATE_FLOOR}..${dateCeiling}`);
+  }
 
   if (noId > 0) console.warn(`[sync] push user=${userId} dropped ${noId} row(s) with no usable id`);
   if (rowErrors > MAX_ROW_ERROR_LOG_LINES) {
@@ -968,6 +1084,7 @@ router.post("/push", (req, res) => {
     skipped: { habits: skipped.habits.size, entries: skipped.entries.size, groups: skipped.groups.size },
     ...(refed.habits + refed.entries + refed.groups > 0 ? { refed } : {}),
     ...(Object.keys(reasons).length > 0 ? { reasons } : {}),
+    ...(badDates > 0 ? { badDates } : {}),
     ...(noId > 0 ? { noId } : {}),
   };
   return res.json({
