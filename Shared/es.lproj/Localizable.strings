@@ -249,7 +249,6 @@
 "Share streak" = "Compartir racha";
 "Share Streak" = "Compartir racha";
 "Advanced Analytics" = "Análisis avanzado";
-"8-week trends, insights & weekly review" = "Tendencias de 8 semanas, análisis y resumen semanal";
 "Unlock with Pro" = "Desbloquear con Pro";
 "8-Week Trend" = "Tendencia de 8 semanas";
 "Insights" = "Análisis";
@@ -549,7 +548,7 @@
 "No streaks yet" = "Aún no hay rachas";
 
 /* Pro claims (D11): what Advanced Analytics contains, in the locked card on Statistics and on the
-   paywall (it replaces "8-week trends, insights & weekly review", left in place), and the
+   paywall (it replaced "8-week trends, insights & weekly review", removed in 1.4.1), and the
    paywall's subtitle for Weekly Review. "Your top 5 streaks", never "your best streaks": the free
    card keeps its Best Streak tile. */
 "Insights, the 8-week trend, the strength chart and your top 5 streaks" = "Análisis, la tendencia de 8 semanas, el gráfico de fuerza y tus 5 rachas más largas";

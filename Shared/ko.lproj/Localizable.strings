@@ -249,7 +249,6 @@
 "Share streak" = "연속 기록 공유";
 "Share Streak" = "연속 기록 공유";
 "Advanced Analytics" = "고급 분석";
-"8-week trends, insights & weekly review" = "8주 추세, 인사이트 및 주간 리뷰";
 "Unlock with Pro" = "Pro로 잠금 해제";
 "8-Week Trend" = "8주 추세";
 "Insights" = "인사이트";
@@ -549,7 +548,7 @@
 "No streaks yet" = "아직 연속 기록이 없습니다";
 
 /* Pro claims (D11): what Advanced Analytics contains, in the locked card on Statistics and on the
-   paywall (it replaces "8-week trends, insights & weekly review", left in place), and the
+   paywall (it replaced "8-week trends, insights & weekly review", removed in 1.4.1), and the
    paywall's subtitle for Weekly Review. "Your top 5 streaks", never "your best streaks": the free
    card keeps its Best Streak tile. */
 "Insights, the 8-week trend, the strength chart and your top 5 streaks" = "인사이트, 8주 추세, 습관 강도 차트 및 연속 기록 상위 5개";

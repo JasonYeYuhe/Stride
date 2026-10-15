@@ -12,11 +12,11 @@ Tampoco todos los hábitos son diarios. Elige entre todos los días, un número 
 
 RACHAS QUE TE IMPULSAN
 
-Stride cuenta tus rachas automáticamente. Los días que un hábito no toca son de descanso y no rompen la racha, y si te has propuesto un número de veces por semana, esa racha cuenta semanas en lugar de días. Tu mejor racha queda guardada junto a la actual, y puedes compartir cualquiera como imagen.
+Stride cuenta tus rachas automáticamente. Los días que un hábito no toca son de descanso y no rompen la racha, y si te has propuesto un número de veces por semana, esa racha cuenta semanas en lugar de días. Puedes compartir cualquier racha como imagen.
 
 ESTADÍSTICAS Y MAPA DE CALOR
 
-Sigue tu progreso con estadísticas detalladas y un mapa de calor de tus últimas 12 semanas. Consulta tu racha actual y la mejor, tu porcentaje de cumplimiento de los últimos 30 días y en qué días de la semana rindes más. En los hábitos programados solo ciertos días, ese porcentaje solo cuenta los días en los que tocaba.
+Sigue tu progreso con un mapa de calor de tus últimas 12 semanas. Consulta tu racha actual y la mejor, una puntuación de fuerza que se recupera si fallas un día, tu porcentaje de cumplimiento de los últimos 30 días y en qué días de la semana rindes más. En los hábitos de días concretos, ese porcentaje solo cuenta los días que tocaba. ¿Se te ha olvidado algún día? Corrige los días pasados en tu historial.
 
 WIDGETS PARA LA PANTALLA DE INICIO Y LA DE BLOQUEO (iPhone y iPad)
 
@@ -32,14 +32,14 @@ Marca los hábitos de la mañana en el iPhone, revisa tus estadísticas en el iP
 
 CASI TODO ES GRATIS
 
-Hábitos sin límite, hábitos medibles (objetivo y unidad), frecuencias flexibles, widgets, recordatorios para cada hábito, mapa de calor y estadísticas, plantillas, compartir rachas, exportación de datos (CSV o JSON) y sincronización entre dispositivos.
+Hábitos sin límite, hábitos medibles, frecuencias flexibles, widgets, recordatorios, mapa de calor y estadísticas, plantillas, compartir rachas, exportación en CSV o JSON y sincronización.
 
 STRIDE PRO
 
 Stride Pro añade tres cosas:
 
 • Grupos de hábitos: organízalos en grupos plegables.
-• Estadísticas avanzadas: la tarjeta de información y el gráfico de tendencia de 8 semanas.
+• Estadísticas avanzadas: la tarjeta de información, el gráfico de tendencia de 8 semanas, el gráfico de fuerza y tus 5 rachas más largas.
 • Revisión semanal: un repaso a cómo te ha ido la semana.
 
 TU PRIVACIDAD IMPORTA
