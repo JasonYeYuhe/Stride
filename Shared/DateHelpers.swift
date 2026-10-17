@@ -36,6 +36,23 @@ enum HabitCalendar {
             ?? utc.startOfDay(for: date)
     }
 
+    /// Day-key for an instant the SYSTEM supplied — a notification's delivery date, a response's
+    /// time: always that instant's local Y/M/D in `calendar`, anchored to UTC midnight.
+    ///
+    /// **Not idempotent, on purpose.** `dayKey(for:)` returns any instant that is exactly
+    /// 00:00:00.000 UTC unchanged, taking it for a key that was already made. A whole-minute
+    /// reminder in a negative UTC offset can be exactly that instant of the NEXT date: the default
+    /// 20:00 reminder in US Eastern daylight time fires at 00:00Z, as do 19:00 EST and 16:00 PST.
+    /// Through `dayKey(for:)` its Mark Done wrote tomorrow's record (RELEASE-1.4.0.md D4, the
+    /// design review's one blocker; invisible from UTC+9). Use this for instants and `dayKey(for:)`
+    /// for values that may already be keys — never the other way round: re-reading a stored key
+    /// here would move it back a day in the Americas, the bug `dayKey(for:)` documents.
+    static func dayKey(forInstant instant: Date, calendar: Calendar = .current) -> Date {
+        let c = calendar.dateComponents([.year, .month, .day], from: instant)
+        return utc.date(from: DateComponents(year: c.year, month: c.month, day: c.day))
+            ?? utc.startOfDay(for: instant)
+    }
+
     /// Normalize an already-stored record date (idempotent on day-keys).
     static func startOfKey(_ recordDate: Date) -> Date {
         utc.startOfDay(for: recordDate)

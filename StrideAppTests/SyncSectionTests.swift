@@ -217,7 +217,7 @@ final class SyncSectionTests: XCTestCase {
         try appendRecoveredEdit(named: "Someone else's", for: "99")
         sync.refreshRecoveredEdits()
         XCTAssertEqual(try content().recoveredEdits, 1)
-        XCTAssertEqual(sync.recoveredEditsFile.accountID, owner)
+        XCTAssertEqual(sync.recoveredEditsFile, .recoveredEdits(accountID: owner))
 
         try actions.clearRecoveredEdits()
 
@@ -505,6 +505,186 @@ final class SyncSectionTests: XCTestCase {
         XCTAssertEqual(sync.recoveredEdits?.lines, 2, "the row shows the new count")
 
         XCTAssertTrue(try actions.clearRecoveredEdits(expectedTotal: 2))
+        XCTAssertEqual(try recovery.log.lineCount(accountID: owner), 0)
+    }
+
+    // MARK: - Clear and Erase are bound to what was exported (1.4.0, RELEASE-1.4.0.md D6)
+
+    // The guards above compare with what the confirmation was built from. The row's count
+    // refreshes after every sync, so a dialog opened after the export can already count a line
+    // the export does not hold: export 1, a sync archives 1 more, the row reads 2, Clear or
+    // Erase confirmed for 2 took the line nobody exported — the only copy of that edit.
+
+    /// Where these tests' Export Recovered Edits writes, instead of the host app's tmp.
+    private func scratchExportRoot() -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("StrideAppTests-exports-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        return root
+    }
+
+    /// Export Recovered Edits as the button runs it: `write`, which remembers the total.
+    @discardableResult
+    private func exportRecoveredEdits(into root: URL) async throws -> WrittenExport {
+        try await DataExportService.write(sync.recoveredEditsFile, container: container, sync: sync, in: root)
+    }
+
+    func testClearAfterAnExportTakesNothingTheExportDidNotHold() async throws {
+        owners.set(SyncOwner(SyncSession.accountA.account))
+        let root = scratchExportRoot()
+        try appendRecoveredEdit(for: owner)
+        sync.refreshRecoveredEdits()
+        let first = try await exportRecoveredEdits(into: root)
+        XCTAssertEqual(first.recoveredEditsTotal, 1)
+        try appendRecoveredEdit(named: "Archived after the export", for: owner)
+        sync.refreshRecoveredEdits()
+        let shown = try XCTUnwrap(sync.recoveredEdits?.archivedTotal)
+        XCTAssertEqual(shown, 2, "the dialog opens on the refreshed count")
+
+        XCTAssertFalse(try actions.clearRecoveredEdits(expectedTotal: shown))
+        XCTAssertEqual(try recovery.log.lineCount(accountID: owner), 2, "nothing cleared")
+
+        // Exported again, now holding both: Clear goes through.
+        let second = try await exportRecoveredEdits(into: root)
+        XCTAssertEqual(second.recoveredEditsTotal, 2)
+        XCTAssertTrue(try actions.clearRecoveredEdits(expectedTotal: shown))
+        XCTAssertEqual(try recovery.log.lineCount(accountID: owner), 0)
+
+        // The clear forgot the export: the log starts again from 0, and lines that arrive now were
+        // never exported — clearing them is the user's choice again, as before any export.
+        try appendRecoveredEdit(named: "After the clear", for: owner)
+        sync.refreshRecoveredEdits()
+        XCTAssertTrue(try actions.clearRecoveredEdits(expectedTotal: 1))
+    }
+
+    /// Without any export, Clear is what it was: the confirmation tells the user to export first,
+    /// and clearing without doing so stays their choice.
+    func testClearWithNoExportIsBoundOnlyToItsConfirmation() throws {
+        owners.set(SyncOwner(SyncSession.accountA.account))
+        try appendRecoveredEdit(for: owner)
+        try appendRecoveredEdit(named: "Another", for: owner)
+        sync.refreshRecoveredEdits()
+
+        XCTAssertFalse(sync.hasRecoveredEditsNotExported())
+        XCTAssertTrue(try actions.clearRecoveredEdits(expectedTotal: 2))
+        XCTAssertEqual(try recovery.log.lineCount(accountID: owner), 0)
+    }
+
+    /// Erase, signed out: no pre-erase sync runs, but one before the tap archived a line after the
+    /// export. Nothing is erased; exported again, the erase goes through.
+    func testASignedOutEraseAfterAnExportTakesNothingTheExportDidNotHold() async throws {
+        tokens.delete()
+        sessions.session = nil
+        let auth = AuthService(api: server.makeClient(tokenStore: tokens), tokenStore: tokens,
+                               defaults: local.defaults, onSignOut: { [unowned self] in self.sync.signedOut() })
+        owners.set(SyncOwner(SyncSession.accountA.account))
+        let root = scratchExportRoot()
+        try appendRecoveredEdit(for: owner)
+        context.insert(Habit(name: "Local"))
+        try context.save()
+        sync.refreshRecoveredEdits()
+        try await exportRecoveredEdits(into: root)
+        try appendRecoveredEdit(named: "Archived after the export", for: owner)
+        sync.refreshRecoveredEdits()
+
+        let outcome = await DataExportService.eraseLocalData(in: context, clearingRecoveredEdits: true,
+                                                             recoveredEditTotalShown: 2, auth: auth, sync: sync,
+                                                             exportRoot: root)
+
+        XCTAssertEqual(outcome, .recoveredEditsChanged)
+        XCTAssertEqual(try recovery.log.lineCount(accountID: owner), 2)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<Habit>()), 1, "nothing erased")
+        XCTAssertEqual(owners.owner?.id, owner)
+
+        try await exportRecoveredEdits(into: root)
+        let again = await DataExportService.eraseLocalData(in: context, clearingRecoveredEdits: true,
+                                                           recoveredEditTotalShown: 2, auth: auth, sync: sync,
+                                                           exportRoot: root)
+        XCTAssertEqual(again, .erased)
+        XCTAssertEqual(try recovery.log.lineCount(accountID: owner), 0)
+        XCTAssertFalse(sync.hasRecoveredEditsNotExported(), "the erase's clear forgot the export")
+        XCTAssertTrue(server.requests.isEmpty)
+    }
+
+    /// Erase with a session: the confirmation counted 2, the pre-erase sync archived nothing, so
+    /// the F4 guard passes — but the export held 1. The binding stops it before the sign-out.
+    func testAnEraseWithASessionAfterAnExportStopsBeforeSigningOut() async throws {
+        owners.set(SyncOwner(SyncSession.accountA.account))
+        cursors.setCursor(recentCursor, for: owner)
+        let root = scratchExportRoot()
+        try appendRecoveredEdit(for: owner)
+        sync.refreshRecoveredEdits()
+        try await exportRecoveredEdits(into: root)
+        try appendRecoveredEdit(named: "Archived after the export", for: owner)
+        sync.refreshRecoveredEdits()
+        stubHappyServer()
+        server.on("GET", "/v1/auth/session",
+                  respond: .ok(#"{"user":{"id":7,"email":"a@example.com","created_at":"2026-09-01 10:00:00"}}"#))
+        server.on("POST", "/v1/auth/logout", respond: .ok(#"{"ok":true}"#))
+        let auth = AuthService(api: server.makeClient(tokenStore: tokens), tokenStore: tokens,
+                               defaults: local.defaults, onSignOut: { [unowned self] in self.sync.signedOut() })
+        await auth.waitForSessionRestore()
+
+        let outcome = await DataExportService.eraseLocalData(in: context, clearingRecoveredEdits: true,
+                                                             recoveredEditTotalShown: 2, auth: auth, sync: sync,
+                                                             exportRoot: root)
+
+        XCTAssertEqual(outcome, .recoveredEditsChanged)
+        XCTAssertEqual(try recovery.log.lineCount(accountID: owner), 2)
+        XCTAssertNotNil(tokens.read(), "still signed in: nothing was erased")
+        XCTAssertFalse(server.paths.contains("/v1/auth/logout"))
+    }
+
+    /// An Export Recovered Edits still being written holds Clear, Erase and Delete Account's
+    /// recheck (W4 review). The file reads the log off the main actor, after the tap's turn, so a
+    /// clear meanwhile could empty it first — and its share, landing under a confirmation or a
+    /// closed sheet, was dropped. Their buttons are disabled while it writes
+    /// (`SyncService.isWritingExport`); this is the service's own refusal, for an export tapped
+    /// while an erase or a recheck was already waiting on a sync. Once written, the file holds
+    /// every line, and each goes through.
+    func testAnExportStillBeingWrittenHoldsClearEraseAndDeleteAccount() async throws {
+        tokens.delete()
+        sessions.session = nil
+        let auth = AuthService(api: server.makeClient(tokenStore: tokens), tokenStore: tokens,
+                               defaults: local.defaults, onSignOut: { [unowned self] in self.sync.signedOut() })
+        owners.set(SyncOwner(SyncSession.accountA.account))
+        let root = scratchExportRoot()
+        try appendRecoveredEdit(for: owner)
+        context.insert(Habit(name: "Local"))
+        try context.save()
+        sync.refreshRecoveredEdits()
+        let step = DeleteAccountStep(email: "a@example.com", erasesDevice: true, hasLocalData: true,
+                                     recoveredEdits: sync.recoveredEdits)
+        XCTAssertFalse(sync.hasRecoveredEditsNotExported(), "nothing exported, nothing in flight")
+
+        let write = Task { @MainActor in try await self.exportRecoveredEdits(into: root) }
+        var tries = 0
+        while !sync.isWritingExport, tries < 20 {
+            await Task.yield()
+            tries += 1
+        }
+        // Its last step is on the main actor, so it cannot finish before this test suspends.
+        XCTAssertTrue(sync.isWritingExport, "the write has started")
+
+        XCTAssertTrue(sync.hasRecoveredEditsNotExported())
+        XCTAssertFalse(try actions.clearRecoveredEdits(expectedTotal: 1), "Clear, as confirmed")
+        let rechecked = await step.recheck(sync: sync, context: context)
+        XCTAssertEqual(rechecked?.recoveredEditsChanged, true, "Delete My Account, as the step showed")
+        let erase = await DataExportService.eraseLocalData(in: context, clearingRecoveredEdits: true,
+                                                           recoveredEditTotalShown: 1, auth: auth, sync: sync,
+                                                           exportRoot: root)
+        XCTAssertEqual(erase, .recoveredEditsChanged, "Erase, as confirmed")
+        XCTAssertTrue(sync.isWritingExport, "all three answered while the file was being written")
+        XCTAssertEqual(try recovery.log.lineCount(accountID: owner), 1)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<Habit>()), 1)
+
+        let written = try await write.value
+        XCTAssertEqual(written.recoveredEditsTotal, 1, "the file holds the line")
+        XCTAssertFalse(sync.isWritingExport)
+        XCTAssertFalse(sync.hasRecoveredEditsNotExported())
+        let goAhead = await step.recheck(sync: sync, context: context)
+        XCTAssertNil(goAhead)
+        XCTAssertTrue(try actions.clearRecoveredEdits(expectedTotal: 1))
         XCTAssertEqual(try recovery.log.lineCount(accountID: owner), 0)
     }
 

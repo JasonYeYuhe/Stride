@@ -77,8 +77,11 @@ else
     echo "==> [0/2] Hosted tests (simulator)"
     # Teed to a fixed path: when this runs inside tmux and fails, the session closes with the
     # script and takes the message with it; the file is what is left to read after reattaching.
+    # "iPhone 17" by name, never the E2E kit's iPhone 17 Pro: a hosted run there removes the
+    # device's pending reminders and spends its once-per-install flags (run_hosted_tests.sh's
+    # header). It waits up to 40 min for that device's lock, then stops with BLOCKED.
     mkdir -p build
-    ./scripts/ci/run_hosted_tests.sh 2>&1 | tee build/ship-hosted-tests.log || {
+    ./scripts/ci/run_hosted_tests.sh "iPhone 17" 2>&1 | tee build/ship-hosted-tests.log || {
         echo "✗ Hosted tests failed — nothing was archived or uploaded (build/ship-hosted-tests.log)."
         echo "  Fix them, or, only if the simulator itself is broken, rerun with"
         echo "  STRIDE_SKIP_HOSTED_TESTS=1."

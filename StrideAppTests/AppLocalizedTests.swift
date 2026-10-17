@@ -15,16 +15,25 @@ final class AppLocalizedTests: XCTestCase {
 
     private var saved: AppLanguage = .system
     private var hadStoredLanguage = false
+    private var notificationDefaults: ScratchDefaults?
 
     override func setUp() async throws {
         try await super.setUp()
         saved = LanguageManager.shared.selectedLanguage
         hadStoredLanguage = UserDefaults.standard.object(forKey: "stride_app_language") != nil
+        // Since 1.4.0 a language change hands the reminder actions and the pending reminders to
+        // the system again (`NotificationService.languageDidChange`): to a recording center here,
+        // never the host app's real one.
+        let scratch = ScratchDefaults("notifications.language")
+        notificationDefaults = scratch
+        NotificationService.testOverride = NotificationService(center: RecordingCenter(), defaults: scratch.defaults)
     }
 
     override func tearDown() async throws {
         LanguageManager.shared.selectedLanguage = saved
         if !hadStoredLanguage { UserDefaults.standard.removeObject(forKey: "stride_app_language") }
+        NotificationService.testOverride = nil
+        notificationDefaults?.remove()
         try await super.tearDown()
     }
 

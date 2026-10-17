@@ -65,6 +65,53 @@ check_display_name() {
     else fail "$1: CFBundleDisplayName missing from the built Info.plist"; fi
 }
 
+# plist_array <plist> <:Key>  — the array's entries, one per line; empty if the key is absent
+# or not an array. PlistBuddy prints an array as "Array {" / one indented entry per line / "}".
+plist_array() {
+    plist_get "$1" "$2" | sed -n 's/^ \{1,\}\(.*[^ ]\) *$/\1/p'
+}
+
+# The background refresh's identifier: BackgroundSync.taskIdentifier in
+# Stride/Sources/Services/BackgroundSync.swift. A hosted test (BackgroundSyncTests) checks the
+# constant against the built app's plist; this checks the plist itself.
+BG_REFRESH_TASK_ID="yyh.stride.habittracker.sync"
+
+# check_background_refresh_ios <Info.plist>
+# 1.4.0's background sync (RELEASE-1.4.0.md D5) needs two keys that are NOT on Xcode's
+# INFOPLIST_KEY_* allowlist, so they come from the hand-written Stride/Stride-Info.plist merged
+# into the generated one. Set as build settings they would be dropped without a warning — the
+# 1.2.0 SentryDSN trap — and nothing would fail: `register` would return false and every submit
+# would be refused, both only in the log. The arrays are parsed, not grepped.
+check_background_refresh_ios() {
+    local info="$1" modes ids
+    modes="$(plist_array "$info" :UIBackgroundModes)"
+    ids="$(plist_array "$info" :BGTaskSchedulerPermittedIdentifiers)"
+    if echo "$modes" | grep -qx "fetch"; then
+        pass "UIBackgroundModes contains fetch"
+    else
+        fail "UIBackgroundModes is [$(echo $modes)], expected it to contain fetch — background refresh would never run"
+    fi
+    if echo "$ids" | grep -qxF "$BG_REFRESH_TASK_ID"; then
+        pass "BGTaskSchedulerPermittedIdentifiers contains $BG_REFRESH_TASK_ID"
+    else
+        fail "BGTaskSchedulerPermittedIdentifiers is [$(echo $ids)], expected it to contain $BG_REFRESH_TASK_ID"
+    fi
+}
+
+# check_no_background_refresh_macos <Info.plist>
+# The partial plist is the iOS target's only (BGTaskScheduler is unavailable on macOS). On the
+# Mac, UIBackgroundModes means nothing and a stray key is a sign the plist reached StrideMac.
+check_no_background_refresh_macos() {
+    local info="$1" key
+    for key in UIBackgroundModes BGTaskSchedulerPermittedIdentifiers; do
+        if [[ -z "$(plist_get "$info" ":$key")" ]]; then
+            pass "no $key (iOS only)"
+        else
+            fail "$key present in the macOS Info.plist — Stride/Stride-Info.plist is the iOS target's"
+        fi
+    done
+}
+
 # check_sentry <Frameworks dir> <main executable>
 # Three halves of "crash reporting works", each of which has been — or silently could be —
 # missing while the build stayed green:
@@ -132,6 +179,7 @@ check_ios_app() {
     local app="${1%/}"
     local info="$app/Info.plist"
     check_app_common "Stride.app" "$info" "$app/PrivacyInfo.xcprivacy" "$app/Frameworks" "$app" "$app"
+    if [[ -f "$info" ]]; then check_background_refresh_ios "$info"; fi
 
     # The widget. With `embed: false` on the dependency in project.yml (or without the
     # dependency) there is no "Embed Foundation Extensions" phase and this directory simply does
@@ -162,4 +210,5 @@ check_macos_app() {
     check_app_common "Stride.app (macOS)" "$app/Contents/Info.plist" \
         "$app/Contents/Resources/PrivacyInfo.xcprivacy" "$app/Contents/Frameworks" \
         "$app" "$app/Contents/MacOS"
+    if [[ -f "$app/Contents/Info.plist" ]]; then check_no_background_refresh_macos "$app/Contents/Info.plist"; fi
 }

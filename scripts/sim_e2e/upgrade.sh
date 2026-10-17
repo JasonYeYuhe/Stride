@@ -1,12 +1,17 @@
 #!/bin/bash
 # upgrade.sh <udid> <old app> <new app> [--wait <s>] [--server <name>] [--label <name>] [--relaunch]
+#            [--reminders <daily habit id>,<Mon/Wed/Fri habit id>]
 #                                RELEASE GATE: one in-place upgrade on a simulator, checked.
 # upgrade.sh check-log <device log>     the device-log check alone, on a saved log
-# upgrade.sh check-gate <device log>    the store-gate order alone (no widget open before the app's)
+# upgrade.sh check-gate <device log> [<marker before>]
+#                                       the store-gate order alone (no widget open before the app's,
+#                                       unless at the schema the old build had already marked)
 # upgrade.sh check-dir <dir>            the default.store check alone, on a directory
 # upgrade.sh counts <store dir | file>  row counts of a saved store (read from a scratch copy)
 # upgrade.sh prefs <plist | plutil -p listing>
 #                                       its stride_delivery_* entries
+# upgrade.sh check-reminders <app.sh reminders listing | dir of the plists> <daily id>,<M/W/F id>
+#                                       the after-upgrade reminder check alone (below)
 #
 # Why (E2E U123 and MIG, 2026-10-07): on the first 1.3.1 launch after an in-place upgrade from
 # 1.2.3 or 1.3.0, chronod launched StrideWidgetExtension with the app; StrideWidget.init()
@@ -39,20 +44,46 @@
 #        - the store gate (the upgrade-race fix, review round): in the device log, no widget
 #          "Store opened in the extension" before the app's "Store opened by the app", and how
 #          often the widget was turned away before it ("Store not opened in the extension: …");
-#          then the marker the app wrote, stride_store_schema_version in the App Group prefs;
+#          then the marker the app wrote, stride_store_schema_version in the App Group prefs.
+#          From an old build that has the gate itself (1.3.1+), the App Group prefs saved before
+#          the install (group-prefs-before.txt) already hold the marker: a widget open BEFORE the
+#          app's, at that same schema, is what the gate allows (the store is at the widget's
+#          schema; nothing is pending to race), so it is a NOTE — unless the app then migrated
+#          the store after all (the model checksum changed), which still fails, as does a
+#          checksum that could not be read on either side (unknown is not unchanged);
 #        - the delivery marks: when the old store had rows 5+ min older than the old app's last
 #          sync (SyncDeliveryMigration.margin), the migration must have marked them — marks still
-#          waiting in the prefs, or a first full pull with ?deletionsSince= in the server log;
+#          waiting in the prefs, or a first full pull with ?deletionsSince= in the server log.
+#          From an old build that already ran it (stride_delivery_migration_v1_done in
+#          prefs-before.txt: 1.3.1+), this launch runs nothing and marks nothing: a NOTE — when no
+#          mark of the old build's still waited. When one did (stride_delivery_marks_unproven or
+#          …_unverified in prefs-before.txt), it must still wait after the launch, or the first
+#          full pull must have asked ?deletionsSince=; else the run fails (the marks were lost);
 #        - recovered edits: lines in the data container's SyncRecoveryLog. The gate's scenario
 #          makes no edit on the upgraded device, so any line is a row pushed back that was deleted
 #          elsewhere — the U123 relaunch's 17.
 #   5. with --relaunch: a second cold launch (the U123 relaunch pushed the whole store and filled
 #      Recovered Edits), its requests, and the recovered edits again.
+#   6. with --reminders <daily>,<mwf> (1.4.0, RELEASE-1.4.0.md D4/D7): the system's pending
+#      notification store, read from scratch copies of <device data>/Library/UserNotifications/
+#      <dir>/PendingNotifications.plist and Categories.plist (app.sh reminders, notifications.py).
+#        - before the install, as part of the starting point: both habits' bare 1.3.x ids,
+#          stride.habit.reminder.<id>, are pending (else exit 1: the recipe was not followed);
+#        - after the first launch, retried (the daemon writes the file after the app's adds and
+#          removes; STRIDE_E2E_REMINDER_TRIES × STRIDE_E2E_REMINDER_PAUSE s, default 10 × 3):
+#          the Mon/Wed/Fri habit has exactly .2, .4 and .6 and no bare id; the daily habit keeps
+#          exactly its bare id; both categories, stride.habit.binary and stride.habit.count, are
+#          registered; and when the archive's records show categories at all, those four requests
+#          carry one of the two.
+#      Without the flag nothing about reminders is read, so runs on devices with no reminder
+#      habits (every gate run before 1.4.0) work as they did. Why the system's store and not an
+#      app log line: design review upgrade-gate-blind-to-reminders; README, "Reminder habits",
+#      has the starting point (notification permission is granted on the OLD build, by hand).
 # Everything lands in $ROOT/upgrades/<label>/ (default <UTC time>-<pro|promax>), report.txt
 # included. Exit 0 PASS; 3 FAIL (a failed open in the log, any default.store, the app not running
-# after the wait, a widget open before the app's, no marker, unmarked rows, recovered edits); 1
-# the run could not be made. Never uninstalls, never opens the device's store with sqlite3 (it
-# reads scratch copies), never removes anything on the device.
+# after the wait, a widget open before the app's, no marker, unmarked rows or the old build's
+# waiting marks lost, recovered edits, reminders not converted); 1 the run could not be made. Never uninstalls, never opens the
+# device's store with sqlite3 (it reads scratch copies), never removes anything on the device.
 #
 # The check-* commands need no simulator. Each prints what it found; check-log and check-dir exit
 # 3 on a fallback, check-gate on a widget open before the app's, like the run.
@@ -111,11 +142,20 @@ check_log() {
 # open (which writes the marker first). Prints what the gate did; returns 3 when the widget opened
 # first, or the widget asked but the app never logged its open. Sets GATE_BUILD=1 when the log
 # has any gate line (a build with the gate, which must also have written the marker).
+#
+# <marker before>: stride_store_schema_version as the OLD build left it in the App Group prefs
+# (1.3.1+ writes it). A widget open before the app's, at exactly that schema, is the gate letting
+# the widget in on a store already at its schema — no migration pending for it to race — so it
+# is noted, not failed (GATE_EXCUSED=1; the run still fails it if the app then migrated the store).
+# Until the fix pass every such open failed, and every upgrade from v1.3.1 with a widget was a
+# false FAIL (E2E 2026-10-11, upgrades/e1-131to140-widget).
 GATE_BUILD=0
+GATE_EXCUSED=0
 check_gate() {
-  local log="$1" lines app ext waits before after
+  local log="$1" prev="${2:-}" lines app ext ext_schema waits before after
   [[ -f "$log" ]] || die "no device log at $log"
   GATE_BUILD=0
+  GATE_EXCUSED=0
   lines="$(grep -nE "$APP_OPEN_RE|$EXT_OPEN_RE|$EXT_WAIT_RE" "$log" || true)"
   if [[ -z "$lines" ]]; then
     echo "store gate: no gate line in the device log (a build before the schema gate)"
@@ -132,17 +172,28 @@ check_gate() {
   echo "store gate: the app opened the store and wrote the marker at log line $app:"
   sed -n "${app}p" "$log" | cut -c1-320 | sed 's/^/  /'
   if [[ -n "$ext" && "$ext" -lt "$app" ]]; then
-    echo "store gate: THE WIDGET OPENED THE STORE FIRST, at line $ext — the U123 race window:"
-    sed -n "${ext}p" "$log" | cut -c1-320 | sed 's/^/  /'
-    return 3
+    ext_schema="$(sed -n "${ext}s/.*Store opened in the extension at schema \([0-9][0-9]*\).*/\1/p" "$log")"
+    if [[ -n "$prev" && "$ext_schema" == "$prev" ]]; then
+      echo "NOTE: the widget opened the store before the app, at line $ext, at schema $ext_schema — the marker the old build had already written (stride_store_schema_version = $prev before the install). The gate lets the widget in at the store's own schema: no migration was pending for it to race (the model checksum is checked below):"
+      sed -n "${ext}p" "$log" | cut -c1-320 | sed 's/^/  /'
+      GATE_EXCUSED=1
+    else
+      echo "store gate: THE WIDGET OPENED THE STORE FIRST, at line $ext — the U123 race window${prev:+ (marker before the install: $prev; the widget opened at schema ${ext_schema:-?})}:"
+      sed -n "${ext}p" "$log" | cut -c1-320 | sed 's/^/  /'
+      return 3
+    fi
   fi
   waits="$(awk -v app="$app" -v re="$EXT_WAIT_RE" 'NR < app && $0 ~ re { sub(/.*Store not opened in the extension: /, ""); print }' "$log" | sort | uniq -c | sed 's/^ *//' || true)"
   if [[ -n "$waits" ]]; then
     echo "store gate: the widget was turned away before the app's open: $(tr '\n' ',' <<<"$waits" | sed 's/,$//; s/,/, /g')"
+  elif [[ $GATE_EXCUSED -eq 1 ]]; then
+    echo "store gate: the widget was let in at once: the marker was already there"
   else
     echo "NOTE: the widget asked for nothing before the app's open, so the gate was not exercised — only the extension's launch was. Place a Stride widget on the home screen for that (README)."
   fi
-  if [[ -n "$ext" ]]; then
+  if [[ $GATE_EXCUSED -eq 1 ]]; then
+    :
+  elif [[ -n "$ext" ]]; then
     echo "store gate: the widget opened the store after the app's open, at line $ext"
   else
     echo "NOTE: no widget open after the app's open (no Stride widget on the home screen, or none reloaded within the wait)"
@@ -223,6 +274,17 @@ store_counts() {
   echo "rows:${out}  syncedAt set:${synced:- (no ZSYNCEDAT column: a pre-1.3.1 model)}  model=$ck"
 }
 
+# The model checksum out of a store_counts line; nothing when it could not be read (the "?" of a
+# failed Z_METADATA/writefile/plutil read, or "no store at …"). Callers must treat nothing as
+# unknown, never as equal to another unknown.
+model_checksum() {
+  local ck
+  [[ "$1" == *"  model="* ]] || return 0
+  ck="${1##*  model=}"
+  [[ -n "$ck" && "$ck" != "?" ]] && echo "$ck"
+  return 0
+}
+
 # A directory, or a .store file: the store file in it.
 store_file() {
   if [[ -d "$1" ]]; then echo "$1/Stride.store"; else echo "$1"; fi
@@ -271,6 +333,134 @@ delivery_prefs() {
   fi
 }
 
+# The delivery marks still waiting in a prefs plist or `plutil -p` listing, by key
+# (stride_delivery_marks_unproven: for the proof; …_unverified: for the absence pass after it),
+# space-separated; nothing when none waits (SyncMarksProof removes each key when it is settled).
+waiting_marks() {
+  local src="$1" listing k found=""
+  [[ -f "$src" ]] || return 0
+  if plutil -lint -s "$src" >/dev/null 2>&1; then listing="$(plutil -p "$src")"; else listing="$(cat "$src")"; fi
+  for k in stride_delivery_marks_unproven stride_delivery_marks_unverified; do
+    if grep -Eq "^ *\"$k\" => (1|true)\$" <<<"$listing"; then found="${found:+$found }$k"; fi
+  done
+  echo "$found"
+}
+
+# ── Reminders (--reminders) ─────────────────────────────────────────────────────────────────
+# Read from an `app.sh reminders` listing: "request<TAB><id><TAB><category>…" lines (the header of
+# notifications.py). The ids are NotificationService's: stride.habit.reminder.<habit id> for a
+# daily trigger (1.3.x and 1.4.0 alike), stride.habit.reminder.<habit id>.<w> (w = 1 Sun … 7 Sat)
+# for 1.4.0's weekday triggers (D4).
+REMINDER_PREFIX="stride.habit.reminder."
+REMINDER_CATEGORIES="stride.habit.binary stride.habit.count"
+UUID_RE='^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$'
+
+# "<daily>,<mwf>" → REM_DAILY, REM_MWF (upper-cased: Habit.id.uuidString is upper case).
+parse_reminders_arg() {
+  local daily mwf
+  [[ "$1" == *,* ]] || die "--reminders <daily habit id>,<Mon/Wed/Fri habit id> (got '$1')"
+  daily="$(tr '[:lower:]' '[:upper:]' <<<"${1%%,*}")"
+  mwf="$(tr '[:lower:]' '[:upper:]' <<<"${1#*,}")"
+  [[ "$daily" =~ $UUID_RE && "$mwf" =~ $UUID_RE ]] || die "--reminders: two habit UUIDs, comma-separated (got '$1')"
+  [[ "$daily" != "$mwf" ]] || die "--reminders: the daily and the Mon/Wed/Fri habit must be two habits"
+  REM_DAILY="$daily"
+  REM_MWF="$mwf"
+}
+
+# The request ids of one habit in a listing, bare and .<w>, sorted, space-separated.
+habit_requests() {
+  awk -F'\t' -v p="$REMINDER_PREFIX$2" '$1 == "request" && ($2 == p || index($2, p ".") == 1) { print $2 }' "$1" \
+    | sort -u | tr '\n' ' ' | sed 's/ $//'
+}
+
+# A listing for an `app.sh reminders` output file or a directory holding the plists themselves.
+reminders_listing() {
+  local src="$1" out="$2"
+  if [[ -d "$src" ]]; then
+    {
+      printf 'source\t%s\n' "$src"
+      if [[ -f "$src/PendingNotifications.plist" ]]; then notifications_py requests "$src/PendingNotifications.plist"; else printf 'decoded-requests\tnone\n'; fi
+      if [[ -f "$src/Categories.plist" ]]; then notifications_py categories "$src/Categories.plist"; else printf 'decoded-categories\tnone\n'; fi
+    } >"$out" || die "could not decode the stores in $src"
+  else
+    [[ -f "$src" ]] || die "no reminders listing at $src"
+    cp "$src" "$out"
+  fi
+}
+
+# Before the install: the old build's state the run starts from. Both bare ids, nothing else for
+# the two habits (1.3.x knows no weekday id). Prints; returns 1 when the starting point is wrong.
+check_reminders_before() {
+  local listing="$1" id got rc=0
+  for id in "$REM_DAILY" "$REM_MWF"; do
+    got="$(habit_requests "$listing" "$id")"
+    if [[ "$got" == "$REMINDER_PREFIX$id" ]]; then
+      echo "reminders before: $REMINDER_PREFIX$id pending (the old build's daily trigger)"
+    else
+      echo "reminders before: habit $id has [${got:-nothing pending}], not exactly its bare id"
+      rc=1
+    fi
+  done
+  return $rc
+}
+
+# After the first launch: D4's conversion. Prints each finding; returns 3 on any failure.
+check_reminders() {
+  local listing="$1" got want rc=0 mode id cat cats_seen c cat_bad=0
+  mode="$(awk -F'\t' '$1 == "decoded-requests" { print $2; exit }' "$listing")"
+  [[ "$mode" != none && -n "$mode" ]] || { echo "reminders: NO PendingNotifications.plist after the launch (every request removed?)"; return 3; }
+  got="$(habit_requests "$listing" "$REM_DAILY")"
+  want="$REMINDER_PREFIX$REM_DAILY"
+  if [[ "$got" == "$want" ]]; then
+    echo "reminders: the daily habit keeps exactly its bare id ($want)"
+  else
+    echo "reminders: DAILY HABIT $REM_DAILY has [${got:-nothing pending}], want exactly [$want]"
+    rc=3
+  fi
+  got="$(habit_requests "$listing" "$REM_MWF")"
+  want="$REMINDER_PREFIX$REM_MWF.2 $REMINDER_PREFIX$REM_MWF.4 $REMINDER_PREFIX$REM_MWF.6"
+  if [[ "$got" == "$want" ]]; then
+    echo "reminders: the Mon/Wed/Fri habit has exactly .2 .4 .6 and no bare id"
+  else
+    echo "reminders: MON/WED/FRI HABIT $REM_MWF has [${got:-nothing pending}], want exactly [$want]"
+    rc=3
+  fi
+  # The requests' categories. Asserted only when the archive's records show categories at all:
+  # the record keys were read from the runtime's strings, not from a real store (notifications.py),
+  # so "no category anywhere" may be a key the decoder does not know rather than a missing one.
+  if [[ "$mode" == strings ]]; then
+    echo "NOTE: the pending store's records were not decoded (strings fallback): request categories not checked"
+  else
+    cats_seen="$(awk -F'\t' '$1 == "request" && index($2, "stride.habit.") == 1 && $3 != "-" { print $3 }' "$listing" | sort -u | tr '\n' ' ')"
+    if [[ -z "$cats_seen" ]]; then
+      echo "NOTE: no Stride request in the store shows a category: either none was set (a D4 bug) or the record keeps it under a key notifications.py does not know — read reminders-after/PendingNotifications.plist with plutil -p"
+    else
+      for id in "$REM_DAILY" "$REM_MWF.2" "$REM_MWF.4" "$REM_MWF.6"; do
+        cat="$(awk -F'\t' -v i="$REMINDER_PREFIX$id" '$1 == "request" && $2 == i { print $3; exit }' "$listing")"
+        case " $REMINDER_CATEGORIES " in
+          *" $cat "*) ;;
+          *) [[ -z "$cat" ]] || { echo "reminders: $REMINDER_PREFIX$id carries category '$cat', not stride.habit.binary or stride.habit.count"; cat_bad=1; } ;;
+        esac
+      done
+      if [[ $cat_bad -eq 0 ]]; then echo "reminders: the requests carry ${cats_seen% }"; else rc=3; fi
+    fi
+  fi
+  if [[ "$(awk -F'\t' '$1 == "decoded-categories" { print $2; exit }' "$listing")" == none ]]; then
+    echo "reminders: NO Categories.plist: the app registered no notification category"
+    rc=3
+  else
+    for c in $REMINDER_CATEGORIES; do
+      if awk -F'\t' -v c="$c" '$1 == "category" && $2 == c { f = 1 } END { exit !f }' "$listing"; then
+        echo "reminders: category $c registered ($(awk -F'\t' -v c="$c" '$1 == "category" && $2 == c { print $3; exit }' "$listing"))"
+      else
+        echo "reminders: CATEGORY $c NOT REGISTERED"
+        rc=3
+      fi
+    done
+  fi
+  return $rc
+}
+
 # ── Offline commands ────────────────────────────────────────────────────────────────────────
 RC=0
 case "${1:-}" in
@@ -279,8 +469,9 @@ case "${1:-}" in
     check_log "$2" || RC=$?
     exit $RC ;;
   check-gate)
-    [[ -n "${2:-}" ]] || die "usage: upgrade.sh check-gate <device log>"
-    check_gate "$2" || RC=$?
+    [[ -n "${2:-}" ]] || die "usage: upgrade.sh check-gate <device log> [<schema marker before the install>]"
+    [[ -z "${3:-}" || "${3:-}" =~ ^[0-9]+$ ]] || die "check-gate: the marker before the install is a number (got '$3')"
+    check_gate "$2" "${3:-}" || RC=$?
     exit $RC ;;
   check-dir)
     [[ -n "${2:-}" ]] || die "usage: upgrade.sh check-dir <dir>"
@@ -294,12 +485,21 @@ case "${1:-}" in
     [[ -n "${2:-}" ]] || die "usage: upgrade.sh prefs <plist | plutil -p listing>"
     delivery_prefs "$2"
     exit 0 ;;
+  check-reminders)
+    [[ -n "${2:-}" && -n "${3:-}" ]] || die "usage: upgrade.sh check-reminders <app.sh reminders listing | dir of the plists> <daily id>,<M/W/F id>"
+    parse_reminders_arg "$3"
+    mkdir -p "$ROOT/scratch"
+    L="$ROOT/scratch/reminders-listing.$$"
+    reminders_listing "$2" "$L"
+    check_reminders "$L" || RC=$?
+    rm -f "$L"
+    exit $RC ;;
   ""|-h|--help)
-    die "usage: upgrade.sh <udid> <old app> <new app> [--wait <s>] [--server <name>] [--label <name>] [--relaunch] | check-log <log> | check-gate <log> | check-dir <dir> | counts <store> | prefs <plist>" ;;
+    die "usage: upgrade.sh <udid> <old app> <new app> [--wait <s>] [--server <name>] [--label <name>] [--relaunch] [--reminders <daily id>,<M/W/F id>] | check-log <log> | check-gate <log> [<marker before>] | check-dir <dir> | counts <store> | prefs <plist> | check-reminders <listing|dir> <daily id>,<M/W/F id>" ;;
 esac
 
 # ── The run ─────────────────────────────────────────────────────────────────────────────────
-[[ $# -ge 3 ]] || die "usage: upgrade.sh <udid> <old app> <new app> [--wait <s>] [--server <name>] [--label <name>] [--relaunch]"
+[[ $# -ge 3 ]] || die "usage: upgrade.sh <udid> <old app> <new app> [--wait <s>] [--server <name>] [--label <name>] [--relaunch] [--reminders <daily id>,<M/W/F id>]"
 UDID="$(resolve_udid "$1")"
 OLD="$2"
 NEW="$3"
@@ -308,9 +508,15 @@ WAIT=20
 SERVER=""
 LABEL=""
 RELAUNCH=0
+REM_DAILY=""
+REM_MWF=""
+REM_TRIES="${STRIDE_E2E_REMINDER_TRIES:-10}"
+REM_PAUSE="${STRIDE_E2E_REMINDER_PAUSE:-3}"
+[[ "$REM_TRIES" =~ ^[1-9][0-9]*$ && "$REM_PAUSE" =~ ^[0-9]+$ ]] || die "STRIDE_E2E_REMINDER_TRIES (≥ 1) and STRIDE_E2E_REMINDER_PAUSE must be whole numbers"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --relaunch) RELAUNCH=1 ;;
+    --reminders) [[ -n "${2:-}" ]] || die "--reminders <daily id>,<M/W/F id>"; parse_reminders_arg "$2"; shift ;;
     --wait) [[ "${2:-}" =~ ^[0-9]+$ ]] || die "--wait <seconds>"; WAIT="$2"; shift ;;
     --server) [[ -n "${2:-}" ]] || die "--server <name>"; SERVER="$2"; check_name "$SERVER"; shift ;;
     --label) [[ "${2:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "--label <letters, digits, . _ ->"; LABEL="$2"; shift ;;
@@ -349,6 +555,8 @@ copy_store() {
 
 run() {
   local installed grp grp2 data t0 mark="" log="" pid fail="" ck_before ck_after last_sync="" qualify edits_before edits marker mark2
+  local try rem_ok marker_before="" migrated_before=0 gate_text marks_text model_before model_after
+  local waiting_before="" waiting_after
   echo "upgrade.sh: $OLD_V → $NEW_V on $DEV ($UDID), evidence in $OUT"
 
   section "starting point"
@@ -372,14 +580,43 @@ run() {
   else
     echo "NOTE: no prefs plist before the upgrade ($(tail -1 "$OUT/prefs-before.txt"))"
   fi
+  # What the old build already did: a 1.3.1+ build ran the delivery migration on its own first
+  # launch and writes the store gate's marker on every open. Saved before the install, so the
+  # checks below can tell the new build's work from the old one's.
+  if grep -Eq '"stride_delivery_migration_v1_done" => (1|true)' "$OUT/prefs-before.txt" 2>/dev/null; then
+    migrated_before=1
+    waiting_before="$(waiting_marks "$OUT/prefs-before.txt")"
+    [[ -z "$waiting_before" ]] || echo "the old build's delivery marks still wait for their proof: $waiting_before"
+  fi
+  if "$APP_SH" prefs "$UDID" group >"$OUT/group-prefs-before.txt" 2>&1; then
+    marker_before="$(sed -n 's/^ *"stride_store_schema_version" => \([0-9][0-9]*\)$/\1/p' "$OUT/group-prefs-before.txt")"
+  fi
+  if [[ -n "$marker_before" ]]; then
+    echo "App Group marker before the install: stride_store_schema_version = $marker_before (the old build has the store gate)"
+  else
+    echo "App Group marker before the install: none (a build before the store gate)"
+  fi
   store_sha1 "$grp" >"$OUT/sha1-before.txt"
   copy_store "$grp" "$OUT/before"
   echo "Stride.store (copied to before/):"
   sed 's/^/  sha1 /' "$OUT/sha1-before.txt"
   echo "  $(store_counts "$OUT/before/Stride.store")"
   qualify="$(qualifying_rows "$OUT/before/Stride.store" "$last_sync")"
-  echo "  rows the delivery migration must mark (5+ min before the last sync${last_sync:+, $last_sync}): $qualify"
+  if [[ $migrated_before -eq 1 ]]; then
+    echo "  rows 5+ min before the last sync${last_sync:+ ($last_sync)}: $qualify — the old build already ran the delivery migration (stride_delivery_migration_v1_done), so none is this launch's to mark"
+  else
+    echo "  rows the delivery migration must mark (5+ min before the last sync${last_sync:+, $last_sync}): $qualify"
+  fi
   edits_before="$(recovered_edits "$data")"
+  if [[ -n "$REM_DAILY" ]]; then
+    # Read while the old build's requests are all there is. The stores live outside the app's
+    # containers, so the in-place install should leave them alone; the new build's first launch
+    # is what changes them (its reschedule and prune, D4).
+    "$APP_SH" reminders "$UDID" "$OUT/reminders-before" >"$OUT/reminders-before.txt" \
+      || die "--reminders: could not read the device's notification store before the upgrade (above). The starting point needs notifications allowed and both reminder habits on, on the OLD build: README, \"Reminder habits\""
+    check_reminders_before "$OUT/reminders-before.txt" \
+      || die "--reminders: the starting point is not the old build's two reminders (reminders-before.txt): README, \"Reminder habits\""
+  fi
 
   section "in-place install of $NEW_V"
   # From before the install: chronod may start the widget before the app's first launch.
@@ -418,7 +655,7 @@ run() {
   check_log "$OUT/devicelog.txt" || fail="$fail; a failed store open in the device log (CoreData 134110/134100, the fallback, or the error screen)"
 
   section "store gate (devicelog.txt, group-prefs-after.txt)"
-  check_gate "$OUT/devicelog.txt" || fail="$fail; the widget opened the store before the app had (the U123 race window)"
+  check_gate "$OUT/devicelog.txt" "$marker_before" || fail="$fail; the widget opened the store before the app had (the U123 race window)"
   "$APP_SH" prefs "$UDID" group >"$OUT/group-prefs-after.txt" 2>&1 || true
   marker="$(sed -n 's/^ *"stride_store_schema_version" => \([0-9][0-9]*\)$/\1/p' "$OUT/group-prefs-after.txt")"
   if [[ -n "$marker" ]]; then
@@ -444,10 +681,24 @@ run() {
   ck_after="$(store_counts "$OUT/after/Stride.store")"
   echo "before: $ck_before"
   echo "after:  $ck_after"
-  if [[ "${ck_before##*model=}" == "${ck_after##*model=}" ]]; then
+  model_before="$(model_checksum "$ck_before")"
+  model_after="$(model_checksum "$ck_after")"
+  if [[ -z "$model_before" || -z "$model_after" ]]; then
+    # Unread is not unchanged: "?" == "?" used to read as "unchanged", and an excused widget-first
+    # open then passed on nothing (second fix pass).
+    echo "model checksum: COULD NOT BE READ (before: ${model_before:-?}, after: ${model_after:-?}) — whether the new app migrated Stride.store is unknown"
+    if [[ $GATE_EXCUSED -eq 1 ]]; then
+      echo "  — and the widget had opened it before the app: nothing rules out a migration it raced"
+      fail="$fail; the widget opened the store before the app had, and the model checksum could not be read to rule out a migration (the U123 race window)"
+    fi
+  elif [[ "$model_before" == "$model_after" ]]; then
     echo "model checksum unchanged: the new app did not migrate Stride.store (right only when the release changes no model)"
   else
     echo "model checksum changed: Stride.store was migrated"
+    if [[ $GATE_EXCUSED -eq 1 ]]; then
+      echo "  — and the widget had opened it before the app, at the old schema: THE U123 RACE WINDOW after all"
+      fail="$fail; the widget opened the store before the app had, which then migrated it (the U123 race window)"
+    fi
   fi
 
   section "prefs after the first launch (prefs-after.txt)"
@@ -465,7 +716,25 @@ run() {
   fi
 
   section "delivery marks"
-  if [[ "$qualify" == "?" ]]; then
+  if [[ $migrated_before -eq 1 && -n "$waiting_before" ]]; then
+    # The old build ran the migration, but its marks still waited for their proof or for the
+    # absence pass after it (a 1.3.1 device upgraded from 1.2.x/1.3.0 that never made the full
+    # pull). Nothing proves them but that pull, so the new build must keep them waiting or ask
+    # ?deletionsSince= itself; lost, the next full pull can archive rows deleted elsewhere — U123's
+    # data loss, which the NOTE below used to pass on (second fix pass).
+    waiting_after="$(waiting_marks "$OUT/prefs-after.txt")"
+    if [[ -n "$waiting_after" ]]; then
+      echo "the old build's marks still wait (prefs-before.txt: $waiting_before; prefs-after.txt: $waiting_after)"
+    elif [[ -s "$OUT/requests.txt" ]] && grep -Eq 'GET /v1/sync/pull\?([^ ]*&)?deletionsSince=' "$OUT/requests.txt"; then
+      echo "the old build's marks waited ($waiting_before), and the first full pull asked ?deletionsSince= (their proof ran)"
+    else
+      echo "UNPROVEN MARKS LOST: the old build's marks waited ($waiting_before in prefs-before.txt), yet none waits now and no pull asked ?deletionsSince= — the next full pull can archive rows deleted elsewhere (U123)"
+      [[ -n "$SERVER" ]] || echo "  (no --server: a proof that ran could not be seen; rerun with --server <name>)"
+      fail="$fail; the old build's unproven delivery marks were lost (none waits, and no pull asked ?deletionsSince=)"
+    fi
+  elif [[ $migrated_before -eq 1 ]]; then
+    echo "NOTE: the old build had already run the delivery migration (stride_delivery_migration_v1_done in prefs-before.txt) and no mark of its waits (no stride_delivery_marks_unproven or _unverified there): this launch runs none and marks nothing; the $qualify row(s) older than its last sync were the old build's to mark, and its marks were proved"
+  elif [[ "$qualify" == "?" ]]; then
     echo "NOTE: could not count the rows the migration must mark (no last sync in the old prefs, or a store without stamps)"
   elif [[ "$qualify" -eq 0 ]]; then
     echo "no row was 5+ min older than the old app's last sync: the migration has nothing to mark"
@@ -484,6 +753,37 @@ run() {
   echo "SyncRecoveryLog lines: $edits_before before the upgrade, $edits after the first launch"
   if [[ "$edits" -gt "$edits_before" ]]; then
     fail="$fail; $((edits - edits_before)) recovered edit(s) after the first launch"
+  fi
+
+  if [[ -n "$REM_DAILY" ]]; then
+    section "reminders after the first launch (reminders-before.txt, reminders-after.txt, reminders-check.txt)"
+    # Retried: usernotificationsd applies the app's removes and adds asynchronously and writes the
+    # plist after them, so the first read can still show the old build's state.
+    rem_ok=0
+    try=1
+    while :; do
+      rm_under_root "$OUT/reminders-after"
+      : >"$OUT/reminders-check.txt"
+      if "$APP_SH" reminders "$UDID" "$OUT/reminders-after" >"$OUT/reminders-after.txt" 2>"$OUT/reminders-after.err" \
+         && check_reminders "$OUT/reminders-after.txt" >"$OUT/reminders-check.txt"; then
+        rem_ok=1
+        break
+      fi
+      [[ $try -lt $REM_TRIES ]] || break
+      sleep "$REM_PAUSE"
+      try=$((try + 1))
+    done
+    echo "read $try time(s); pending for the two habits:"
+    echo "  before: daily [$(habit_requests "$OUT/reminders-before.txt" "$REM_DAILY")]  M/W/F [$(habit_requests "$OUT/reminders-before.txt" "$REM_MWF")]"
+    if [[ -s "$OUT/reminders-check.txt" ]]; then
+      echo "  after:  daily [$(habit_requests "$OUT/reminders-after.txt" "$REM_DAILY")]  M/W/F [$(habit_requests "$OUT/reminders-after.txt" "$REM_MWF")]"
+      cat "$OUT/reminders-check.txt"
+    else
+      echo "  after:  could not be read: $(tail -1 "$OUT/reminders-after.err" 2>/dev/null)"
+    fi
+    if [[ $rem_ok -eq 0 ]]; then
+      fail="$fail; the reminders were not converted as D4 requires (reminders-check.txt)"
+    fi
   fi
 
   if [[ $RELAUNCH -eq 1 ]]; then
@@ -514,14 +814,29 @@ run() {
   section "verdict"
   if [[ -n "$fail" ]]; then
     echo "FAIL: $OLD_V → $NEW_V on $DEV: ${fail#; }."
+    # Only an actual failed open is called one: the report used to say "did not open Stride.store"
+    # for a widget-first or unmarked-rows fail too, with "Store opened by the app" in the log.
     case "$fail" in
-      *default.store*|*"failed store open"*|*"before the app had"*|*"marked none"*|*"recovered edit"*)
+      *default.store*|*"failed store open"*)
         echo "The first launch after the upgrade did not open Stride.store: an App Store update would show the user an empty app (the fallback, then a whole-store push on the next launch, E2E U123) or the store error screen, not their habits." ;;
+    esac
+    case "$fail" in
+      *"before the app had"*|*"marked none"*|*"marks were lost"*|*"recovered edit"*)
+        echo "A sign of the upgrade race (E2E U123), whether or not the store opened: a widget open that could race the app's migration, rows the delivery migration left unmarked or marks the old build left waiting that were lost (the next full pull can archive rows deleted elsewhere), or rows pushed back that were deleted elsewhere." ;;
+    esac
+    case "$fail" in
+      *"reminders were not converted"*)
+        echo "The 1.3.x reminders were not turned into 1.4.0's: a specific-days habit would keep nagging on rest days (or a daily one fall silent), and the action buttons need the categories (D4)." ;;
     esac
     echo "Evidence: $OUT"
     return 3
   fi
-  echo "PASS: $OLD_V → $NEW_V on $DEV: the first launch opened Stride.store; no failed open in the device log, no default.store, no widget open before the app's, no unmarked rows, no recovered edits. Evidence: $OUT"
+  gate_text="no widget open before the app's"
+  [[ $GATE_EXCUSED -eq 1 ]] && gate_text="the widget opened only at the schema the old build had marked (no migration to race)"
+  marks_text="no unmarked rows"
+  [[ $migrated_before -eq 1 ]] && marks_text="the delivery migration already the old build's"
+  [[ -n "$waiting_before" ]] && marks_text="$marks_text, its waiting marks kept or proved"
+  echo "PASS: $OLD_V → $NEW_V on $DEV: the first launch opened Stride.store; no failed open in the device log, no default.store, $gate_text, $marks_text, no recovered edits${REM_DAILY:+; the reminders converted (.2 .4 .6 for the M/W/F habit, the daily bare id kept, both categories registered)}. Evidence: $OUT"
 }
 
 run 2>&1 | tee "$OUT/report.txt"

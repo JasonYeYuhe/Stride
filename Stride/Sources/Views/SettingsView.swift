@@ -23,7 +23,8 @@ struct SettingsView: View {
     @State private var showSaveError = false
     @State private var habitToEdit: Habit?
 
-    // Notification states
+    // Notification states: copies of NotificationService (not observable), read when the view is
+    // created and again each time Settings is shown (`refreshReminderSettings`).
     @State private var reminderEnabled = NotificationService.shared.isReminderEnabled
     @State private var reminderTime = NotificationService.shared.reminderTime
     @State private var morningEnabled = NotificationService.shared.isMorningMotivationEnabled
@@ -66,6 +67,9 @@ struct SettingsView: View {
     private var auth = AuthService.shared
     private var sync = SyncService.shared
     private var languageManager = LanguageManager.shared
+    /// False while the iPad shell keeps Settings alive but hidden (RELEASE-1.4.0.md D2); the
+    /// "when shown" refreshes below wait for it. Always true in the Mac's Settings window.
+    @Environment(\.shellTabIsActive) private var isActive
 
     private var activeHabits: [Habit] {
         allHabits.filter { !$0.isArchived }
@@ -272,6 +276,15 @@ struct SettingsView: View {
                     }
                     .tint(.green)
                     .onChange(of: reminderEnabled) { _, newValue in
+                        // The three rows write to the service only what it does not already
+                        // hold. Not every change here is the user's: the refresh each time
+                        // Settings is shown copies the service's values in
+                        // (`refreshReminderSettings`), and writing one back is not free. "On"
+                        // asks for permission and reschedules every habit; where permission has
+                        // since been revoked, the ask is refused, the toggle bounces off and the
+                        // reminder is switched off for every window, with nobody touching it
+                        // (ShellTests watches for the write-back).
+                        guard newValue != NotificationService.shared.isReminderEnabled else { return }
                         handleReminderToggle(newValue)
                     }
 
@@ -282,6 +295,7 @@ struct SettingsView: View {
                             displayedComponents: .hourAndMinute
                         )
                         .onChange(of: reminderTime) { _, newValue in
+                            guard !Self.sameClockTime(newValue, NotificationService.shared.reminderTime) else { return }
                             NotificationService.shared.reminderTime = newValue
                         }
 
@@ -299,6 +313,7 @@ struct SettingsView: View {
                         }
                         .tint(.orange)
                         .onChange(of: morningEnabled) { _, newValue in
+                            guard newValue != NotificationService.shared.isMorningMotivationEnabled else { return }
                             NotificationService.shared.isMorningMotivationEnabled = newValue
                         }
                     }
@@ -497,26 +512,16 @@ struct SettingsView: View {
 
                 // Export Data
                 Section {
-                    // Transferable files holding only the container: nothing is serialised until
-                    // the user picks a destination. Two `let`s used to stand here, running the
-                    // CSV and the JSON export of the whole history on every render of this
-                    // screen — every sync tick, entitlement refresh and edit — on the main thread.
-                    // No `message:` on a file's ShareLink: the share sheet sends it as an item of
-                    // its own, and Save to Files wrote it beside the file as text.txt ("JSON export
-                    // of all habits", E2E S6). The subject is only a mail subject.
-                    ShareLink(
-                        item: HabitsCSVFile(container: modelContext.container),
-                        subject: Text("Stride Habits Export"),
-                        preview: SharePreview(DataExportService.fileName("Stride-Export", extension: "csv"))
-                    ) {
+                    // Written on the tap, then shared (ExportShareButton): nothing is serialised
+                    // until then. Two `let`s used to stand here, running the CSV and the JSON
+                    // export of the whole history on every render of this screen — every sync
+                    // tick, entitlement refresh and edit — on the main thread. The JSON names the
+                    // store's owner as the tap finds it (`ExportFile.ownerBackup`).
+                    ExportShareButton(.csv, sync: sync) {
                         Label("Export as CSV", systemImage: "tablecells")
                     }
 
-                    ShareLink(
-                        item: BackupJSONFile(container: modelContext.container),
-                        subject: Text("Stride Habits Export"),
-                        preview: SharePreview(DataExportService.fileName("Stride-Backup", extension: "json"))
-                    ) {
+                    ExportShareButton(.ownerBackup, sync: sync) {
                         Label("Export as JSON", systemImage: "curlybraces")
                     }
 
@@ -564,7 +569,7 @@ struct SettingsView: View {
                         // Offered first (phase C): the erase clears the recovered edits too, and
                         // they are the only copy of the edits a deletion took.
                         if recoveredEditLines > 0 {
-                            RecoveredEditsShareLink(sync: sync)
+                            RecoveredEditsExportButton(sync: sync)
                         }
                         Button(role: .destructive) {
                             eraseError = nil
@@ -581,7 +586,9 @@ struct SettingsView: View {
                                 }
                             }
                         }
-                        .disabled(isErasing || sync.isSyncing)
+                        // Not while an export is still being written either: it is the copy of
+                        // what this erases, shared only once written (`SyncService.isWritingExport`).
+                        .disabled(isErasing || sync.isSyncing || sync.isWritingExport)
                     } footer: {
                         if let eraseError {
                             inlineError(eraseError)
@@ -618,7 +625,8 @@ struct SettingsView: View {
                     }
                 }
             }
-            .navigationTitle("Settings")
+            // No title of its own: the shell sets it (ContentView.title), and the Mac's Settings
+            // window gets it from StrideApp.
             .alert("Delete Habit", isPresented: $showingDeleteAlert) {
                 Button("Cancel", role: .cancel) {
                     habitToDelete = nil
@@ -751,11 +759,17 @@ struct SettingsView: View {
                 eraseConfirmMessage
             }
             .onChange(of: auth.isLoggedIn) { _, loggedIn in
-                if loggedIn {
-                    Task { await sync.sync(context: modelContext) }
-                }
+                guard loggedIn else { return }
+                let trigger = Self.syncTrigger(afterUserLoadedBy: auth.userLoadedBy)
+                Task { await sync.sync(context: modelContext, trigger: trigger) }
             }
-            .task {
+            // Each time Settings is shown. A `.task` alone runs when the view appears, and at
+            // regular width the shell keeps Settings alive once visited, hidden while another place
+            // shows: it would appear once, and the reminder, permission, Pro and recovered-edits
+            // reads would never be redone on a later visit. Keyed on being shown, and doing nothing
+            // while hidden.
+            .task(id: isActive) {
+                guard isActive else { return }
                 #if DEBUG
                 SyncSectionDemo.seedIfNeeded(context: modelContext, sync: sync)
                 presentDemoSheet()
@@ -763,9 +777,28 @@ struct SettingsView: View {
                 // The recovered-edits count is read when Settings asks, not at launch
                 // (SyncService.refreshRecoveredEdits); a run that archives refreshes it too.
                 sync.refreshRecoveredEdits()
-                await checkNotificationStatus()
+                await refreshReminderSettings()
                 await store.refreshPurchasedProducts()
             }
+    }
+
+    /// The sync Settings runs when `isLoggedIn` turns true. A sign-in the user just made goes at
+    /// once, as Sync Now does (`.userInitiated`: a user who asked is never told "later"). A
+    /// session restored with no one asking — the launch check, W3's foreground recheck, a login
+    /// link's or a sync's recheck — turns it true too, and syncs `.automatic`: inside the owner's
+    /// backoff window or the server's pause it sends nothing (D5).
+    ///
+    /// Until the fix pass every flip was `.userInitiated`. 1.3.x flipped only at the launch check
+    /// or a sign-in, but the recheck flips it on an ordinary foreground, and Settings stays alive
+    /// to see it (iPad's kept tab, the iPhone's TabView, the Mac's Settings window): a paused
+    /// server was synced anyway, and `syncIfLoggedIn` then waited that sync out and ran its own
+    /// (verification, minor). Not skipped for a restore: a login link's recheck that finds the
+    /// session alive ignores the link, and nothing else syncs then.
+    static func syncTrigger(afterUserLoadedBy load: AuthService.UserLoad?) -> SyncService.Trigger {
+        switch load {
+        case .signIn: return .userInitiated
+        case .restore, nil: return .automatic
+        }
     }
 
     // MARK: - Backup, Restore, Erase
@@ -1218,11 +1251,40 @@ struct SettingsView: View {
         }
     }
 
-    private func checkNotificationStatus() async {
-        let status = await NotificationService.shared.checkPermission()
-        if status == .denied && reminderEnabled {
-            notificationDenied = true
+    /// The Reminders rows and their warning, read again each time Settings is shown.
+    ///
+    /// The rows are `@State` copies of NotificationService, which is not observable. In 1.3.x
+    /// that was enough on iPad: the detail was a `switch` that built Settings anew on every
+    /// visit. The 1.4.0 shell keeps it alive (RELEASE-1.4.0.md D2), so without this a change made
+    /// in another iPad window — the reminder switched off, or moved from 21:00 to 07:00 — never
+    /// reached this window's rows however often Settings was reopened, and "Notifications are
+    /// disabled" stayed after the user had turned them back on in the Settings app: the check
+    /// could only ever set the warning, never clear it (W5 review).
+    ///
+    /// A copy is assigned only when it differs, and the rows' `.onChange` handlers do not write
+    /// back a value the service already holds, so reading the service never changes it.
+    private func refreshReminderSettings() async {
+        let service = NotificationService.shared
+        if reminderEnabled != service.isReminderEnabled {
+            reminderEnabled = service.isReminderEnabled
         }
+        if !Self.sameClockTime(reminderTime, service.reminderTime) {
+            reminderTime = service.reminderTime
+        }
+        if morningEnabled != service.isMorningMotivationEnabled {
+            morningEnabled = service.isMorningMotivationEnabled
+        }
+        let status = await service.checkPermission()
+        // Both ways: notifications allowed again clear the warning.
+        notificationDenied = status == .denied && reminderEnabled
+    }
+
+    /// Whether two reminder times are the same hour and minute, the only parts NotificationService
+    /// keeps (in `Calendar.current`, as it does). The DatePicker's date and the service's are
+    /// different days at the same time.
+    private static func sameClockTime(_ a: Date, _ b: Date) -> Bool {
+        let calendar = Calendar.current
+        return calendar.dateComponents([.hour, .minute], from: a) == calendar.dateComponents([.hour, .minute], from: b)
     }
 }
 
@@ -1341,13 +1403,21 @@ struct DeleteAccountStep: Identifiable, Equatable {
     /// The rebuilt step reads the store again (`context`), not Continue's answer: the sync that
     /// archived the line can have emptied it — the habit it removed was the last one — and the
     /// updated sheet offered Export as JSON for an empty store (E2E S-DEL).
+    ///
+    /// Also bound to what was exported, as Clear and Erase are (1.4.0, RELEASE-1.4.0.md D6;
+    /// `SyncService.hasRecoveredEditsNotExported`): after one refusal the rebuilt step's total is
+    /// the new one, and the final button tapped again "as shown" deleted the line the export
+    /// before it never held. Once Export Recovered Edits has written this owner's file, the
+    /// deletion waits until the file holds everything the log does; while one is still being
+    /// written (tapped as this waited out a sync), it waits for that file too.
     @MainActor
     func recheck(sync: SyncService, context: ModelContext) async -> DeleteAccountStep? {
         guard erasesDevice else { return nil }
         await sync.waitUntilIdle()
         sync.refreshRecoveredEdits()
         let now = sync.recoveredEdits
-        guard now?.archivedTotal != recoveredEditTotal, now?.lines != 0 else { return nil }
+        let moved = now?.archivedTotal != recoveredEditTotal || sync.hasRecoveredEditsNotExported()
+        guard moved, now?.lines != 0 else { return nil }
         var step = DeleteAccountStep(email: email, erasesDevice: true,
                                      hasLocalData: Self.hasLocalData(in: context), recoveredEdits: now)
         step.recoveredEditsChanged = true
@@ -1387,7 +1457,7 @@ struct DeleteAccountView: View {
     let onDelete: () -> Void
     let onCancel: () -> Void
 
-    @Environment(\.modelContext) private var modelContext
+    private var isDeleteDisabled: Bool { sync.isSyncing || sync.isWritingExport }
 
     var body: some View {
         NavigationStack {
@@ -1405,19 +1475,14 @@ struct DeleteAccountView: View {
                     if step.offersBackup || step.offersRecoveredEdits {
                         Section {
                             if step.offersBackup {
-                                // No `message:`: it went beside the file as text.txt (E2E S6; Settings'
-                                // Export Data rows).
-                                ShareLink(
-                                    item: BackupJSONFile(container: modelContext.container),
-                                    subject: Text("Stride Habits Export"),
-                                    preview: SharePreview(DataExportService.fileName("Stride-Backup", extension: "json"))
-                                ) {
+                                // Settings' Export as JSON: the owner's backup, written on the tap.
+                                ExportShareButton(.ownerBackup, sync: sync) {
                                     Label("Export as JSON", systemImage: "curlybraces")
                                 }
                                 .sweepAnchor("deleteExport")
                             }
                             if step.offersRecoveredEdits {
-                                RecoveredEditsShareLink(sync: sync)
+                                RecoveredEditsExportButton(sync: sync)
                                     .sweepAnchor("deleteRecoveredEdits")
                             }
                         } header: {
@@ -1449,11 +1514,13 @@ struct DeleteAccountView: View {
                             // Red icon as well as title, as the Sync section's destructive rows.
                             // Dimmed by hand while disabled: an explicit style overrides the system's.
                             Label("Delete My Account", systemImage: "person.crop.circle.badge.minus")
-                                .foregroundStyle(.red.opacity(sync.isSyncing ? 0.4 : 1))
+                                .foregroundStyle(.red.opacity(isDeleteDisabled ? 0.4 : 1))
                         }
                         // As the Erase row: a sync running now may be archiving a line this step
                         // never offered (`DeleteAccountStep.recheck` checks again on the tap).
-                        .disabled(sync.isSyncing)
+                        // And an export above still being written would be dropped when this
+                        // closes the sheet, its data deleted (`SyncService.isWritingExport`).
+                        .disabled(isDeleteDisabled)
                         .sweepAnchor("deleteConfirm")
                     }
                 }

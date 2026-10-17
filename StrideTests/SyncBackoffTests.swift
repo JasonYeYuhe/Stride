@@ -285,12 +285,13 @@ final class SyncBackoffTests: XCTestCase {
 
     // MARK: - Recording run outcomes
 
-    /// `record(_:for:)` over each outcome: synced resets, a backOff stop counts, and every other
+    /// `record(_:for:trigger:)` over each outcome: synced resets, a backOff stop counts, and every other
     /// stop — reauth, upgrade, a local failure, a run ended by a sign-out — leaves the state as
     /// it was (none of them is the server asking for less traffic).
     func testRecordingOutcomes() {
         let summary = SyncRunSummary()
-        let first = store.record(.stopped(.backOff(.clientBug, answer: Self.invalidPayload), summary), for: "A")
+        let first = store.record(.stopped(.backOff(.clientBug, answer: Self.invalidPayload), summary),
+                                 for: "A", trigger: .automatic)
         XCTAssertEqual(first?.consecutiveFailures, 1)
         XCTAssertEqual(first?.reason, .clientBug)
 
@@ -300,16 +301,110 @@ final class SyncBackoffTests: XCTestCase {
             .stopped(.localFailure("save"), summary), .blocked(.ownerUnsettled), .blocked(.alreadyRunning),
         ] {
             advance(1)
-            XCTAssertEqual(store.record(other, for: "A"), first, "\(other)")
+            XCTAssertEqual(store.record(other, for: "A", trigger: .automatic), first, "\(other)")
         }
 
         let paused = store.record(.stopped(.backOff(.serverAsked(seconds: 300, paused: true),
-                                                    answer: SyncHTTPAnswer(status: 503, code: "sync_paused", retryAfterSeconds: 300)), summary), for: "A")
+                                                    answer: SyncHTTPAnswer(status: 503, code: "sync_paused", retryAfterSeconds: 300)), summary),
+                                  for: "A", trigger: .automatic)
         XCTAssertEqual(paused?.consecutiveFailures, 2)
         XCTAssertEqual(paused?.reason, .paused)
         XCTAssertEqual(paused?.delay, 300)
 
-        XCTAssertNil(store.record(.synced(summary), for: "A"))
+        XCTAssertNil(store.record(.synced(summary), for: "A", trigger: .automatic))
+        XCTAssertNil(store.state(for: "A"))
+    }
+
+    // MARK: - The background trigger (1.4.0, RELEASE-1.4.0.md D5)
+
+    /// The whole table, so a fourth trigger has to be placed in it on purpose. Before 1.4.0 every
+    /// check was `== .automatic`, under which `.background` would have been Sync Now.
+    func testTheTriggerTable() {
+        XCTAssertTrue(SyncBackoffTrigger.automatic.waitsOutWindow)
+        XCTAssertTrue(SyncBackoffTrigger.background.waitsOutWindow)
+        XCTAssertFalse(SyncBackoffTrigger.manual.waitsOutWindow)
+        XCTAssertTrue(SyncBackoffTrigger.automatic.recordsNoAnswer)
+        XCTAssertTrue(SyncBackoffTrigger.manual.recordsNoAnswer)
+        XCTAssertFalse(SyncBackoffTrigger.background.recordsNoAnswer)
+    }
+
+    /// A background run waits out an open window exactly like a launch — a paused server's above
+    /// all, or every refresh and every lock-screen action would ask it again.
+    func testBackgroundWaitsOutTheWindowLikeAutomatic() {
+        let state = store.recordFailure(.serverAsked(seconds: 600, paused: true), for: "A")
+
+        XCTAssertEqual(store.decision(for: .background, ownerID: "A"), .wait(state))
+        XCTAssertFalse(store.mayRun(.background, ownerID: "A"))
+        XCTAssertTrue(store.mayRun(.manual, ownerID: "A"))
+        advance(600)
+        XCTAssertTrue(store.mayRun(.background, ownerID: "A"))
+        XCTAssertEqual(store.decision(for: .background, ownerID: "B"), .go, "an owner with no window")
+    }
+
+    /// No HTTP answer on a background run — offline, a timeout, or iOS cancelling the refresh as
+    /// its time ran out, which APIClient reports the same way — leaves the state exactly as it
+    /// was: none stays none, and an earlier window is neither extended nor counted. Recorded, it
+    /// would open a minute's window that turns away the foreground sync the user starts next.
+    func testABackgroundRunWithNoAnswerLeavesTheStateAsItWas() {
+        let summary = SyncRunSummary()
+        let offline = SyncRunOutcome.stopped(.backOff(.transient, answer: .noAnswer), summary)
+
+        XCTAssertNil(store.record(offline, for: "A", trigger: .background))
+        XCTAssertNil(store.state(for: "A"))
+        XCTAssertNil(defaults.object(forKey: SyncBackoffStore.key), "nothing written at all")
+        XCTAssertTrue(store.mayRun(.automatic, ownerID: "A"), "the foreground sync that follows goes")
+
+        // A prior server episode, three failures deep: untouched — not a fourth, not re-timed.
+        store.recordFailure(.transient, answer: Self.serverDown, for: "A")
+        store.recordFailure(.transient, answer: Self.serverDown, for: "A")
+        let prior = store.recordFailure(.transient, answer: Self.serverDown, for: "A")
+        XCTAssertEqual(prior.consecutiveFailures, 3)
+        advance(30)
+        XCTAssertEqual(store.record(offline, for: "A", trigger: .background), prior)
+        XCTAssertEqual(store.state(for: "A"), prior)
+    }
+
+    /// The same no-answer on a launch or a Sync Now is still recorded (about a minute, uncounted):
+    /// only the background trigger skips it.
+    func testANoAnswerIsStillRecordedForAutomaticAndManual() {
+        let offline = SyncRunOutcome.stopped(.backOff(.transient, answer: .noAnswer), SyncRunSummary())
+        for trigger: SyncBackoffTrigger in [.automatic, .manual] {
+            store.clearAll()
+            let state = store.record(offline, for: "A", trigger: trigger)
+            XCTAssertEqual(state?.reason, .offline, "\(trigger)")
+            XCTAssertEqual(state?.delay, 60, "\(trigger)")
+        }
+    }
+
+    /// What the server actually answered still counts on a background run: a 5xx, a 429, the
+    /// pause switch and a client bug are recorded and respected (D5), and a success resets.
+    func testABackgroundRunStillRecordsEveryRealAnswer() {
+        let summary = SyncRunSummary()
+        let server = store.record(.stopped(.backOff(.transient, answer: Self.serverDown), summary),
+                                  for: "A", trigger: .background)
+        XCTAssertEqual(server?.reason, .serverError)
+        XCTAssertEqual(server?.consecutiveFailures, 1)
+
+        let limited = store.record(.stopped(.backOff(.serverAsked(seconds: 30, paused: false),
+                                                     answer: SyncHTTPAnswer(status: 429, code: "rate_limited")), summary),
+                                   for: "A", trigger: .background)
+        XCTAssertEqual(limited?.reason, .rateLimited)
+        XCTAssertEqual(limited?.consecutiveFailures, 2)
+        XCTAssertEqual(limited?.delay, 30)
+
+        let paused = store.record(.stopped(.backOff(.serverAsked(seconds: 300, paused: true),
+                                                    answer: SyncHTTPAnswer(status: 503, code: "sync_paused")), summary),
+                                  for: "A", trigger: .background)
+        XCTAssertEqual(paused?.reason, .paused)
+        XCTAssertEqual(paused?.consecutiveFailures, 3)
+        XCTAssertFalse(store.mayRun(.background, ownerID: "A"))
+
+        let bug = store.record(.stopped(.backOff(.clientBug, answer: Self.invalidPayload), summary),
+                               for: "A", trigger: .background)
+        XCTAssertEqual(bug?.reason, .clientBug)
+        XCTAssertEqual(bug?.consecutiveFailures, 4)
+
+        XCTAssertNil(store.record(.synced(summary), for: "A", trigger: .background), "success resets")
         XCTAssertNil(store.state(for: "A"))
     }
 
@@ -331,14 +426,14 @@ final class SyncBackoffTests: XCTestCase {
         let paused = try JSONSerialization.data(withJSONObject: ["error": "sync_paused", "code": "sync_paused", "retryAfterSeconds": 900])
         server.scriptPull(at: 1, SyncTransportResponse(status: 503, body: paused))
         let o1 = await device.sync()
-        let s1 = try XCTUnwrap(store.record(o1, for: "A"))
+        let s1 = try XCTUnwrap(store.record(o1, for: "A", trigger: .automatic))
         XCTAssertEqual(s1.reason, .paused)
         XCTAssertEqual(s1.delay, 900)
         XCTAssertFalse(store.mayRun(.automatic, ownerID: "A"))
 
         server.scriptPull(at: 1, .noAnswer)
         let o2 = await device.sync()
-        let s2 = try XCTUnwrap(store.record(o2, for: "A"))
+        let s2 = try XCTUnwrap(store.record(o2, for: "A", trigger: .automatic))
         XCTAssertEqual(s2.reason, .offline)
         XCTAssertEqual(s2.consecutiveFailures, 1)
         XCTAssertEqual(s2.delay, 60)
@@ -346,14 +441,14 @@ final class SyncBackoffTests: XCTestCase {
         let invalid = try JSONSerialization.data(withJSONObject: ["error": "invalid_payload", "code": "invalid_payload"])
         server.scriptPush(at: 1, SyncTransportResponse(status: 400, body: invalid))
         let o3 = await device.sync()
-        let s3 = try XCTUnwrap(store.record(o3, for: "A"))
+        let s3 = try XCTUnwrap(store.record(o3, for: "A", trigger: .automatic))
         XCTAssertEqual(s3.reason, .clientBug)
         XCTAssertEqual(s3.consecutiveFailures, 2)
         XCTAssertEqual(s3.delay, 120)
         XCTAssertEqual(try device.pendingCount(), 2, "nothing held, nothing acknowledged")
 
         let o4 = await device.sync()
-        XCTAssertNil(store.record(o4, for: "A"))
+        XCTAssertNil(store.record(o4, for: "A", trigger: .automatic))
         XCTAssertTrue(store.mayRun(.automatic, ownerID: "A"))
         XCTAssertEqual(try device.pendingCount(), 0)
     }

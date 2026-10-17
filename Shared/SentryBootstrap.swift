@@ -36,7 +36,9 @@ enum SentryBootstrap {
         "https://461897892c305803cfd5d06c2b62a502@o4511263220891648.ingest.us.sentry.io/4511513693585408"
 
     static func start() {
-        #if canImport(Sentry)
+        // Not in the Mac test variant (RELEASE-1.4.0.md D7): its runs must not report into the
+        // production stride-apple project as sessions of the version the tree is at.
+        #if canImport(Sentry) && !STRIDE_MAC_VARIANT
         // Not under XCTest. StrideAppTests (hosted) launches the real app as its test host, so
         // without this every test run — the ship.sh gate, and CI booting a fresh simulator
         // each time — started production Sentry with the live DSN: the first runs on

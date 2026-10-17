@@ -3,17 +3,19 @@ import SwiftData
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The app side of backup and export: files for the share sheet, reading a picked file, and the
-/// words for what went wrong. The formats, validation, restore and erase themselves are in
+/// The app side of backup and export: the export files, reading a picked file, and the words for
+/// what went wrong. The formats, validation, restore and erase themselves are in
 /// Shared/DataBackup.swift, where StrideTests can run them.
 ///
-/// Settings used to build both exports as `String`s inline in its body
-/// (`let csvString = DataExportService.exportCSV(habits: allHabits)`), so every render of the
-/// Settings screen serialised the user's whole history twice, on the main thread, whether or not
-/// anyone was exporting — and shared the result as text, which the Files app cannot save as a
-/// `.json` a restore could pick. `BackupJSONFile` and `HabitsCSVFile` are `Transferable` values
-/// that hold only the container: `ShareLink(item: BackupJSONFile(container: …))` costs nothing
-/// to build, and the file is written when the user picks a destination.
+/// Write first, then share (1.4.0, RELEASE-1.4.0.md D6). 1.3.x handed ShareLink lazy
+/// `Transferable` items whose file was written only when the share sheet asked for it, with the
+/// sheet blocking the main thread while it waited (`NSExtensionURLResult wait:` in the stack) —
+/// and the backup's snapshot needs the main actor. That was STRIDE-APPLE-7 (a 2 s+ hang in macOS
+/// 1.3.0's NSSharingServicePicker, Sentry) and the 6–7 s before the iOS share sheet appeared. Now the Export button (`ExportShareButton`)
+/// writes the file on the tap — the snapshot on the main actor, the encode and the write off
+/// it — and presents the share sheet (iOS) or the save panel (macOS) only once the file exists.
+/// Settings used to build both exports as `String`s in its body on every render; nothing is
+/// serialised now until a button is tapped.
 enum DataExportService {
 
     // MARK: - Producing the files
@@ -47,54 +49,217 @@ enum DataExportService {
         "\(stem)-\(fileDateFormatter.string(from: date)).\(ext)"
     }
 
-    /// Reads the snapshot on the main actor (SwiftData models belong to the context's actor),
-    /// then encodes and writes off it, so a large history does not stall the share sheet.
-    fileprivate static func exportFile(from container: ModelContainer, account: BackupAccount? = nil,
-                                       stem: String, ext: String,
-                                       encode: @Sendable (BackupDocument) throws -> Data) async throws -> URL {
-        let document = try await MainActor.run {
-            try DataBackup.snapshot(of: container.mainContext, account: account)
+    // MARK: - Writing an export (write first, then share)
+
+    /// What the Export button at `file` writes, written: `writeBackupFile`, `writeCSVFile`, or
+    /// the recovered edits through `SyncService.writeRecoveredEditsFile`, which remembers the
+    /// total the file holds for Clear and Erase. The one call `ExportShareButton` makes, so the
+    /// hosted tests run exactly what a tap runs. `root` is tmp; tests pass their own directory.
+    ///
+    /// Counted in `SyncService.exportWrites` from the tap to the written file: the buttons that
+    /// erase what an export copies are disabled meanwhile (`SyncService.isWritingExport`).
+    @MainActor
+    static func write(_ file: ExportFile, container: ModelContainer, sync: SyncService? = nil,
+                      in root: URL = FileManager.default.temporaryDirectory) async throws -> WrittenExport {
+        let sync = sync ?? .shared   // see `restore` for the optionals
+        return try await sync.countingExportWrite {
+            switch file {
+            case .backup(let account):
+                return try await writeBackupFile(container: container, account: account, in: root)
+            case .ownerBackup:
+                // The owner as the tap finds it, read in the same main-actor turn as the snapshot:
+                // the descriptor, built at render, can be older than a sync that settled the owner.
+                let owner = sync.storeOwner.map { BackupAccount(id: $0.id, email: $0.email) }
+                return try await writeBackupFile(container: container, account: owner, in: root)
+            case .csv:
+                return try await writeCSVFile(container: container, in: root)
+            case .recoveredEdits(let accountID):
+                return try await sync.writeRecoveredEditsFile(accountID: accountID, in: root)
+            }
         }
-        return try writeExportFile(try encode(document),
-                                   named: fileName(stem, extension: ext, date: document.exportedAt))
+    }
+
+    /// The lossless v2 backup, `Stride-Backup-<date>.json`, naming `account`. The snapshot is read
+    /// on the main actor (SwiftData models belong to the context's actor); the encode and the
+    /// write run off it, so a multi-year history does not hold the main thread while it is
+    /// serialised.
+    @MainActor
+    static func writeBackupFile(container: ModelContainer, account: BackupAccount?,
+                                in root: URL = FileManager.default.temporaryDirectory) async throws -> WrittenExport {
+        let document = try DataBackup.snapshot(of: container.mainContext, account: account)
+        let name = fileName("Stride-Backup", extension: "json", date: document.exportedAt)
+        let url = try await Task.detached(priority: .userInitiated) {
+            try writeExportFile(try DataBackup.encode(document), named: name, in: root)
+        }.value
+        return WrittenExport(url: url)
+    }
+
+    /// One row per check-in, `Stride-Export-<date>.csv`, for spreadsheets. As `writeBackupFile`:
+    /// the snapshot on the main actor, the rest off it.
+    @MainActor
+    static func writeCSVFile(container: ModelContainer,
+                             in root: URL = FileManager.default.temporaryDirectory) async throws -> WrittenExport {
+        let document = try DataBackup.snapshot(of: container.mainContext)
+        let name = fileName("Stride-Export", extension: "csv", date: document.exportedAt)
+        let url = try await Task.detached(priority: .userInitiated) {
+            try writeExportFile(DataBackup.csvData(document), named: name, in: root)
+        }.value
+        return WrittenExport(url: url)
+    }
+
+    /// The recovery log's export (`SyncRecoveryExport`) for `accountID`,
+    /// `Stride-RecoveredEdits-<date>.json`, with the archived total it holds. All of it off the
+    /// main actor: the read takes the log's flock — which the main-actor sync engine takes to
+    /// append — and reads a file of up to 5 MB. Deliberately not a backup: picked in Restore it is
+    /// `notABackup` (its version key is `recoveryLogVersion`). Call it through
+    /// `SyncService.writeRecoveredEditsFile`, which remembers the total.
+    static func writeRecoveredEditsFile(log: SyncRecoveryLog, accountID: String?,
+                                        in root: URL = FileManager.default.temporaryDirectory) async throws -> WrittenExport {
+        try await Task.detached(priority: .userInitiated) {
+            let export = try log.export(accountID: accountID)
+            let url = try writeExportFile(export.data, named: fileName("Stride-RecoveredEdits", extension: "json"),
+                                          in: root)
+            return WrittenExport(url: url, recoveredEditsTotal: export.archivedTotal)
+        }.value
     }
 
     // MARK: - The files in tmp
 
     /// Every export file is written into a directory of its own in tmp, named with this prefix.
+    /// scripts/sim_e2e/app.sh `exports` lists them by it.
     static let exportDirectoryPrefix = "StrideExport-"
 
     /// Writes one export into a new `StrideExport-<UUID>` directory under `root`: two exports on
-    /// the same day must not overwrite a file a share sheet may still be reading.
+    /// the same day must not overwrite a file a share sheet may still be reading. A write that
+    /// fails takes its directory with it, so a failed export leaves nothing behind.
     static func writeExportFile(_ data: Data, named name: String,
                                 in root: URL = FileManager.default.temporaryDirectory) throws -> URL {
         let directory = root.appendingPathComponent(exportDirectoryPrefix + UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent(name)
-        try data.write(to: url, options: .atomic)
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            throw error
+        }
         return url
     }
 
-    /// Deletes every export directory under `root`, and returns how many went (E2E S-DEL).
+    /// Deletes the export at `url` — its whole `StrideExport-<UUID>` directory — at once, for an
+    /// export that was written and then handed to no one: a Mac save panel cancelled — the menu
+    /// Export's (ContentView) or an Export button's (`ExportShareButton`, since the fix pass) — or
+    /// a pass dropped before its panel came up (the menu's pass cancelled or blocked by a sheet,
+    /// a button whose view went during the write). Nothing can be
+    /// reading such a file, so it does not wait for a sweep: on a Mac, launches can be weeks
+    /// apart, and every ⇧⌘E → Cancel used to leave one more full backup of every habit in tmp
+    /// until the next launch (W6 review). Never for a file a share sheet or a save panel still
+    /// has (D6: a share cannot tell when its receiver is done reading); those are the sweeps'.
+    ///
+    /// Only a directory named with `exportDirectoryPrefix`: a URL that is not one of ours removes
+    /// nothing. Returns whether the directory went.
+    @discardableResult
+    static func removeUnsharedExport(at url: URL) -> Bool {
+        let directory = url.deletingLastPathComponent()
+        guard directory.lastPathComponent.hasPrefix(exportDirectoryPrefix) else { return false }
+        return (try? FileManager.default.removeItem(at: directory)) != nil
+    }
+
+    /// How long a fresh export survives an erase (RELEASE-1.4.0.md D6, "Cleanup").
+    static let exportGracePeriod: TimeInterval = 10 * 60
+
+    /// The exports a Mac save panel holds — the menu Export's (ContentView) and every Export
+    /// button's (`ExportShareButton`) — from the moment the panel is offered the file until it
+    /// answers. No sweep takes them (`removeExportFiles`).
+    ///
+    /// Why (verification, minor): a save panel is a sheet on one window, and Settings' Erase Local
+    /// Data, Delete Account and the account screen's Start stay usable in another while it is up;
+    /// and an erase's deferred sweep runs 10 min 5 s after it, whatever is on screen then. It
+    /// spares the last `exportGracePeriod` only, so a panel left open past that had its file
+    /// deleted underneath it, and Save then failed with the backup of the data just erased gone.
+    /// iOS's share sheet is modal over the flows that erase, so only the Mac holds files here.
+    static let exportsInUse = ExportsInUse()
+
+    /// Deletes the export directories under `root` — every one, or with `olderThan`, only those
+    /// made at least that long before `now` — and returns how many went (E2E S-DEL).
     ///
     /// Nothing ever removed them: tmp kept every backup, CSV and recovered-edits file shared since
-    /// the app was installed (three copies per tap, before `ExportFileMemo`), and after Delete
-    /// Account the deleted account's habits and edits were still there, although the deletion
-    /// erases this device's copy. Called at launch (StrideApp; no share sheet is open then), after
-    /// Erase Local Data (`eraseLocalData`), and after the flows that erase the store from outside
-    /// Settings' list — Delete Account, Start from This Account's Data (`AccountDataRefresh`). The
-    /// exports those offered were shared before the button that erased could be tapped, and a
-    /// share hands the receiver its own copy of the file. A directory that cannot be removed now is
-    /// left for the next call.
+    /// the app was installed (three copies per tap in 1.3.0), and after Delete Account the deleted
+    /// account's habits and edits were still there, although the deletion erases this device's
+    /// copy. Called in full at launch (StrideApp; no share sheet is open then), and after the
+    /// erases (`removeExportFilesAfterErase`).
+    ///
+    /// The receiver of a share gets its own copy of the file when it loads it — the share sheet's
+    /// item provider registers it without open-in-place (`ExportSharePresenter`), as 1.3.x's
+    /// `SentTransferredFile` did — so deleting ours after that cuts nothing off. What a sweep can
+    /// still cut off is a share that has not loaded yet: the sheet still open, or a Mac service
+    /// that reads later. So an erase spares the exports of the last `exportGracePeriod`.
+    ///
+    /// A directory whose age cannot be read counts as fresh: an erase leaves it to the deferred
+    /// sweep or the next launch rather than risk the backup of what it erased. One that cannot be
+    /// removed now is left for the next call. One a save panel holds (`exportsInUse`) is never
+    /// taken, whatever its age: the panel's answer releases it, and its Cancel deletes it.
     @discardableResult
-    static func removeExportFiles(in root: URL = FileManager.default.temporaryDirectory) -> Int {
+    static func removeExportFiles(in root: URL = FileManager.default.temporaryDirectory,
+                                  olderThan age: TimeInterval = 0, now: Date = Date()) -> Int {
         let fileManager = FileManager.default
         guard let names = try? fileManager.contentsOfDirectory(atPath: root.path) else { return 0 }
         var removed = 0
-        for name in names where name.hasPrefix(exportDirectoryPrefix) {
-            if (try? fileManager.removeItem(at: root.appendingPathComponent(name))) != nil { removed += 1 }
+        for name in names where name.hasPrefix(exportDirectoryPrefix) && !exportsInUse.holds(directoryNamed: name) {
+            let directory = root.appendingPathComponent(name, isDirectory: true)
+            if age > 0 {
+                let values = try? directory.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
+                guard let made = values?.creationDate ?? values?.contentModificationDate,
+                      now.timeIntervalSince(made) >= age else { continue }
+            }
+            if (try? fileManager.removeItem(at: directory)) != nil { removed += 1 }
         }
         return removed
+    }
+
+    /// After an erase (Erase Local Data, Start from This Account's Data, account deletion): the
+    /// exports go with the data they copy (E2E S-DEL), except those of the last
+    /// `exportGracePeriod`, which one deferred sweep takes once they are that old.
+    ///
+    /// 1.3.x deleted every export here, on the premise that the flow's exports "were shared
+    /// before the button that erased could be tapped". Not on a Mac: the share or save UI lets go
+    /// of the window while the receiver may still be reading, and an iOS AirDrop can outlast the
+    /// sheet. The export a user just made of the data they are erasing is the one copy that must
+    /// not go (design review, "export-cleanup-races-inflight-share").
+    ///
+    /// The deferred sweep spares the last `exportGracePeriod` too: it runs once everything that
+    /// existed at the erase is past it, so it takes all of that, and an export made after the
+    /// erase gets its own window. On a Mac, where launches can be weeks apart, a deleted account's
+    /// export does not linger; the launch sweep still covers an iOS app suspended meanwhile.
+    ///
+    /// Returns the deferred sweep, for the hosted tests: with `deferredExportSweepDelay`
+    /// shortened, they await it to see the erase's own call schedule it (W4 review: a test that
+    /// scheduled one itself passed with this line gone).
+    @discardableResult
+    static func removeExportFilesAfterErase(in root: URL = FileManager.default.temporaryDirectory) -> Task<Int, Never> {
+        removeExportFiles(in: root, olderThan: exportGracePeriod)
+        return scheduleDeferredExportSweep(in: root)
+    }
+
+    #if DEBUG
+    /// How long after an erase its deferred sweep runs: just past `exportGracePeriod`, so
+    /// everything that existed at the erase has left the window by then. Settable in DEBUG only,
+    /// for the hosted tests, which shorten it to see the sweep an erase schedules run
+    /// (ExportTests, LocalDataFlowTests); the sweep's rule stays the grace period.
+    static var deferredExportSweepDelay: Duration = .seconds(exportGracePeriod + 5)
+    #else
+    static let deferredExportSweepDelay: Duration = .seconds(exportGracePeriod + 5)
+    #endif
+
+    /// The deferred half of `removeExportFilesAfterErase`, off the main actor: after `delay`,
+    /// every export directory older than the grace period.
+    @discardableResult
+    static func scheduleDeferredExportSweep(in root: URL = FileManager.default.temporaryDirectory,
+                                            after delay: Duration = deferredExportSweepDelay) -> Task<Int, Never> {
+        Task.detached(priority: .utility) {
+            do { try await Task.sleep(for: delay) } catch { return 0 }
+            return removeExportFiles(in: root, olderThan: exportGracePeriod)
+        }
     }
 
     // MARK: - Reading a picked file
@@ -228,8 +393,9 @@ enum DataExportService {
         /// A device with a session could not sync first, so nothing was erased.
         case syncFailed
         /// The pre-erase sync archived recovered edits the confirmation never counted (a row
-        /// edited here was deleted on another device meanwhile). Nothing was erased and the device
-        /// is still signed in: the new count is on screen with its export, and Erase asks again.
+        /// edited here was deleted on another device meanwhile), or the log holds more than the
+        /// last Export Recovered Edits wrote. Nothing was erased and a device with a session is
+        /// still signed in: the new count is on screen with its export, and Erase asks again.
         case recoveredEditsChanged
         case saveFailed
     }
@@ -267,8 +433,17 @@ enum DataExportService {
     /// 5 MB cap the sync's line pushes the oldest out, and the count reads the same (review
     /// recovery-backup-1).
     ///
-    /// An erase also deletes the export files in tmp (`removeExportFiles`; `exportRoot` is tmp
-    /// itself, a test's own directory in tests): they are copies of what it erased (E2E S-DEL).
+    /// And when the lines go, they go only as far as they were exported (1.4.0, RELEASE-1.4.0.md
+    /// D6): once Export Recovered Edits wrote this owner's file, a total above what it held is
+    /// `.recoveredEditsChanged` too (`SyncService.hasRecoveredEditsNotExported`). The count on
+    /// screen refreshes after a sync, so a confirmation "as shown" no longer proves the user has
+    /// the lines: export N, a sync archives one more, the row reads N + 1, and Erase confirmed
+    /// against N + 1 cleared a line that was never exported — the only copy of that edit. Checked
+    /// signed out too, where no pre-erase sync runs but a sync before the tap may have archived.
+    ///
+    /// An erase also deletes the export files in tmp, all but the last few minutes' at once and
+    /// those later (`removeExportFilesAfterErase`; `exportRoot` is tmp itself, a test's own
+    /// directory in tests): they are copies of what it erased (E2E S-DEL).
     @MainActor
     static func eraseLocalData(in context: ModelContext,
                                clearingRecoveredEdits: Bool = false,
@@ -283,7 +458,12 @@ enum DataExportService {
                 sync.refreshRecoveredEdits()
                 guard (sync.recoveredEdits?.archivedTotal ?? 0) == shown else { return .recoveredEditsChanged }
             }
+            // After the pre-erase sync, which can archive; before the sign-out, which the
+            // outcome promises has not happened.
+            if clearingRecoveredEdits, sync.hasRecoveredEditsNotExported() { return .recoveredEditsChanged }
             await auth.logout()
+        } else if clearingRecoveredEdits, sync.hasRecoveredEditsNotExported() {
+            return .recoveredEditsChanged
         }
         // Also what stops a sync that started during logout's request from writing into the
         // store or the cursor after this point (SyncService.stateGeneration).
@@ -298,8 +478,13 @@ enum DataExportService {
         } catch {
             return .saveFailed
         }
-        sync.resetSyncState(clearingRecoveryLog: clearingRecoveredEdits)
-        removeExportFiles(in: exportRoot)
+        // Asked again at the clear (W4 review): an Export Recovered Edits tapped while this
+        // waited on the pre-erase sync or the sign-out's request may still be writing, and it
+        // reads the log after this turn. Those lines are kept, as a log nobody could count is,
+        // rather than cleared from under the export the user has just asked for.
+        let clearing = clearingRecoveredEdits && !sync.hasRecoveredEditsNotExported()
+        sync.resetSyncState(clearingRecoveryLog: clearing)
+        removeExportFilesAfterErase(in: exportRoot)
         return .erased
     }
 
@@ -310,6 +495,36 @@ enum DataExportService {
         f.timeZone = TimeZone.current
         return f
     }()
+}
+
+/// The export directories a save panel holds (`DataExportService.exportsInUse`), by
+/// `StrideExport-<UUID>` name, counted. Lock-guarded: the deferred sweep reads it off the main
+/// actor, from a detached task.
+final class ExportsInUse: @unchecked Sendable {
+    private let lock = NSLock()
+    private var counts: [String: Int] = [:]
+
+    /// `url` is the written file; its directory is what is held.
+    func hold(_ url: URL) {
+        let name = Self.directoryName(of: url)
+        lock.withLock { counts[name, default: 0] += 1 }
+    }
+
+    func release(_ url: URL) {
+        let name = Self.directoryName(of: url)
+        lock.withLock {
+            guard let count = counts[name] else { return }
+            counts[name] = count > 1 ? count - 1 : nil
+        }
+    }
+
+    func holds(directoryNamed name: String) -> Bool {
+        lock.withLock { counts[name] != nil }
+    }
+
+    private static func directoryName(of url: URL) -> String {
+        url.deletingLastPathComponent().lastPathComponent
+    }
 }
 
 // MARK: - The restore screen
@@ -346,104 +561,35 @@ struct RestoreHandover: Equatable {
     var recoveredEdits: Int?
 }
 
-// MARK: - Share sheet items
+// MARK: - Export buttons
 
-/// One share, one file (E2E S-DEL). The share sheet asks an item for its file several times (its
-/// collaboration check among them, the device log shows), and each ask used to read the store and
-/// write a copy of its own: one Export as JSON tap left three `StrideExport-*` directories,
-/// written within 80 ms. Each item holds one of these (a class, so every copy of the item value
-/// shares it): the first ask writes the file, and every ask made while it is being written or in
-/// the `reuseWindow` after gets that same file. A later share of the same item — no redraw made a
-/// new one — writes a fresh file, so no share is handed data more than a minute old. A failed
-/// write is not kept: the next ask tries again.
-final class ExportFileMemo: @unchecked Sendable {
-    static let reuseWindow: TimeInterval = 60
-
-    private let lock = NSLock()
-    private var made: (task: Task<URL, Error>, at: Date)?
-
-    func file(now: Date = Date(), write: @escaping @Sendable () async throws -> URL) async throws -> URL {
-        let task: Task<URL, Error> = lock.withLock {
-            if let made, now.timeIntervalSince(made.at) < Self.reuseWindow { return made.task }
-            let task = Task { try await write() }
-            made = (task, now)
-            return task
-        }
-        do {
-            return try await task.value
-        } catch {
-            lock.withLock { if made?.task == task { made = nil } }
-            throw error
-        }
-    }
+/// What an Export button writes (`DataExportService.write`): which file, for which account. A
+/// plain value, free to build on every render — nothing is read or serialised until the tap.
+/// Replaces 1.3.x's lazy `Transferable` items (`BackupJSONFile`, `HabitsCSVFile`,
+/// `RecoveredEditsJSONFile`) and the `ExportFileMemo` that kept their repeated asks to one file.
+enum ExportFile: Equatable, Sendable {
+    /// The v2 backup naming `account`: the account screen's "Export a Backup", which names the
+    /// conflict's OWNER — whose ids the rows carry — not the account just signed into
+    /// (`SyncService.backupFile(for:)`).
+    case backup(account: BackupAccount?)
+    /// The v2 backup naming the store's owner as the tap finds it (Settings, Delete Account);
+    /// nil for a store with no owner.
+    case ownerBackup
+    /// One row per check-in, for spreadsheets.
+    case csv
+    /// The recovery log of `accountID` (nil: the no-account log): the store owner's for Settings
+    /// (`SyncService.recoveredEditsFile`), the conflict owner's on the account screen
+    /// (`SyncService.recoveredEditsFile(for:)`).
+    case recoveredEdits(accountID: String?)
 }
 
-/// The lossless v2 backup, as a `.json` file. Serialised only when the user picks a destination.
-///
-/// `account` is the store's sync owner, written into the file (`accountId`, `accountEmail`) so a
-/// restore can tell a backup of this account from another's. It defaults to the owner recorded
-/// when the item is made (`DataExportService.storeOwnerAccount`), so Settings' existing
-/// `BackupJSONFile(container:)` records it with no change there; nil for a store with no owner.
-struct BackupJSONFile: Transferable, Sendable {
-    let container: ModelContainer
-    var account: BackupAccount?
-    let memo = ExportFileMemo()
-
-    init(container: ModelContainer, account: BackupAccount? = DataExportService.storeOwnerAccount()) {
-        self.container = container
-        self.account = account
-    }
-
-    static var transferRepresentation: some TransferRepresentation {
-        FileRepresentation(exportedContentType: .json) { file in
-            SentTransferredFile(try await file.memo.file {
-                try await DataExportService.exportFile(
-                    from: file.container, account: file.account, stem: "Stride-Backup", ext: "json",
-                    encode: { try DataBackup.encode($0) })
-            })
-        }
-    }
-}
-
-/// The recovery log's export (`SyncRecoveryExport`), as a `.json` file for Settings → Recovered
-/// edits → Export as JSON (phase C) and the account screen's Export. Holds only the log and the
-/// owner's id, and reads the file when the user picks a destination. Deliberately not a backup:
-/// picked in Restore it is `notABackup` (its version key is `recoveryLogVersion`).
-struct RecoveredEditsJSONFile: Transferable, Sendable {
-    let log: SyncRecoveryLog
-    let accountID: String?
-    let memo = ExportFileMemo()
-
-    /// `SyncService.recoveredEditsFile` makes one for the store's owner.
-    init(log: SyncRecoveryLog, accountID: String?) {
-        self.log = log
-        self.accountID = accountID
-    }
-
-    static var transferRepresentation: some TransferRepresentation {
-        FileRepresentation(exportedContentType: .json) { file in
-            SentTransferredFile(try await file.memo.file {
-                try DataExportService.writeExportFile(
-                    try file.log.exportData(accountID: file.accountID),
-                    named: DataExportService.fileName("Stride-RecoveredEdits", extension: "json"))
-            })
-        }
-    }
-}
-
-/// One row per check-in, as a `.csv` file for spreadsheets. Serialised only when shared.
-struct HabitsCSVFile: Transferable, Sendable {
-    let container: ModelContainer
-    let memo = ExportFileMemo()
-
-    static var transferRepresentation: some TransferRepresentation {
-        FileRepresentation(exportedContentType: .commaSeparatedText) { file in
-            SentTransferredFile(try await file.memo.file {
-                try await DataExportService.exportFile(
-                    from: file.container, stem: "Stride-Export", ext: "csv", encode: { DataBackup.csvData($0) })
-            })
-        }
-    }
+/// One export, written (`DataExportService.write`).
+struct WrittenExport: Equatable, Sendable {
+    /// `tmp/StrideExport-<UUID>/<name>`.
+    var url: URL
+    /// Recovered edits only: `Summary.archivedTotal` of what the file holds, read under the same
+    /// flock as its lines (`SyncRecoveryLog.export`). nil for a backup or a CSV.
+    var recoveredEditsTotal: Int? = nil
 }
 
 // MARK: - What the user reads

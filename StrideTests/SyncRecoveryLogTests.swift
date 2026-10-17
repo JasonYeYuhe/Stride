@@ -300,6 +300,23 @@ final class SyncRecoveryLogTests: XCTestCase {
         XCTAssertEqual(object["exportedAt"] as? String, "2026-09-22T18:00:00.500Z")
     }
 
+    /// What an export holds is what Clear and Erase may take (1.4.0, RELEASE-1.4.0.md D6): the
+    /// total that comes with the file is its own lines + dropped — past the cap too, where the
+    /// lines alone undercount — and the same number `summary` gives for that log.
+    func testAnExportCarriesTheArchivedTotalItHolds() throws {
+        let log = makeLog(cap: try oneLineBytes() * 2 + 100)
+        for i in 1...4 { try log.append([padded(i)], accountID: "42") }
+
+        let export = try log.export(accountID: "42")
+
+        let document = try SyncRecoveryLog.decodeExport(export.data)
+        XCTAssertGreaterThan(document.dropped, 0, "precondition: past the cap")
+        XCTAssertEqual(export.archivedTotal, document.items.count + document.dropped)
+        XCTAssertEqual(export.archivedTotal, 4)
+        XCTAssertEqual(export.archivedTotal, try log.summary(accountID: "42").archivedTotal)
+        XCTAssertEqual(try makeLog().export(accountID: "nobody").archivedTotal, 0, "an empty log")
+    }
+
     func testTheExportIsNotMistakenForABackup() throws {
         // Picked in Restore by mistake, it must say "not a backup" — not "a 1.2.3 export", which
         // is what a `schemaVersion: 1` key would have made DataBackup answer.

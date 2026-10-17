@@ -72,16 +72,20 @@ project is not exactly what `project.yml` generates.
 |---|---|---|
 | `StrideTests` (macOS) | `xcodebuild test -scheme StrideTests -destination platform=macOS CODE_SIGNING_ALLOWED=NO` | CI, locally |
 | `StrideTests` (iOS) | same with `-destination 'platform=iOS Simulator,name=iPhone 17 Pro'` | locally |
-| `StrideAppTests` (hosted) | `scripts/ci/run_hosted_tests.sh ["iPhone 17 Pro"]` | locally, `ship.sh` gate; CI on the preview runner |
+| `StrideAppTests` (hosted) | `scripts/ci/run_hosted_tests.sh ["iPhone 17"]` | locally, `ship.sh` gate; CI on the preview runner |
 | iOS product check | `scripts/ci/build_ios_generic.sh <derived-data>` | CI, pre-push hook |
 | Server | `cd server && npm test && npm run typecheck` | CI, locally |
 | Archive / export | `scripts/verify_archive.sh` (two modes) | `build-appstore.sh`, before any upload |
 
-- **`run_hosted_tests.sh`** uses an existing simulator ("iPhone 17 Pro", else the first
+- **`run_hosted_tests.sh`** uses an existing simulator ("iPhone 17", else the first
   iPhone) and never creates or erases one; it fails unless more than zero tests ran and none
   failed, counted from the xcresult (`xcodebuild` can exit 0 having run nothing).
   `STRIDE_HOSTED_DERIVED_DATA` moves its derived data. Hosted tests launch the real app, so
-  anything the app does at launch happens in them too.
+  anything the app does at launch happens in them too — which is why they stay off the E2E
+  kit's iPhone 17 Pro (the launch removes that device's pending reminders). Outside CI it holds
+  `/tmp/lock-iphone-17` for the run: someone else's lock is waited on for up to 40 min, then it
+  exits 2 with BLOCKED; your own hold is reused when its holder file says
+  `label=$STRIDE_SIM_LOCK_LABEL` (`scripts/ci/sim_lock.sh`).
 - **CI** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on pushes and PRs to
   `main` and `release/**`. A cheap `Changed areas` job (`scripts/ci/changed_areas.sh`)
   decides what else runs: `project.yml`, `Stride*/`, `Shared/` → the Apple job; `server/` →
@@ -137,14 +141,25 @@ Release and App Store:
 - `asc_api.py` — the shared ASC API helper. `setup_iap.py`, `upload_iap_screenshot.py`,
   `appstore_metadata.py`, `update_asc_metadata.py`, `update_screenshots.py`,
   `submit_build.py` — one-off ASC jobs from earlier releases, kept for reference; read one
-  before running it.
-- `screenshots.sh`, `generate_screenshots.swift` — App Store screenshots.
+  before running it. Never run `update_screenshots.py` or `appstore_metadata.py` for
+  screenshots: the first wipes every locale's sets and picks a version without a platform, the
+  second rewrites the 1.0 metadata.
+- `store_screenshots.py list|upload --platform IOS|MAC_OS --version <v>` — store screenshots
+  for one version on one platform: `list` is read-only; `upload --set <display type> <files…>`
+  replaces only the named display types, en-US unless `--locale` says otherwise, from an
+  explicit file list, and is a dry run without `--yes` (an owner-approved ASC write).
+- `screenshots.sh`, `generate_screenshots.swift` — the pre-1.4.0 App Store screenshots (AppKit
+  mock images). From 1.4.0 they are captured from real builds (RELEASE-1.4.0.md D8).
+- `mac_variant/build.sh` — the macOS test variant, `yyh.stride.habittracker.mactest`: a StrideMac
+  Debug build that cannot reach the real store on this Mac. Build, preflight, launch rules:
+  [scripts/mac_variant/README.md](scripts/mac_variant/README.md).
 - `a11y_sweep.sh [--size <content size>|default] [--app <Stride.app>]` — the Dynamic Type
   review artefact: every tab, Stats scrolled to each chart, and the paywall, as PNGs in
   `build/a11y/<size>/`. The size defaults to `accessibility-extra-extra-extra-large`;
   `--size default` (`large`) is the layout check against a previous set before store
   screenshots — they must match up to sub-pixel text. It runs on iPhone 17 Pro Max (the
-  screenshot device) under a per-device mutex, never creates a simulator, and puts content
+  screenshot device; `--device` for another) under the per-device mutex `/tmp/lock-<device>`
+  every project uses (40-minute wait, then BLOCKED), never creates a simulator, and puts content
   size, appearance, status bar and boot state back even when it fails. `--help` has the rest.
 
 Launch arguments the sweep and screenshot runs use — all but `-tab` exist only in DEBUG
@@ -163,7 +178,8 @@ ASC scripts read `ASC_API_KEY_ID`, `ASC_ISSUER_ID` and `ASC_KEY_PATH` from `scri
 
 CI and hooks: `ci/` — `changed_areas.sh`, `check_xcodegen_drift.sh`, `build_ios_generic.sh`,
 `check_ios_product.sh`, `check_macos_product.sh` (+ the shared `product_checks.sh`),
-`run_hosted_tests.sh`; `git-hooks/pre-push` and `install-git-hooks.sh`.
+`run_hosted_tests.sh` (+ `sim_lock.sh`, the simulator mutex it shares with `a11y_sweep.sh`);
+`git-hooks/pre-push` and `install-git-hooks.sh`.
 
 Server and ops: `rehearse_server.sh` (deploy rehearsal on a copy of production, on the host);
 `ops/check_email_auth.sh` (SPF/DKIM/DMARC for the magic-link sender). The on-host jobs

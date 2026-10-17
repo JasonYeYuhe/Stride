@@ -32,6 +32,10 @@
 #     can drop it at signing time, and then universal links silently open Safari instead of
 #     the app. The check switches itself on the day the entitlement is added; nothing to
 #     remember.
+#   - every other top-level key of the project's entitlements file, with the same value
+#     (1.4.0): the App Sandbox, the app group, and on the Mac files.user-selected.read-write,
+#     whose absence through 1.3.1 left Restore's open panel dead (check_all_entitlements). On
+#     macOS the file must still declare the sandbox and that key.
 set -uo pipefail   # no -e: report every failed check, then exit on the count
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -96,8 +100,62 @@ check_signature() {
                 pass "signed app carries $key [$(echo $signed)]"
             fi
         fi
+        check_all_entitlements "$entitlements" "$key"
     fi
     rm -f "$entitlements"
+}
+
+# entitlement_value <plist> <key>  — the key's value as comparable text: a scalar as PlistBuddy
+# prints it, an array as its entries, sorted, one per line. Empty when the key is absent.
+entitlement_value() {
+    plist_get "$1" ":$2" | sed -e 's/^ *//' -e '/^Array {$/d' -e '/^}$/d' | sort
+}
+
+# check_all_entitlements <signed entitlements plist> <key already checked above>
+# Every top-level key of the project's entitlements file, with the same value, in the signed app
+# (RELEASE-1.4.0.md D5). The associated-domains check above was the only one, and it could not
+# see what 1.3.0 and 1.3.1 shipped without: StrideMac.entitlements had the App Sandbox and no
+# com.apple.security.files.user-selected.* entitlement, so AppKit refused to show an open or save
+# panel and Restore from Backup did nothing on the Mac. 1.4.0 adds the key (Restore and the menu
+# Export need it); this makes a key that the file declares and signing drops — a profile without
+# the capability, a CODE_SIGN_ENTITLEMENTS that moved — fail before the upload, whichever key it
+# is. Extra keys in the signed app (application-identifier, team-identifier) are signing's own.
+# On macOS the file itself must also still declare the two keys the Mac's panels depend on: a key
+# deleted from the project would otherwise pass here as "nothing to compare".
+check_all_entitlements() {
+    local signed_plist="$1" skip="$2" key expected signed checked=0
+    local keys
+    # `plutil -p` prints each top-level key as `  "key" => …` at exactly two spaces.
+    keys="$(plutil -p "$ENTITLEMENTS" 2>/dev/null | sed -n 's/^  "\([^"]*\)" => .*$/\1/p')"
+    if [[ -z "$keys" ]]; then
+        fail "could not read the keys of $(basename "$ENTITLEMENTS")"
+        return
+    fi
+    if [[ "$PLATFORM" == "macos" ]]; then
+        for key in com.apple.security.app-sandbox com.apple.security.files.user-selected.read-write; do
+            if echo "$keys" | grep -qxF "$key"; then
+                pass "$(basename "$ENTITLEMENTS") declares $key"
+            else
+                fail "$(basename "$ENTITLEMENTS") no longer declares $key — the Mac's open and save panels need it"
+            fi
+        done
+    fi
+    while IFS= read -r key; do
+        [[ -z "$key" || "$key" == "$skip" ]] && continue
+        checked=$((checked + 1))
+        expected="$(entitlement_value "$ENTITLEMENTS" "$key")"
+        signed="$(entitlement_value "$signed_plist" "$key")"
+        if [[ -z "$signed" ]]; then
+            fail "$key declared in $(basename "$ENTITLEMENTS") but absent from the signed app"
+        elif [[ "$signed" != "$expected" ]]; then
+            fail "$key differs: signed [$(echo $signed)], project [$(echo $expected)]"
+        else
+            pass "signed app carries $key [$(echo $signed)]"
+        fi
+    done <<< "$keys"
+    if (( checked == 0 )); then
+        pass "no other key in $(basename "$ENTITLEMENTS") to compare"
+    fi
 }
 
 if [[ "$MODE" == "exported" ]]; then

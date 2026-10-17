@@ -82,11 +82,24 @@ final class SyncService {
     enum Trigger {
         /// Sync Now, a sign-in, Erase's pre-erase sync: goes at once, backoff or not.
         case userInitiated
-        /// Launch and foreground (and M3's background refresh, and any post-edit sync): skipped
-        /// while the owner's backoff window is open.
+        /// Launch and foreground: skipped while the owner's backoff window is open.
         case automatic
+        /// 1.4.0's background runs — the BGAppRefreshTask and the sync after a notification
+        /// action (RELEASE-1.4.0.md D5): skipped inside the window like `.automatic`, and a run
+        /// that got no answer at all leaves no backoff and no `syncError` behind
+        /// (`SyncBackoffTrigger.recordsNoAnswer`).
+        case background
 
-        var backoff: SyncBackoffTrigger { self == .automatic ? .automatic : .manual }
+        /// An exhaustive switch, never `self == .automatic ? … : .manual`: that ternary mapped
+        /// any new case to Sync Now's rules without a warning (design review,
+        /// "background-trigger-silent-default").
+        var backoff: SyncBackoffTrigger {
+            switch self {
+            case .userInitiated: return .manual
+            case .automatic: return .automatic
+            case .background: return .background
+            }
+        }
     }
 
     private let lastSyncKey = SyncDeliveryMigration.lastSyncTimeKey
@@ -180,14 +193,15 @@ final class SyncService {
         // Claimed before the first suspension, so a caller that saw `isSyncing == false` and
         // calls in the same main-actor turn (syncAfterInFlight) is never the one turned away.
         guard !isSyncing else { return false }
-        // The fast path of the engine's own check (`SyncEngine.run(trigger:)`): an automatic sync
-        // inside the owner's window does not even flip `isSyncing`, so Settings shows no spinner
-        // for a sync that is not going to happen. Only while the owner is the one signed in: B
-        // signing into a device A owned may be about to adopt it (`settleOwner`), and A's window
-        // is not B's. The engine asks the same store again with the run's binding — the rule.
-        if trigger == .automatic, let owner = owners.owner,
+        // The fast path of the engine's own check (`SyncEngine.run(trigger:)`): an automatic or
+        // background sync inside the owner's window does not even flip `isSyncing`, so Settings
+        // shows no spinner for a sync that is not going to happen. Only while the owner is the one
+        // signed in: B signing into a device A owned may be about to adopt it (`settleOwner`), and
+        // A's window is not B's. The engine asks the same store again with the run's binding — the
+        // rule. `waitsOutWindow`, not `== .automatic`, so `.background` takes it too.
+        if trigger.backoff.waitsOutWindow, let owner = owners.owner,
            sessions.currentSyncSession()?.account.id == owner.id,
-           !backoffStore.mayRun(.automatic, ownerID: owner.id) {
+           !backoffStore.mayRun(trigger.backoff, ownerID: owner.id) {
             refreshBackoff()
             return false
         }
@@ -216,7 +230,7 @@ final class SyncService {
             strikes: strikes, marks: marks, recoveryLog: recoveryLog, backoff: backoffStore,
             report: report, bounds: bounds)
         let outcome = await engine.run(in: context, options: options, trigger: trigger.backoff)
-        return finish(outcome, transport: transport)
+        return finish(outcome, transport: transport, trigger: trigger)
     }
 
     /// Waits for a sync already in flight to finish, then runs one of its own and reports
@@ -239,7 +253,7 @@ final class SyncService {
     /// The run's outcome as UI state. The Settings footer keeps 1.3.0's wording: the server's
     /// sentence, or this build's own for the codes it knows (`APIError.displayMessage`) — never
     /// a raw code.
-    private func finish(_ outcome: SyncRunOutcome, transport: APISyncTransport) -> Bool {
+    private func finish(_ outcome: SyncRunOutcome, transport: APISyncTransport, trigger: Trigger) -> Bool {
         // The engine wrote the outcome to the store under the run's owner; mirror it. Not after
         // a run a sign-out ended: the engine wrote nothing for it, and `signedOut()` has just
         // cleared the mirror for a device that is now signed out.
@@ -277,8 +291,13 @@ final class SyncService {
                 // and the Settings sync section, both from `backoff` — and never as `syncError`
                 // (M2 answer table: 429 / 503 `sync_paused`; acceptance (9): "sync paused" and no
                 // error). The same test the two rows use, so the three places cannot disagree.
-                // Offline, other 5xx and a client bug keep 1.3.0's footer sentence.
-                if !SyncBackoffReason(kind, answer: answer).showsSyncPaused {
+                // Offline, other 5xx and a client bug keep 1.3.0's footer sentence — except a
+                // background run that got no answer: the engine recorded no window for it
+                // (`recordsNoAnswer`), and the footer would show iOS cutting the run short, as
+                // "cancelled", to a user who never asked for a sync (RELEASE-1.4.0.md D5).
+                let reason = SyncBackoffReason(kind, answer: answer)
+                let silentNoAnswer = reason == .offline && !trigger.backoff.recordsNoAnswer
+                if !reason.showsSyncPaused && !silentNoAnswer {
                     syncError = transport.displayMessage
                 }
             case .recoveryLogFailed, .localFailure:
@@ -357,6 +376,7 @@ final class SyncService {
             // A clear that fails leaves the lines under the old owner's key, never shown for
             // another account; Settings' Clear can retry once that account owns the store.
             try? recoveryLog.clear(accountID: previousOwner.id)
+            forgetRecoveredEditsExport(for: previousOwner.id)
         }
         refreshRecoveredEdits()
     }
@@ -441,16 +461,111 @@ final class SyncService {
         recoveredEdits = try? recoveryLog.summary(accountID: owners.owner?.id)
     }
 
-    /// Export as JSON: the owner's log as one document (`SyncRecoveryExport`), for a ShareLink
-    /// (`RecoveredEditsJSONFile` in DataExportService) or the account screen's Export. Local
-    /// only — it holds names and notes, so it never goes near a diagnostic report.
+    /// Export as JSON: the owner's log as one document (`SyncRecoveryExport`). Local only — it
+    /// holds names and notes, so it never goes near a diagnostic report. The Export buttons write
+    /// it through `writeRecoveredEditsFile`.
     func exportRecoveredEdits(exportedAt: Date = Date()) throws -> Data {
         try recoveryLog.exportData(accountID: owners.owner?.id, exportedAt: exportedAt)
     }
 
-    /// The export as a ShareLink item, named `Stride-RecoveredEdits-<date>.json`.
-    var recoveredEditsFile: RecoveredEditsJSONFile {
-        RecoveredEditsJSONFile(log: recoveryLog, accountID: owners.owner?.id)
+    /// What "Export Recovered Edits" writes (`ExportFile`): the owner's log, as the screen showing
+    /// the button counts it.
+    var recoveredEditsFile: ExportFile {
+        .recoveredEdits(accountID: owners.owner?.id)
+    }
+
+    /// Writes `accountID`'s export (`DataExportService.writeRecoveredEditsFile`, off the main
+    /// actor) and remembers the total it holds, which Clear and Erase are bound to
+    /// (`hasRecoveredEditsNotExported`). Remembered on the write, not on a completed share: no
+    /// share sheet reliably says the receiver has the file (design review), and the file exists.
+    func writeRecoveredEditsFile(accountID: String?,
+                                 in root: URL = FileManager.default.temporaryDirectory) async throws -> WrittenExport {
+        let key = Self.exportKey(accountID)
+        let clears = recoveredEditsClears
+        recoveredEditsWrites[key, default: 0] += 1
+        defer { recoveredEditsWrites[key, default: 1] -= 1 }
+        let written = try await DataExportService.writeRecoveredEditsFile(log: recoveryLog, accountID: accountID, in: root)
+        // A clear while the file was written: its total counts lines that are gone, and lines
+        // archived after the clear would hide under it — so it is not remembered.
+        if clears == recoveredEditsClears, let total = written.recoveredEditsTotal {
+            exportedRecoveredEditTotals[key] = total
+        }
+        return written
+    }
+
+    /// Whether the owner's log holds lines the last "Export Recovered Edits" of this session did
+    /// not (1.4.0, RELEASE-1.4.0.md D6): its total is above what that file held. Clear and Erase
+    /// then run their "New recovered edits arrived. Export them, then try again." path instead of
+    /// clearing — the count on screen refreshes after every sync, so a confirmation "as shown"
+    /// could take a line archived between the export and the tap, never exported.
+    ///
+    /// True as well while an export of that log is still being written (W4 review): the file is
+    /// read off the main actor, under the log's flock, so a clear now could land before that read
+    /// and leave the export the user just asked for without the lines it was for — and nothing
+    /// is remembered yet to compare with. The buttons that clear are disabled meanwhile
+    /// (`isWritingExport`); this is what holds for an export tapped while an erase is already
+    /// waiting on its sync, or Delete Account's recheck on one.
+    ///
+    /// False when nothing was exported for this owner since the log was last cleared: clearing
+    /// without exporting stays the user's choice, which the confirmations put to them ("Export
+    /// them first if you might need them"). False for a log that cannot be read: there is no
+    /// total to compare, and Clear's own guard keeps such a log.
+    func hasRecoveredEditsNotExported() -> Bool {
+        let owner = owners.owner?.id
+        if isWritingRecoveredEdits(of: owner) { return true }
+        guard let exported = exportedRecoveredEditTotals[Self.exportKey(owner)],
+              let now = try? recoveryLog.summary(accountID: owner) else { return false }
+        return now.archivedTotal > exported
+    }
+
+    /// Export files being written right now, any kind, from any screen or window
+    /// (`DataExportService.write`, counted by `countingExportWrite`).
+    ///
+    /// 1.3.x needed no such count: its share sheet held the main thread until the file existed,
+    /// so nothing else on the screen could be tapped first. Write-first frees the screen while
+    /// the file is written (W4 review). Export as JSON in Delete Account, then Delete My Account a
+    /// second later, deleted the account before the file was ready; the sheet then closed under
+    /// the button, its share was dropped (`ExportSharePresenter.present`), and the only copy of
+    /// the erased data sat in tmp until the deferred sweep took it. Export, then Clear
+    /// Recovered Edits…, dropped the share under the confirmation the same way. So the buttons
+    /// that erase what an export copies are disabled while this is above 0 — Erase Local Data…,
+    /// Clear Recovered Edits…, Discard…, Delete My Account, Start from This Account's Data and
+    /// its sibling choices, Restore Anyway — and the share comes up before any of them can run.
+    private(set) var exportWrites = 0
+
+    var isWritingExport: Bool { exportWrites > 0 }
+
+    /// Runs one export write counted in `exportWrites`, whether it succeeds or throws.
+    func countingExportWrite<Written>(_ write: () async throws -> Written) async rethrows -> Written {
+        exportWrites += 1
+        defer { exportWrites -= 1 }
+        return try await write()
+    }
+
+    /// The total each owner's last export held (`writeRecoveredEditsFile`), for this session:
+    /// the guard is against a sync landing between an export and a confirmation, which happen in
+    /// one sitting. Keyed by `exportKey`.
+    @ObservationIgnored private var exportedRecoveredEditTotals: [String: Int] = [:]
+    /// Recovered-edits writes in flight per owner (`writeRecoveredEditsFile`), keyed by
+    /// `exportKey`.
+    @ObservationIgnored private var recoveredEditsWrites: [String: Int] = [:]
+    /// Moves on every clear of a recovery log this service makes (`forgetRecoveredEditsExport`).
+    @ObservationIgnored private var recoveredEditsClears = 0
+
+    private func isWritingRecoveredEdits(of accountID: String?) -> Bool {
+        recoveredEditsWrites[Self.exportKey(accountID), default: 0] > 0
+    }
+
+    private static func exportKey(_ accountID: String?) -> String {
+        accountID.map { "account:" + $0 } ?? "no-account"
+    }
+
+    /// `accountID`'s log was just cleared: its totals start again from 0, and a total remembered
+    /// from before would let that many new, never-exported lines be cleared. Every clear here goes
+    /// through this — Clear, Erase, Start from This Account's Data, account deletion.
+    private func forgetRecoveredEditsExport(for accountID: String?) {
+        exportedRecoveredEditTotals[Self.exportKey(accountID)] = nil
+        recoveredEditsClears += 1
     }
 
     /// Clear: the owner's lines and dropped count are gone. The UI confirms first — this is the
@@ -464,14 +579,24 @@ final class SyncService {
     /// line as it adds its own, and the count reads the same (review recovery-backup-1). It is
     /// read and the file cleared in one main-actor turn, and archiving happens on the main actor
     /// too, so no line can land in between. A log that cannot be read is not cleared.
+    ///
+    /// Also false when the log holds more than this owner's last export did
+    /// (`hasRecoveredEditsNotExported`): `expectedTotal` is taken when the dialog opens, from a
+    /// count that may already include a line archived after the export. And while an export of
+    /// it is still being written, which reads the log after this turn.
     @discardableResult
     func clearRecoveredEdits(expectedTotal: Int? = nil) throws -> Bool {
         defer { refreshRecoveredEdits() }
-        if let expectedTotal {
-            guard let now = try? recoveryLog.summary(accountID: owners.owner?.id),
-                  now.archivedTotal == expectedTotal else { return false }
+        let owner = owners.owner?.id
+        if isWritingRecoveredEdits(of: owner) { return false }
+        let exported = exportedRecoveredEditTotals[Self.exportKey(owner)]
+        if expectedTotal != nil || exported != nil {
+            guard let now = try? recoveryLog.summary(accountID: owner) else { return false }
+            if let expectedTotal, now.archivedTotal != expectedTotal { return false }
+            if let exported, now.archivedTotal > exported { return false }
         }
-        try recoveryLog.clear(accountID: owners.owner?.id)
+        try recoveryLog.clear(accountID: owner)
+        forgetRecoveredEditsExport(for: owner)
         return true
     }
 
@@ -594,15 +719,15 @@ final class SyncService {
         ownership.holdings(owner: conflict.owner, in: context)
     }
 
-    /// The owner's backup file for the screen's "Export a backup" (M1's v2 JSON; its `accountId`
-    /// is the OWNER's — whose ids the rows carry — not the account just signed into), and the
+    /// What the screen's "Export a Backup" writes (`ExportFile`; M1's v2 JSON): its `accountId`
+    /// is the OWNER's — whose ids the rows carry — not the account just signed into. And the
     /// owner's recovery-log export, offered when it has lines.
-    func backupFile(for conflict: SyncOwnerConflict, container: ModelContainer) -> BackupJSONFile {
-        BackupJSONFile(container: container, account: conflict.owner.map { BackupAccount(id: $0.id, email: $0.email) })
+    func backupFile(for conflict: SyncOwnerConflict) -> ExportFile {
+        .backup(account: conflict.owner.map { BackupAccount(id: $0.id, email: $0.email) })
     }
 
-    func recoveredEditsFile(for conflict: SyncOwnerConflict) -> RecoveredEditsJSONFile {
-        RecoveredEditsJSONFile(log: recoveryLog, accountID: conflict.owner?.id)
+    func recoveredEditsFile(for conflict: SyncOwnerConflict) -> ExportFile {
+        .recoveredEdits(accountID: conflict.owner?.id)
     }
 
     /// "Start from this account's data" (M2, "Different account, something to lose"; also the
@@ -628,6 +753,7 @@ final class SyncService {
             syncError = appLocalized("Unable to save changes. Please try again.")
             return false
         }
+        forgetRecoveredEditsExport(for: conflict.owner?.id)   // its log went with the erase
         ownerConflict = nil
         refreshBackoff()
         refreshRecoveredEdits()
@@ -670,6 +796,8 @@ final class SyncService {
             refreshBackoff()
             refreshRecoveredEdits()
         }
+        // Its log goes whether or not the erase saves (`SyncOwnership.accountDeleted`).
+        forgetRecoveredEditsExport(for: account.id)
         try ownership.accountDeleted(account.id, in: context)
         lastSyncTime = nil
         defaults.removeObject(forKey: lastSyncKey)

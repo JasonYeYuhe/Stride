@@ -152,6 +152,26 @@ lock_dir_for_udid() {
 }
 udid_alias() { [[ "$1" == "$UDID_PRO" ]] && echo pro || echo promax; }
 
+# The device's own data directory (…/CoreSimulator/Devices/<udid>/data), from simctl's `dataPath`:
+# the system stores live there, not in the app's containers — UserNotifications among them.
+device_data_dir() {
+  local json dir
+  json="$(xcrun simctl list devices -j)" || die "xcrun simctl list devices -j failed"
+  dir="$(/usr/bin/python3 -I -c '
+import json, sys
+for devs in json.loads(sys.stdin.read())["devices"].values():
+    for d in devs:
+        if d.get("udid") == sys.argv[1]:
+            print(d.get("dataPath", ""))
+            raise SystemExit(0)
+' "$1" <<<"$json")" || die "could not read simctl's device list"
+  [[ -n "$dir" && -d "$dir" ]] || die "no data directory for simulator $1 (simctl dataPath '${dir}')"
+  echo "$dir"
+}
+
+# The decoder of the UserNotifications stores (notifications.py's header has the format).
+notifications_py() { /usr/bin/python3 -I "$KIT_DIR/notifications.py" "$@"; }
+
 # ── App bundles ─────────────────────────────────────────────────────────────────────────────
 plist_value() { /usr/libexec/PlistBuddy -c "Print :$2" "$1" 2>/dev/null; }
 

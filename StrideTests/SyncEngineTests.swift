@@ -950,6 +950,47 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(a.backoffStore.state(for: "1")?.reason, .paused, "A's window is A's")
     }
 
+    /// 1.4.0's `.background` trigger through the engine (RELEASE-1.4.0.md D5): a run that got no
+    /// answer at all — offline, or iOS cancelling a refresh whose time ran out, which APIClient
+    /// reports the same way — writes no backoff, so the foreground sync the user starts next goes
+    /// at once and delivers the row. Recorded, its minute's window would turn that sync away.
+    func testABackgroundRunWithNoAnswerWritesNoBackoffAndTheNextAutomaticRunGoes() async throws {
+        let a = device(backoff: true)
+        let habit = a.habit("Read")
+        try a.save()
+        a.cursors.setCursor(SyncTimestamp.millisecondString(from: Date()), for: "1")
+        server.scriptPush(at: 1, .noAnswer)
+
+        let cut = await a.sync(trigger: .background)
+        guard case .stopped(.backOff(.transient, let answer), _) = cut, answer.status == nil else { return XCTFail("\(cut)") }
+        XCTAssertNil(a.backoffStore.state(for: "1"), "no answer on a background run leaves no window")
+        XCTAssertTrue(habit.isPending)
+
+        expectSynced(await a.sync(trigger: .automatic))
+        XCTAssertFalse(habit.isPending)
+    }
+
+    /// A background run waits out an open window like a launch, and a real answer — here the
+    /// pause switch — is recorded for it as for any run.
+    func testABackgroundRunRecordsTheServersAnswerAndWaitsOutTheWindow() async throws {
+        let a = device(backoff: true)
+        a.habit("Read")
+        try a.save()
+        server.scriptPull(at: 1, SyncTransportResponse(status: 503, body: Data(
+            #"{"error":"sync_paused","code":"sync_paused","retryAfterSeconds":900}"#.utf8)))
+
+        let paused = await a.sync(trigger: .background)
+        guard case .stopped(.backOff(.serverAsked(seconds: 900, paused: true), _), _) = paused else { return XCTFail("\(paused)") }
+        let state = try XCTUnwrap(a.backoffStore.state(for: "1"))
+        XCTAssertEqual(state.reason, .paused)
+        XCTAssertEqual(state.delay, 900)
+
+        let requests = server.requests.count
+        let waiting = await a.sync(trigger: .background)
+        XCTAssertEqual(waiting, .blocked(.backingOff(state)))
+        XCTAssertEqual(server.requests.count, requests, "a background run inside the window sends nothing")
+    }
+
     /// Stops that are not the server asking for less traffic leave the window alone — a sign-out
     /// mid-run above all, which says nothing about the server.
     func testASignOutMidRunWritesNoBackoff() async throws {
