@@ -591,7 +591,23 @@ Counted as `entry_date_push_refused` per refused push and `invalid_entry_date` p
 (either path); logged as `[sync] push user=<id> refused push: <n> entry dates not a real day in
 2025-01-01..<ceiling>` or `[sync] push user=<id> skipped <n> entries as invalid_value: date not a
 real day in …`, never a date or an id, with `dateRefused=<n>` or `badDates=<n>` on the request
-line. A device clock more than two days fast is refused the same way until the day arrives.
+line.
+
+A device whose clock is more than two days fast (fewer in a time zone ahead of UTC) is refused
+too, and how it recovers depends on the version:
+- **Below 1.3.1** the whole push is refused while the day is past the ceiling, and goes through
+  once the day is inside the window: those apps send their whole store on every sync.
+- **From 1.3.1** the check-in stays held after the day arrives. It is sent again only once it is
+  edited (a new edit stamp lifts the hold). Full resync does not send held rows, and Settings has
+  no Discard for `invalid_value`. Until the edit, it stays under "A value the server doesn't
+  accept" and does not reach the account's other devices. Nothing is lost: the row stays on the
+  device. Lifting such holds once the date is back in the window would be a client change.
+
+`scripts/sync_rehearsal.sh` runs this rule unmodified, so its fixtures are dated inside the
+window: `Scenario.day0` is noon UTC 600 days before today (never before 2025-01-02), and no
+scenario spans more than 500 days. The 3,000-entry chunk scenarios (S5, S11) use 6 habits ×
+500 days instead of 3 × 1,000. A fixture dated before 2025-01-01 is held or refused like a real
+one, so the old 2023 fixtures fail the gate against this server.
 
 **Notes on a day held under two ids.** Entries conflict on (habit, day), so two devices that
 checked a day before either pulled the other's hold one row under two ids. Two rules keep the note

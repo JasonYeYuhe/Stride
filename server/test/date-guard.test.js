@@ -243,7 +243,7 @@ const REFUSED = [
   ["a number, not a string", 20261015],
   ["the day before the floor: 2024-12-31", "2024-12-31"],
   ["a real leap day before the floor: 2024-02-29", "2024-02-29"],
-  ["a real leap day after the ceiling: 2028-02-29", "2028-02-29"],
+  ["a real leap day far past any ceiling: 2096-02-29", "2096-02-29"],
   ["today + 3 (UTC)", () => utcDay(3)],
 ];
 const ACCEPTED = [

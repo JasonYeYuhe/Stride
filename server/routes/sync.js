@@ -465,6 +465,12 @@ function legacyShape(req, habits, entries) {
  *     runs, and the deletion queue is acknowledged only after a push succeeds. The device keeps
  *     everything, shows the sentence (1.2.3 prints `error`, 1.3.0 `message` — errorBody), and
  *     syncs again once it is on 1.4.0, which holds those rows instead.
+ * A device clock more than ENTRY_DATE_LEAD_DAYS fast (fewer in a zone ahead of UTC) lands here
+ * too, and the two paths recover differently. Below 1.3.1 the push is refused until the day is
+ * inside the window, then goes through, because those apps re-send their whole store on every
+ * sync. From 1.3.1 the entry stays held after the day arrives: only a new edit stamp lifts a hold,
+ * Full resync does not send held rows, and Settings has no Discard for invalid_value. So the
+ * entry reaches the account only once the check-in is edited (it stays on the device meanwhile).
  * Counted as `invalid_entry_date` per refused entry, in either path, and
  * `entry_date_push_refused` per refused push; logged as one line with the user id and the count —
  * never a date, an id or an email.
