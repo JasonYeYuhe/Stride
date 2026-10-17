@@ -950,9 +950,11 @@ design are below. Each was checked by that workstream's reviewer.
   - screenshots: APP_DESKTOP keeps 1.3.1's four captures (real app, no false claim, but they show
     the removed Settings row and the toolbar "New Habit"). Replacing them needs the owner's go and
     a hands-on variant run.
-- [ ] After macOS approval: `release.py release 1.4.0 --platform MAC_OS` (MANUAL; the owner said
-  to release the Mac version on 2026-10-14). Then merge PR JasonYeYuhe/Stride#7 and tag v1.4.0 (as #6 and v1.3.1 were, after
-  approval on both platforms).
+- [x] **macOS approved** (found PENDING_DEVELOPER_RELEASE 2026-10-17 16:25 JST) and **released**
+  the same minute: `release.py release 1.4.0 --platform MAC_OS` (MANUAL; the owner said to release
+  the Mac version on 2026-10-14). READY_FOR_SALE at 16:25. Both platforms are live on 1.4.0 (22).
+- [ ] Merge PR JasonYeYuhe/Stride#7 (merge commit) and tag v1.4.0 on the merged m3 tip, as #6 and
+  v1.3.1 were.
 
 ### Follow-ups for 1.4.1 (readiness review, 2026-10-14; none blocks 1.4.0)
 
