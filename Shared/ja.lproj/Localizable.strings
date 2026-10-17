@@ -249,7 +249,6 @@
 "Share streak" = "連続記録をシェア";
 "Share Streak" = "連続記録をシェア";
 "Advanced Analytics" = "高度な分析";
-"8-week trends, insights & weekly review" = "8週間の推移、インサイト、週間レビュー";
 "Unlock with Pro" = "Proで解除";
 "8-Week Trend" = "8週間の推移";
 "Insights" = "インサイト";
@@ -502,3 +501,102 @@
 /* 1.4.0 (M3). Under an Export button when writing the export file failed (e.g. no disk space); on
    the Mac, also the title of an alert after File → Export Backup… / Export as CSV… failed. */
 "Couldn't create the file. Try again." = "ファイルを作成できませんでした。もう一度お試しください。";
+
+/* ============================================================
+   1.4.1 (M4)
+   ============================================================ */
+
+/* History (D5, D6): the sheet that shows a habit's past days in a month grid, where any day can
+   be checked, unchecked or annotated. "Edit history" is the button on a habit's Statistics card
+   and the heatmap's VoiceOver action; "Opens History" is a VoiceOver hint. In "%@, %@ of %@" the
+   arguments are the spoken date, the amount logged and the daily target. */
+"Edit history" = "履歴を編集";
+"Opens History" = "履歴を開きます";
+"History" = "履歴";
+"Previous Month" = "前の月";
+"Next Month" = "次の月";
+"Completed" = "完了済み";
+"Amount" = "数値";
+"%@, %@ of %@" = "%@、%@（目標%@）";
+"%@, rest day" = "%@、休息日";
+"Has a note" = "メモあり";
+
+/* Notes (D7): a note can be added only to a day that has a check-in, and new input stops at 500
+   characters. "Description" is the habit's own optional text in the habit editor. A check-in with
+   a note is never removed without asking; "Combine" merges two different notes left on one day
+   by two devices. */
+"Check in to add a note." = "チェックインするとメモを追加できます。";
+"Notes can be up to 500 characters." = "メモは500文字までです。";
+"Description" = "説明";
+"e.g., Right after breakfast" = "例：朝食のすぐあと";
+"Remove the check-in and its note?" = "チェックインとメモを削除しますか？";
+"Remove" = "削除";
+"This day has more than one note. Combine them into one?" = "この日には複数のメモがあります。1つにまとめますか？";
+"Combine" = "まとめる";
+
+/* Strength (D9, D10): a 0-100 score of how established a habit is. It rises with every check-in
+   and recovers after a miss. "Strength" is also a narrow tile label on the free Statistics card.
+   The Pro cards show its change over 30 and 90 days and the habit's five longest streaks, the one
+   still going marked "Current". */
+"Strength" = "定着度";
+"Strength grows with every check-in and recovers after a miss; it counts a rolling 7 days, the streak counts calendar weeks." = "定着度はチェックインのたびに上がり、できなかった後も回復します。定着度は直近7日間で数え、連続記録はカレンダーの週で数えます。";
+"Strength grows with every check-in and recovers after a miss." = "定着度はチェックインのたびに上がり、できなかった後も回復します。";
+"30-Day Change" = "30日間の変化";
+"90-Day Change" = "90日間の変化";
+"Your Top 5 Streaks" = "連続記録トップ5";
+"Current" = "継続中";
+"No streaks yet" = "まだ連続記録がありません";
+
+/* Pro claims (D11): what Advanced Analytics contains, in the locked card on Statistics and on the
+   paywall (it replaced "8-week trends, insights & weekly review", removed in 1.4.1), and the
+   paywall's subtitle for Weekly Review. "Your top 5 streaks", never "your best streaks": the free
+   card keeps its Best Streak tile. */
+"Insights, the 8-week trend, the strength chart and your top 5 streaks" = "インサイト、8週間の推移、定着度のグラフ、連続記録トップ5";
+"A look back at how your week went" = "1週間の取り組みを振り返る";
+
+/* Subscription status in Settings (D12), on iOS and in the Mac Settings window. "Plan" is the row
+   whose value is Monthly, Yearly or Lifetime; each %@ is a date. "Manage Subscription" opens
+   Apple's subscription settings. "A subscription still renews" warns a Lifetime owner who is
+   still paying for a subscription. */
+"Plan" = "プラン";
+"Renews on %@" = "%@に自動更新";
+"Expires on %@" = "%@に終了予定";
+"Manage Subscription" = "サブスクリプションを管理";
+"Payment problem — update your payment method" = "お支払いの問題 — お支払い方法を更新してください";
+"A subscription still renews" = "サブスクリプションの自動更新が続いています";
+"Pro ended on %@" = "Proは%@に終了しました";
+"Resubscribe" = "再登録";
+
+/* Template units (D15): stored as a new habit's unit when it is added from a template, then shown
+   after any number ("3/8 glasses"), so one form that reads after 1 and after 8. They match the
+   unit hint "Unit (e.g. glasses, min, km)". */
+"glasses" = "杯";
+"min" = "分";
+"steps" = "歩";
+"words" = "字";
+"hours" = "時間";
+"km" = "km";
+
+/* Editing a habit (2026-10-15 decision 8): under the Goal and Frequency settings in edit mode only.
+   A new target or schedule re-scores every past day. */
+"Changes apply to your whole history, including streaks and strength." = "変更は、連続記録や定着度を含むこれまでの履歴全体に適用されます。";
+
+/* 1.4.1 W4 */
+
+/* Today on a past day (D8): every habit was created after the day picked in the week strip, so
+   none is listed for it. A habit created later can still be filled in for that day from History. */
+"No habits had started by this day." = "この日はまだどの習慣も始まっていませんでした。";
+
+/* History's note (W4 review): a button in the question that comes up when a changed note cannot be
+   saved as it is — over the 500-character cap, or on a day that holds a second, different note the
+   user does not want combined. It puts the saved note back, unchanged, and then closes History,
+   picks the other day, or makes the change that was asked for. */
+"Discard Changes" = "変更を破棄";
+
+/* 1.4.1 W6 */
+
+/* Habit Templates (D15): the caption under a count template's name, and what VoiceOver reads as
+   the row's value — its daily goal: the number, then one of the "Template units (D15)" entries
+   ("8 glasses a day", "5 km a day", "8 hours a day"). Write the number and unit as this language's
+   template names write them ("Sleep 8hrs", "Read 30min"). */
+"%lld %@ a day" = "1日%lld%@";

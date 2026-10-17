@@ -727,6 +727,38 @@ final class NotificationServiceTests: XCTestCase {
         XCTAssertEqual(declined, .denied)
         XCTAssertEqual(already, .allowed)
         XCTAssertTrue(center.pending.isEmpty)
+        let badge = await center.waitForBadge(after: 0, timeout: .milliseconds(300))
+        XCTAssertNil(badge, "no grant, no badge")
+    }
+
+    /// The badge after a grant (RELEASE-1.4.0.md's follow-up, Mac checklist item 12; 1.4.1 W5):
+    /// "Allow" at the habit sheet's prompt sets it at once, from the store — nothing set it until
+    /// the next save, activation or midnight, and a Mac left in front kept a blank Dock tile.
+    func testAGrantAtTheSheetSetsTheBadge() async throws {
+        let done = habit("Done", reminder: false)
+        done.records = [HabitRecord(date: Date())]
+        try insert(done, habit("Open"), habit("Quiet", reminder: false), habit("Archived", archived: true))
+        center.status = .notDetermined
+        center.userAllows = true
+
+        let permission = await service.ensureReminderPermission(schedulingExistingIn: container)
+
+        XCTAssertEqual(permission, .allowed)
+        let badge = await center.waitForBadge(after: 0)
+        XCTAssertEqual(badge, 2, "Open and Quiet are left today; Done is done, Archived is not counted")
+    }
+
+    /// Settings' Daily Reminder switch after its grant (`permissionGranted`, SettingsView's
+    /// `handleReminderToggle`): the store's reminders are scheduled and the badge is set.
+    func testPermissionGrantedSchedulesTheStoreAndSetsTheBadge() async throws {
+        let open = habit("Open", hour: 6, minute: 0)
+        try insert(open, habit("Quiet", reminder: false))
+
+        service.permissionGranted(schedulingExistingIn: container)
+
+        XCTAssertEqual(Set(center.pending.keys), [reminderID(open)])
+        let badge = await center.waitForBadge(after: 0)
+        XCTAssertEqual(badge, 2)
     }
 
     // MARK: - Daily reminder

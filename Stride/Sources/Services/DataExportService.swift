@@ -43,11 +43,34 @@ enum DataExportService {
         DataBackup.csvData(try DataBackup.snapshot(of: context))
     }
 
-    /// `Stride-Backup-2026-09-27.json`, dated in the user's own time zone. ASCII on purpose: the
-    /// name travels through mail, cloud drives and other people's machines.
-    static func fileName(_ stem: String, extension ext: String, date: Date = Date()) -> String {
-        "\(stem)-\(fileDateFormatter.string(from: date)).\(ext)"
+    /// `Stride-Backup-2026-09-27-143005.json`: the export's date and time to the second
+    /// (`yyyy-MM-dd-HHmmss`, 24-hour), in the user's own time zone. ASCII on purpose: the name
+    /// travels through mail, cloud drives and other people's machines.
+    ///
+    /// The time is there since 1.4.1 (RELEASE-1.4.0.md "Follow-ups for 1.4.1"): with the date
+    /// alone, a second export on the same day suggested the same name as the first, so saving it
+    /// into the same folder (a Mac save panel, Files on iOS) met the first file instead of making
+    /// a second one. Two exports in the same second still share a name; the panel then asks to
+    /// replace, as it does for any existing file. In tmp each export has a directory of its own
+    /// anyway (`writeExportFile`).
+    ///
+    /// Gregorian and POSIX whatever the device's calendar and locale (an `en_US_POSIX` formatter
+    /// is Gregorian already; the calendar is set so it stays so): a Japanese- or Buddhist-calendar
+    /// device would otherwise name the file 0008-… or 2569-… (docs/X2-non-gregorian-day-keys.md).
+    /// A formatter per call, so the zone is the one in effect now and nothing shared is mutated
+    /// across the detached tasks that call this.
+    static func fileName(_ stem: String, extension ext: String, date: Date = Date(),
+                         timeZone: TimeZone = .current) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = fileDateFormat
+        return "\(stem)-\(formatter.string(from: date)).\(ext)"
     }
+
+    /// The date and time in every export's name (`fileName`).
+    static let fileDateFormat = "yyyy-MM-dd-HHmmss"
 
     // MARK: - Writing an export (write first, then share)
 
@@ -79,8 +102,8 @@ enum DataExportService {
         }
     }
 
-    /// The lossless v2 backup, `Stride-Backup-<date>.json`, naming `account`. The snapshot is read
-    /// on the main actor (SwiftData models belong to the context's actor); the encode and the
+    /// The lossless v2 backup, `Stride-Backup-<date-time>.json`, naming `account`. The snapshot is
+    /// read on the main actor (SwiftData models belong to the context's actor); the encode and the
     /// write run off it, so a multi-year history does not hold the main thread while it is
     /// serialised.
     @MainActor
@@ -94,8 +117,8 @@ enum DataExportService {
         return WrittenExport(url: url)
     }
 
-    /// One row per check-in, `Stride-Export-<date>.csv`, for spreadsheets. As `writeBackupFile`:
-    /// the snapshot on the main actor, the rest off it.
+    /// One row per check-in, `Stride-Export-<date-time>.csv`, for spreadsheets. As
+    /// `writeBackupFile`: the snapshot on the main actor, the rest off it.
     @MainActor
     static func writeCSVFile(container: ModelContainer,
                              in root: URL = FileManager.default.temporaryDirectory) async throws -> WrittenExport {
@@ -108,8 +131,8 @@ enum DataExportService {
     }
 
     /// The recovery log's export (`SyncRecoveryExport`) for `accountID`,
-    /// `Stride-RecoveredEdits-<date>.json`, with the archived total it holds. All of it off the
-    /// main actor: the read takes the log's flock — which the main-actor sync engine takes to
+    /// `Stride-RecoveredEdits-<date-time>.json`, with the archived total it holds. All of it off
+    /// the main actor: the read takes the log's flock — which the main-actor sync engine takes to
     /// append — and reads a file of up to 5 MB. Deliberately not a backup: picked in Restore it is
     /// `notABackup` (its version key is `recoveryLogVersion`). Call it through
     /// `SyncService.writeRecoveredEditsFile`, which remembers the total.
@@ -487,14 +510,6 @@ enum DataExportService {
         removeExportFilesAfterErase(in: exportRoot)
         return .erased
     }
-
-    private static let fileDateFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd"
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone.current
-        return f
-    }()
 }
 
 /// The export directories a save panel holds (`DataExportService.exportsInUse`), by

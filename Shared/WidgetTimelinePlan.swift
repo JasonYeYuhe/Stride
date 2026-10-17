@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 
 /// What the widget shows and when: one entry for now, one for the coming local midnight.
 ///
@@ -13,8 +14,9 @@ import Foundation
 ///
 /// Pure: it takes the instant, the calendar and plain row inputs, and reads no clock, no
 /// `Calendar.current` and no store — so tests can pin it to any zone. The day arithmetic
-/// itself stays in `Habit` (reached through `RowInput.status`); this file only decides which
-/// habit-day each entry describes.
+/// itself stays in `HabitStats` (reached through `RowInput.status`); this file only decides
+/// which habit-day each entry describes. `rowInputs(for:in:now:calendar:)`, below, is the
+/// widget's one read of the store.
 struct WidgetTimelinePlan {
     /// One habit as a widget row. Plain values: the view never touches a model object.
     struct Row: Identifiable, Equatable {
@@ -34,6 +36,10 @@ struct WidgetTimelinePlan {
         let streak: Int
         /// A times-per-week habit counts its streak in weeks ("12w", "12 week streak").
         let streakInWeeks: Bool
+        /// The entry's day has a live record with a non-empty note (D7). A checked, noted row
+        /// must not be a toggle: un-checking it would delete the note from the extension, so it
+        /// opens the app on that day instead (W2's link).
+        var hasNote: Bool = false
     }
 
     /// A habit's state on one habit-day.
@@ -41,6 +47,8 @@ struct WidgetTimelinePlan {
         let isCompleted: Bool
         let progress: Double
         let streak: Int
+        /// One of the day's live records carries a non-empty note (`Row.hasNote`).
+        var hasNote: Bool = false
     }
 
     /// Everything the plan needs about one habit. `status` is asked with a DAY-KEY (UTC
@@ -89,7 +97,8 @@ struct WidgetTimelinePlan {
                            colorHex: input.colorHex, isCount: input.isCount,
                            isCompleted: status.isCompleted,
                            progress: min(1, max(0, status.progress)),
-                           streak: status.streak, streakInWeeks: input.streakInWeeks)
+                           streak: status.streak, streakInWeeks: input.streakInWeeks,
+                           hasNote: status.hasNote)
             })
         }
 
@@ -142,10 +151,39 @@ struct WidgetTimelinePlan {
     }
 }
 
+extension WidgetTimelinePlan {
+    /// The last habit-day a plan made at `now` describes: its midnight entry's. One `HabitStats`
+    /// per habit with this as its `today` answers both entries' day-keys, each as if it were
+    /// today (`HabitStats.currentStreak(asIfToday:)`): a record dated tomorrow (the demo top-up
+    /// dates by UTC, D13; a device in a zone already on the next day) counts once tomorrow's
+    /// entry shows, and not before — not even in a times-per-week habit's week, which the app's
+    /// `Habit.currentStreak()` would leave it out of too.
+    static func lastDayKey(now: Date, calendar: Calendar) -> Date {
+        dayKey(of: nextLocalMidnight(after: now, calendar: calendar), in: calendar)
+    }
+
+    /// The widget's read (HabitTimelineProvider.read(now:)): ONE fetch of live record ids for
+    /// every habit, in the context that fetched them (the widget's own: a deletion another
+    /// process saved shows up only there, D2), then one `HabitStats` per habit answering both
+    /// day-keys — one set build instead of 1.4.0's six record scans per habit per timeline.
+    /// The inputs hold their `HabitStats` and no model object; the plan copies plain rows out of
+    /// them, so each `HabitStats` is released with the inputs, before the timeline is handed over
+    /// (no static cache, Data safety 5).
+    static func rowInputs(for habits: [Habit], in context: ModelContext, now: Date,
+                          calendar: Calendar) -> [RowInput] {
+        let live = HabitStats.liveRecordIDs(of: habits, in: context)
+        let last = lastDayKey(now: now, calendar: calendar)
+        return habits.map { habit in
+            RowInput(habit, stats: HabitStats(habit: habit, liveRecordIDs: live, calendar: calendar, today: last))
+        }
+    }
+}
+
 extension WidgetTimelinePlan.RowInput {
-    /// A habit read through its own day arithmetic. The closure captures the model object, so
-    /// build the plan while the context that fetched it is alive (the provider does, in one call).
-    init(_ habit: Habit) {
+    /// A habit's row, answered from one `HabitStats` (built through the plan's last day-key,
+    /// `WidgetTimelinePlan.lastDayKey`): each day-key as if it were today, so the "now" entry
+    /// counts nothing dated after it. Captures `stats` only, never the model object.
+    init(_ habit: Habit, stats: HabitStats) {
         self.init(habitId: habit.id.uuidString,
                   name: habit.name,
                   emoji: habit.emoji,
@@ -153,9 +191,19 @@ extension WidgetTimelinePlan.RowInput {
                   isCount: habit.habitKind == .count,
                   streakInWeeks: habit.schedule == .timesPerWeek,
                   status: { dayKey in
-                      WidgetTimelinePlan.Status(isCompleted: habit.isCompletedOn(dayKey),
-                                                progress: habit.progress(on: dayKey),
-                                                streak: habit.currentStreak(from: dayKey))
+                      WidgetTimelinePlan.Status(isCompleted: stats.isCompleted(on: dayKey),
+                                                progress: stats.progress(on: dayKey),
+                                                streak: stats.currentStreak(asIfToday: dayKey),
+                                                hasNote: stats.hasNote(on: dayKey))
                   })
+    }
+
+    /// One habit on its own: its live ids from its own context, and a `HabitStats` through the
+    /// last day-key of a plan made now in the device's calendar. Tests and one-off callers; the
+    /// widget reads every habit at once with `WidgetTimelinePlan.rowInputs`.
+    init(_ habit: Habit) {
+        let last = WidgetTimelinePlan.lastDayKey(now: Date(), calendar: .current)
+        self.init(habit, stats: HabitStats(habit: habit, live: HabitStats.liveRecords(of: habit),
+                                           calendar: .current, today: last))
     }
 }

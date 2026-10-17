@@ -20,13 +20,28 @@
 		     UserDefaults(suiteName: "group.yyh.stride.habittracker"), which the app reads on
 		     its next sync (StrideWidget.swift, Shared/SyncDeletionQueue.swift). 1C8F.1 is the
 		     reason for defaults shared with apps/extensions in the same App Group. The widget
-		     reads and writes no other defaults, file timestamps, boot time or disk space. -->
+		     reads and writes no other defaults, and no file timestamps or disk space. -->
 		<dict>
 			<key>NSPrivacyAccessedAPIType</key>
 			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
 			<key>NSPrivacyAccessedAPITypeReasons</key>
 			<array>
 				<string>1C8F.1</string>
+			</array>
+		</dict>
+		<!-- 35F9.1 (1.4.1; missing since 1.3.1): this target compiles all of Shared/ but
+		     SentryBootstrap.swift (project.yml), so the binary carries StoreOpenRetry
+		     (Shared/SharedModelContainer.swift), which measures elapsed time within the process
+		     with ProcessInfo.systemUptime. The widget opens the store with openForExtension, which
+		     does not retry, but the code is compiled in. The value is never stored or sent. The
+		     app's file-timestamp reason (C617.1) is not declared here: DataExportService is not
+		     compiled into the widget. -->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>35F9.1</string>
 			</array>
 		</dict>
 	</array>

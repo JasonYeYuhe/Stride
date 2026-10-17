@@ -31,6 +31,8 @@ struct ContentView: View {
     @State private var exportPanelOffered: URL?
     /// The menu Export's write failed: an alert says so — a menu has no row to put the line under.
     @State private var exportFailed = false
+    /// This window, for the menu Export's check once its file is written (`writeRequestedExport`).
+    @State private var windowProbe = ShellWindowProbe()
     #endif
 
     /// - Parameter shell: injected by the hosted shell tests; the app starts from the launch
@@ -90,6 +92,7 @@ struct ContentView: View {
             .onAppear { openSettingsIfTheLaunchAskedForIt() }
             // The menu bar acts on this window while it is in front (D3, `StrideCommands`).
             .modifier(ShellCommandsPublisher(shell: shell))
+            .readsShellWindow(into: windowProbe)
             // File → Export Backup… / Export as CSV…: written first, then the save panel.
             .task(id: shell.request) { await writeRequestedExport() }
             .fileMover(isPresented: exportPanelShown, file: exportPanelFile) { result in
@@ -252,6 +255,8 @@ struct ContentView: View {
             case .review: WeeklyReviewView()
             case .paywall: ProPaywallView()
             }
+        case .history(let habitID, let day):
+            HabitHistoryView(habitID: habitID, day: day)
         case .export:
             EmptyView()
         }
@@ -306,27 +311,29 @@ struct ContentView: View {
             offerToExportPanel(nil)
         }
         guard case .export(let export) = shell.request else { return }
+        let asked = shell.request
         let written = try? await DataExportService.write(export.file, container: modelContext.container)
-        guard !Task.isCancelled else {
+        // Something came up meanwhile on THIS window — New Habit from Today's +, History, an alert
+        // — and a panel cannot go over it: the ask is dropped, with the menu's beep for "not now",
+        // rather than left as a request no panel will ever answer. This window's sheet, not the key
+        // window's (`MenuCommandRules.exportPassEnd` says why; 1.4.0 follow-up).
+        let end = MenuCommandRules.exportPassEnd(
+            wrote: written != nil, cancelled: Task.isCancelled,
+            ownWindowShowsSheet: windowProbe.showsSheet, ownWindowIsOnScreen: windowProbe.isOnScreen)
+        if MenuCommandRules.clearsRequest(end), shell.request == asked { shell.request = nil }
+        switch end {
+        case .cancelled:
             if let written { DataExportService.removeUnsharedExport(at: written.url) }
-            return
-        }
-        // Something came up meanwhile — New Habit from Today's +, an alert — and a panel cannot go
-        // over it: the ask is dropped, with the menu's beep for "not now", rather than left as a
-        // request no panel will ever answer.
-        if MenuCommandPress.keyWindowShowsSheet {
+        case .dropped:
             if let written { DataExportService.removeUnsharedExport(at: written.url) }
-            shell.request = nil
             NSSound.beep()
-            return
-        }
-        guard let written else {
-            shell.request = nil
+        case .failed:
             exportFailed = true
-            return
+        case .offerPanel:
+            guard let written else { return }
+            offerToExportPanel(written.url)
+            exportPanelFile = written.url
         }
-        offerToExportPanel(written.url)
-        exportPanelFile = written.url
     }
 
     /// Sets the file the panel is offered, held from every sweep until the panel answers
@@ -372,6 +379,7 @@ private extension View {
 /// Settings is its own window.
 struct SidebarView: View {
     @Bindable var shell: ShellState
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         list
@@ -408,12 +416,37 @@ struct SidebarView: View {
         }
     }
 
-    @ViewBuilder
     private func row(_ tab: ShellTab) -> some View {
+        label(tab)
+            .labelStyle(SidebarRowLabelStyle(stacked: typeSize.isAccessibilitySize))
+    }
+
+    @ViewBuilder
+    private func label(_ tab: ShellTab) -> some View {
         switch tab {
         case .today: Label("Today", systemImage: "checkmark.circle.fill")
         case .stats: Label("Statistics", systemImage: "chart.bar.fill")
         case .settings: Label("Settings", systemImage: "gear")
+        }
+    }
+}
+
+/// A sidebar row: the system's Label, except at accessibility sizes, where the icon goes above
+/// the title and the title gets the row's whole width. Beside the icon, AX5 left the 13-inch
+/// iPad's sidebar too little for one word, and "Sta- / tistics" and "Set- / tings" broke inside
+/// it, the second line under the icon (gate 8).
+private struct SidebarRowLabelStyle: LabelStyle {
+    let stacked: Bool
+
+    @ViewBuilder
+    func makeBody(configuration: Configuration) -> some View {
+        if stacked {
+            VStack(alignment: .leading, spacing: 4) {
+                configuration.icon
+                configuration.title
+            }
+        } else {
+            Label(configuration)
         }
     }
 }

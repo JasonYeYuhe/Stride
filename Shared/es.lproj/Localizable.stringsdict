@@ -634,5 +634,41 @@
 			<string>Se eliminan de este dispositivo y puede que no existan en ningún otro sitio. Si puedes necesitarlos, exporta primero una copia de seguridad.</string>
 		</dict>
 	</dict>
+	<!-- 1.4.1 (M4). The heatmap's VoiceOver summary (D5): completed days of the 84 shown, then
+	     the current streak in days, or in weeks for a times-per-week habit. One plural variable
+	     per entry: en follows the day total (its streak words are the same for 1 and 2), es
+	     follows the streak (the total is always 84). -->
+	<key>%lld of %lld days completed, %lld day streak</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%1$lld de %2$lld días completados, %3$#@streak@</string>
+		<key>streak</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>racha de %lld día</string>
+			<key>other</key>
+			<string>racha de %lld días</string>
+		</dict>
+	</dict>
+	<key>%lld of %lld days completed, %lld week streak</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%1$lld de %2$lld días completados, %3$#@streak@</string>
+		<key>streak</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>racha de %lld semana</string>
+			<key>other</key>
+			<string>racha de %lld semanas</string>
+		</dict>
+	</dict>
 </dict>
 </plist>

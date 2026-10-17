@@ -953,8 +953,8 @@ design are below. Each was checked by that workstream's reviewer.
 - [x] **macOS approved** (found PENDING_DEVELOPER_RELEASE 2026-10-17 16:25 JST) and **released**
   the same minute: `release.py release 1.4.0 --platform MAC_OS` (MANUAL; the owner said to release
   the Mac version on 2026-10-14). READY_FOR_SALE at 16:25. Both platforms are live on 1.4.0 (22).
-- [ ] Merge PR JasonYeYuhe/Stride#7 (merge commit) and tag v1.4.0 on the merged m3 tip, as #6 and
-  v1.3.1 were.
+- [x] PR JasonYeYuhe/Stride#7 merged 2026-10-17 (merge commit c6507f7); tag v1.4.0 on the m3 tip
+  6f5af54 ("Code = 4617d1b; later commits are docs"), as #6 and v1.3.1 were.
 
 ### Follow-ups for 1.4.1 (readiness review, 2026-10-14; none blocks 1.4.0)
 
