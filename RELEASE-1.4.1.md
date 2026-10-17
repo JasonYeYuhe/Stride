@@ -920,6 +920,25 @@ go per action.
   strength numbers were recomputed independently.
 - 2026-10-15, #8 + #9 merged into main and deployed (DEPLOY 5 steps, rehearsal 32/32); main merged
   into m4 (31f23e8). Mac 1.4.0 went IN_REVIEW.
+- 2026-10-17, gate 8 (a11y) first pass.
+  - Commits: 0083fb4 deflakes BackgroundSyncTests and adds the DEBUG `-openHistory <habit>
+    [-historyDay n]` / `-scrollTo historyEditor` hooks; 4d65525 fixes the sweep.
+  - The flake was a test race, not product code. Under utility-QoS starvation the 5 s bound passed
+    before the submitter answered (reproduced 4/4, fixed 0/4).
+  - Four sweeps: iPhone 17 Pro Max and iPad Pro 13 (M5), each at default and AX5 (148 PNGs). The
+    PNG review found 28 findings; the real ones are fixed and re-swept:
+    - habit-colour text reaches ≥ 4.5:1 via `ColorContrast.readable`, the Today streak text too;
+    - Edit history and Share have 44 pt tap areas;
+    - tile and OverallStatsCard baselines line up;
+    - History's disabled note field is dimmed;
+    - iPad History and account sheets use the page size on iOS 18+;
+    - AX5 layouts: Upgrade to Pro, the iPad sidebar, the Sync rows, the holdings box.
+  - A DEBUG `-demoScenario details` set covers the Description line, note dots, the count stepper
+    and a light habit colour.
+  - Rejected: the 14 pt phone heatmap cell (D5's trade-off; Edit history and the VoiceOver action
+    are the 44 pt paths).
+  - Left as follow-ups: Settings habit rows' #FF9500 "4d" on white (2.1:1); Today's check circle
+    filled with a yellow habit's colour (by design); the Spanish iPad sidebar at AX5 is unchecked.
 - 2026-10-17, **P2 done**:
   - Mac 1.4.0 was approved (PENDING_DEVELOPER_RELEASE at 16:25 JST) and released at once; READY_FOR_SALE.
   - RELEASE-1.4.0.md ticked (6f5af54). #7 merged (c6507f7) after a CI re-run: one flaky hosted test,
