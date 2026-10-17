@@ -163,6 +163,9 @@ struct HabitHistoryView: View {
         // A bare ScrollView has no ideal height, and a sheet sized to it would be a sliver.
         .frame(minWidth: 460, idealWidth: 520, minHeight: 620)
         #endif
+        // On iPad the form sheet ended inside the Note field at the default size, and below the
+        // month grid at AX5 (gate 8).
+        .pageSizedSheet()
     }
 
     // MARK: - Layout
@@ -325,7 +328,10 @@ struct HabitHistoryView: View {
         let scheduled = stats.isScheduled(on: key)
         let isSelected = n == selected
         let digits = String(calendar.component(.day, from: noon))
-        let numberStyle: Color = completed ? .white : (!inWindow ? Color.secondary.opacity(0.4) : (scheduled ? .primary : .secondary))
+        // On the habit's colour: white, or black where white would not be read — Yellow 1.5:1,
+        // Green and Orange 2.2:1 (gate 8; `Color.content(onFillHex:)`).
+        let onFill = Color.content(onFillHex: habit.colorHex)
+        let numberStyle: Color = completed ? onFill : (!inWindow ? Color.secondary.opacity(0.4) : (scheduled ? .primary : .secondary))
         return Button {
             select(n)
         } label: {
@@ -349,7 +355,7 @@ struct HabitHistoryView: View {
                     .minimumScaleFactor(0.6)
                 if noted {
                     Circle()
-                        .fill(completed ? Color.white : habit.color)
+                        .fill(completed ? onFill : habit.color)
                         .frame(width: 4, height: 4)
                         .offset(y: 12)
                 }
@@ -490,6 +496,7 @@ struct HabitHistoryView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Note")
                 .font(.subheadline.weight(.semibold))
+                .foregroundStyle(hasRecord ? .primary : .secondary)
                 .accessibilityHidden(true)   // the field's own label says it
             TextField("How did it go?", text: $draft.text, axis: .vertical)
                 .lineLimit(3...8)
@@ -498,6 +505,10 @@ struct HabitHistoryView: View {
                 .disabled(!hasRecord)
                 .padding(10)
                 .background(RoundedRectangle(cornerRadius: 10).fill(Color.appBackground))
+                // Dimmed while it takes nothing (D7: a note needs the day's record): it looked
+                // exactly like the open field, and the line that says why can be below the fold
+                // (gate 8).
+                .opacity(hasRecord ? 1 : 0.45)
                 .accessibilityLabel("Note")
                 .accessibilityIdentifier("history.note")
             if !hasRecord {

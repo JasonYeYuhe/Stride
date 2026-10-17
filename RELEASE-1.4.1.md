@@ -931,6 +931,27 @@ go per action.
     - W10, the client fix and migration, on branch worktree-wf_0f3bb37c-d94-2: StrideTests 697,
       hosted 322, rehearsal 109/0/1; review found 4 defects, fixed, including a 45 s first pass
       now ~3 s for 10,000 strays.
+- 2026-10-17, **gate 8 (a11y sweeps)**: iPhone 17 Pro Max and iPad Pro 13" at the default size and
+  AX5. The PNG review's 28 findings were checked against the PNGs and the code; the real ones are
+  fixed and re-swept (all four sweeps), the rest rejected below.
+  - Fixed: habit colours as text are a contrast-checked shade where they do not read on the card
+    (Edit history/Share: Green 1.99 → 4.5:1, Yellow 1.35 → 4.5:1; Today's streak text 1.97 →
+    4.5:1); text and dots on a habit-colour fill turn black where white is under 3:1 (History's
+    digits and dot, the heatmap's dot; Yellow, Green, Orange, Teal); the detail card's 44 pt tap
+    areas (layout unchanged); its tiles' values and OverallStatsCard's on one line; History's
+    disabled Note field dimmed; the iPad History and account sheets at the page size (iOS 18+);
+    holdings icons in one column; at accessibility sizes the Sync rows' captions under the Label,
+    the Upgrade row's crown above its words, the sidebar's icons above their titles, Unlock with
+    Pro centred in a rounded rectangle, Today's Description wrapped in full; syncAll's seeded
+    habits in a fixed order.
+  - Coverage: `-demoScenario details` (Yellow Morning Run with a Description and noted check-ins,
+    Drink Water counted) and the sweep's `15_details_*` captures, `02_stats_detail` at AX sizes,
+    `-scrollTo todayHabits`.
+  - Rejected: the phone heatmap's 14 pt cells (D5's recorded trade-off; the phone cell is kept
+    at every text size, 44 pt is out of reach anyway, and Edit history is the 44 pt path); the
+    iPad Sync section's held-row indentation (List's own leading for icon-less rows, pre-1.4.1,
+    no reading cost). Not coverable by the sweep: D12's plan rows (needs a purchase; hosted
+    SKTestSession, gate 4) and Today on a past day (no launch argument picks a date).
 - 2026-10-16, wave B merged (W7 c39d4d8, W6 a094ca2, D11 172fdab); 8 review findings confirmed and
   fixed, 2 refuted.
   - W6: templates carry kind, target and unit. A failed add says so. A pick closes New Habit too:

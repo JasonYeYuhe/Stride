@@ -140,6 +140,9 @@ struct TodayView: View {
                         }
                     }
                     .padding(.horizontal)
+                    // `-scrollTo todayHabits`: the rows, under the tab bar at accessibility sizes,
+                    // for scripts/a11y_sweep.sh (DEBUG only).
+                    .sweepAnchor("todayHabits")
                 } else {
                     LazyVStack(spacing: 16) {
                         ForEach(groupedSections(shown), id: \.group?.id) { section in
@@ -158,6 +161,7 @@ struct TodayView: View {
             }
             .padding(.vertical)
             .shellReadableWidth(regularLayout)
+            .sweepScrollable()
         }
         .background(Color.appBackground)
         // No title of its own: the shell sets it from its own state (ContentView.title).
@@ -465,6 +469,8 @@ struct HabitRowView: View {
     /// A write waiting for the user's go (D7): asked, and only then committed again, unchanged.
     @State private var confirming: PendingConfirmation?
     private var cache = StatsCache.shared
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.colorScheme) private var colorScheme
 
     init(habit: Habit, date: Date) {
         self.habit = habit
@@ -679,10 +685,14 @@ struct HabitRowView: View {
             Text(habit.name)
                 .font(.body.weight(.medium))
             if let habitDescription {
+                // One line (D7), but whole at accessibility sizes, as the day's note under the
+                // row is: the name column is about 230 pt there and "Morning Run" itself wraps,
+                // so one line cut nearly every description off after a word or two, and three
+                // still cut "Before breakfast, one lap of the park" (gate 8).
                 Text(habitDescription)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(typeSize.isAccessibilitySize ? nil : 1)
             }
             if habit.habitKind == .count {
                 Text(countLabel)
@@ -707,9 +717,11 @@ struct HabitRowView: View {
                         .foregroundStyle(.orange)
                     // Not "\(streak) \(habit.streakUnit) streak": the unit would reach every
                     // language as the English word.
+                    // The flame keeps the system orange; the words are a darker shade of it where
+                    // that does not read: #FF9500 is 1.97:1 on the light card (gate 8).
                     Text(habit.streakUnit == "week" ? "\(streak) week streak" : "\(streak) day streak")
                         .font(.caption)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Color.readableText(hex: "#FF9500", in: colorScheme))
                 }
             }
         }

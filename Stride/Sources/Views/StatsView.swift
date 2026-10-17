@@ -252,14 +252,17 @@ struct OverallStatsCard: View {
         let todayCount = summary.todayCount
         let bestStreak = summary.bestStreak
         let avgCompletion = summary.avgCompletion
-        HStack(spacing: 0) {
+        // The three values on one baseline (`statValue`): centred, a column whose caption wraps
+        // ("Best / Streak" at AX5) sat higher than one whose caption does not, "5/5" about 50 pt
+        // below "7" (gate 8). The dividers stay centred on their columns, as before.
+        HStack(alignment: .statValue, spacing: 0) {
             StatItem(value: "\(todayCount)/\(habits.count)", label: "Today", icon: "checkmark.circle",
                      a11yValue: "\(todayCount) of \(habits.count) habits completed")
-            Divider().frame(height: 40)
             StatItem(value: "\(bestStreak.value)", label: bestStreak.inWeeks ? "Best Streak (weeks)" : "Best Streak", icon: "flame")
-            Divider().frame(height: 40)
+                .overlay(alignment: .leading) { Divider().frame(height: 40) }
             StatItem(value: "\(Int(avgCompletion * 100))%", label: "30d Avg", icon: "chart.line.uptrend.xyaxis",
                      a11yLabel: "30-day average")
+                .overlay(alignment: .leading) { Divider().frame(height: 40) }
         }
         .padding()
         .background(
@@ -286,6 +289,7 @@ struct StatItem: View {
                 .accessibilityHidden(true)
             Text(verbatim: value)
                 .font(.title3.bold())
+                .alignmentGuide(.statValue) { $0[.firstTextBaseline] }
             Text(label)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -294,6 +298,29 @@ struct StatItem: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(a11yLabel ?? label)
         .accessibilityValue(a11yValue.map { Text($0) } ?? Text(verbatim: value))
+    }
+}
+
+private extension VerticalAlignment {
+    /// OverallStatsCard's row: each column's value baseline.
+    enum StatValue: AlignmentID {
+        static func defaultValue(in d: ViewDimensions) -> CGFloat { d[VerticalAlignment.center] }
+    }
+    static let statValue = VerticalAlignment(StatValue.self)
+}
+
+extension View {
+    /// A tap area that reaches past a small label by `horizontal` and `vertical` on each side,
+    /// with the layout unchanged: the padding is taken back right after the content shape, so the
+    /// parent still places and draws the label at its own size. SwiftUI hit-tests the shape where
+    /// it lies, past the parent's frame too, and VoiceOver's frame for the control is the same
+    /// area (measured in StatsRenderTests).
+    func tapTargetOutset(horizontal: CGFloat = 0, vertical: CGFloat = 0) -> some View {
+        padding(.horizontal, horizontal)
+            .padding(.vertical, vertical)
+            .contentShape(Rectangle())
+            .padding(.horizontal, -horizontal)
+            .padding(.vertical, -vertical)
     }
 }
 
@@ -336,9 +363,18 @@ struct HabitDetailStatsCard: View {
     let shell: ShellState
     @State private var showShareSheet = false
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.colorScheme) private var colorScheme
 
     /// The sim kit's handle on the Edit history button (RELEASE-1.4.1.md D6, E2E H1).
     static let editHistoryIdentifier = "stats.editHistory"
+    /// How far each button's tap area reaches past its label (`tapTargetOutset`), so both are
+    /// 44 pt tall and Share 44 pt wide at the default size (gate 8: 18 pt of text and a
+    /// 19 × 22 pt glyph before). Edit history's is vertical only; Share's is on every side, and
+    /// its 13 pt to the leading side still leaves 3 pt of `DetailCardHeaderLayout.rowSpacing`
+    /// before Edit history's label. Their accessibility frames are these areas too
+    /// (StatsRenderTests takes them back off to measure the drawn header).
+    static let editHistoryTapOutset: CGFloat = 13
+    static let shareTapOutset = CGSize(width: 13, height: 11)
 
     /// The unit drawn beside a streak number, which is drawn separately and larger.
     ///
@@ -358,13 +394,22 @@ struct HabitDetailStatsCard: View {
         shell.request = .history(habitID: habit.id, day: Date())
     }
 
+    /// The two buttons' colour: the habit's, as text on this card — a darker shade of it where the
+    /// colour itself does not read there (gate 8: Green measured 1.99:1 on the light card, and
+    /// Yellow, 1.35:1, all but hid the button D6 makes the way into History).
+    private var buttonTint: Color {
+        Color.readableText(hex: habit.colorHex, in: colorScheme)
+    }
+
     /// Edit history is a visible, titled button — the one keyboard and Full Keyboard Access path
     /// into History, since the heatmap's cells are not focusable.
     private var editHistoryButton: some View {
         Button(action: openHistory) {
             Label("Edit history", systemImage: "calendar")
                 .font(.subheadline.weight(.medium))
-                .foregroundStyle(habit.color)
+                .foregroundStyle(buttonTint)
+                // 18 pt of text: a 44 pt tall target, the layout unchanged (gate 8).
+                .tapTargetOutset(vertical: Self.editHistoryTapOutset)
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier(Self.editHistoryIdentifier)
@@ -376,7 +421,9 @@ struct HabitDetailStatsCard: View {
         } label: {
             Image(systemName: "square.and.arrow.up")
                 .font(.body)
-                .foregroundStyle(habit.color)
+                .foregroundStyle(buttonTint)
+                // A 19 × 22 pt glyph: 45 × 44 pt to tap.
+                .tapTargetOutset(horizontal: Self.shareTapOutset.width, vertical: Self.shareTapOutset.height)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Share streak")
@@ -409,9 +456,12 @@ struct HabitDetailStatsCard: View {
 
             // Four tiles side by side leave each about 70 pt: at accessibility sizes "100%" in
             // .title2 no longer fits one and the captions break mid-word. Stacked there instead.
+            // Side by side they share their bottom edge, so the values stay on one line when a
+            // caption wraps ("30-Day / Rate" at xLarge, all but "Strength" at xxxLarge); centred,
+            // the wrapped tiles' values sat lower than the rest (gate 8).
             let tiles = typeSize.isAccessibilitySize
                 ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
-                : AnyLayout(HStackLayout(spacing: 20))
+                : AnyLayout(HStackLayout(alignment: .bottom, spacing: 20))
             tiles {
                 let current = stats.currentStreak()
                 VStack(alignment: .leading, spacing: 4) {
@@ -623,6 +673,15 @@ struct ProLockedCard: View {
     let title: LocalizedStringKey
     let message: LocalizedStringKey
     let action: () -> Void
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    /// A capsule while the label is one line. At accessibility sizes it wraps ("Unlock / with Pro"
+    /// at AX5), and a capsule's half-height ends ran into both lines (gate 8).
+    private var buttonShape: AnyShape {
+        typeSize.isAccessibilitySize
+            ? AnyShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            : AnyShape(Capsule())
+    }
 
     var body: some View {
         Button(action: action) {
@@ -640,9 +699,11 @@ struct ProLockedCard: View {
                 Text("Unlock with Pro")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.white)
+                    // Centred like the rest of the card when it wraps.
+                    .multilineTextAlignment(.center)
                     .padding(.horizontal, 20)
                     .padding(.vertical, 8)
-                    .background(Capsule().fill(.green))
+                    .background(buttonShape.fill(.green))
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 24)
@@ -1147,11 +1208,13 @@ private struct HeatmapGrid: View {
                 .fill(completed ? habit.color : Color.gray.opacity(0.15))
                 .frame(width: side, height: side)
                 .overlay {
-                    // The day carries a note (D5, D7): a dot that contrasts with either fill. A
-                    // count day below its target can carry one too, on the empty fill.
+                    // The day carries a note (D5, D7): a dot that contrasts with either fill — on
+                    // the habit's colour white, or black where white would not show (Yellow,
+                    // Green, Orange, Teal; `Color.content(onFillHex:)`). A count day below its
+                    // target can carry one too, on the empty fill.
                     if model.hasNote {
                         Circle()
-                            .fill(completed ? Color.white : habit.color)
+                            .fill(completed ? Color.content(onFillHex: habit.colorHex) : habit.color)
                             .frame(width: HeatmapLayout.noteDot, height: HeatmapLayout.noteDot)
                     }
                 }

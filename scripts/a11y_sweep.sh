@@ -59,6 +59,22 @@
 #                          at accessibility sizes only: the same two scrolled to the day's editor
 #                          (`-scrollTo historyEditor`, SweepScroll), which sits below the month
 #                          grid there. The grid itself stops growing at accessibility2.
+# At accessibility sizes Stats is also taken at the detail card (02_stats_detail.png,
+# `-statsScrollTo detail`): its four tiles, stacked there, are under the tab bar in 02_stats.
+# The standard set never draws a light habit colour, a Description, a noted day or a count habit,
+# so the 15_details_* captures (2026-10-17, gate 8) launch `-demoScenario details` (DemoData):
+# Morning Run in Yellow with a Description and notes on today's and two days back's check-ins,
+# and Drink Water counted, 5 of 8 glasses today.
+#   15_details_today       Today: the Description line and today's note under the row; at
+#                          accessibility sizes also _at_todayHabits (`-scrollTo todayHabits`), the
+#                          rows the tab bar covers in the first frame.
+#   15_details_stats       Stats at the detail card: Edit history and Share in a shade of Yellow
+#                          that reads on the card.
+#   15_details_heatmap     the heatmap's Yellow days and their note dots.
+#   15_details_history     Morning Run's History: dark digits on Yellow, today's note, the dots.
+#   15_details_history_count
+#                          Drink Water's: Orange days, today's ring under its goal, the stepper.
+#                          Both also _at_historyEditor at accessibility sizes.
 # The `sync` set (1.3.1, DEV-PLAN-1.3.md M2 phase C) draws every new sync state from its DEBUG
 # launch scenario, since none of them can be produced on a simulator with no server:
 #   10_today_sync_<state>  Today's line under the progress card, `-syncStatus <state>` for
@@ -341,13 +357,32 @@ if [[ "$SET" == core || "$SET" == all ]]; then
     capture 02_stats_beststreaks.png -tab 1 -statsScrollTo beststreaks
     capture 02_stats_weekday.png  -tab 1 -statsScrollTo weekday
     capture 02_stats_heatmap.png  -tab 1 -statsScrollTo heatmap
+    if [[ "$SIZE" == accessibility-* ]]; then
+        capture 02_stats_detail.png -tab 1 -statsScrollTo detail
+    fi
     capture 03_settings.png -tab 2
     capture 04_paywall.png  -tab 0 -paywall
+    # What the standard set never draws (header): `-demoScenario details`.
+    capture 15_details_today.png   -tab 0 -demoScenario details
+    if [[ "$SIZE" == accessibility-* ]]; then
+        capture 15_details_today_at_todayHabits.png -tab 0 -demoScenario details -scrollTo todayHabits
+    fi
+    capture 15_details_stats.png   -tab 1 -demoScenario details -statsScrollTo detail
+    capture 15_details_heatmap.png -tab 1 -demoScenario details -statsScrollTo heatmap
 fi
 if [[ "$SET" != sync ]]; then
     # History (header): over Stats, on today and twenty days back; at accessibility sizes each
     # again at its editor, which the month grid pushes below the fold there.
     HISTORY_HABIT="Read 30 min"
+    # The details set's two first (header), so the run still ends on the standard set.
+    for which in "history:Morning Run" "history_count:Drink Water"; do
+        name="15_details_${which%%:*}"; habit="${which#*:}"
+        capture "$name.png" -tab 1 -demoScenario details -openHistory "$habit"
+        if [[ "$SIZE" == accessibility-* ]]; then
+            capture "${name}_at_historyEditor.png" -tab 1 -demoScenario details -openHistory "$habit" \
+                -scrollTo historyEditor
+        fi
+    done
     capture 05_history.png      -tab 1 -openHistory "$HISTORY_HABIT"
     capture 05_history_past.png -tab 1 -openHistory "$HISTORY_HABIT" -historyDay -20
     if [[ "$SIZE" == accessibility-* ]]; then

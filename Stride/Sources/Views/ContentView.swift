@@ -379,6 +379,7 @@ private extension View {
 /// Settings is its own window.
 struct SidebarView: View {
     @Bindable var shell: ShellState
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         list
@@ -415,12 +416,37 @@ struct SidebarView: View {
         }
     }
 
-    @ViewBuilder
     private func row(_ tab: ShellTab) -> some View {
+        label(tab)
+            .labelStyle(SidebarRowLabelStyle(stacked: typeSize.isAccessibilitySize))
+    }
+
+    @ViewBuilder
+    private func label(_ tab: ShellTab) -> some View {
         switch tab {
         case .today: Label("Today", systemImage: "checkmark.circle.fill")
         case .stats: Label("Statistics", systemImage: "chart.bar.fill")
         case .settings: Label("Settings", systemImage: "gear")
+        }
+    }
+}
+
+/// A sidebar row: the system's Label, except at accessibility sizes, where the icon goes above
+/// the title and the title gets the row's whole width. Beside the icon, AX5 left the 13-inch
+/// iPad's sidebar too little for one word, and "Sta- / tistics" and "Set- / tings" broke inside
+/// it, the second line under the icon (gate 8).
+private struct SidebarRowLabelStyle: LabelStyle {
+    let stacked: Bool
+
+    @ViewBuilder
+    func makeBody(configuration: Configuration) -> some View {
+        if stacked {
+            VStack(alignment: .leading, spacing: 4) {
+                configuration.icon
+                configuration.title
+            }
+        } else {
+            Label(configuration)
         }
     }
 }

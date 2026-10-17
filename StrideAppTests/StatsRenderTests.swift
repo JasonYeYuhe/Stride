@@ -313,9 +313,11 @@ final class StatsRenderTests: XCTestCase {
             subject.name = test.name
             let locale = Locale(identifier: test.language)
             let editLabel = try XCTUnwrap(localized("Edit history", language: test.language))
-            // Above the card, the same button at its full width, to measure the card's against.
+            // Above the card, the same button at its full width, to measure the card's against —
+            // with the same tap area, which its accessibility frame is.
             let reference = Button {} label: {
                 Label(editLabel, systemImage: "calendar").font(.subheadline.weight(.medium))
+                    .tapTargetOutset(vertical: HabitDetailStatsCard.editHistoryTapOutset)
             }
             .buttonStyle(.plain)
             .fixedSize()
@@ -354,7 +356,15 @@ final class StatsRenderTests: XCTestCase {
             let elements = try XCTUnwrap(found)
             XCTAssertEqual(elements.name.count, 1, "\(what): the name is read once (the probe is hidden)")
             let name = elements.name[0].accessibilityFrame
-            let edit = elements.edit.accessibilityFrame, share = elements.share.accessibilityFrame
+            // The buttons as drawn: their accessibility frames are their tap areas, which reach
+            // past the labels (`tapTargetOutset`, gate 8).
+            let edit = elements.edit.accessibilityFrame.insetBy(dx: 0, dy: HabitDetailStatsCard.editHistoryTapOutset)
+            let share = elements.share.accessibilityFrame.insetBy(dx: HabitDetailStatsCard.shareTapOutset.width,
+                                                                  dy: HabitDetailStatsCard.shareTapOutset.height)
+            // …and those areas are at least 44 pt (Share 44 × 44) at every size the cases take.
+            XCTAssertGreaterThanOrEqual(elements.edit.accessibilityFrame.height, 43.5, "\(what): Edit history's tap area")
+            XCTAssertGreaterThanOrEqual(elements.share.accessibilityFrame.height, 43.5, "\(what): Share's tap area")
+            XCTAssertGreaterThanOrEqual(elements.share.accessibilityFrame.width, 43.5, "\(what): Share's tap area")
 
             let font = Font.title3.bold()
             let widest = DetailCardHeaderLayout.unbreakableRuns(of: test.name)

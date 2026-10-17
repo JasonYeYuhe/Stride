@@ -213,6 +213,23 @@ extension View {
         frame(maxWidth: regular ? ShellLayout.readableWidth : nil)
             .frame(maxWidth: regular ? .infinity : nil)
     }
+
+    /// A sheet's root on iPad (iOS 18 and later): the page size, nearly the screen's height,
+    /// instead of the form sheet's, about 580 × 650 pt even on a 13-inch iPad — which cut History's
+    /// day editor and the account screen's last button in half at the default size (gate 8). An
+    /// iPhone's sheet is the page size already; iOS 17 and the Mac keep their sheets as they were.
+    @ViewBuilder
+    func pageSizedSheet() -> some View {
+        #if os(iOS)
+        if #available(iOS 18.0, *) {
+            presentationSizing(.page)
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+    }
 }
 
 #if DEBUG

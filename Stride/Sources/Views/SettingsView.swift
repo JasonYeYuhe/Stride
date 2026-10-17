@@ -78,6 +78,7 @@ struct SettingsView: View {
     /// False while the iPad shell keeps Settings alive but hidden (RELEASE-1.4.0.md D2); the
     /// "when shown" refreshes below wait for it. Always true in the Mac's Settings window.
     @Environment(\.shellTabIsActive) private var isActive
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     private var activeHabits: [Habit] {
         allHabits.filter { !$0.isArchived }
@@ -1007,15 +1008,20 @@ struct SettingsView: View {
     private func proRow(_ row: ProSettingsRow) -> some View {
         switch row {
         case .upgrade:
+            // At accessibility sizes the crown goes above the words, which then get the row's
+            // width: beside it they had about 230 pt at AX5, and the title broke inside a word,
+            // "Up- / grade to / Pro" (gate 8).
+            let crown = Image(systemName: "crown.fill")
+                .font(.title2)
+                .foregroundStyle(.yellow)
+                .accessibilityHidden(true)
             Button {
                 showingPaywall = true
             } label: {
                 HStack(spacing: 12) {
-                    Image(systemName: "crown.fill")
-                        .font(.title2)
-                        .foregroundStyle(.yellow)
-                        .accessibilityHidden(true)
+                    if !typeSize.isAccessibilitySize { crown }
                     VStack(alignment: .leading, spacing: 2) {
+                        if typeSize.isAccessibilitySize { crown }
                         Text("Upgrade to Pro")
                             .font(.headline)
                             .foregroundStyle(.primary)
