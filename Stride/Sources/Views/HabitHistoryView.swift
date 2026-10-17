@@ -174,11 +174,12 @@ struct HabitHistoryView: View {
         let stats = cache.stats(for: habit, today: now, calendar: calendar)
         let window = Self.window(startDay: stats.startDay, today: now, calendar: calendar)
         let selected = min(max(selectedDay, window.lowerBound), window.upperBound)
-        ScrollView {
+        let page = ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 header(habit, stats: stats)
                 monthSection(habit, stats: stats, window: window, selected: selected, calendar: calendar)
                 editor(habit, stats: stats, day: selected, calendar: calendar)
+                    .sweepAnchor("historyEditor")
             }
             .padding()
             .frame(maxWidth: ShellLayout.readableWidth)
@@ -186,6 +187,16 @@ struct HabitHistoryView: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .background(Color.appBackground)
+        #if DEBUG
+        // `-scrollTo historyEditor`: the day's editor, which the month grid pushes below the fold
+        // at accessibility sizes, for scripts/a11y_sweep.sh (SweepScroll). Release builds get the
+        // page alone, as StatsView's `-statsScrollTo`.
+        ScrollViewReader { proxy in
+            page.task { await SweepScroll.scroll(proxy) }
+        }
+        #else
+        page
+        #endif
     }
 
     /// The habit and its check-in count: the days with a live record up to today. It used to be

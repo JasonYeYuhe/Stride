@@ -1,10 +1,10 @@
 #!/bin/bash
-# Dynamic Type sweep: capture every tab of Stride, plus the Pro paywall, at one text size on a
-# simulator, as PNGs a person reviews before a release.
+# Dynamic Type sweep: capture every tab of Stride, plus the Pro paywall and a habit's History, at
+# one text size on a simulator, as PNGs a person reviews before a release.
 #
 #   scripts/a11y_sweep.sh [--size <content size>|default] [--out <dir>] [--device <name|UDID>]
-#                         [--app <path to Stride.app>] [--lang <code>] [--set core|sync|all]
-#                         [extra xcodebuild args...]
+#                         [--app <path to Stride.app>] [--lang <code>]
+#                         [--set core|history|sync|all] [extra xcodebuild args...]
 #
 #   --size    a `simctl ui content_size` value (default: accessibility-extra-extra-extra-large,
 #             the largest one). `default` means `large`, the size a fresh device ships with; that
@@ -20,20 +20,22 @@
 #             capture script drives that iPad and takes no lock, so check it is not in use first.
 #   --app     skip the build and install this .app instead — e.g. one built from another
 #             checkout, to capture a before/after pair from the same script. It must be a
-#             Debug build: `-demo` and `-paywall` are compiled out of Release.
+#             Debug build: `-demo`, `-paywall` and `-openHistory` are compiled out of Release.
 #   --lang    run every launch in this system language: en, es, ja, ko, zh-Hans or zh-Hant
 #             (`-AppleLanguages (<code>)` plus the matching `-AppleLocale`, e.g. ja_JP). The in-app
 #             picker is pinned to "System Default" for the launch (`-stride_app_language ""`, the
 #             argument domain again), so a language picked on the device earlier cannot win.
 #             Without --lang the launches carry no language arguments at all, as before.
-#   --set     which captures: `core` (the tabs and the paywall, the 1.3.0 set), `sync` (the M2
-#             sync UI, below) or `all` (default).
+#   --set     which captures: `core` (the tabs, the paywall and History — the 1.3.0 set plus
+#             1.4.1's), `history` (History alone, for RELEASE-1.4.1.md gate 8), `sync` (the M2 sync
+#             UI, below) or `all` (default).
 #   Anything else is passed to xcodebuild (the package-cache flags, typically).
 #
 # What it does: builds Stride (Debug, its own derived data) unless --app is given; boots the
 # simulator if it is not booted; sets the content size, light appearance and a fixed 9:41
 # status bar (so two runs diff cleanly); launches with `-demo -tab <n>` for Today, Stats and
-# Settings and with `-demo -paywall` for the paywall; captures each with `simctl io screenshot`.
+# Settings, with `-demo -paywall` for the paywall and with `-demo -openHistory` for History;
+# captures each with `simctl io screenshot`.
 # Stats is captured seven times: the top, then scrolled to Insights, the 8-week trend, Strength,
 # the top 5 streaks (1.4.1), By Weekday and the Activity heatmap with the DEBUG-only
 # `-statsScrollTo <anchor>` (StatsView).
@@ -46,6 +48,17 @@
 # add `--device "iPhone 17e"` (about 390 pt, the narrowest iPhone simulator on this Mac in
 # 2026-10) and `--lang es`, whose "Editar historial" is the widest button. The hosted
 # StatsRenderTests measure the header at 375 pt.
+# History (RELEASE-1.4.1.md D6; gate 8 needs it at default and AX5 sizes) is a shell sheet that only
+# a tap opens, so it comes from the DEBUG-only `-openHistory <habit name | index>
+# [-historyDay <days from today>]` (StrideApp.launchHistoryRequest), over Stats (`-tab 1`, where
+# "Edit history" is), for "Read 30 min", the demo set's second habit:
+#   05_history             today, a checked day: the toggle on and the note field open;
+#   05_history_past        twenty days back (`-historyDay -20`), older than the demo set's 15 days
+#                          of check-ins: an unchecked day, whose note field says to check in first;
+#   05_history*_at_historyEditor
+#                          at accessibility sizes only: the same two scrolled to the day's editor
+#                          (`-scrollTo historyEditor`, SweepScroll), which sits below the month
+#                          grid there. The grid itself stops growing at accessibility2.
 # The `sync` set (1.3.1, DEV-PLAN-1.3.md M2 phase C) draws every new sync state from its DEBUG
 # launch scenario, since none of them can be produced on a simulator with no server:
 #   10_today_sync_<state>  Today's line under the progress card, `-syncStatus <state>` for
@@ -83,10 +96,11 @@
 #
 # Known limits (read before trusting a "looks fine"):
 #   - `simctl` has no touch input to scroll with, so a screen is captured below the fold only
-#     where the app scrolls itself on launch: Stats, via `-statsScrollTo`. The first version of
-#     this script took the top of each screen only, and at accessibility-XXXL that proved
-#     nothing about the charts 1.3.0 made scale — they start two screens down (the 2026-09-27
-#     baseline needed two to three screens of scrolling). Still top-only: Today's lower rows,
+#     where the app scrolls itself on launch: Stats, via `-statsScrollTo`; History and the sync
+#     screens, via `-scrollTo`. The first version of this script took the top of each screen
+#     only, and at accessibility-XXXL that proved nothing about the charts 1.3.0 made scale —
+#     they start two screens down (the 2026-09-27 baseline needed two to three screens of
+#     scrolling). Still top-only: Today's lower rows,
 #     the Settings habit rows and the paywall price cards; review those by scrolling the booted
 #     simulator.
 #   - Insights, the 8-week trend, Strength and the top 5 streaks are Pro-only. On a simulator
@@ -162,7 +176,7 @@ case "$SIZE" in
     accessibility-extra-extra-large|accessibility-extra-extra-extra-large) ;;
     *) echo "✗ Unknown content size '$SIZE' (see: xcrun simctl help ui)"; exit 2 ;;
 esac
-case "$SET" in core|sync|all) ;; *) echo "✗ Unknown --set '$SET' (core, sync or all)"; exit 2 ;; esac
+case "$SET" in core|history|sync|all) ;; *) echo "✗ Unknown --set '$SET' (core, history, sync or all)"; exit 2 ;; esac
 # The language for every launch, in the argument domain (nothing is written to the device).
 LANG_ARGS=()
 if [[ -n "$LANG_CODE" ]]; then
@@ -258,7 +272,7 @@ restore() {
     xcrun simctl status_bar "$UDID" clear >/dev/null 2>&1 || true
     xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
     # A sync run that died half-way still takes its seeded recovery log with it.
-    if [[ "$SET" != core ]] && declare -f clear_recovery_log >/dev/null; then clear_recovery_log || true; fi
+    if [[ "$SET" == sync || "$SET" == all ]] && declare -f clear_recovery_log >/dev/null; then clear_recovery_log || true; fi
     [[ $WAS_BOOTED -eq 0 ]] && xcrun simctl shutdown "$UDID" >/dev/null 2>&1 || true
     # Only a lock this run took (never the caller's STRIDE_SIM_LOCK_LABEL hold).
     sim_lock_release
@@ -310,7 +324,7 @@ capture() {
     xcrun simctl io "$UDID" screenshot --type=png "$OUT/$file" >/dev/null 2>&1
     echo "    ✓ $file"
 }
-if [[ "$SET" != sync ]]; then
+if [[ "$SET" == core || "$SET" == all ]]; then
     capture 01_today.png    -tab 0
     capture 02_stats.png    -tab 1
     if [[ "$SIZE" == large ]]; then
@@ -330,7 +344,19 @@ if [[ "$SET" != sync ]]; then
     capture 03_settings.png -tab 2
     capture 04_paywall.png  -tab 0 -paywall
 fi
-if [[ "$SET" != core ]]; then
+if [[ "$SET" != sync ]]; then
+    # History (header): over Stats, on today and twenty days back; at accessibility sizes each
+    # again at its editor, which the month grid pushes below the fold there.
+    HISTORY_HABIT="Read 30 min"
+    capture 05_history.png      -tab 1 -openHistory "$HISTORY_HABIT"
+    capture 05_history_past.png -tab 1 -openHistory "$HISTORY_HABIT" -historyDay -20
+    if [[ "$SIZE" == accessibility-* ]]; then
+        capture 05_history_at_historyEditor.png -tab 1 -openHistory "$HISTORY_HABIT" -scrollTo historyEditor
+        capture 05_history_past_at_historyEditor.png -tab 1 -openHistory "$HISTORY_HABIT" -historyDay -20 \
+            -scrollTo historyEditor
+    fi
+fi
+if [[ "$SET" == sync || "$SET" == all ]]; then
     for state in signInAgain paused offline waiting held synced justSynced; do
         capture "10_today_sync_$state.png" -tab 0 -syncStatus "$state"
     done

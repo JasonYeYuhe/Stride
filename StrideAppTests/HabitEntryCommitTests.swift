@@ -554,6 +554,48 @@ final class HistoryRouteTests: XCTestCase {
         XCTAssertNil(request(malformed))
         XCTAssertEqual(AppURLRoute.of(malformed, calendar: calendar), .other)
     }
+
+    #if DEBUG
+    // MARK: - The a11y sweep's launch argument (DEBUG)
+
+    /// `-openHistory <habit> [-historyDay <days>]` (`StrideApp.launchHistoryRequest`), which
+    /// scripts/a11y_sweep.sh launches with to capture History: a habit by its exact name, or else by
+    /// its place in Stats' list, archived habits not counted; days from today in the device's zone,
+    /// never a future day; no habit, or no argument, asks for nothing.
+    func testTheSweepsLaunchArgumentAsksForThatHabitsHistory() throws {
+        var listed: [Habit] = []
+        for (order, name) in ["Morning Run", "Read 30 min", "0"].enumerated() {
+            let habit = Habit(name: name)
+            habit.sortOrder = Double(order)
+            context.insert(habit)
+            listed.append(habit)
+        }
+        let archived = Habit(name: "Old")
+        archived.sortOrder = -1
+        archived.isArchived = true
+        context.insert(archived)
+        try context.save()
+
+        func asked(_ arguments: [String]) -> (habitID: UUID, dayKey: Date)? {
+            guard case .history(let id, let day)? = StrideApp.launchHistoryRequest(
+                arguments: ["Stride", "-demo", "-tab", "1"] + arguments, in: context, now: now, calendar: calendar)
+            else { return nil }
+            return (id, HabitCalendar.dayKey(forInstant: day, calendar: calendar))
+        }
+        XCTAssertEqual(asked(["-openHistory", "Read 30 min"])?.habitID, listed[1].id, "by name")
+        XCTAssertEqual(asked(["-openHistory", "Read 30 min"])?.dayKey, key(2026, 9, 16),
+                       "today in Los Angeles, though UTC is on the 17th")
+        XCTAssertEqual(asked(["-openHistory", "1"])?.habitID, listed[1].id, "by index; the archived habit is not counted")
+        XCTAssertEqual(asked(["-openHistory", "0"])?.habitID, listed[2].id, "a name before an index")
+        XCTAssertEqual(asked(["-openHistory", "Read 30 min", "-historyDay", "-20"])?.dayKey, key(2026, 8, 27))
+        XCTAssertEqual(asked(["-historyDay", "3", "-openHistory", "Morning Run"])?.dayKey, key(2026, 9, 16),
+                       "a day after today opens on today")
+        XCTAssertNil(asked(["-openHistory", "Old"]), "archived")
+        XCTAssertNil(asked(["-openHistory", "7"]))
+        XCTAssertNil(asked(["-openHistory"]))
+        XCTAssertNil(asked(["-historyDay", "-20"]))
+    }
+    #endif
 }
 
 /// The window half of "W2-URL-1": a history link that arrives while the window already shows a

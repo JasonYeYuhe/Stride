@@ -198,6 +198,11 @@ struct StrideApp: App {
                 await Self.syncIfLoggedIn(modelContainer)
                 await StoreService.shared.loadProducts()
             }
+            #if DEBUG
+            // `-openHistory <habit> [-historyDay <days>]`: History over the launch, for the a11y
+            // sweep (`launchHistoryRequest`).
+            .task { @MainActor in Self.openLaunchHistory(in: shell, context: modelContainer.mainContext) }
+            #endif
             #if os(iOS)
             // The Mac has these two, and its activation pass, once per process instead
             // (`installProcessTriggers`): a Mac app outlives its windows, and its Dock badge with it.
@@ -376,6 +381,53 @@ struct StrideApp: App {
             > HabitCalendar.dayKey(forInstant: now, calendar: calendar) ? now : day
         return .history(habitID: habitID, day: opensOn)
     }
+
+    #if DEBUG
+    /// `-openHistory <habit> [-historyDay <days>]`: the request for that habit's History, so
+    /// scripts/a11y_sweep.sh can capture it — `simctl` has no touch input, and the sweep can only
+    /// capture what a launch argument opens (RELEASE-1.4.1.md gate 8: History at default and AX5
+    /// sizes). DEBUG-only like `-paywall` and `-statsScrollTo`; the sweep passes it with `-demo`,
+    /// whose set `prepareStore` has written by the time the window asks.
+    ///
+    /// - `<habit>`: a habit's exact name, or else its index among the habits Stats lists (not
+    ///   archived; by `sortOrder`, then creation): `"Read 30 min"` or `1` in the demo set.
+    /// - `<days>`: days from today, 0 by default, so `-20` is twenty days back. A day after today
+    ///   opens on today, as a history link's does (D8).
+    ///
+    /// Nil without `-openHistory`, or when no habit matches: the app then just opens.
+    @MainActor
+    static func launchHistoryRequest(arguments: [String] = CommandLine.arguments, in context: ModelContext,
+                                     now: Date = Date(), calendar: Calendar = .current) -> ShellRequest? {
+        guard let flag = arguments.firstIndex(of: "-openHistory"), flag + 1 < arguments.count else { return nil }
+        let wanted = arguments[flag + 1]
+        let descriptor = FetchDescriptor<Habit>(predicate: #Predicate { !$0.isArchived },
+                                                sortBy: [SortDescriptor(\.sortOrder), SortDescriptor(\.createdAt)])
+        guard let habits = try? context.fetch(descriptor),
+              let habit = habits.first(where: { $0.name == wanted })
+                ?? Int(wanted).flatMap({ habits.indices.contains($0) ? habits[$0] : nil })
+        else { return nil }
+        var days = 0
+        if let dayFlag = arguments.firstIndex(of: "-historyDay"), dayFlag + 1 < arguments.count,
+           let asked = Int(arguments[dayFlag + 1]) {
+            days = min(asked, 0)
+        }
+        guard let day = calendar.date(byAdding: .day, value: days, to: now) else { return nil }
+        return .history(habitID: habit.id, day: day)
+    }
+
+    /// Whether a window has asked yet: once per process, as the Mac's `-tab 2` (a second iPad
+    /// window parses the same arguments).
+    @MainActor private static var launchHistoryAsked = false
+
+    /// Sets the shell's request straight away, as `-paywall` presents its sheet: the sweep skips
+    /// the onboarding (`-stride_onboarding_completed YES`), so nothing else is up at launch.
+    @MainActor
+    private static func openLaunchHistory(in shell: ShellState, context: ModelContext) {
+        guard !launchHistoryAsked else { return }
+        launchHistoryAsked = true
+        if let request = launchHistoryRequest(in: context) { shell.request = request }
+    }
+    #endif
 
     /// Hands a history link's request to the window's shell — or leaves the shell as it is, and the
     /// app just comes forward, as for a habit that is not here (W2 review, "W2-URL-1"):
