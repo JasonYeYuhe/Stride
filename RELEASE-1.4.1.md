@@ -920,6 +920,17 @@ go per action.
   strength numbers were recomputed independently.
 - 2026-10-15, #8 + #9 merged into main and deployed (DEPLOY 5 steps, rehearsal 32/32); main merged
   into m4 (31f23e8). Mac 1.4.0 went IN_REVIEW.
+- 2026-10-17, **P2 done**:
+  - Mac 1.4.0 was approved (PENDING_DEVELOPER_RELEASE at 16:25 JST) and released at once; READY_FOR_SALE.
+  - RELEASE-1.4.0.md ticked (6f5af54). #7 merged (c6507f7) after a CI re-run: one flaky hosted test,
+    `BackgroundSyncTests.testAFinishedRunWaitsForTheResubmitsAnswerUpToItsBound`, failed on the
+    runner on a docs-only commit. It is a 1.4.1 fix item.
+  - Tag v1.4.0 on 6f5af54. main merged into m4 (de03fd4).
+  - Prepared but not merged, pending owner Q1/Q2:
+    - the X2 server date guard, draft PR #11 (server 602, local rehearsal 36/36);
+    - W10, the client fix and migration, on branch worktree-wf_0f3bb37c-d94-2: StrideTests 697,
+      hosted 322, rehearsal 109/0/1; review found 4 defects, fixed, including a 45 s first pass
+      now ~3 s for 10,000 strays.
 - 2026-10-16, wave B merged (W7 c39d4d8, W6 a094ca2, D11 172fdab); 8 review findings confirmed and
   fixed, 2 refuted.
   - W6: templates carry kind, target and unit. A failed add says so. A pick closes New Habit too:
