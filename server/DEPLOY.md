@@ -500,6 +500,7 @@ handler — so every gate below is ≥ 1.3.1, and 1.3.0 is treated exactly like 
 | 409 | `cursor_expired` | header ≥ 1.3.1 | Pull `since` older than 355 days (365 − 10 grace). The app does a full pull. |
 | 413 | — | everyone | Body over 5 MB. |
 | 426 | `client_update_required` | in practice apps ≤ 1.2.2 and 1.1 (no header) | A legacy-shaped push ([below](#legacy-shaped-pushes)): an entry with no `updatedAt` or a habit with no `kind`. Refused whole; nothing in it is written. |
+| 426 | `client_update_required` | below 1.3.1: 1.2.3 (no header) and 1.3.0 | An entry whose date is not a real day in 2025-01-01 … UTC today + 2 ([below](#entry-dates)), e.g. a non-Gregorian device's `0008-10-15`. Refused whole; nothing in it is written. From 1.3.1 the entry alone is skipped as `invalid_value`. |
 | 429 | `rate_limited` | everyone | Over 60 sync requests/min for the account, or over 100 per 15 min from one IP without a session; `Retry-After`. |
 | 503 | `sync_paused` | everyone | The [pause switch](#pausing-sync) is on; `Retry-After`. |
 
@@ -541,6 +542,73 @@ again (the server keeps the row). Counted as `legacy_push_refused` per push and
 <n> entries without updatedAt, <m> habits without kind`, with `legacyRefused=entries:<n>,habits:<m>`
 on the request line.
 
+<a id="entry-dates"></a>**Entry dates (X2 guard).** Every shipped build since 1.2.0 builds a
+check-in's day key with the device's calendar and writes it with a Gregorian formatter, so on a
+device whose system calendar is not Gregorian (th_TH, fa_IR, ps_AF and ar_SA default to one)
+2026-10-15 is pushed as `0008-10-15` (Japanese), `2569-10-15` (Buddhist), `1448-05-04` (Islamic),
+`5787-02-04` (Hebrew), `2019-02-05` (Ethiopic Amete Mihret) and so on — the full table is in
+`docs/X2-non-gregorian-day-keys.md` (m4/1.4.1), section 2. The server used to store any string,
+`2026-02-30` included, and hand it to every device on the account. Now an entry date must be
+canonical `YYYY-MM-DD` (ASCII digits, zero-padded), a real day (a round trip through `Date.UTC`),
+and within **2025-01-01 … the server's UTC today + 2 days** (UTC+14's today is at most one UTC day
+ahead). The window, not a 1970–2100 range, is what catches the Ethiopic and Indian (`1948-…`)
+keys. A missing date is still `missing_field`. What a refused date does depends on the app:
+
+- **≥ 1.3.1** (valid header): that entry alone is skipped as `invalid_value`, the rest of the
+  push applies. Those apps hold the row: kept on the device, never acknowledged (so their full
+  pull cannot delete it), not re-sent until edited, and listed in Settings as "A value the
+  server doesn't accept". An entry already dropped for another reason keeps it (`tombstoned`,
+  `tombstoned_habit`, `missing_field`; the habit checks come first).
+- **Below 1.3.1** — 1.2.3 (no header; ≤ 1.2.2 are already refused as legacy-shaped) and 1.3.0
+  (header, but none of the 1.3.1 contract): the **whole push** is refused with `426
+  client_update_required` before anything is written, with "Stride can't sync some dates on this
+  device. Update Stride from the App Store to keep syncing; nothing on this device was changed."
+  (in `error` without a header, in `message` for 1.3.0). A row-level skip would cost them the
+  row: they read only `ok`, and their next full pull deletes every local check-in the server
+  lacks. A 426 is safe for the same reason as the legacy refusal: v1.2.3 and v1.3.0
+  `SyncService.sync` push then pull in one `do`/`catch`, a non-2xx throws out of the push, so the
+  pull never runs and the deletion queue stays queued. Updating to 1.4.0 turns the refusal into
+  held rows.
+
+Rows already stored are **not rewritten** (only the device knows which calendar wrote a key) and
+pull is not filtered. The cost: a ≤ 1.3.0 device that has already pulled such a row pushes it
+back in every snapshot, and is refused until it updates. So before deploying, run X2's read-only
+query on the backup:
+
+```sql
+SELECT substr(e.date,1,4) y, count(*), count(DISTINCT h.user_id) FROM habit_entries e
+  JOIN habits h ON h.id=e.habit_id
+  WHERE e.date<'2025-01-01' OR e.date>date('now','+2 days') OR date(e.date) IS NOT e.date
+  GROUP BY y;
+```
+
+(`date(x) IS NOT x` is the "real, canonical day" half: SQLite turns `2026-02-30` into
+`2026-03-02` and `2026-2-3` into NULL.)
+
+Zero rows is the expected answer (no real account had synced before 2026-10-15). Anything else
+is a non-Gregorian user whose other ≤ 1.3.0 devices will be refused; note who before deploying.
+Counted as `entry_date_push_refused` per refused push and `invalid_entry_date` per refused entry
+(either path); logged as `[sync] push user=<id> refused push: <n> entry dates not a real day in
+2025-01-01..<ceiling>` or `[sync] push user=<id> skipped <n> entries as invalid_value: date not a
+real day in …`, never a date or an id, with `dateRefused=<n>` or `badDates=<n>` on the request
+line.
+
+A device whose clock is more than two days fast (fewer in a time zone ahead of UTC) is refused
+too, and how it recovers depends on the version:
+- **Below 1.3.1** the whole push is refused while the day is past the ceiling, and goes through
+  once the day is inside the window: those apps send their whole store on every sync.
+- **From 1.3.1** the check-in stays held after the day arrives. It is sent again only once it is
+  edited (a new edit stamp lifts the hold). Full resync does not send held rows, and Settings has
+  no Discard for `invalid_value`. Until the edit, it stays under "A value the server doesn't
+  accept" and does not reach the account's other devices. Nothing is lost: the row stays on the
+  device. Lifting such holds once the date is back in the window would be a client change.
+
+`scripts/sync_rehearsal.sh` runs this rule unmodified, so its fixtures are dated inside the
+window: `Scenario.day0` is noon UTC 600 days before today (never before 2025-01-02), and no
+scenario spans more than 500 days. The 3,000-entry chunk scenarios (S5, S11) use 6 habits ×
+500 days instead of 3 × 1,000. A fixture dated before 2025-01-01 is held or refused like a real
+one, so the old 2023 fixtures fail the gate against this server.
+
 **Notes on a day held under two ids.** Entries conflict on (habit, day), so two devices that
 checked a day before either pulled the other's hold one row under two ids. Two rules keep the note
 (RELEASE-1.4.1.md, Data safety 2):
@@ -580,6 +648,8 @@ apps still learn the id from that pull. The cost is one indexed read per entry a
 
 **Deletions since (full pull, ≥ 1.3.1).** `GET /v1/sync/pull?deletionsSince=<ISO>` with no `since` adds `deletionsSince: {complete: true, habitIds, entryIds, groupIds}` — the account's tombstones after that time, read in the snapshot's transaction — or `{complete: false}` when the time is past the 355-day horizon or unreadable; a 1.3.1 store's first full pull after the update asks with 1.3.0's cursor, to tell a deletion elsewhere from a row the 1.3.0 server refused. Logged as `deletionsSince=<n>|incomplete`.
 
+`invalid_value` is also an entry date outside the window, for apps ≥ 1.3.1
+([entry dates](#entry-dates)); the rest of this paragraph is about numbers.
 `invalid_value` (1.3.0 server) is a row with a number no app can produce, which the server used
 to store and hand to every device on the account: every app up to 1.2.3 traps on `Int(value)`
 at infinity or past 9.2e18 (Today crashed on every launch), and fails the decode of the whole

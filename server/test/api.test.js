@@ -7667,7 +7667,9 @@ describe("Sync body limit: a large full-snapshot push is accepted", () => {
 
   it("accepts a year of check-ins (well past the old 10kb ceiling)", async () => {
     const entries = [];
-    const start = new Date("2026-01-01T00:00:00.000Z");
+    // The year up to today: entry dates after today + 2 are refused (routes/sync.js entryDateOk).
+    const todayUTC = Date.parse(new Date().toISOString().slice(0, 10) + "T00:00:00.000Z");
+    const start = new Date(todayUTC - 364 * 86400000);
     for (let i = 0; i < 365; i++) {
       const d = new Date(start.getTime() + i * 86400000).toISOString().slice(0, 10);
       entries.push({ id: crypto.randomUUID().toUpperCase(), habitId, date: d, value: 1,
