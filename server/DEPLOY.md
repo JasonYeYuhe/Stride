@@ -804,7 +804,8 @@ PM2 `reload`/`restart` leaves the DB in a clean state.
 ### Scheduled jobs (root crontab)
 
 [`ops/crontab.stride`](ops/crontab.stride) lists Stride's lines: the 03:30 backup, the
-03:50 demo top-up and the 04:10 restore drill, each logging to `/root/backups/`. It is a
+03:50 demo top-up, the 04:10 restore drill and the 08:20 second top-up, each logging to
+`/root/backups/`. It is a
 **fragment** — root's crontab also holds ColorArchive's jobs, and `crontab <file>` would
 replace them. The block below installs the two new lines (the 03:30 one was already there)
 once an rsync has put `backup.sh` and `ops/` on the host. **Done on production 2026-09-27**
@@ -821,6 +822,11 @@ sudo bash -c 'crontab -l | grep -q ops/restore-drill.js ||
 sudo crontab -l | grep -c stride-server        # 3
 diff <(sudo crontab -l | grep -v stride-server) <(grep -v stride-server ~/root-crontab.bak-$(date +%Y%m%d))  # no output: ColorArchive's jobs untouched
 ```
+
+The 08:20 line (a second top-up after Los Angeles midnight, RELEASE-1.4.1.md Q3a) was added on
+production 2026-10-20, by hand after the 03:50 line, with the crontab before and after saved as
+`/root/backups/root-crontab-{before,new}-20261020-142220.txt`. On a rebuilt host, add it from the
+fragment the same way (`grep -E "^20 8 "`); `grep -c stride-server` then reads 4.
 
 Then run each once by hand, in this order, and read the output:
 
@@ -881,7 +887,8 @@ rm "$TMPDIR/check.db"                          # it holds every user's email
 
 ### App Review demo account top-up
 
-[`ops/demo-topup.js`](ops/demo-topup.js), daily 03:50. **Never put `seed-demo.js` on a
+[`ops/demo-topup.js`](ops/demo-topup.js), daily at 03:50 and again at 08:20 UTC, after Los
+Angeles midnight. **Never put `seed-demo.js` on a
 timer**: it deletes the demo account's sessions and magic-link tokens and re-creates its
 habits under new ids, so a scheduled run during a review signs the reviewer out and
 replaces everything on their device. The top-up only adds check-ins — for each seeded
