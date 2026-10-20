@@ -272,6 +272,39 @@ func sweepTombstones(olderThanDays days: Double = 0) async throws -> Int {
     return tombstones
 }
 
+/// The test server's entry-date-guard switch (server/lib/testHooks.js). Off, a push stores entries
+/// on any date, as the server did before the guard was deployed on 2026-10-20; on is the default
+/// and what production runs. Use `withEntryDateGuardOff`, which always switches it back on.
+@MainActor
+func setEntryDateGuard(enabled: Bool) async throws {
+    var request = URLRequest(url: Rehearsal.base.appendingPathComponent("__test/entry-date-guard"))
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.httpBody = try JSONSerialization.data(withJSONObject: ["enabled": enabled])
+    let (data, response) = try await URLSession(configuration: .ephemeral).data(for: request)
+    guard (response as? HTTPURLResponse)?.statusCode == 200,
+          let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+          json["enabled"] as? Bool == enabled
+    else { throw RehearsalError.http("entry-date-guard: \(String(decoding: data, as: UTF8.self))") }
+}
+
+/// Runs `body` against the server as it was before 2026-10-20 (entry-date guard off), to seed rows
+/// stored back then, and switches the guard back on before returning or rethrowing: nothing after
+/// `body`, in this scenario or a later one, runs with it off.
+@MainActor
+func withEntryDateGuardOff<T>(_ body: () async throws -> T) async throws -> T {
+    let result: T
+    do {
+        try await setEntryDateGuard(enabled: false)
+        result = try await body()
+    } catch {
+        try? await setEntryDateGuard(enabled: true)
+        throw error
+    }
+    try await setEntryDateGuard(enabled: true)
+    return result
+}
+
 /// A full pull straight from the server, for comparing devices with what the server holds.
 @MainActor
 func serverSnapshot(_ account: Account, clientHeader: String? = Rehearsal.client131) async throws -> SyncPullResponse {

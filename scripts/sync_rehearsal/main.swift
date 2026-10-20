@@ -55,6 +55,7 @@ func main() async -> Int32 {
         ("K1 old-build keys repaired", scenarios.oldBuildKeysRepairedAndFollowedByB),
         ("K2 both devices repair", scenarios.bothDevicesRepairTheSamePulledKeys),
         ("K3 Islamic civil keys on Gregorian", scenarios.islamicCivilKeysRepairedOnAGregorianDevice),
+        ("K4 held keys, guard on", scenarios.heldOldBuildKeysRepairedUnderTheGuard),
         // Last: its sweep takes every tombstone in the throwaway database.
         ("S24 migrated marks, no list", scenarios.migratedMarksWithNoList),
     ]

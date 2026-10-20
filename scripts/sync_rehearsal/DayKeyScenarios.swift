@@ -6,6 +6,12 @@ import SwiftData
 // against the real local server. The harness has no calendar to inject into a device, so the old
 // build's records are made directly with 1.4.0's formula (`DayKeyDecoder.oldKeyDay`, which
 // StrideTests pins against that formula), on days relative to today: the repair's window is.
+//
+// Since 2026-10-20 the server refuses those keys (server/routes/sync.js `entryDateOk`): a 1.3.1+
+// device holds them as `invalid_value`. K1–K3 repair rows stored before that, so the old build's
+// first syncs, the ones that put its keys on the server and onto B, run with the guard switched
+// off through the test hook (`withEntryDateGuardOff`); the repair and every sync after it run
+// against the guard. K4 is the old build after the guard, with it on throughout.
 
 @MainActor
 extension Scenarios {
@@ -78,7 +84,10 @@ extension Scenarios {
         }
         try a.save()
         let oldIDs = Set(read.records.map(\.id.uuidString))
-        guard isSynced(await a.sync()), isSynced(await b.sync()) else { throw Missing(description: "the first syncs") }
+        // The old build's syncs, before the guard: the server stores its keys and B pulls them.
+        try await withEntryDateGuardOff {
+            guard isSynced(await a.sync()), isSynced(await b.sync()) else { throw Missing(description: "the first syncs") }
+        }
         let bRead = try unwrap(b.habit(id: read.id), "B has Read")
         _ = HabitCheckIn.setChecked(true, on: HabitStats.key(ofDay: shared), of: bRead, in: b.context)
         try b.save()
@@ -159,7 +168,10 @@ extension Scenarios {
             return r
         }
         try a.save()
-        guard isSynced(await a.sync()), isSynced(await b.sync()) else { throw Missing(description: "the first syncs") }
+        // The old build's syncs, before the guard: the server stores its keys and B pulls them.
+        try await withEntryDateGuardOff {
+            guard isSynced(await a.sync()), isSynced(await b.sync()) else { throw Missing(description: "the first syncs") }
+        }
         let pulled = try liveEntries(b)
         report.check("setup: B pulled A's three Buddhist-year rows (2569-…, 2568-…) as they are",
                      pulled.count == 3 && pulled.keys.allSatisfy { isStray(String($0.split(separator: "|")[1]), today: today) },
@@ -227,7 +239,10 @@ extension Scenarios {
         }
         try a.save()
         let oldIDs = Set(walk.records.map(\.id.uuidString))
-        guard isSynced(await a.sync()), isSynced(await b.sync()) else { throw Missing(description: "the first syncs") }
+        // The old build's syncs, before the guard: the server stores its keys and B pulls them.
+        try await withEntryDateGuardOff {
+            guard isSynced(await a.sync()), isSynced(await b.sync()) else { throw Missing(description: "the first syncs") }
+        }
         let pulled = try liveEntries(b)
         let unsettled = DayKeyDecoder(today: now, calendar: gregorian)
         let offByOne = days.filter { unsettled.realDay(ofKeyDay: HabitStats.dayNumber(ofKey: oldKey($0, .islamicCivil)), stamp: stamp($0)) != $0 }
@@ -261,5 +276,79 @@ extension Scenarios {
                      isSynced(bSynced) && isSynced(aSynced) && isSynced(bAgain) && aOutcome.replaced == 300
                         && Set(server.keys) == expected && finalA == server && finalB == server && calm,
                      "\(describe(bSynced)), \(describe(aSynced)), \(describe(bAgain)); server \(server.count), A≠server: \(finalA != server), B≠server: \(finalB != server); calm \(calm)")
+    }
+
+    // K4 — the old build after the guard (2026-10-20), guard on throughout. A runs 1.4.0 on a
+    // Japanese-calendar phone and checks three days: its sync gets each skipped as invalid_value,
+    // so A holds them at their Reiwa keys and neither the server nor B has any. A updates: the
+    // launch's pass re-keys the three in place at their real days (never delivered, so the same
+    // ids and nothing to tombstone), lifts the holds and sets its flag. A's next sync puts the three
+    // real days up with no deletion, B's gets them, and nothing is pending, held or queued.
+    func heldOldBuildKeysRepairedUnderTheGuard() async throws {
+        let account = try Account.create()
+        let a = Device131("A", account: account), b = Device131("B", account: account)
+        defer { a.remove(); b.remove() }
+        let now = Date()
+        let japanese = calendar(.japanese)
+        let today = HabitStats.dayNumber(ofKey: HabitCalendar.dayKey(forInstant: now, calendar: japanese))
+        let days = [today - 6, today - 5, today - 4]
+
+        let read = a.habit("Read")
+        read.records = days.map { d in
+            let r = HabitRecord(date: oldKey(d, .japanese), note: d == days[1] ? "from A's old build" : nil)
+            r.date = oldKey(d, .japanese)
+            r.updatedAt = SyncTimestamp.floorToMillisecond(now.addingTimeInterval(Double(d - today) * 86_400))
+            return r
+        }
+        try a.save()
+        let ids = Set(read.records.map(\.id.uuidString))
+        let aFirst = await a.sync(), bFirst = await b.sync()
+        let held = try SyncCopies.heldRows(in: a.context, reasons: [.invalidValue]).records
+        let aBefore = try liveEntries(a)
+        let serverBefore = try await serverEntries(account)
+        let bBefore = try liveEntries(b)
+        let bHasRead = try b.habit(id: read.id) != nil
+        report.check("setup: A's three check-ins at Reiwa keys (0008-…) are skipped as invalid_value — A holds them, the server and B have none",
+                     isSynced(aFirst) && isSynced(bFirst) && Set(held.map(\.id.uuidString)) == ids
+                        && aBefore.count == 3 && aBefore.keys.allSatisfy { $0.contains("|0008-") || $0.contains("|0007-") }
+                        && serverBefore.isEmpty && bBefore.isEmpty && bHasRead,
+                     "\(describe(aFirst)), \(describe(bFirst)); A holds \(held.count): \(aBefore.keys.sorted().joined(separator: ", ")); server \(serverBefore.count), B \(bBefore.count)")
+
+        let pass = DayKeyRepair.launchPass(in: a.context, flags: a.defaults, syncDefaults: a.defaults,
+                                           deletionQueue: a.queue, now: now, calendar: japanese)
+        var outcome = DayKeyRepair.Outcome()
+        if case .repaired(let o) = pass.result { outcome = o }
+        let aDays = try liveEntries(a)
+        let expected = Set(days.map { "\(read.id.uuidString)|\(dayString($0))" })
+        let stillHeld = try SyncCopies.heldRows(in: a.context, reasons: Set(SyncHoldReason.allCases))
+        report.check("A's launch pass re-keys the three held check-ins in place at their real days, same ids, and lifts the holds; no tombstones, the flag set",
+                     pass.flagSet && outcome.found == 3 && outcome.rekeyed == 3 && outcome.replaced == 0
+                        && outcome.holdsLifted == 3 && outcome.tombstones.isEmpty && a.queue.pending().isEmpty
+                        && stillHeld.isEmpty && Set(aDays.keys) == expected
+                        && Set(aDays.values.map { String($0.prefix(36)) }) == ids,
+                     "\(pass.result); A: \(aDays.keys.sorted().joined(separator: ", "))")
+
+        let mark = a.transport.mark()
+        let aSynced = await a.sync()
+        let sent = totalPushed(a.transport.since(mark))
+        let server = try await serverEntries(account)
+        report.check("A's next sync puts the three real days up with no deletion; the server holds exactly those, under A's ids, the note kept",
+                     isSynced(aSynced) && sent.entries == 3 && sent.deletions == 0
+                        && Set(server.keys) == expected && server == aDays
+                        && server["\(read.id.uuidString)|\(dayString(days[1]))"]?.hasSuffix("|from A's old build") == true,
+                     "\(describe(aSynced)); pushed \(sent); server \(server.keys.sorted().joined(separator: ", "))")
+
+        let bSynced = await b.sync()
+        let aAgain = await a.sync()
+        let finalServer = try await serverEntries(account)
+        let finalA = try liveEntries(a), finalB = try liveEntries(b)
+        let heldA = try SyncCopies.heldRows(in: a.context, reasons: Set(SyncHoldReason.allCases))
+        let heldB = try SyncCopies.heldRows(in: b.context, reasons: Set(SyncHoldReason.allCases))
+        let calm = try a.pendingCount() == 0 && b.pendingCount() == 0 && heldA.isEmpty && heldB.isEmpty
+            && a.queue.pending().isEmpty && b.queue.pending().isEmpty
+        report.check("…and B's sync gets them: A, B and the server hold the same three real days, nothing pending, held or queued on either device",
+                     isSynced(bSynced) && isSynced(aAgain) && Set(finalServer.keys) == expected
+                        && finalA == finalServer && finalB == finalServer && calm,
+                     "server \(finalServer.count), A \(finalA.count), B \(finalB.count); A≠server: \(finalA != finalServer), B≠server: \(finalB != finalServer); calm \(calm)")
     }
 }
