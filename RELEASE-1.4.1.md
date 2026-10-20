@@ -971,6 +971,43 @@ go per action.
     iPad Sync section's held-row indentation (List's own leading for icon-less rows, pre-1.4.1,
     no reading cost). Not coverable by the sweep: D12's plan rows (needs a purchase; hosted
     SKTestSession, gate 4) and Today on a past day (no launch argument picks a date).
+- 2026-10-20, owner "全部按你说的做" (Q1a–Q5a as recommended):
+  - **W10 merged** into m4 (c9dc2ea). Integrated gates on it: StrideTests 707 (705 + 2 known
+    skips) in Asia/Tokyo and America/Los_Angeles; hosted 324 + 12 known skips (StoreKit on 26.5).
+  - **Q1a, #11 merged** into main (36691cf) and **deployed**: X2's read-only query on production
+    and on the pre-deploy backup found 0 rows outside [2025-01-01, today+2] or non-canonical (281
+    entries, 7 users); server 602, typecheck clean; host diff = exactly #11's 5 files; prod-copy
+    rehearsal 36/36; backup /root/backups/stride-predeploy-20261020-141247.db; health 200,
+    loopback 000, AASA application/json, check_demo_account exit 0. main merged into m4 (95e4610;
+    package.json's `npm test` lists both new test files).
+  - **W8 deployed** from m4's server/ (Mac 1.4.0 review closed, so no review open): server 645,
+    typecheck clean; host diff = exactly W8's 6 files; prod-copy rehearsal 36/36; the demo scripts
+    on a separate prod copy first (add 2 habits, second run adds nothing, top-up dry run names all
+    8, integrity ok; copy removed); backup stride-predeploy-20261020-141701.db; same post-deploy
+    checks. Then on production: `demo-add-habits.js` added Water (+84 check-ins) and Stretch (+38),
+    a second run added nothing, and the top-up dry run names all eight habits.
+  - **Gate 2** after the W8 deploy: check_demo_account.sh exit 0 in the default zone and under
+    TZ=America/Los_Angeles; every habit at 25 or more of the last 30 days scores 0.85 or more (the
+    bar is 0.75).
+  - **Q3a**: the gate-2 residual is accepted (no re-seed). A second top-up at 08:20 UTC, after LA
+    midnight, is in root's crontab (7ca1428; before/after saved in /root/backups).
+  - **Q4a, gate 4** on a new iOS 18.5 simulator `Stride-StoreKit-iOS18` (StoreKit testing works
+    there; on 26.5 it skips): run 1 10/1, run 2 11/1, a different test each time
+    (`testAnExpiredSubscriptionIsOneLapsedRowAndLocked`, then `testBillingRetryShowsThePaymentRow`).
+    Both were the test reading `isPro` (currentEntitlements) before StoreKit caught up with the
+    status it had waited for. `refresh(until:)` now also waits for the expected `isPro`; then
+    12/12 (StoreKitStatusTests 11 + StoreKitConfigurationLoadTests 1, no skips) twice in a row.
+  - **Rehearsal on the merged tree: 103/9/1.** #11's guard refuses the fixtures of M4 (dates in
+    2028) and K1–K3 (old-build keys pushed to seed the server). Production is unaffected (0 such
+    rows). The fix is a test-only hook that switches the guard off only while K1–K3 seed rows
+    "stored before the guard", plus a new K4 for the guarded path (held rows re-keyed in place).
+  - **Q5a**: the pre-existing Today crash risk (another context deleting a whole habit while Today
+    shows it; no production path does this) is accepted for 1.4.1.
+  - **P3b** Mac candidates captured at 2880×1800, 12 in dark and light
+    (build/store-screenshots/1.4.1/mac/candidates, contact_sheet.png). Default pick 01–04: light
+    Today (details), light Statistics heatmap, light History, dark Today (the live listing also
+    has 4). The paywall is left out: the Debug variant's products never load (spinner). The Mac
+    sidebar has no Settings tab (`-tab 2` shows Today).
 - 2026-10-16, wave B merged (W7 c39d4d8, W6 a094ca2, D11 172fdab); 8 review findings confirmed and
   fixed, 2 refuted.
   - W6: templates carry kind, target and unit. A failed add says so. A pick closes New Habit too:

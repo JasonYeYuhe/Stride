@@ -154,13 +154,22 @@ final class StoreKitStatusTests: XCTestCase {
     private var rows: [ProSettingsRow] { ProSettingsRow.rows(for: store.proStatus, isPro: store.isPro) }
 
     /// StoreKit applies a session change (an expiry, a refund, a renewal) on its own queue:
-    /// refreshes until `condition` holds, or fails after `timeout`.
-    private func refresh(until condition: () -> Bool, timeout: Duration = StoreKitStatusTests.patience,
+    /// refreshes until `condition` holds, and `isPro` is `expectedPro` when one is given, or fails
+    /// after `timeout`.
+    ///
+    /// Why both: `proStatus` comes from `Product.SubscriptionInfo.status` and `isPro` from
+    /// `Transaction.currentEntitlements` (D12 keeps it there by design), and StoreKit updates the
+    /// two separately. On iOS 18.5 (2026-10-20, gate 4) a test that waited for the status alone
+    /// read `isPro` a moment before the entitlement caught up: billing retry showed
+    /// `.billingIssue` with `isPro` still true in one run, and an expiry stayed `.active` past
+    /// the patience in another while parallel builds loaded the Mac. Each test passed on the other run.
+    private func refresh(until condition: () -> Bool, isPro expectedPro: Bool? = nil,
+                         timeout: Duration = StoreKitStatusTests.patience,
                          _ what: String, file: StaticString = #filePath, line: UInt = #line) async {
         let deadline = ContinuousClock.now + timeout
         repeat {
             await store.refreshPurchasedProducts()
-            if condition() { return }
+            if condition(), expectedPro.map({ store.isPro == $0 }) ?? true { return }
             try? await Task.sleep(for: .milliseconds(200))
         } while ContinuousClock.now < deadline
         XCTFail("\(what): still \(store.proStatus), isPro \(store.isPro)", file: file, line: line)
@@ -232,7 +241,7 @@ final class StoreKitStatusTests: XCTestCase {
 
         await refresh(until: {
             if case .lapsed = store.proStatus { return true } else { return false }
-        }, "expired")
+        }, isPro: false, "expired")
         XCTAssertFalse(store.isPro, "locked")
         guard case .lapsed(let expiredOn) = store.proStatus else { return }
         XCTAssertLessThanOrEqual(expiredOn, Date().addingTimeInterval(60))
@@ -247,7 +256,7 @@ final class StoreKitStatusTests: XCTestCase {
 
         await refresh(until: {
             if case .lapsed = store.proStatus { return true } else { return false }
-        }, "refunded")
+        }, isPro: false, "refunded")
         XCTAssertFalse(store.isPro)
         guard case .lapsed(let endedOn) = store.proStatus else { return }
         XCTAssertGreaterThan(endedOn, before)
@@ -263,7 +272,7 @@ final class StoreKitStatusTests: XCTestCase {
 
         await refresh(until: {
             if case .lapsed = store.proStatus { return true } else { return false }
-        }, "Lifetime refunded")
+        }, isPro: false, "Lifetime refunded")
         XCTAssertFalse(store.isPro)
     }
 
@@ -331,7 +340,7 @@ final class StoreKitStatusTests: XCTestCase {
 
         await refresh(until: {
             if case .billingIssue = store.proStatus { return true } else { return false }
-        }, "billing retry")
+        }, isPro: false, "billing retry")
         guard case .billingIssue(let productID, let graceUntil) = store.proStatus else { return }
         XCTAssertEqual(productID, monthlyID)
         XCTAssertNil(graceUntil, "no grace period")
@@ -350,7 +359,7 @@ final class StoreKitStatusTests: XCTestCase {
 
         await refresh(until: {
             if case .billingIssue(_, _?) = store.proStatus { return true } else { return false }
-        }, "grace period")
+        }, isPro: true, "grace period")
         XCTAssertTrue(store.isPro, "entitled through the grace period")
         guard case .billingIssue(let productID, let graceUntil?) = store.proStatus else { return }
         XCTAssertEqual(productID, monthlyID)
