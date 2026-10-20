@@ -97,6 +97,11 @@ enum NotificationRouter {
     /// range-checked parser a backup's days go through — "2026-02-30" and "2026-9-5" are refused,
     /// never rolled over). A bad value falls back to the delivered day (`ReminderDay.resolve`), it
     /// never writes a bogus one.
+    ///
+    /// Every day a 1.4.1 snooze carries is Gregorian (`HabitCalendar.dayCalendar`, X2). One a
+    /// snooze from an older build carries on a non-Gregorian device (0008-10-15) is refused here,
+    /// and an Ethiopic one that parses (2019-02-05) is neither today nor yesterday: either way the
+    /// check-in goes to the delivered day or today, never to the stray key.
     static func day(from userInfo: [AnyHashable: Any]) -> Date? {
         (userInfo[UserInfoKey.day] as? String).flatMap(DataBackup.dayKey)
     }

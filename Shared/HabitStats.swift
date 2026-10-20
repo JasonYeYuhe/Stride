@@ -428,16 +428,25 @@ final class HabitStats {
     // MARK: Aggregates (computed on first access)
 
     private lazy var sortedCompleted: [Int] = completed.sorted()
-    private lazy var earliestLiveDay: Int? = values.keys.min()
+    /// The earliest live record on a real day: from `HabitCalendar.firstRealDayNumber` (2025-01-01)
+    /// on (X2). A key before it is one a build before 1.4.1 wrote on a non-Gregorian device — a
+    /// Japanese-calendar phone's year 8 — not yet repaired (`DayKeyRepair`, at the next launch).
+    /// Taken for the start, it made the strength walk start in year 8: about 737,000 days, some
+    /// 18 MB of arrays per habit. Days after `today` are not in `values` at all.
+    private lazy var earliestLiveDay: Int? = {
+        let floor = HabitCalendar.firstRealDayNumber
+        return values.keys.lazy.filter { $0 >= floor }.min()
+    }()
 
-    /// min(creation day, earliest live record), as a day number.
+    /// min(creation day, earliest live record on a real day), as a day number.
     private lazy var startDayNumber: Int = {
         let created = Self.dayNumber(of: createdAt, in: calendar)
         return earliestLiveDay.map { min(created, $0) } ?? created
     }()
 
-    /// min(creation day, earliest live record): where the rate (D8), the strength walk (D9),
-    /// Today's past-day filter (O11) and History's backdating window (D8) start.
+    /// min(creation day, earliest live record on or after 2025-01-01): where the rate (D8), the
+    /// strength walk (D9), Today's past-day filter (O11) and History's backdating window (D8)
+    /// start.
     private(set) lazy var startDay: Date = Self.key(ofDay: startDayNumber)
 
     private var streakMemo: [Int: Int] = [:]

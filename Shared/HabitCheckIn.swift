@@ -133,10 +133,30 @@ enum HabitCheckIn {
         case note(String?)
     }
 
+    /// `setChecked(nil, …)` for a day whose live records the caller read from the store a moment
+    /// ago (`liveRecords(of:onDays:)`), for a pass that merges many days at once: `DayKeyRepair`.
+    /// The same merge, the same rules (decision 7 as amended: the record D2 reads kept, a lone note
+    /// moved onto it, the others deleted here only with no tombstone, `.combineNotes` asked for two
+    /// different notes), only without the per-call store read: in a context holding thousands of
+    /// pending changes, that read is checked in memory against every one of them, and a read per
+    /// day made the first repair of a 1,000-record store take 45 s (W10-PERF-1). `day` must be
+    /// the day's live records as the store answered them, with nothing written to them since.
+    static func merge(_ day: [HabitRecord], on date: Date, of habit: Habit, in context: ModelContext) -> Change {
+        write(.unchanged, day: day.sorted { $0.outranks($1) }, on: date, of: habit, in: context,
+              confirmed: nil, undo: nil)
+    }
+
     /// The one write behind the three setters.
     private static func write(_ target: Target, on date: Date, of habit: Habit, in context: ModelContext,
                               confirmed: Confirmation?, undo: Undo?) -> Change {
-        var day = liveRecords(of: habit, on: date)
+        write(target, day: liveRecords(of: habit, on: date), on: date, of: habit, in: context,
+              confirmed: confirmed, undo: undo)
+    }
+
+    /// `write` on `day`, the day's live records as the store holds them, in rank order.
+    private static func write(_ target: Target, day stored: [HabitRecord], on date: Date, of habit: Habit,
+                              in context: ModelContext, confirmed: Confirmation?, undo: Undo?) -> Change {
+        var day = stored
         // Decided on, and compared with, what the store holds now — not this context's memory of it.
         if adoptStoredFields(of: day, in: context) { day.sort { $0.outranks($1) } }
         let kept = day.first
@@ -347,19 +367,36 @@ enum HabitCheckIn {
     /// Pending changes count: a record appended but not yet saved is live, one deleted but not yet
     /// saved is not. One small store query per write; a write is a user gesture, not a loop.
     static func liveRecords(of habit: Habit, on date: Date) -> [HabitRecord] {
-        let counts: (HabitRecord) -> Bool
-        switch HabitStats.liveRecords(of: habit) {
-        case .attached: counts = { !$0.isDeleted && $0.modelContext != nil }
-        case .persistentIDs(let ids): counts = { !$0.isDeleted && ids.contains($0.persistentModelID) }
-        // Not an answer `liveRecords(of:)` gives; a set of ids can only be matched by reading them.
-        case .ids(let ids): counts = { !$0.isDeleted && $0.modelContext != nil && ids.contains($0.id) }
-        // The habit is in no context: there is no store to have deleted anything from.
-        case .all: counts = { !$0.isDeleted }
-        }
+        let counts = liveRecordFilter(of: habit)
         let day = HabitStats.dayNumber(of: date, in: .current)
         return habit.records
             .filter { counts($0) && HabitStats.dayNumber(ofKey: $0.date) == day }
             .sorted { $0.outranks($1) }
+    }
+
+    /// `liveRecords(of:on:)` for each of `days` (day numbers) at once, from ONE store answer for
+    /// the habit: a day with no live record is absent. For `merge`.
+    static func liveRecords(of habit: Habit, onDays days: Set<Int>) -> [Int: [HabitRecord]] {
+        guard !days.isEmpty else { return [:] }
+        let counts = liveRecordFilter(of: habit)
+        var byDay: [Int: [HabitRecord]] = [:]
+        for record in habit.records where counts(record) {
+            let day = HabitStats.dayNumber(ofKey: record.date)
+            if days.contains(day) { byDay[day, default: []].append(record) }
+        }
+        return byDay.mapValues { $0.sorted { $0.outranks($1) } }
+    }
+
+    /// Which of `habit.records` the store holds as live, decided before any record's date is read.
+    private static func liveRecordFilter(of habit: Habit) -> (HabitRecord) -> Bool {
+        switch HabitStats.liveRecords(of: habit) {
+        case .attached: return { !$0.isDeleted && $0.modelContext != nil }
+        case .persistentIDs(let ids): return { !$0.isDeleted && ids.contains($0.persistentModelID) }
+        // Not an answer `liveRecords(of:)` gives; a set of ids can only be matched by reading them.
+        case .ids(let ids): return { !$0.isDeleted && $0.modelContext != nil && ids.contains($0.id) }
+        // The habit is in no context: there is no store to have deleted anything from.
+        case .all: return { !$0.isDeleted }
+        }
     }
 
     /// "Complete this habit" — Siri and Shortcuts. Unlike `tap`, it never removes anything:
@@ -669,10 +706,14 @@ enum HistoryLink {
     }
 
     /// The habit and the day of a history link — the day as a local instant (noon of that date in
-    /// `calendar`), which is what `ShellRequest.history(habitID:day:)` takes — or nil for every URL
-    /// that is not exactly one: this scheme and host, no user, password, port, path or fragment,
-    /// and exactly the two items, each once, a UUID and a real `yyyy-MM-dd` date.
-    static func target(of url: URL, calendar: Calendar) -> (habitID: UUID, day: Date)? {
+    /// `calendar`'s zone), which is what `ShellRequest.history(habitID:day:)` takes — or nil for
+    /// every URL that is not exactly one: this scheme and host, no user, password, port, path or
+    /// fragment, and exactly the two items, each once, a UUID and a real `yyyy-MM-dd` date.
+    ///
+    /// The date is Gregorian, as every day-key is (`HabitCalendar.dayCalendar`, X2): it is read in
+    /// a Gregorian calendar in `calendar`'s zone, never in the device's own calendar.
+    static func target(of url: URL, calendar deviceCalendar: Calendar) -> (habitID: UUID, day: Date)? {
+        let calendar = HabitCalendar.dayCalendar(deviceCalendar)
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               components.scheme?.lowercased() == scheme,
               components.host?.lowercased() == host,
@@ -701,10 +742,10 @@ enum HistoryLink {
     }
 
     /// Exactly four, two and two ASCII digits with dashes, naming a date that exists. Any year
-    /// from 1 (W2 review, "W2-URL-2"): day-keys take their year, month and day from the device's
-    /// calendar (`HabitCalendar.dayKey`), so on a Japanese-calendar device today's key is year 8
-    /// of Reiwa written as 0008-10-15 — the link round-trips through that same calendar in
-    /// `target`, which a 1970 floor refused, leaving every noted widget row there a dead link.
+    /// from 1: W2's review ("W2-URL-2") took the floor out when day-keys still took their year from
+    /// the device's calendar (0008-10-15 on a Japanese-calendar phone). Since X2 every key is
+    /// Gregorian (`HabitCalendar.dayCalendar`); a link an older widget drew with such a year opens
+    /// History on that Gregorian date, which History clamps to the days it offers.
     private static func dateParts(_ text: String) -> (year: Int, month: Int, day: Int)? {
         let scalars = Array(text.unicodeScalars)
         guard scalars.count == 10, scalars[4] == "-", scalars[7] == "-" else { return nil }

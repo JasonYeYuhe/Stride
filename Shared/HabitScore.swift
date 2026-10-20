@@ -138,6 +138,10 @@ enum HabitScore {
         #if DEBUG
         walkCount += 1
         #endif
+        // Never before 2025-01-01 (X2): a start there could only come from a key a non-Gregorian
+        // device wrote (year 8 is ~737,000 days of arrays). `HabitStats.startDay` already skips
+        // such keys; this holds for a caller that passes its own start.
+        let startDay = max(startDay, HabitCalendar.firstRealDayNumber)
         let last = todayIsComplete ? today : today - 1
         guard startDay <= last else {
             return Series(firstDayNumber: startDay, todayNumber: today, inputs: [], scores: [])

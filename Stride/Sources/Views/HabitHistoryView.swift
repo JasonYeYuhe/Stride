@@ -24,8 +24,9 @@ import SwiftData
 /// the store when the day is picked and after every save (`storedDay`).
 ///
 /// **Days** run from `HabitStats.startDay` (min(creation day, earliest live record)) − 365 d up
-/// to today, never a future day (D8). `createdAt` is never written. Notes go only on days with a
-/// record (D7): a yes/no day once it is checked, a count day once it holds a value. The 500-
+/// to today, never before 2025-01-01 (`window`, X2) and never a future day (D8). `createdAt` is
+/// never written. Notes go only on days with a record (D7): a yes/no day once it is checked, a
+/// count day once it holds a value. The 500-
 /// character cap applies to new input only (`acceptsNoteDraft`): an existing longer note is shown
 /// and kept whole, and a value edit never touches it.
 ///
@@ -533,8 +534,8 @@ struct HabitHistoryView: View {
     // MARK: - Actions
 
     private func showMonth(_ delta: Int, from month: Date, calendar: Calendar) {
-        guard let moved = calendar.date(byAdding: .month, value: delta, to: month) else { return }
-        displayedMonth = Self.monthStart(containing: moved, in: calendar)
+        guard let moved = Self.month(delta, from: month, in: calendar) else { return }
+        displayedMonth = moved
     }
 
     /// Picks another day. A note being typed is written first; when that needs a question, the
@@ -781,11 +782,13 @@ struct HabitHistoryView: View {
     // MARK: - Days
 
     /// The days History offers (D8): from min(creation day, earliest live record) − 365 days to
-    /// today, as day numbers. Never a future day.
+    /// today, as day numbers, but never before `HabitCalendar.firstRealDayKey` (2025-01-01, X2):
+    /// a key before it is one a non-Gregorian device wrote, which `DayKeyRepair` takes for a stray
+    /// key and moves, so a backfill must never land there. Never a future day.
     static func window(startDay: Date, today: Date, calendar: Calendar) -> ClosedRange<Int> {
         let last = dayNumber(ofInstant: today, in: calendar)
         let start = min(HabitStats.dayNumber(ofKey: startDay), last)
-        return (start - backdatingDays)...last
+        return min(max(start - backdatingDays, HabitCalendar.firstRealDayNumber), last)...last
     }
 
     /// The day number of a LOCAL instant's date in `calendar` — never taking the instant for a
@@ -795,18 +798,32 @@ struct HabitHistoryView: View {
         HabitStats.dayNumber(ofKey: HabitCalendar.dayKey(forInstant: instant, calendar: calendar))
     }
 
-    /// Noon of a day number's date in `calendar`: an instant on that date in every zone (a DST
-    /// change happens at night), for the grid's and the editor's dates.
+    /// Noon of a day number's date in `calendar`'s zone: an instant on that date in every zone (a
+    /// DST change happens at night), for the grid's and the editor's dates. The key's date is
+    /// Gregorian, so it is read back in a Gregorian calendar (`HabitCalendar.dayCalendar`, X2): in
+    /// the device's own, 2026-10-15 would be Reiwa 2026 on a Japanese-calendar phone.
     static func noon(ofDay day: Int, in calendar: Calendar) -> Date {
         let key = HabitStats.key(ofDay: day)
         let c = HabitCalendar.utc.dateComponents([.year, .month, .day], from: key)
-        return calendar.date(from: DateComponents(year: c.year, month: c.month, day: c.day, hour: 12)) ?? key
+        return HabitCalendar.dayCalendar(calendar).date(from: DateComponents(year: c.year, month: c.month,
+                                                                             day: c.day, hour: 12)) ?? key
     }
 
-    /// Noon of the first day of the month containing `instant`, in `calendar`.
+    /// Noon of the first day of the month containing `instant`, in `calendar`: the calendar's own
+    /// month interval, which knows its leap months. Rebuilt from era, year and month it lost them
+    /// (W10-KEYS-2): a Chinese-calendar month 6 and leap month 6 share all three, so the leap
+    /// month (2025-07-25 to 2025-08-22) mapped back to month 6, could not be shown, and the
+    /// forward chevron stuck on month 6. Noon, so a DST change at midnight does not matter.
     static func monthStart(containing instant: Date, in calendar: Calendar) -> Date {
-        let c = calendar.dateComponents([.era, .year, .month], from: instant)
-        return calendar.date(from: DateComponents(era: c.era, year: c.year, month: c.month, day: 1, hour: 12)) ?? instant
+        guard let start = calendar.dateInterval(of: .month, for: instant)?.start else { return instant }
+        return calendar.date(bySettingHour: 12, minute: 0, second: 0, of: start)
+            ?? calendar.date(byAdding: .hour, value: 12, to: start) ?? instant
+    }
+
+    /// The month `delta` months from the one starting at `month` (a `monthStart`), as its
+    /// `monthStart`: what the chevrons show.
+    static func month(_ delta: Int, from month: Date, in calendar: Calendar) -> Date? {
+        calendar.date(byAdding: .month, value: delta, to: month).map { monthStart(containing: $0, in: calendar) }
     }
 
     /// The grid's cells for the month starting at `monthStart`: nil for each cell before its first

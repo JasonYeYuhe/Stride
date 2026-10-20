@@ -51,6 +51,10 @@ func main() async -> Int32 {
         // X1: the day match never puts one id on two records.
         ("M9 day match, id in use", scenarios.dayMatchNeverPutsOneIDOnTwoRecords),
         ("M10 pull onto a same-id pair", scenarios.pullOntoASameIDPair),
+        // X2 (W10): keys a non-Gregorian device wrote before 1.4.1, repaired (DayKeyScenarios.swift).
+        ("K1 old-build keys repaired", scenarios.oldBuildKeysRepairedAndFollowedByB),
+        ("K2 both devices repair", scenarios.bothDevicesRepairTheSamePulledKeys),
+        ("K3 Islamic civil keys on Gregorian", scenarios.islamicCivilKeysRepairedOnAGregorianDevice),
         // Last: its sweep takes every tombstone in the throwaway database.
         ("S24 migrated marks, no list", scenarios.migratedMarksWithNoList),
     ]

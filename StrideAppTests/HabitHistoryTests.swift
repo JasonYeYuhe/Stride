@@ -563,6 +563,93 @@ final class HabitHistoryTests: XCTestCase {
         XCTAssertEqual(try stored(read).count, 0)
     }
 
+    // MARK: - Days on any calendar (X2)
+
+    private func calendar(_ identifier: Calendar.Identifier) -> Calendar {
+        var c = Calendar(identifier: identifier)
+        c.timeZone = TimeZone(identifier: "Asia/Tokyo")!
+        return c
+    }
+
+    private func utcKey(_ y: Int, _ m: Int, _ d: Int) -> Date {
+        HabitCalendar.utc.date(from: DateComponents(year: y, month: m, day: d))!
+    }
+
+    /// History reaches 365 days before the habit's start, but never before 2025-01-01: a key
+    /// before it is one a non-Gregorian device wrote, which the next launch's DayKeyRepair would
+    /// take for a stray key and move (X2; the owner's Q2).
+    func testHistoryNeverOffersADayBefore2025() throws {
+        let tokyo = calendar(.gregorian)
+        let now = try XCTUnwrap(tokyo.date(from: DateComponents(year: 2026, month: 10, day: 15, hour: 12)))
+        let floor = HabitCalendar.firstRealDayNumber
+        XCTAssertEqual(HabitHistoryView.window(startDay: utcKey(2025, 6, 1), today: now, calendar: tokyo).lowerBound, floor)
+        XCTAssertEqual(HabitHistoryView.window(startDay: utcKey(2026, 3, 27), today: now, calendar: tokyo).lowerBound,
+                       HabitStats.dayNumber(ofKey: utcKey(2025, 3, 27)))
+        XCTAssertEqual(HabitHistoryView.window(startDay: utcKey(2026, 3, 27), today: now, calendar: tokyo).upperBound,
+                       HabitStats.dayNumber(ofKey: utcKey(2026, 10, 15)))
+        // A start still at a stray key (not yet repaired) does not open year 8 either.
+        let year8 = HabitStats.dayNumber(ofKey: utcKey(8, 10, 1))
+        XCTAssertEqual(HabitHistoryView.window(startDay: HabitStats.key(ofDay: year8), today: now, calendar: tokyo).lowerBound, floor)
+    }
+
+    /// On a Japanese-, Buddhist- or Hebrew-calendar device the grid's cells and the editor's date
+    /// are the real days: noon of a key's Gregorian date in the device's zone (before X2 it was
+    /// read in the device's calendar — 2026-10-15 as Reiwa 2026), keyed back to itself, inside the
+    /// device-calendar month the grid shows.
+    func testHistorysDaysAreTheRealOnesOnANonGregorianDevice() throws {
+        let gregorian = calendar(.gregorian)
+        let n = HabitStats.dayNumber(ofKey: utcKey(2026, 10, 15))
+        for identifier in [Calendar.Identifier.japanese, .buddhist, .hebrew, .chinese, .gregorian] {
+            let device = calendar(identifier)
+            let noon = HabitHistoryView.noon(ofDay: n, in: device)
+            XCTAssertEqual(gregorian.dateComponents([.year, .month, .day, .hour], from: noon),
+                           DateComponents(year: 2026, month: 10, day: 15, hour: 12), "\(identifier)")
+            XCTAssertEqual(HabitHistoryView.dayNumber(ofInstant: noon, in: device), n, "\(identifier)")
+            let cells = HabitHistoryView.monthCells(HabitHistoryView.monthStart(containing: noon, in: device), in: device)
+            XCTAssertEqual(cells.filter { $0 == n }.count, 1, "\(identifier)")
+            let days = cells.compactMap { $0 }
+            XCTAssertEqual(days, Array(days[0]...days[days.count - 1]), "\(identifier): consecutive real days")
+        }
+    }
+
+    /// The chevrons step through a Chinese-calendar year's leap month like any other (W10-KEYS-2):
+    /// from May 2025 to December 2025 and back in Asia/Shanghai, months 6, leap 6 (2025-07-25 to
+    /// 2025-08-22) and 7 each appear once in both directions, every real day in exactly one grid,
+    /// with no gap. Before, the month start was rebuilt from era, year and month, which turned the
+    /// leap month into month 6: it could not be shown, and "next" stuck on month 6.
+    func testTheMonthChevronsStepThroughAChineseLeapMonth() throws {
+        var chinese = Calendar(identifier: .chinese)
+        chinese.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        var gregorian = Calendar(identifier: .gregorian)
+        gregorian.timeZone = chinese.timeZone
+        let leapStart = HabitStats.dayNumber(ofKey: utcKey(2025, 7, 25))
+        let first = HabitHistoryView.monthStart(
+            containing: try XCTUnwrap(gregorian.date(from: DateComponents(year: 2025, month: 5, day: 15, hour: 12))), in: chinese)
+        var forward = [first]
+        while forward.count < 9, let next = HabitHistoryView.month(1, from: forward[forward.count - 1], in: chinese) {
+            forward.append(next)
+        }
+        var backward = [forward[forward.count - 1]]
+        while backward.count < forward.count, let previous = HabitHistoryView.month(-1, from: backward[backward.count - 1], in: chinese) {
+            backward.append(previous)
+        }
+        XCTAssertEqual(Array(backward.reversed()), forward, "back the way it came")
+
+        func label(_ month: Date) -> String {
+            let c = chinese.dateComponents([.month, .isLeapMonth], from: month)
+            return "\(c.isLeapMonth == true ? "leap " : "")\(c.month ?? 0)"
+        }
+        let labels = forward.map(label)
+        XCTAssertEqual(Set(labels).count, labels.count, "every month once: \(labels)")
+        XCTAssertEqual(labels.filter { ["6", "leap 6", "7"].contains($0) }, ["6", "leap 6", "7"], "\(labels)")
+        let grids = forward.map { HabitHistoryView.monthCells($0, in: chinese).compactMap { $0 } }
+        let leap = try XCTUnwrap(grids.first { $0.contains(leapStart) })
+        XCTAssertEqual(leap.first, leapStart, "the leap month starts its own grid")
+        XCTAssertEqual(leap.count, 29)
+        let days = grids.flatMap { $0 }
+        XCTAssertEqual(days, Array(days[0]...days[days.count - 1]), "every real day once, in order")
+    }
+
     // MARK: - Hosting
 
     /// History alone as the window's root, `width` points wide if given (the screen's otherwise).
