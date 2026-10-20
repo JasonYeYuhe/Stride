@@ -398,11 +398,12 @@ editing `.env` run `sudo pm2 restart stride-server --update-env` before trusting
   `GLOBAL_RATE_LIMIT_PER_15MIN` (100, per IP, everything except sync). None is set on
   production; the defaults are the intended values.
 - `STRIDE_TEST_HOOKS` — **never set on the host.** With `NODE_ENV=test` it mounts
-  `POST /__test/sweep-tombstones` for `scripts/sync_rehearsal.sh` (M2's swept-tombstone case);
-  under `NODE_ENV=production` nothing is mounted even with it set, and a mounted route still
-  404s any request carrying the proxy headers the nginx block above sets (`X-Real-IP`,
-  `X-Forwarded-For` — nginx adds neither by default, so keep those lines) — see
-  `lib/testHooks.js` and its tests.
+  `POST /__test/sweep-tombstones` (M2's swept-tombstone case) and `POST /__test/entry-date-guard`
+  (switches the [entry-date guard](#entry-dates) off and on, for the day-key repair's K1–K3) for
+  `scripts/sync_rehearsal.sh`; under `NODE_ENV=production` nothing is mounted even with it set,
+  and a mounted route still 404s any request carrying the proxy headers the nginx block above
+  sets (`X-Real-IP`, `X-Forwarded-For` — nginx adds neither by default, so keep those lines) —
+  see `lib/testHooks.js` and its tests.
 
 ### Error reporting (Sentry)
 
@@ -616,7 +617,13 @@ too, and how it recovers depends on the version:
 window: `Scenario.day0` is noon UTC 600 days before today (never before 2025-01-02), and no
 scenario spans more than 500 days. The 3,000-entry chunk scenarios (S5, S11) use 6 habits ×
 500 days instead of 3 × 1,000. A fixture dated before 2025-01-01 is held or refused like a real
-one, so the old 2023 fixtures fail the gate against this server.
+one, so the old 2023 fixtures fail the gate against this server. The one exception is the day-key
+repair's K1–K3, which repair rows stored before the guard: their old build's first syncs run with
+the guard switched off through the test hook `POST /__test/entry-date-guard` (`lib/testHooks.js`;
+test servers only), only to put those keys on the server and onto the second device, and switch
+it back on before the 1.4.1 repair and every sync after it. K4 rehearses the guarded path, with
+the guard on throughout: the old build's keys are held as `invalid_value` on the device, and its
+1.4.1 repair re-keys them in place, lifts the holds and pushes the real days.
 
 **Notes on a day held under two ids.** Entries conflict on (habit, day), so two devices that
 checked a day before either pulled the other's hold one row under two ids. Two rules keep the note

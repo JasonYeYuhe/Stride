@@ -58,9 +58,6 @@ enum Scenario {
         return max(back, floor).addingTimeInterval(12 * 3_600)
     }()
     static func day(_ n: Int) -> Date { day0.addingTimeInterval(Double(n) * 86_400) }
-    /// `day(firstRealDay)` is 2026-01-01: a scenario whose checks read the stats' start uses days
-    /// from here, since the stats ignore a record before 2025-01-01 (X2, `HabitStats.startDay`).
-    static let firstRealDay = 1_096
 }
 
 func describe(_ outcome: SyncRunOutcome) -> String {
@@ -1442,20 +1439,21 @@ extension Scenarios {
     // M4 — a record dated before the habit was created: History lets a day up to a year before
     // creation be checked (D8). The record goes up and down like any other; `createdAt` is never
     // written (the server sets it only on insert), and the rate starts at the earlier of the two.
-    // On days of 2026 (`Scenario.firstRealDay`), not 2023's: since X2 the stats' start ignores a
-    // record before 2025-01-01, which only a non-Gregorian device's key can be.
+    // On past days from `Scenario.day0`, never before 2025-01-02: inside the server's entry-date
+    // window, and read by the stats' start, which since X2 ignores a record before 2025-01-01
+    // (only a non-Gregorian device's key can be one).
     func recordBeforeCreatedAt() async throws {
         let account = try Account.create()
         let a = Device131("A", account: account), b = Device131("B", account: account)
         defer { a.remove(); b.remove() }
         let stretch = a.habit("Stretch")
-        let created = SyncTimestamp.floorToMillisecond(Scenario.day(Scenario.firstRealDay + 10))
+        let created = SyncTimestamp.floorToMillisecond(Scenario.day(10))
         stretch.createdAt = created
         stretch.updatedAt = created
         try a.save()
         guard isSynced(await a.sync()), isSynced(await b.sync()) else { throw Missing(description: "the first syncs") }
 
-        let day = Scenario.firstRealDay + 3
+        let day = 3
         try a.history(stretch, day: day, checked: true)
         let aSynced = await a.sync()
         let bSynced = await b.sync()
@@ -1467,8 +1465,8 @@ extension Scenarios {
         let createdEverywhere = stretch.createdAt == created && bStretch.createdAt == created
             && SyncTimestamp.parse(serverHabit?.createdAt) == created
         let start = HabitCalendar.dayKey(for: Scenario.day(day))
-        let startA = HabitStats(habit: stretch, live: HabitStats.liveRecords(of: stretch), today: Scenario.day(Scenario.firstRealDay + 20)).startDay
-        let startB = HabitStats(habit: bStretch, live: HabitStats.liveRecords(of: bStretch), today: Scenario.day(Scenario.firstRealDay + 20)).startDay
+        let startA = HabitStats(habit: stretch, live: HabitStats.liveRecords(of: stretch), today: Scenario.day(20)).startDay
+        let startB = HabitStats(habit: bStretch, live: HabitStats.liveRecords(of: bStretch), today: Scenario.day(20)).startDay
         let pendingA = try a.pendingCount(), pendingB = try b.pendingCount()
         report.check("a check-in a week before the habit was created reaches B and the server; createdAt is unchanged everywhere, and the rate starts at the check-in",
                      isSynced(aSynced) && isSynced(bSynced) && onServer.count == 1 && onB.count == 1
