@@ -8,6 +8,14 @@
  * caught was invisible to the test suite because the test database never has that shape.
  *
  * Exit 0 = every check passed. Anything else = do not deploy.
+ *
+ * Off the host (a dry run of new checks, never a substitute for the run above): copy server/
+ * without its databases into a scratch dir, link node_modules, seed it with
+ * `DEMO_TOKEN=<random> node seed-demo.js` there, write `DEMO_TOKEN=<same>` into a scratch file,
+ * start `PORT=3199 NODE_ENV=production DD_TRACE_ENABLED=false node index.js` in it, and run this
+ * with REHEARSAL_DIR=<scratch dir> LIVE_ENV=<scratch file>. A database created fresh has none of
+ * the shapes an upgraded production one has (columns added by ALTER TABLE to old rows), so only
+ * the run on a production copy proves those.
  */
 const fs = require("fs");
 const path = require("path");
@@ -204,6 +212,64 @@ async function main() {
       check("…and wrote nothing: no entry added or deleted, no tombstone, no updated_at moved",
         after.entries === before.entries && after.tombs === before.tombs && after.emax === before.emax,
         JSON.stringify({ before, after }));
+    }
+
+    // --- X2 date guard (routes/sync.js entryDateOk) on the real account ---
+    // A non-Gregorian device's key for a real day. From an app before 1.3.1 the whole push is
+    // refused — its deletion of a real check-in included; from 1.3.1 the entry alone is skipped.
+    const dated = (p.habits || [])[0];
+    const dateVictim = (p.entries || [])[0];
+    if (!dated || !dateVictim) {
+      check("date guard: the demo account has a habit and a check-in", false, "none pulled");
+    } else {
+      /** The demo account's check-ins, every column. */
+      const demoEntries = () => JSON.stringify(db.prepare(`SELECT e.* FROM habit_entries e JOIN habits h ON h.id=e.habit_id
+        JOIN users u ON u.id=h.user_id WHERE u.email='demo@stride-review.com' ORDER BY e.id`).all());
+      const tombs = () => /** @type {any} */ (db.prepare("SELECT COUNT(*) AS n FROM deletion_tombstones").get()).n;
+      const at = new Date().toISOString();
+      const entry = (/** @type {string} */ id, /** @type {string} */ date, /** @type {(s: string) => string} */ fmt) =>
+        ({ id, habitId: dated.id, date, value: 1, createdAt: fmt(at), updatedAt: fmt(at) });
+
+      const before = { entries: demoEntries(), tombs: tombs() };
+      const refused = await call("POST", "/v1/sync/push", { token: session, body: {
+        habits: [], groups: [], deletedHabitIds: [], deletedGroupIds: [], deletedEntryIds: [dateVictim.id],
+        entries: [entry(crypto.randomUUID().toUpperCase(), "0008-10-15", wholeSecond)],
+      } });
+      const afterRefused = { entries: demoEntries(), tombs: tombs() };
+      check("header-less push with a 0008-10-15 entry -> 426 client_update_required, sentence in error",
+        refused.status === 426 && refused.json?.code === "client_update_required"
+          && typeof refused.json?.error === "string" && refused.json.error.startsWith("Stride can't sync some dates"),
+        JSON.stringify({ status: refused.status, json: refused.json }));
+      check("…and wrote nothing: no entry added, changed or deleted, no tombstone",
+        afterRefused.entries === before.entries && afterRefused.tombs === before.tombs,
+        `tombstones ${before.tombs} -> ${afterRefused.tombs}, entries ${afterRefused.entries === before.entries ? "unchanged" : "CHANGED"}`);
+
+      // The good entry goes on a day the habit does not hold, so it cannot land on a real row.
+      const held = new Set(db.prepare("SELECT date FROM habit_entries WHERE habit_id = ?").all(dated.id)
+        .map((r) => /** @type {any} */ (r).date));
+      let free = Date.parse("2025-01-01T00:00:00Z");
+      while (held.has(new Date(free).toISOString().slice(0, 10))) free += 86400000;
+      const goodDay = new Date(free).toISOString().slice(0, 10);
+      const badId = crypto.randomUUID().toUpperCase(), goodId = crypto.randomUUID().toUpperCase();
+      const client = { "X-Stride-Client": "ios/1.3.1(21)" };
+      const mixed = await call("POST", "/v1/sync/push", { token: session, headers: client, body: {
+        habits: [], groups: [], deletedHabitIds: [], deletedEntryIds: [], deletedGroupIds: [],
+        entries: [entry(badId, "2569-10-15", (s) => s), entry(goodId, goodDay, (s) => s)],
+      } });
+      const storedGood = /** @type {any} */ (db.prepare("SELECT date FROM habit_entries WHERE id = ?").get(goodId));
+      const storedBad = db.prepare("SELECT 1 FROM habit_entries WHERE id = ?").get(badId);
+      check("ios/1.3.1(21) push, one 2569-10-15 entry and one good -> 200, the bad one skipped invalid_value, the good one applied",
+        mixed.status === 200 && mixed.json?.applied?.entries === 1
+          && JSON.stringify(mixed.json?.skipped?.entries) === JSON.stringify([badId])
+          && mixed.json?.skippedReasons?.entries?.[badId] === "invalid_value"
+          && storedGood?.date === goodDay && !storedBad,
+        JSON.stringify({ status: mixed.status, applied: mixed.json?.applied, skippedReasons: mixed.json?.skippedReasons, goodDay, stored: storedGood?.date ?? null }));
+      // Put the copy's demo data back as it was: the test check-in deleted through the API.
+      const undo = await call("POST", "/v1/sync/push", { token: session, headers: client, body: {
+        habits: [], groups: [], entries: [], deletedHabitIds: [], deletedGroupIds: [], deletedEntryIds: [goodId],
+      } });
+      check("…the test check-in deleted again via the API: the demo account's check-ins are exactly as before",
+        undo.status === 200 && demoEntries() === before.entries, `${undo.status}`);
     }
 
     // --- E2E S4 on a real check-in: uncheck + re-check pushed by 1.3.1, then pulled by each app ---

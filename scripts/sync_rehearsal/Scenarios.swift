@@ -45,7 +45,18 @@ final class Report {
 enum Scenario {
     /// Noon UTC, so `HabitCalendar.dayKey` lands on the same calendar day in every time zone
     /// from UTC−11 to UTC+11 (UTC+9 hides date bugs — feedback on Stride's blind spots).
-    static let day0 = HabitCalendar.utc.date(from: DateComponents(year: 2023, month: 1, day: 1, hour: 12))!
+    ///
+    /// Inside the server's entry-date window (server/routes/sync.js `entryDateOk`: 2025-01-01 …
+    /// UTC today + 2), which the server here runs unmodified: a fixture outside it is held as
+    /// `invalid_value` by a 1.3.1 device and refused whole (426) for a 1.2.3 / 1.3.0 one, like a
+    /// real check-in. So day 0 is 600 days before today, never before 2025-01-02, and day(0) …
+    /// day(599) are all past days. No scenario spans more than 500 days.
+    static let day0: Date = {
+        let utc = HabitCalendar.utc
+        let back = utc.date(byAdding: .day, value: -600, to: utc.startOfDay(for: Date()))!
+        let floor = utc.date(from: DateComponents(year: 2025, month: 1, day: 2))!
+        return max(back, floor).addingTimeInterval(12 * 3_600)
+    }()
     static func day(_ n: Int) -> Date { day0.addingTimeInterval(Double(n) * 86_400) }
     /// `day(firstRealDay)` is 2026-01-01: a scenario whose checks read the stats' start uses days
     /// from here, since the stats ignore a record before 2025-01-01 (X2, `HabitStats.startDay`).
@@ -252,7 +263,9 @@ struct Scenarios {
             let account = try Account.create()
             let a = Device131("A", account: account)
             defer { a.remove() }
-            for i in 0..<3 { a.habit("Habit \(i)", days: Array(0..<1_000)) }   // 3 habits + 3,000 entries
+            // 6 habits + 3,000 entries: two chunks (2,000 + 1,000). Not 3 × 1,000 days, which no
+            // longer fits in the server's entry-date window (Scenario.day0).
+            for i in 0..<6 { a.habit("Habit \(i)", days: Array(0..<500)) }
             try a.save()
 
             a.transport.pushFault = { $0 == 2 ? fault : nil }
@@ -274,7 +287,7 @@ struct Scenarios {
             let server = try await serverSnapshot(account)
             report.check("\(label): the retry sends only chunk 2, and the server ends with every row once",
                          try isSynced(retry) && pushes(ex2).count == 1 && resent.rows == pendingAfter && resent.habits == 0
-                            && server.totals == SyncTotals(habits: 3, entries: 3_000, groups: 0) && (try a.pendingCount()) == 0,
+                            && server.totals == SyncTotals(habits: 6, entries: 3_000, groups: 0) && (try a.pendingCount()) == 0,
                          "\(describe(ex2)); server \(server.totals.map { "\($0.habits)h/\($0.entries)e" } ?? "none")")
         }
     }
@@ -581,7 +594,7 @@ struct Scenarios {
         let x = try Account.create(), y = try Account.create()
         let a = Device131("A", account: x)
         defer { a.remove() }
-        for i in 0..<3 { a.habit("Habit \(i)", days: Array(0..<1_000)) }
+        for i in 0..<6 { a.habit("Habit \(i)", days: Array(0..<500)) }   // 3,000 entries: two chunks
         try a.save()
         let queued = UUID().uuidString
         a.queue.trackEntry(queued)

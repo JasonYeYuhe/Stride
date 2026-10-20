@@ -30,6 +30,12 @@
  *   legacy_push_refused        a push refused 426 client_update_required because its entries
  *                              carry no edit stamp (apps <= 1.2.2) or its habits no `kind` (1.1)
  *                              — routes/sync.js legacyShape: the old devices still trying to sync
+ *   entry_date_push_refused    a push from an app before 1.3.1 refused 426 client_update_required
+ *                              because an entry's date is not a real day in 2025-01-01..UTC
+ *                              today+2 (routes/sync.js entryDateOk; X2, non-Gregorian day keys)
+ *   invalid_entry_date         per entry refused for its date: in such a refused push, or
+ *                              skipped as invalid_value for an app >= 1.3.1. The non-Gregorian
+ *                              population still on a build without the X2 fix
  *   lww_refeed.<kind>          a push that lost to a strictly newer edit with different values,
  *                              whose winner was moved back into the feed (routes/sync.js, the
  *                              LWW re-feed; kind = habits | entries | groups). Not a shim
