@@ -453,6 +453,9 @@ enum DayKeyRepair {
         do {
             let decoder = DayKeyDecoder(today: now, calendar: calendar)
             if try strayRecordCount(in: context, decoder: decoder) == 0 {
+                // Logged too, so an upgrade's device log shows the pass ran (gate 7, 2026-10-21):
+                // otherwise only the App Group flag says so.
+                logger.notice("Day-key repair: nothing to repair")
                 result = .nothingToRepair
             } else if SyncDeliveryMigration.runOnceIfNeeded(in: context, defaults: syncDefaults) == .failed {
                 logger.error("Day-key repair deferred: the delivery-state migration has not run")
