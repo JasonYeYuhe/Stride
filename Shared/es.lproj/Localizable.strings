@@ -603,7 +603,6 @@
 
 /* 1.4.1, 2026-10-22 */
 
-/* Statistics' 8-week Trend and Weekly Review: what VoiceOver reads, after the week or the habit, for
-   a week with nothing to count yet — before the habit existed, or this week before anything is due
-   or checked in. Nothing is drawn for it, and it must not sound like 0% or a missed week. */
+/* Statistics' 8-week Trend: what VoiceOver reads, after the week, for a week that ended before the
+   habit existed. Nothing is drawn for it, and it must not sound like 0% or a missed week. */
 "Not started" = "Sin empezar";

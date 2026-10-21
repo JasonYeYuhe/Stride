@@ -642,16 +642,49 @@ final class HabitStats {
     }
 
     /// The rate of the Monday-anchored week starting `monday` (a day-key) as the Pro cards show it:
-    /// from `startDay`, through the last counted day. Nil when no day of it has come due — the
-    /// habit had not started, or it is this week and nothing is due or done yet — which the cards
-    /// show as nothing to count, never as a missed week: the Trend drew the weeks before a habit
-    /// existed as grey bars marked 0, so a new Pro user's chart was mostly zeros.
+    /// from `startDay`, through the last counted day (times-per-week this week: what is owed so
+    /// far, `goalSoFarRate`). Nil when no day of it has come due — the habit had not started, or
+    /// it is this week and nothing is due or done yet — which the cards show as nothing to count,
+    /// never as a missed week: the Trend drew the weeks before a habit existed as grey bars marked
+    /// 0, so a new Pro user's chart was mostly zeros.
     func countedRate(ofWeekStarting monday: Date) -> Double? {
         countedRate(ofWeekStartingDay: dayNumber(of: monday))
     }
 
+    /// Whether the week starting `monday` (a day-key) ended before `startDay`: the habit did not
+    /// exist in it. Of the weeks `countedRate` has no rate for, only these are "Not started" to
+    /// VoiceOver; this week before anything is due or done is a habit that has begun, and a habit
+    /// with a 100-day history heard "Not started" every Monday morning (review of bab8acf,
+    /// 2026-10-22).
+    func endsBeforeStart(weekStarting monday: Date) -> Bool {
+        dayNumber(of: monday) + 6 < startDayNumber
+    }
+
     private func countedRate(ofWeekStartingDay monday: Int) -> Double? {
-        dueRate(from: monday, to: min(monday + 6, lastCountedDayNumber))
+        let sunday = monday + 6, last = min(sunday, lastCountedDayNumber)
+        if schedule == .timesPerWeek, last < sunday { return goalSoFarRate(ofWeekStartingDay: monday, through: last) }
+        return dueRate(from: monday, to: last)
+    }
+
+    /// Times-per-week, a week not counted to its Sunday yet (this week): only the check-ins that
+    /// can no longer be made up are owed — the week's goal less the days still to come after
+    /// `last`. `weeklyGoalRate` spreads the goal over the days counted so far (goal × days ÷ 7)
+    /// and calls each of them without a check-in a miss, so "3 times a week" done Wednesday,
+    /// Friday and Sunday, every week, read "Down vs last week" from Tuesday (0%) to Sunday before
+    /// the check-in (77%): on track, and told it slipped six days of seven (review of bab8acf,
+    /// 2026-10-22). Nil while nothing is owed yet and nothing is done (as a daily habit's Monday
+    /// before the check-in); 100% while what is done covers what is owed. Counted to its Sunday, a week owes
+    /// its whole goal and this would be `weeklyGoalRate`'s min(1, done ÷ goal), which past weeks
+    /// keep.
+    private func goalSoFarRate(ofWeekStartingDay monday: Int, through last: Int) -> Double? {
+        let first = max(monday, startDayNumber), sunday = monday + 6
+        guard first <= last else { return nil }
+        // The week the habit started in owes its share of the goal, as in `weeklyGoalRate`.
+        let goal = Double(max(1, timesPerWeek)) * Double(sunday - first + 1) / 7
+        let done = Double((first...last).reduce(0) { $0 + (completed.contains($1) ? 1 : 0) })
+        let owed = goal - Double(sunday - last)
+        guard owed > 0 else { return done > 0 ? 1 : nil }
+        return min(1, done / owed)
     }
 
     /// This week so far (`countedRate(ofWeekStarting:)`): Insights' momentum, Weekly Review.

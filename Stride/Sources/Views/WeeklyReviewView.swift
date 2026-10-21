@@ -102,8 +102,8 @@ struct WeeklyReviewView: View {
                     // with the detail — further down; its number is already about 1.5x body there.
                     .dynamicTypeSize(...DynamicTypeSize.accessibility2)
                     .accessibilityElement(children: .ignore)
+                    // Nothing to count yet: the caption alone, as the dash shows nothing more.
                     .accessibilityLabel(summary.overall.map { Text("This week, \(Int($0 * 100)) percent complete") } ?? Text("This Week"))
-                    .accessibilityValue(summary.overall == nil ? Text("Not started") : Text(verbatim: ""))
 
                 if let diff = summary.change {
                     HStack(spacing: 4) {
@@ -169,9 +169,11 @@ struct WeeklyReviewView: View {
                     }
                     .padding(.horizontal)
                     .accessibilityElement(children: .ignore)
+                    // Without a rate, the name alone, as the dash: "Not started" was spoken here too,
+                    // for a habit with months of history on any Monday before its check-in (review
+                    // of bab8acf, 2026-10-22). This week never lies before a habit's start.
                     .accessibilityLabel(rate.map { Text("\(habit.emoji) \(habit.name), \(Int($0 * 100)) percent") }
                                         ?? Text(verbatim: "\(habit.emoji) \(habit.name)"))
-                    .accessibilityValue(rate == nil ? Text("Not started") : Text(verbatim: ""))
                 }
             }
 

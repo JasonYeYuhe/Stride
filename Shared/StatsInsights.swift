@@ -87,8 +87,11 @@ enum StatsInsights {
         let rates: [Double?]
         /// The mean over the habits with something to count this week; nil when none has.
         let overall: Double?
-        /// `overall` minus last week's (the mean over the habits with something to count then),
-        /// when both exist and they differ by more than a point.
+        /// This week against last, each habit against itself: the mean change over the habits
+        /// with something to count in both weeks, when it is more than a point. Two means over
+        /// different habits moved with no habit changing: a weekend-only habit, not due yet this
+        /// week and missed last weekend, made a level daily habit "Up 50% vs last week" every
+        /// weekday (review of bab8acf, 2026-10-22).
         let change: Double?
         /// The habit alone at the top of this week's percents, and the one alone at the bottom,
         /// among at least two with something to count. The first of equal rates used to be
@@ -98,9 +101,14 @@ enum StatsInsights {
     }
 
     static func weeklyReview(thisWeek: [Double?], lastWeek: [Double?]) -> WeeklyReview {
-        let overall = mean(thisWeek), lastOverall = mean(lastWeek)
+        let overall = mean(thisWeek)
+        // Nil for a habit with nothing to count in one of the weeks, which `mean` leaves out.
+        let changes: [Double?] = zip(thisWeek, lastWeek).map { now, was in
+            guard let now, let was else { return nil }
+            return now - was
+        }
         var change: Double?
-        if let overall, let lastOverall, abs(overall - lastOverall) > 0.01 { change = overall - lastOverall }
+        if let moved = mean(changes), abs(moved) > 0.01 { change = moved }
         let rated = thisWeek.indices.compactMap { i in thisWeek[i].map { (index: i, percent: percent($0)) } }
         var best: Int?, worst: Int?
         if rated.count >= 2 {

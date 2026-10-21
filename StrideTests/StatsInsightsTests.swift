@@ -12,6 +12,10 @@ import Foundation
 ///   in Insights and in Weekly Review alike;
 /// - a habit created three weeks ago drew five grey bars marked 0 in the Trend, as if missed.
 ///
+/// The review of that fix (bab8acf, 2026-10-22) added three: "3 times a week" on track read as down
+/// until its Sunday check-in; Weekly Review's change subtracted means over different habits; and
+/// VoiceOver said "Not started" for this week of a habit with months of history.
+///
 /// Dates are fixed UTC day-keys (2026-06-01 is a Monday), as in StatsMathTests, so none of this
 /// depends on the day or the time zone the tests run in.
 @MainActor
@@ -224,7 +228,7 @@ final class StatsInsightsTests: XCTestCase {
     }
 
     /// "3 times a week", met last week; Monday before the check-in has nothing to count, and the
-    /// check-in alone meets the share of the goal the day carries.
+    /// check-in alone is on track: nothing is owed yet.
     func testATimesPerWeekMondayWaitsForTheCheckIn() {
         let h = habit(.timesPerWeek, timesPerWeek: 3, created: day(5, 1))
         checkIn(h, on: [day(5, 25), day(5, 27), day(5, 29)])
@@ -235,6 +239,66 @@ final class StatsInsightsTests: XCTestCase {
         XCTAssertEqual(s.thisWeekRate ?? 0, 1, accuracy: 0.0001)
         XCTAssertEqual(StatsInsights.momentum(thisWeek: s.thisWeekRate, lastWeek: s.lastWeekRate),
                        StatsInsights.Momentum(was: 100, now: 100))
+    }
+
+    /// "3 times a week" done Wednesday, Friday and Sunday, last week and this: on every day of this
+    /// week, before and after the day's check-in, the week so far is never down. bab8acf spread the
+    /// goal over the days counted (`weeklyGoalRate`) and read Tuesday 0%, Thursday 77%, Friday
+    /// before the check-in 58% and Sunday before it 77%: "Down vs last week" six days of seven.
+    func testATimesPerWeekUserOnTrackIsNeverDown() {
+        let checkIns = [day(5, 27), day(5, 29), day(5, 31), day(6, 3), day(6, 5), day(6, 7)]
+        for today in days(day(6, 1), through: day(6, 7)) {
+            for doneToday in [false, true] where !doneToday || checkIns.contains(today) {
+                let h = habit(.timesPerWeek, timesPerWeek: 3, created: day(5, 1))
+                checkIn(h, on: checkIns.filter { doneToday ? $0 <= today : $0 < today })
+                let s = stats(h, today: today)
+                let what = "\(today), done today: \(doneToday)"
+                XCTAssertEqual(s.lastWeekRate, 1, what)
+                if let rate = s.thisWeekRate { XCTAssertEqual(rate, 1, what) }
+                XCTAssertNotEqual(StatsInsights.momentum(thisWeek: s.thisWeekRate, lastWeek: s.lastWeekRate)?.isUp,
+                                  false, what)
+            }
+        }
+        let h = habit(.timesPerWeek, timesPerWeek: 3, created: day(5, 1))
+        checkIn(h, on: Array(checkIns.prefix(3)))
+        XCTAssertEqual(stats(h, today: day(6, 2)).completionRate(from: day(6, 1), to: day(6, 1)), 0,
+                       "what bab8acf read on Tuesday")
+    }
+
+    /// The same goal, nothing done this week: owed is only what can no longer be made up. Friday
+    /// morning three days are left for three check-ins, so nothing is owed yet; on Saturday one of
+    /// them is missed for good, and a Saturday check-in covers one of the two owed by Sunday.
+    func testATimesPerWeekWeekOwesOnlyWhatCanNoLongerBeMadeUp() {
+        let h = habit(.timesPerWeek, timesPerWeek: 3, created: day(5, 1))
+        checkIn(h, on: [day(5, 27), day(5, 29), day(5, 31)])
+        XCTAssertNil(stats(h, today: day(6, 5)).thisWeekRate)
+
+        let saturday = stats(h, today: day(6, 6))
+        XCTAssertEqual(saturday.thisWeekRate, 0)
+        XCTAssertEqual(StatsInsights.momentum(thisWeek: saturday.thisWeekRate, lastWeek: saturday.lastWeekRate),
+                       StatsInsights.Momentum(was: 100, now: 0))
+
+        checkIn(h, on: [day(6, 6)])
+        XCTAssertEqual(stats(h, today: day(6, 6)).thisWeekRate ?? 0, 0.5, accuracy: 0.0001)
+    }
+
+    /// Counted to its Sunday, this week's rate is the one it keeps as last week (`weeklyGoalRate`):
+    /// two of three. A habit created on Thursday owes its share of the goal from then, 3 × 4 ÷ 7,
+    /// as `weeklyGoalRate` counts that week: nothing owed on Saturday morning, and one Sunday
+    /// check-in is 7/12.
+    func testATimesPerWeekWeekCountedToItsSundayKeepsItsRate() {
+        let h = habit(.timesPerWeek, timesPerWeek: 3, created: day(5, 1))
+        checkIn(h, on: [day(6, 6), day(6, 7)])
+        let sunday = stats(h, today: day(6, 7))
+        XCTAssertEqual(sunday.thisWeekRate ?? 0, 2.0 / 3.0, accuracy: 0.0001)
+        XCTAssertEqual(sunday.thisWeekRate, stats(h, today: day(6, 8)).lastWeekRate)
+
+        let new = habit(.timesPerWeek, timesPerWeek: 3, created: day(6, 4))
+        XCTAssertNil(stats(new, today: day(6, 6)).thisWeekRate, "Saturday: two days left for its share")
+        checkIn(new, on: [day(6, 7)])
+        let created = stats(new, today: day(6, 7))
+        XCTAssertEqual(created.thisWeekRate ?? 0, 7.0 / 12.0, accuracy: 0.0001)
+        XCTAssertEqual(created.thisWeekRate, stats(new, today: day(6, 8)).lastWeekRate)
     }
 
     /// A habit created this Wednesday did not exist last week: no momentum. 1.4.1 (23) said "Up vs
@@ -279,7 +343,7 @@ final class StatsInsightsTests: XCTestCase {
     }
 
     /// Best and Needs work only for a habit alone at the top or the bottom of the percents shown;
-    /// the overall rates are means over the habits with something to count in that week.
+    /// the overall rate is the mean over the habits with something to count this week.
     func testWeeklyReviewHighlightsOnlyAHabitAlone() {
         func review(_ rates: [Double?], last: [Double?]? = nil) -> StatsInsights.WeeklyReview {
             StatsInsights.weeklyReview(thisWeek: rates, lastWeek: last ?? rates)
@@ -301,6 +365,30 @@ final class StatsInsightsTests: XCTestCase {
         XCTAssertNil(review([0.5], last: [0.505]).change, "within a point: no change shown, as before")
     }
 
+    /// The change compares each habit with itself, over the habits with something to count in
+    /// both weeks. bab8acf subtracted last week's mean over every habit rated then from this week's
+    /// over the ones rated now: a habit with nothing due yet this week moved the change alone.
+    func testWeeklyReviewComparesEachHabitWithItself() {
+        XCTAssertNil(StatsInsights.weeklyReview(thisWeek: [0.5, nil], lastWeek: [0.5, 1]).change, "bab8acf: Down 25%")
+        XCTAssertNil(StatsInsights.weeklyReview(thisWeek: [1, nil], lastWeek: [1, 0]).change, "bab8acf: Up 50%")
+        XCTAssertNil(StatsInsights.weeklyReview(thisWeek: [1, nil], lastWeek: [nil, 1]).change, "nothing pairs")
+        let moved = StatsInsights.weeklyReview(thisWeek: [0.5, nil], lastWeek: [4.0 / 7.0, 1])
+        XCTAssertEqual(moved.change ?? 0, 0.5 - 4.0 / 7.0, accuracy: 0.0001, "the daily habit against itself")
+
+        // Wednesday 06-03, today not done: a daily habit done every day, level with last week, and
+        // a Saturday–Sunday habit missed last weekend with nothing due yet this week.
+        let daily = habit(created: day(5, 1))
+        checkIn(daily, on: days(day(5, 25), through: day(6, 2)))
+        let weekend = habit(.specificDays, activeDays: (1 << 0) | (1 << 6), created: day(5, 1))
+        let all = [stats(daily, today: day(6, 3)), stats(weekend, today: day(6, 3))]
+        XCTAssertEqual(all.map(\.thisWeekRate), [1, nil])
+        XCTAssertEqual(all.map(\.lastWeekRate), [1, 0])
+
+        let review = StatsInsights.weeklyReview(thisWeek: all.map(\.thisWeekRate), lastWeek: all.map(\.lastWeekRate))
+        XCTAssertEqual(review.overall, 1)
+        XCTAssertNil(review.change)
+    }
+
     // MARK: - 8-week Trend
 
     /// Created Thursday 07-02, today Wednesday 07-22, the eight weeks from Monday 06-01. The four
@@ -314,17 +402,33 @@ final class StatsInsightsTests: XCTestCase {
         let mondays = (0..<8).map { utc.date(byAdding: .day, value: 7 * $0, to: day(6, 1))! }
 
         XCTAssertEqual(mondays.map { s.countedRate(ofWeekStarting: $0) }, [nil, nil, nil, nil, 1, 1, 0, 1])
+        XCTAssertEqual(mondays.map { s.endsBeforeStart(weekStarting: $0) },
+                       [true, true, true, true, false, false, false, false], "only these are \"Not started\"")
         XCTAssertEqual(s.completionRate(from: day(6, 1), to: day(6, 7)), 0, "what the old Trend drew")
     }
 
-    /// Mon/Wed only, created on a Thursday: nothing of that week was due, so it is not started
-    /// either; the next week counts.
-    func testACreationWeekWithNothingDueIsNotStarted() {
+    /// Monday 07-20 before the check-in: this week has nothing to count yet, but the habit has run
+    /// since 07-02, so the week is not one before its start (bab8acf spoke "Not started" for it).
+    func testThisWeekWithNothingCountedIsNotBeforeTheStart() {
+        let h = habit(created: day(7, 2))
+        checkIn(h, on: days(day(7, 2), through: day(7, 19)))
+        let s = stats(h, today: day(7, 20))
+
+        XCTAssertNil(s.countedRate(ofWeekStarting: day(7, 20)))
+        XCTAssertFalse(s.endsBeforeStart(weekStarting: day(7, 20)))
+        XCTAssertTrue(s.endsBeforeStart(weekStarting: day(6, 22)), "06-22 to 06-28")
+        XCTAssertFalse(s.endsBeforeStart(weekStarting: day(6, 29)), "the week it was created in")
+    }
+
+    /// Mon/Wed only, created on a Thursday: nothing of that week was due, so it has nothing to
+    /// count, though the habit existed in it; the next week counts.
+    func testACreationWeekWithNothingDueHasNothingToCount() {
         let h = habit(.specificDays, activeDays: (1 << 1) | (1 << 3), created: day(6, 4))
         checkIn(h, on: [day(6, 8), day(6, 10)])
         let s = stats(h, today: day(6, 12))
 
         XCTAssertNil(s.countedRate(ofWeekStarting: day(6, 1)))
+        XCTAssertFalse(s.endsBeforeStart(weekStarting: day(6, 1)))
         XCTAssertEqual(s.countedRate(ofWeekStarting: day(6, 8)), 1)
     }
 }

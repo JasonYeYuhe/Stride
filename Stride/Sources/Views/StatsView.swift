@@ -773,6 +773,9 @@ struct TrendCard: View {
         /// started, or this week before anything is due or done. Drawn as no bar and no number,
         /// where it was a grey bar marked 0 like a missed week (2026-10-22).
         let rate: Double?
+        /// The week ended before the habit existed (`HabitStats.endsBeforeStart`): only then is a
+        /// week without a rate "Not started" to VoiceOver.
+        let beforeStart: Bool
     }
 
     private var points: [WeekPoint] {
@@ -783,7 +786,8 @@ struct TrendCard: View {
                 label: StatsWeeks.label.string(from: start),
                 spokenDate: start.formatted(spoken),
                 // This week counts today once it is done, as Insights' momentum does.
-                rate: stats.countedRate(ofWeekStarting: start)
+                rate: stats.countedRate(ofWeekStarting: start),
+                beforeStart: stats.endsBeforeStart(weekStarting: start)
             )
         }
     }
@@ -845,7 +849,10 @@ struct TrendCard: View {
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Week of \(point.spokenDate)")
                     // The bar's own label truncates; rounding here would speak a different number.
-                    .accessibilityValue(point.rate.map { Text(verbatim: "\(Int($0 * 100))%") } ?? Text("Not started"))
+                    // A week the habit has begun with nothing counted yet says only its date, as
+                    // its empty slot: "Not started" was false for it (review of bab8acf, 2026-10-22).
+                    .accessibilityValue(point.rate.map { Text(verbatim: "\(Int($0 * 100))%") }
+                                        ?? (point.beforeStart ? Text("Not started") : Text(verbatim: "")))
                 }
             }
             // The tallest bar is 80 pt; the rest is the two labels, so only that part scales.
