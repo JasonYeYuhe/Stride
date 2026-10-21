@@ -260,6 +260,7 @@
 		E6553FC77D1634915D27A1EA /* Sentry in Frameworks */ = {isa = PBXBuildFile; productRef = 39783EF6BB5C62A3753E1A18 /* Sentry */; };
 		E719A22367E7428166D03724 /* SyncPushPlannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 094FF22CE3EB3D7DB55020FA /* SyncPushPlannerTests.swift */; };
 		E83F02CD837080DFA6C5CE7F /* Habit.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21336DA7BBDF96DEA4D3407 /* Habit.swift */; };
+		E84BC6E6EDB22B0C6D1A2E85 /* AccessibilityActionScanTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86A2EC968D79E6EEE4B1F1B8 /* AccessibilityActionScanTests.swift */; };
 		E8D0037F00784F3AF2FC9B6B /* ShellTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDB7EA5A81A91D86F79290E0 /* ShellTab.swift */; };
 		EA7FE99629C59ACEF34275DD /* Localizable.stringsdict in Resources */ = {isa = PBXBuildFile; fileRef = 998C891A4897F219A5F71B6F /* Localizable.stringsdict */; };
 		EAA63FA049BB304EFA9175B9 /* APIClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8391C8D32C72F9BA4984888 /* APIClientTests.swift */; };
@@ -401,6 +402,7 @@
 		846D324A474DC86FFFE7DCA4 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
 		847E52D455D7AB6D24D2755D /* SyncSectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncSectionView.swift; sourceTree = "<group>"; };
 		852A60877722860C48D934FE /* StoreServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreServiceTests.swift; sourceTree = "<group>"; };
+		86A2EC968D79E6EEE4B1F1B8 /* AccessibilityActionScanTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityActionScanTests.swift; sourceTree = "<group>"; };
 		87EBFD93F5E7421D2855B6A1 /* AuthServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthServiceTests.swift; sourceTree = "<group>"; };
 		8835383E3F4F875072106E6C /* StatsCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatsCache.swift; sourceTree = "<group>"; };
 		8F7762020997DD0185475C26 /* StrideWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrideWidget.swift; sourceTree = "<group>"; };
@@ -648,6 +650,7 @@
 		CD0F1E1CDEF1208B88573BE0 /* StrideTests */ = {
 			isa = PBXGroup;
 			children = (
+				86A2EC968D79E6EEE4B1F1B8 /* AccessibilityActionScanTests.swift */,
 				0DA2E26F53AB0CCF80DEBF10 /* ColorExtensionTests.swift */,
 				1F8FF4E330322A974AB7AE18 /* CountHabitTests.swift */,
 				0F6E7BB05532EC926C50A57F /* DataBackupTests.swift */,
@@ -1041,6 +1044,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E84BC6E6EDB22B0C6D1A2E85 /* AccessibilityActionScanTests.swift in Sources */,
 				69D5CC204585B265C0AD972B /* ColorExtension.swift in Sources */,
 				A20337D9BCFEFE5B29C78296 /* ColorExtensionTests.swift in Sources */,
 				F8E631103B145331AD1AC986 /* CountHabitTests.swift in Sources */,

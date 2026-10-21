@@ -117,6 +117,12 @@ struct StatsView: View {
                                             shell.statsHabitID = habit.id
                                         }
                                     }
+                                    // .onTapGesture is not the element's activation: without this,
+                                    // VoiceOver and Full Keyboard Access (AXPress on the Mac) find a
+                                    // button that does nothing (gate 10, 2026-10-20).
+                                    .accessibilityAction {
+                                        withAnimation { shell.statsHabitID = habit.id }
+                                    }
                                 }
                             }
                             .padding(.horizontal)
