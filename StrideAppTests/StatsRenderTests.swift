@@ -83,6 +83,31 @@ final class StatsRenderTests: XCTestCase {
         Dictionary(uniqueKeysWithValues: range.map { ($0, value) })
     }
 
+    /// A fixed day-key in 2026, for the cards whose words depend on the day of the week.
+    private static func key(_ month: Int, _ day: Int) -> Date {
+        HabitCalendar.utc.date(from: DateComponents(year: 2026, month: month, day: day))!
+    }
+
+    /// `count` day-keys from `first`, `every` days apart.
+    private static func keys(from first: Date, count: Int, every step: Int = 1) -> [Date] {
+        (0..<count).map { HabitCalendar.utc.date(byAdding: .day, value: $0 * step, to: first)! }
+    }
+
+    /// A yes/no habit created on the day-key `created`, checked in on each of `checkedIn`, saved.
+    private func habit(_ name: String, created: Date, checkedIn: [Date]) throws -> Habit {
+        let habit = Habit(name: name)
+        habit.createdAt = created
+        context.insert(habit)
+        habit.records = checkedIn.map { HabitRecord(date: $0) }
+        try context.save()
+        return habit
+    }
+
+    /// `habit`'s stats as of the day-key `today`, in UTC: a card's words on a fixed day.
+    private func stats(_ habit: Habit, today: Date) -> HabitStats {
+        HabitStats(habit: habit, live: HabitStats.liveRecords(of: habit), calendar: HabitCalendar.utc, today: today)
+    }
+
     /// The app's commit over this test's store and cache: no tombstones, effects or Sentry reach
     /// the host app.
     private var commitEnvironment: HabitEntryCommit.Environment {
@@ -252,6 +277,71 @@ final class StatsRenderTests: XCTestCase {
         let dateLabel = Date().formatted(.dateTime.weekday(.wide).month().day().locale(appLocale))
         let cellLabels: Set = [appLocalized("\(dateLabel), completed"), appLocalized("\(dateLabel), not completed")]
         XCTAssertEqual(elements(in: window) { cellLabels.contains($0.accessibilityLabel ?? "") }.count, 0)
+    }
+
+    // MARK: - The Pro cards' words (2026-10-22)
+
+    /// The 8-week Trend as VoiceOver reads it, over fixed days (2026-06-01 is a Monday): a habit
+    /// created Thursday 07-02, done through 07-05, missed the week of 07-06, done 07-13 to 07-19,
+    /// on Monday 07-20 before the check-in. The four weeks before it existed are "Not started",
+    /// its weeks their percents (the missed one 0%), and this week, nothing counted yet, its date
+    /// alone. TrendCard's own wiring: StatsInsightsTests pin `countedRate` and `endsBeforeStart`,
+    /// and stay green if the card goes back to `completionRate(from:to:)` (pre-start weeks 0%) or
+    /// to "Not started" for every week without a rate (this week too, review of bab8acf).
+    func testTheTrendReadsOnlyTheWeeksBeforeAHabitAsNotStarted() async throws {
+        let created = Self.key(7, 2)
+        let walk = try habit("Walk", created: created,
+                             checkedIn: Self.keys(from: created, count: 4) + Self.keys(from: Self.key(7, 13), count: 7))
+        let window = try host(TrendCard(habit: walk, stats: stats(walk, today: Self.key(7, 20))))
+
+        let spoken = StatsWeeks.spoken
+        let labels = Self.keys(from: Self.key(6, 1), count: 8, every: 7).map { appLocalized("Week of \($0.formatted(spoken))") }
+        let notStarted = appLocalized("Not started")
+        var values: [String] = []
+        try await waitUntil("the Trend's eight weeks") {
+            let weeks = labels.compactMap { label in self.elements(in: window) { $0.accessibilityLabel == label }.first }
+            values = weeks.map { $0.accessibilityValue ?? "" }
+            return weeks.count == labels.count
+        }
+        XCTAssertEqual(values, [notStarted, notStarted, notStarted, notStarted, "100%", "0%", "100%", ""])
+    }
+
+    /// Insights for a user who never misses, on Monday 06-01 before the check-in: no strongest or
+    /// toughest day and no momentum, so the card draws nothing. a146384 said "Toughest on Sunday",
+    /// a Strongest day from a Dictionary's order and "Down vs last week (100% → 0%)" here. The same
+    /// user on Wednesday 06-03 with Tuesday missed is told so: Toughest on Tuesday, 100% → 50%.
+    ///
+    /// Weekly Review is not hosted here: it reads `Date()` through `StatsCache.shared`, so no test
+    /// can pin it to a Monday. Its numbers are `StatsInsights.weeklyReview` over
+    /// `HabitStats.thisWeekRate` and `lastWeekRate`, which StatsInsightsTests pin host-less.
+    func testInsightsSayNothingToAUserWhoNeverMisses() async throws {
+        let created = Self.key(5, 1)
+        let may = Self.keys(from: created, count: 31)
+        let never = try habit("Read", created: created, checkedIn: may)
+        let marker = "test.insights.marker"
+        func card(_ habit: Habit, today: Date) -> some View {
+            VStack {
+                Text(verbatim: marker)
+                InsightsCard(habit: habit, stats: stats(habit, today: today))
+            }
+        }
+        let window = try host(card(never, today: Self.key(6, 1)))
+        var labels: [String] = []
+        try await waitUntil("the card's render") {
+            labels = self.elements(in: window) { _ in true }.compactMap(\.accessibilityLabel)
+            return labels.contains(marker)
+        }
+        XCTAssertEqual(labels, [marker], "the card draws nothing")
+
+        let missed = try habit("Run", created: created, checkedIn: may + [Self.key(6, 1)])
+        window.rootViewController = hostingController(card(missed, today: Self.key(6, 3)))
+        let toughest = appLocalized("Toughest on \(appCalendar.weekdaySymbols[2])")
+        let down = appLocalized("Down vs last week (\("100%") → \("50%"))")
+        try await waitUntil("Toughest on Tuesday") {
+            labels = self.elements(in: window) { _ in true }.compactMap(\.accessibilityLabel)
+            return labels.contains(toughest)
+        }
+        XCTAssertEqual(Set(labels), [marker, appLocalized("Insights"), toughest, down])
     }
 
     // MARK: - The detail card's header (W3-1, W3-A11Y-1)

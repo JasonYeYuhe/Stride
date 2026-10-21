@@ -818,6 +818,12 @@ about 2 agent-days from branch cut to iOS submission (2026-10-10 to 2026-10-11, 
   - an **[owner]** go for each `--yes`; read back with `list`.
 - [ ] **[owner]** Review notes: D11's Pro list, and where to find Strength and History (Statistics
   → a habit → Edit history).
+- [ ] **[owner]** Privacy page published before submission: stride-site's privacy page gets
+  docs/privacy.html's three 1.4.1 error reports (a save that fails: check-in/History, template,
+  habit delete; the Pro options failing to load; a purchase that fails, not a cancel), dated
+  October 22, 2026, and is verified live, as 1.3.1's was (RELEASE-1.3.1.md). The page lists
+  exactly what the app sends Sentry, so these captures do not ship before it says so
+  (SyncService.logDiagnostic holds its own back for that reason; review of 830a551, 2026-10-22).
 - [ ] **[owner]** `release.py finish 1.4.1 <build> --platform IOS` first. Mac follows only after gate
   10 passes, with its owner sitting done: `finish 1.4.1 <build> --platform MAC_OS`. Each platform
   needs its own go.

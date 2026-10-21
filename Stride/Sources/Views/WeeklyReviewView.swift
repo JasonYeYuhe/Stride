@@ -7,58 +7,39 @@ struct WeeklyReviewView: View {
            sort: \Habit.sortOrder)
     private var habits: [Habit]
 
-    private let calendar = Calendar.current
-
-    private var weekRange: (start: Date, end: Date) {
-        let today = calendar.startOfDay(for: Date())
-        let weekday = calendar.component(.weekday, from: today)
-        let daysBack = weekday == 1 ? 6 : weekday - 2 // Monday start
-        let start = calendar.date(byAdding: .day, value: -daysBack, to: today)!
-        return (start, today)
-    }
-
-    private var lastWeekRange: (start: Date, end: Date) {
-        let start = calendar.date(byAdding: .day, value: -7, to: weekRange.start)!
-        let end = calendar.date(byAdding: .day, value: -1, to: weekRange.start)!
-        return (start, end)
-    }
-
     /// Every rate the review shows, from ONE `HabitStats` per habit (StatsCache) for the whole
-    /// render. The rates are the model's rule (`completionRate(from:to:)`). The local version
+    /// render. The rates are the model's rule (`countedRate(ofWeekStarting:)`). The local version
     /// divided a raw count of records by elapsed calendar days, ignoring the schedule and count
     /// targets, so on a Sunday "Gym — Mon/Wed/Fri" done on all three days scored 43% and was
     /// tagged "Needs work", while "Water — 8 glasses" with one glass a day scored 100% and was
     /// crowned "Best".
     ///
+    /// This week ends yesterday until today is done (`HabitStats.thisWeekRate`), as Insights'
+    /// momentum: counted as a miss, today made every Monday before the check-in 0% and "Down 100%
+    /// vs last week". What the numbers may say — a rate only with something to count, a Best and
+    /// Needs work only when alone — is `StatsInsights.weeklyReview` (2026-10-22).
+    ///
     /// Built once per render and never kept (W1's carried "per-call wrapper cost"): through the
     /// `Habit` wrappers the body asked about 11 rates per habit, each building its own
     /// `HabitStats` with a store query — ~270 ms for 10 habits × 730 records.
     private struct Summary {
-        /// This week's rate of each habit, in `habits`' order.
-        let rates: [Double]
-        let overall: Double
-        let lastWeekOverall: Double
+        /// This week's rate of each habit, in `habits`' order; nil: nothing to count yet.
+        let rates: [Double?]
+        let overall: Double?
+        let change: Double?
         let best: Habit?
         let needsWork: Habit?
     }
 
     private func summary() -> Summary {
         let stats = StatsCache.shared.stats(for: habits)
-        let week = weekRange, lastWeek = lastWeekRange
-        let rates = stats.map { $0.completionRate(from: week.start, to: week.end) }
-        let lastRates = stats.map { $0.completionRate(from: lastWeek.start, to: lastWeek.end) }
-        // As `max(by:)` / `min(by:)` over the habits picked them: the first of equal rates.
-        var best: Int?, worst: Int?
-        for (index, rate) in rates.enumerated() {
-            if best.map({ rates[$0] < rate }) ?? true { best = index }
-            if worst.map({ rate < rates[$0] }) ?? true { worst = index }
-        }
-        let count = Double(max(1, habits.count))
-        return Summary(rates: rates,
-                       overall: rates.reduce(0, +) / count,
-                       lastWeekOverall: lastRates.reduce(0, +) / count,
-                       best: best.map { habits[$0] },
-                       needsWork: worst.map { habits[$0] })
+        let review = StatsInsights.weeklyReview(thisWeek: stats.map(\.thisWeekRate),
+                                                lastWeek: stats.map(\.lastWeekRate))
+        return Summary(rates: review.rates,
+                       overall: review.overall,
+                       change: review.change,
+                       best: review.best.map { habits[$0] },
+                       needsWork: review.needsWork.map { habits[$0] })
     }
 
     var body: some View {
@@ -81,6 +62,11 @@ struct WeeklyReviewView: View {
                 }
             }
         }
+        #if os(macOS)
+        // A ScrollView has no ideal height, and a Mac sheet sized to it is a sliver: Stats' toolbar
+        // button and View → Weekly Review both open it (sheet audit, 2026-10-22).
+        .frame(minWidth: 420, idealWidth: 480, minHeight: 520)
+        #endif
     }
 
     // Stats hides its Weekly Review button when there are no habits, but this sheet can still
@@ -116,10 +102,10 @@ struct WeeklyReviewView: View {
                     // with the detail — further down; its number is already about 1.5x body there.
                     .dynamicTypeSize(...DynamicTypeSize.accessibility2)
                     .accessibilityElement(children: .ignore)
-                .accessibilityLabel("This week, \(Int(summary.overall * 100)) percent complete")
+                    // Nothing to count yet: the caption alone, as the dash shows nothing more.
+                    .accessibilityLabel(summary.overall.map { Text("This week, \(Int($0 * 100)) percent complete") } ?? Text("This Week"))
 
-                let diff = summary.overall - summary.lastWeekOverall
-                if abs(diff) > 0.01 {
+                if let diff = summary.change {
                     HStack(spacing: 4) {
                         Image(systemName: diff > 0 ? "arrow.up.right" : "arrow.down.right")
                             .font(.caption.bold())
@@ -153,32 +139,46 @@ struct WeeklyReviewView: View {
                             Text(habit.name)
                                 .font(.subheadline.weight(.medium))
 
+                            // Nothing to count yet (Monday before the check-in, or nothing due so
+                            // far): no bar and a dash, never an empty bar that reads as 0%.
                             GeometryReader { geo in
-                                ZStack(alignment: .leading) {
-                                    RoundedRectangle(cornerRadius: 4)
-                                        .fill(Color.green.opacity(0.15))
-                                        .frame(height: 8)
-                                    RoundedRectangle(cornerRadius: 4)
-                                        .fill(habit.color)
-                                        .frame(width: geo.size.width * rate, height: 8)
+                                if let rate {
+                                    ZStack(alignment: .leading) {
+                                        RoundedRectangle(cornerRadius: 4)
+                                            .fill(Color.green.opacity(0.15))
+                                            .frame(height: 8)
+                                        RoundedRectangle(cornerRadius: 4)
+                                            .fill(habit.color)
+                                            .frame(width: geo.size.width * rate, height: 8)
+                                    }
                                 }
                             }
                             .frame(height: 8)
                         }
 
-                        Text("\(Int(rate * 100))%")
-                            .font(.subheadline.bold())
-                            .foregroundStyle(.secondary)
-                            .frame(width: 40, alignment: .trailing)
+                        Group {
+                            if let rate {
+                                Text("\(Int(rate * 100))%")
+                            } else {
+                                Text(verbatim: "–")
+                            }
+                        }
+                        .font(.subheadline.bold())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .trailing)
                     }
                     .padding(.horizontal)
                     .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("\(habit.emoji) \(habit.name), \(Int(rate * 100)) percent")
+                    // Without a rate, the name alone, as the dash: "Not started" was spoken here too,
+                    // for a habit with months of history on any Monday before its check-in (review
+                    // of bab8acf, 2026-10-22). This week never lies before a habit's start.
+                    .accessibilityLabel(rate.map { Text("\(habit.emoji) \(habit.name), \(Int($0 * 100)) percent") }
+                                        ?? Text(verbatim: "\(habit.emoji) \(habit.name)"))
                 }
             }
 
-            // Highlights
-            if habits.count >= 2 {
+            // Highlights: only a habit alone at the top or the bottom (StatsInsights.weeklyReview).
+            if summary.best != nil || summary.needsWork != nil {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Highlights")
                         .font(.headline)
@@ -224,7 +224,8 @@ struct WeeklyReviewView: View {
 /// environment the scaled metrics read; on `WeeklyReviewView` itself they would read the
 /// uncapped size.
 private struct WeeklyRateRing: View {
-    let rate: Double
+    /// Nil: nothing to count yet this week — an empty ring and a dash, not 0%.
+    let rate: Double?
     @ScaledMetric(relativeTo: .largeTitle) private var diameter: CGFloat = 120
     @ScaledMetric(relativeTo: .largeTitle) private var numberSize: CGFloat = 36
 
@@ -233,14 +234,20 @@ private struct WeeklyRateRing: View {
             Circle()
                 .stroke(Color.green.opacity(0.2), lineWidth: 12)
             Circle()
-                .trim(from: 0, to: rate)
+                .trim(from: 0, to: rate ?? 0)
                 .stroke(Color.green, style: StrokeStyle(lineWidth: 12, lineCap: .round))
                 .rotationEffect(.degrees(-90))
                 .animation(.easeInOut(duration: 0.6), value: rate)
 
             VStack(spacing: 2) {
-                Text("\(Int(rate * 100))%")
-                    .font(.system(size: numberSize, weight: .bold, design: .rounded))
+                Group {
+                    if let rate {
+                        Text("\(Int(rate * 100))%")
+                    } else {
+                        Text(verbatim: "–")
+                    }
+                }
+                .font(.system(size: numberSize, weight: .bold, design: .rounded))
                 Text("This Week")
                     .font(.caption)
                     .foregroundStyle(.secondary)

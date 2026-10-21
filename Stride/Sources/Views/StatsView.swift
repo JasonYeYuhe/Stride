@@ -769,18 +769,25 @@ struct TrendCard: View {
         let label: String
         /// Spoken instead of `label` (StatsWeeks.spoken).
         let spokenDate: String
-        let rate: Double
+        /// Nil: nothing of the week to count (`HabitStats.countedRate`) — before the habit
+        /// started, or this week before anything is due or done. Drawn as no bar and no number,
+        /// where it was a grey bar marked 0 like a missed week (2026-10-22).
+        let rate: Double?
+        /// The week ended before the habit existed (`HabitStats.endsBeforeStart`): only then is a
+        /// week without a rate "Not started" to VoiceOver.
+        let beforeStart: Bool
     }
 
     private var points: [WeekPoint] {
         let spoken = StatsWeeks.spoken
         return StatsWeeks.mondays(endingWithWeekOf: stats.today).map { start in
-            let end = start.addingTimeInterval(6 * 86_400)
-            return WeekPoint(
+            WeekPoint(
                 id: start,
                 label: StatsWeeks.label.string(from: start),
                 spokenDate: start.formatted(spoken),
-                rate: stats.completionRate(from: start, to: end)
+                // This week counts today once it is done, as Insights' momentum does.
+                rate: stats.countedRate(ofWeekStarting: start),
+                beforeStart: stats.endsBeforeStart(weekStarting: start)
             )
         }
     }
@@ -799,7 +806,6 @@ struct TrendCard: View {
                 : AnyLayout(HStackLayout(alignment: .bottom, spacing: 6))
             layout {
                 ForEach(points) { point in
-                    let fill = point.rate > 0 ? habit.color.opacity(0.4 + 0.6 * point.rate) : Color.gray.opacity(0.2)
                     Group {
                         if rows {
                             VStack(alignment: .leading, spacing: 4) {
@@ -807,20 +813,28 @@ struct TrendCard: View {
                                     Text(point.label)
                                         .scaledSystemFont(size: 8)
                                     Spacer()
-                                    Text("\(Int(point.rate * 100))")
-                                        .scaledSystemFont(size: 9)
+                                    if let rate = point.rate {
+                                        Text("\(Int(rate * 100))")
+                                            .scaledSystemFont(size: 9)
+                                    }
                                 }
                                 .foregroundStyle(.secondary)
-                                HorizontalBar(fraction: point.rate, fill: fill)
+                                if let rate = point.rate {
+                                    HorizontalBar(fraction: rate, fill: fill(rate))
+                                }
                             }
                         } else {
                             VStack(spacing: 4) {
-                                Text("\(Int(point.rate * 100))")
-                                    .scaledSystemFont(size: 9)
-                                    .foregroundStyle(.secondary)
-                                RoundedRectangle(cornerRadius: 4)
-                                    .fill(fill)
-                                    .frame(height: max(4, CGFloat(point.rate) * 80))
+                                // The column is bottom-aligned: a week with no rate keeps only its
+                                // date, under an empty slot.
+                                if let rate = point.rate {
+                                    Text("\(Int(rate * 100))")
+                                        .scaledSystemFont(size: 9)
+                                        .foregroundStyle(.secondary)
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(fill(rate))
+                                        .frame(height: max(4, CGFloat(rate) * 80))
+                                }
                                 Text(point.label)
                                     .scaledSystemFont(size: 8)
                                     .foregroundStyle(.secondary)
@@ -835,7 +849,10 @@ struct TrendCard: View {
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Week of \(point.spokenDate)")
                     // The bar's own label truncates; rounding here would speak a different number.
-                    .accessibilityValue(Text(verbatim: "\(Int(point.rate * 100))%"))
+                    // A week the habit has begun with nothing counted yet says only its date, as
+                    // its empty slot: "Not started" was false for it (review of bab8acf, 2026-10-22).
+                    .accessibilityValue(point.rate.map { Text(verbatim: "\(Int($0 * 100))%") }
+                                        ?? (point.beforeStart ? Text("Not started") : Text(verbatim: "")))
                 }
             }
             // The tallest bar is 80 pt; the rest is the two labels, so only that part scales.
@@ -844,61 +861,49 @@ struct TrendCard: View {
         .padding()
         .background(RoundedRectangle(cornerRadius: 16).fill(Color.appSecondaryBackground))
     }
+
+    private func fill(_ rate: Double) -> Color {
+        rate > 0 ? habit.color.opacity(0.4 + 0.6 * rate) : Color.gray.opacity(0.2)
+    }
 }
 
 // MARK: - Insights (best/worst day, momentum)
 struct InsightsCard: View {
     let habit: Habit
-    /// This render's stats (StatsView): the weekday counts and both rates read one HabitStats
+    /// This render's stats (StatsView): the weekday tallies and both weeks read one HabitStats
     /// instead of building three.
     let stats: HabitStats
-    private let utc = HabitCalendar.utc
 
     // LocalizedStringKey, not String: a String reaches Text() as verbatim content, so these rows
     // rendered in English in every language. Each phrase is built whole so it is one key.
     private var insights: [(icon: String, text: LocalizedStringKey)] {
         var out: [(String, LocalizedStringKey)] = []
         let symbols = appCalendar.weekdaySymbols // index 0 = Sunday
-        let counts = stats.completionsPerWeekday     // keys 1...7
 
-        if let best = counts.max(by: { $0.value < $1.value }), best.value > 0 {
-            out.append(("star.fill", "Strongest on \(symbols[best.key - 1])"))
+        // A day only when its rate stands alone, and never for times-per-week
+        // (StatsInsights.weekdayExtremes): the first of equal counts was "Toughest on Sunday" for a
+        // user who never misses, and the strongest day changed between launches (2026-10-22).
+        let days = StatsInsights.weekdayExtremes(stats.weekdayTallies, schedule: stats.schedule,
+                                                 activeDaysMask: stats.activeDaysMask)
+        if let best = days.strongest {
+            out.append(("star.fill", "Strongest on \(symbols[best - 1])"))
         }
-        // Toughest = scheduled weekday with the fewest completions
-        let scheduledWeekdays = (1...7).filter { weekdayScheduled($0) }
-        if scheduledWeekdays.count > 1,
-           let worst = scheduledWeekdays.min(by: { (counts[$0] ?? 0) < (counts[$1] ?? 0) }) {
+        if let worst = days.toughest {
             out.append(("exclamationmark.triangle", "Toughest on \(symbols[worst - 1])"))
         }
 
-        // Momentum: this week vs last week
-        let todayKey = stats.today
-        let weekday = utc.component(.weekday, from: todayKey)
-        let daysFromMonday = (weekday + 5) % 7
-        if let thisStart = utc.date(byAdding: .day, value: -daysFromMonday, to: todayKey),
-           let lastStart = utc.date(byAdding: .day, value: -7, to: thisStart),
-           let lastEnd = utc.date(byAdding: .day, value: -1, to: thisStart) {
-            let thisRate = stats.completionRate(from: thisStart, to: todayKey)
-            let lastRate = stats.completionRate(from: lastStart, to: lastEnd)
-            if lastRate > 0 || thisRate > 0 {
-                // Formatted outside the key so the key carries no literal "%" to escape.
-                let was = "\(Int(lastRate*100))%"
-                let now = "\(Int(thisRate*100))%"
-                if thisRate >= lastRate {
-                    out.append(("arrow.up.right", "Up vs last week (\(was) → \(now))"))
-                } else {
-                    out.append(("arrow.down.right", "Down vs last week (\(was) → \(now))"))
-                }
+        // Momentum: this week so far (an unfinished today is not a miss yet) vs last week.
+        if let momentum = StatsInsights.momentum(thisWeek: stats.thisWeekRate, lastWeek: stats.lastWeekRate) {
+            // Formatted outside the key so the key carries no literal "%" to escape.
+            let was = "\(momentum.was)%"
+            let now = "\(momentum.now)%"
+            if momentum.isUp {
+                out.append(("arrow.up.right", "Up vs last week (\(was) → \(now))"))
+            } else {
+                out.append(("arrow.down.right", "Down vs last week (\(was) → \(now))"))
             }
         }
         return out
-    }
-
-    private func weekdayScheduled(_ weekday: Int) -> Bool {
-        switch habit.schedule {
-        case .daily, .timesPerWeek: return true
-        case .specificDays: return (habit.activeDaysMask & (1 << (weekday - 1))) != 0
-        }
     }
 
     var body: some View {
