@@ -1003,6 +1003,31 @@ go per action.
     "stored before the guard", plus a new K4 for the guarded path (held rows re-keyed in place).
   - **Q5a**: the pre-existing Today crash risk (another context deleting a whole habit while Today
     shows it; no production path does this) is accepted for 1.4.1.
+  - **P4 / gate 10.4, first sitting** (owner granted computer use on the variant only; background
+    control, then the console locked, so the keyboard items wait for a second sitting):
+    - 7 (menus): File = New Habit, Sync Now, Export Backup…, Export as CSV… (no New Window); View =
+      Today, Statistics, Weekly Review; Window → Stride. Pass. Shortcut glyphs and the disabled
+      state with Settings key are not readable from the background: open.
+    - 9: Weekly Review before Statistics was ever opened shows the paywall (free); Close; it reopens.
+      Pass. Esc: open (a keystroke).
+    - 6: the picked day (Sun 18) and the Statistics chip survive ⌘1/⌘2 (via View); one toolbar per
+      tab (Today: New Habit; Statistics: Weekly Review). Pass after the fix below.
+    - 13: ⌘, opens a window titled Settings, 900×552; the paywall sheet from it fits (scrolls) and
+      closes. Pass. Free tier: Upgrade + Restore; Redeem hidden (no offer code). Pass.
+    - 1: the export panel opens as a sheet on the Settings window; Cancel leaves no file in
+      `…mactest/Data/tmp` (only the system's empty TemporaryItems). Pass. "Lands where chosen": open
+      (the out-of-process panel takes no background clicks; only ~/Documents, iCloud, was reachable).
+    - gate 10.4 (local): a heatmap click opens History; tick, untick, re-tick Oct 16: one record
+      (sqlite on the variant store), and Statistics updates in the same render. Pass.
+    - **Found and fixed (eccdd49):** Statistics' habit chips did nothing under AXPress, the action
+      VoiceOver and Full Keyboard Access use on the Mac: `.onTapGesture` + `.isButton` with no
+      `.accessibilityAction`. Fixed and verified on a rebuilt variant;
+      AccessibilityActionScanTests now fails any `.onTapGesture` without an action.
+    - The paywall's products never load in the Debug variant (its bundle id has no products): a
+      spinner, then "Unable to load subscription options" + Try Again. Expected for the variant.
+    - Left for the second sitting (keyboard or screen needed): 1 (destination), 2, 3, 4, 5, 7
+      (glyphs, Settings-key state), 8, 9 (Esc), 10, 11, 12; gate 10.4's VoiceOver/FKA pass, the
+      narrow width, and "a History edit syncs to iPhone B".
   - **P3b** Mac candidates captured at 2880×1800, 12 in dark and light
     (build/store-screenshots/1.4.1/mac/candidates, contact_sheet.png). Default pick 01–04: light
     Today (details), light Statistics heatmap, light History, dark Today (the live listing also
