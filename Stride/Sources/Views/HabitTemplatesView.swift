@@ -243,6 +243,11 @@ struct HabitTemplatesView: View {
                 Text("Unable to save your habit. Please try again.")
             }
         }
+        #if os(macOS)
+        // A List has no ideal height, and a Mac sheet sized to it showed only the title, the
+        // search field and Cancel: no template at all (live in 1.4.0; gate 10, 2026-10-22).
+        .frame(minWidth: 420, idealWidth: 480, minHeight: 520)
+        #endif
     }
 
     /// A count template's daily goal, "8 glasses a day", in the app's language; nil for yes/no.

@@ -238,6 +238,14 @@ struct AddHabitView: View {
                 guard reminderEnabled else { return }
                 notificationsDenied = await NotificationService.shared.checkPermission() == .denied
             }
+            #if os(macOS)
+            // The Mac's default Form style is .columns: a TextField's title moves into a label
+            // column, the plain field beside it stays invisible until typed in, and the Section
+            // titles land in the content column as loose rows. Grouped is the layout this form is
+            // written for: headers above their boxes, the prompt inside the field (gate 10,
+            // 2026-10-22).
+            .formStyle(.grouped)
+            #endif
             .navigationTitle(isEditing ? "Edit Habit" : "New Habit")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -278,6 +286,10 @@ struct AddHabitView: View {
                 }
             }
         }
+        #if os(macOS)
+        // A grouped Form has no ideal height either; without this the sheet's size is a guess.
+        .frame(minWidth: 460, idealWidth: 520, minHeight: 620)
+        #endif
         .sheet(isPresented: $showingTemplates) {
             // A picked template is the new habit (D15): this sheet closes with the templates
             // sheet, instead of staying up behind it to save a second, hand-made habit.
