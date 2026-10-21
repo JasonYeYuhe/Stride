@@ -1033,6 +1033,56 @@ go per action.
     Today (details), light Statistics heatmap, light History, dark Today (the live listing also
     has 4). The paywall is left out: the Debug variant's products never load (spinner). The Mac
     sidebar has no Settings tab (`-tab 2` shows Today).
+- 2026-10-21, gates while the owner was away (workflow wf_81ac01c3-f52: one run per gate, each
+  checked by an adversarial verifier; evidence in the session scratchpad, gates-1.4.1/):
+  - **Gate 10.1 PASS:** `build-appstore.sh all` without --upload on 0b91a64 (code = eccdd49):
+    both 1.4.1 (23) archives and exports pass verify_archive (C617.1 + 35F9.1 in the app and the
+    widget, Mac sandbox + files.user-selected.read-write, Apple Distribution, no get-task-allow).
+    The 1.4.0 archives were copied to build/appstore-1.4.0-22 first. The script also uploaded the
+    1.4.1 (23) dSYMs to Sentry (stride-apple).
+  - **Gate 7 Mac PASS:** a v1.4.0 variant seeded with -demo, then m4's variant in place: row counts
+    and the model checksum equal before and after, no default.store, the store-open line logged,
+    W10's flag set with nothing to repair, and the real group container unchanged. (The verifier
+    asked only for a saved artefact of the pid stop.)
+  - **X2 on a real upgrade (gate 7, non-Gregorian, PARTIAL):** promax set to ja_JP@calendar=japanese
+    (restored afterwards to en_US). The 1.4.0 (22) build wrote all 63 records at year 0008 (its
+    By Weekday was wrong). After `upgrade.sh` in place (exit 0), the first 1.4.1 launch logged
+    "Day-key repair: 63 found, 63 re-keyed, 0 replaced, …"; every record keeps its id and moves to
+    its real 2026 day; later launches do nothing; Today, Statistics (By Weekday now right) and
+    History ("October 8 Reiwa") are right. The kit server's guard answers a 1.4.0 push of 0008 with
+    invalid_value and a 1.3.0 push with 426. Not run: the signed-in branch (held rows lifted, the
+    server ending with the real days), which needs UI input.
+  - **Blocked: gate 3 (partly) and gate 7 iOS.** The iOS Simulator MCP crashed repeatedly while the
+    host ran at load average 400–1000 with swap nearly full (other sessions' builds plus this
+    archive), then refused every call until the simulator panel is reopened. Done before that, on
+    1.4.1 (23): gate 3 bullet 1 on A (Read 30 Minutes, Edit history, 2026-09-30 ticked: Best 11→20,
+    rate 86→90 %, strength 88→89 and the heatmap cell in the first frame after Done; the server got
+    one row on sync). Still to run: B, untick/re-tick, the iPad leg, the widget leg; gate 7 iOS's 4
+    legs with a widget and --reminders.
+  - Fixed in the kit (f086529): `upgrade.sh --reminders` refused a correct 1.4.0 starting point (it
+    demanded 1.3.x's bare id for the Mon/Wed/Fri habit). Selftest 114/0.
+  - DayKeyRepair now logs "nothing to repair" (a0f9cd0), so a Gregorian upgrade's log shows the
+    pass ran.
+  - **W9 merged (63d090e):** WHATS_NEW_BY_VERSION["1.4.1"] ×6 (Strength; fix past days from Edit
+    history or a heatmap day, and notes on checked days in History — notes themselves are not new;
+    Pro adds the strength chart and top 5 streaks; the W10 calendar fix, with iOS Settings' own
+    calendar names), verbs that fit the Mac too; store descriptions use the app's names (ja, ko,
+    zh-Hans, es-ES "De por vida"); the es-ES subtitle fits 30; docs/review-notes-1.4.1.md. Two
+    reviewers (claims, language) raised 12 findings; 11 applied, 1 left for the owner.
+    test_release.py 17/17; LocalizationSourceScanTests + LocalizationCatalogTests pass.
+  - **Gate 5, ASC read-back (read-only, 25 GETs):** the subscriptions' 6 localizations each are
+    APPROVED and match setup_iap.py. Open for the owner:
+    - Yearly's ASC description says "save 44%" in every language. True in USD (19.99 vs 12×2.99);
+      EUR 35 %, TWD 36 %, CNY/HKD 43 %, JPY 50 %, KRW 45 %. The app's paywall computes the figure
+      from the live prices, so only the ASC text is off.
+    - The Lifetime IAP has only an en-US localization, and its description omits Weekly Review
+      (D11).
+    - The live app name is "Stride - Habit Tracker" in every locale with no subtitle:
+      metadata/<locale>/name.txt and subtitle.txt have never been pushed (`--app-info`).
+    - The promotional text advertises widgets on the Mac record too (push_metadata.py writes the
+      same files to both platforms).
+    - Should What's New also name the Description field, Settings' plan rows (D12), templates with
+      target and unit?
 - 2026-10-16, wave B merged (W7 c39d4d8, W6 a094ca2, D11 172fdab); 8 review findings confirmed and
   fixed, 2 refuted.
   - W6: templates carry kind, target and unit. A failed add says so. A pick closes New Habit too:
