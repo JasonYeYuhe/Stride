@@ -81,6 +81,11 @@ struct WeeklyReviewView: View {
                 }
             }
         }
+        #if os(macOS)
+        // A ScrollView has no ideal height, and a Mac sheet sized to it is a sliver: Stats' toolbar
+        // button and View → Weekly Review both open it (sheet audit, 2026-10-22).
+        .frame(minWidth: 420, idealWidth: 480, minHeight: 520)
+        #endif
     }
 
     // Stats hides its Weekly Review button when there are no habits, but this sheet can still

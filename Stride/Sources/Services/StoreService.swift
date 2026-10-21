@@ -561,6 +561,12 @@ struct ProPaywallView: View {
                 }
             }
         }
+        #if os(macOS)
+        // A ScrollView has no ideal height, and a Mac sheet sized to it is a sliver. Here, not at
+        // the call sites: Stats, Weekly Review's menu item, New Habit's groups and Settings all
+        // present it (sheet audit, 2026-10-22). History's size; the legal lines scroll.
+        .frame(minWidth: 460, idealWidth: 520, minHeight: 620)
+        #endif
     }
 
     /// "SAVE 44%": the interpolation is typed as a LocalizedStringKey here, outside the ternary
