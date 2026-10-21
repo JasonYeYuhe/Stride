@@ -37,7 +37,7 @@ The demo account has eight habits with about three months of check-ins.
 
 New in 1.4.1:
 - Strength: open Statistics (the Stats tab on iPhone), pick a habit, and see the Strength tile on its card.
-- History: on the same card, tap Edit history, or tap a day on the habit's heatmap. Pick a past day to check it in or out, change a count, or add a note.
+- History: on the same card, tap Edit history, or tap a day on the habit's heatmap. Pick a past day to check it in or out or change a count; once a day has a check-in, you can add a note to it.
 
 Stride Pro (monthly, yearly, or a one-time Lifetime purchase) adds three things: Habit Groups; Advanced Analytics (Insights, the 8-week Trend chart, the Strength chart and your top 5 streaks); and Weekly Review. Everything else is free, including the Strength score and History. The paywall is under Settings > Upgrade to Pro, or Unlock with Pro on the Advanced Analytics card in Statistics.
 ```
@@ -56,7 +56,7 @@ The demo account has eight habits with about three months of check-ins.
 
 New in 1.4.1:
 - Strength: choose Statistics in the sidebar, pick a habit, and see the Strength tile on its card.
-- History: on the same card, click Edit history, or click a day on the habit's heatmap. Pick a past day to check it in or out, change a count, or add a note.
+- History: on the same card, click Edit history, or click a day on the habit's heatmap. Pick a past day to check it in or out or change a count; once a day has a check-in, you can add a note to it.
 
 Stride Pro (monthly, yearly, or a one-time Lifetime purchase) adds three things: Habit Groups; Advanced Analytics (Insights, the 8-week Trend chart, the Strength chart and your top 5 streaks); and Weekly Review. Everything else is free, including the Strength score and History. The paywall is in Stride > Settings… under Upgrade to Pro, or Unlock with Pro on the Advanced Analytics card in Statistics.
 ```

@@ -399,30 +399,32 @@ WHATS_NEW_BY_VERSION = {
   # adds or changes the note of any day with a check-in. Pro: StrengthCard and BestStreaksCard.
   # Last line: W10 (docs/X2-non-gregorian-day-keys.md section 8). Each locale uses its catalog's
   # words (Shared/<lang>.lproj/Localizable.strings: Strength, History, Edit history, Statistics,
-  # Your Top 5 Streaks). No sign-in sentence (W9).
+  # Your Top 5 Streaks). No sign-in sentence (W9). ensure_localizations sends this to the Mac
+  # record too, so the verbs fit both (choose, not tap). The calendar names are iOS Settings'
+  # own (Language & Region > Calendar).
   "1.4.1": {
     "en-US": "• Strength: a 0–100 score for each habit that rewards consistency and recovers after a missed day. Find it on the habit’s card in Statistics.\n"
-             "• Fix past days in your history: in Statistics, tap Edit history on a habit, or tap a day on its heatmap. In History you can also add or change the note on any day you checked in.\n"
+             "• Fix past days in your history: in Statistics, choose Edit history on a habit, or choose a day on its heatmap. In History you can also add or change the note on any day you checked in.\n"
              "• Stride Pro adds a strength chart and your top 5 streaks.\n"
              "• On a device set to a non-Gregorian calendar, such as Japanese or Buddhist, check-ins were saved under the wrong date. They are now saved under the right one, and the ones already saved are moved to the right day.",
     "zh-Hans": "• 习惯强度：用 0–100 的分数衡量每个习惯，坚持越久分数越高，错过一天后也会回升。可以在「统计」的习惯卡片上查看。\n"
-               "• 可以在历史记录里修正过去的日子：在「统计」中轻点习惯的「编辑历史记录」，或轻点热力图上的某一天。在历史记录中，还可以为任何一个已打卡的日子添加或修改备注。\n"
+               "• 可以在历史记录里修正过去的日子：在「统计」中选择习惯的「编辑历史记录」，或选择热力图上的某一天。在历史记录中，还可以为任何一个已打卡的日子添加或修改备注。\n"
                "• Stride Pro 新增习惯强度图表和连续记录前 5 名。\n"
-               "• 在设置为日本历、佛历等非公历日历的设备上，打卡曾被保存到错误的日期。现在会保存到正确的日期，已经保存的打卡也会移回正确的那一天。",
+               "• 在日历设置为日本日历、佛教日历等非公历日历的设备上，打卡曾被保存到错误的日期。现在会保存到正确的日期，已经保存的打卡也会移回正确的那一天。",
     "zh-Hant": "• 習慣強度：用 0–100 的分數衡量每個習慣，越持之以恆分數越高，錯過一天後也會回升。可以在「統計」的習慣卡片上查看。\n"
-               "• 可以在歷史紀錄中修正過去的日子：在「統計」中點一下習慣的「編輯歷史紀錄」，或點一下熱力圖上的某一天。在歷史紀錄中，也可以為任何一個已打卡的日子新增或修改備註。\n"
+               "• 可以在歷史紀錄中修正過去的日子：在「統計」中選擇習慣的「編輯歷史紀錄」，或選擇熱力圖上的某一天。在歷史紀錄中，也可以為任何一個已打卡的日子新增或修改備註。\n"
                "• Stride Pro 新增習慣強度圖表和連續紀錄前 5 名。\n"
                "• 在設定為民國曆、日本曆或佛曆等非公曆曆法的裝置上，打卡曾被儲存到錯誤的日期。現在會儲存到正確的日期，已經儲存的打卡也會移回正確的那一天。",
     "ja": "• 定着度：習慣ごとに 0〜100 で表すスコアです。続けるほど上がり、できなかった日のあとも回復します。「統計」の習慣のカードに表示されます。\n"
-          "• 履歴から過去の日を修正できるようになりました。「統計」で習慣の「履歴を編集」をタップするか、ヒートマップの日をタップします。履歴では、チェックインした日ならいつでもメモを追加・変更できます。\n"
+          "• 履歴から過去の日を修正できるようになりました。「統計」で習慣の「履歴を編集」を選択するか、ヒートマップで日付を選択します。履歴では、チェックインした日であれば、どの日でもメモを追加・変更できます。\n"
           "• Stride Pro では、定着度のグラフと連続記録トップ5が加わります。\n"
-          "• 和暦や仏暦など、グレゴリオ暦以外のカレンダーを設定したデバイスでは、チェックインが違う日付で保存されていました。正しい日付で保存されるようになり、すでに保存されたチェックインも正しい日に移されます。",
+          "• 暦法を和暦やタイ仏暦など西暦（グレゴリオ暦）以外に設定したデバイスでは、チェックインが違う日付で保存されていました。正しい日付で保存されるようになり、すでに保存されたチェックインも正しい日に移されます。",
     "ko": "• 습관 강도: 습관마다 0~100으로 나타내는 점수로, 꾸준할수록 오르고 하루를 놓쳐도 다시 회복됩니다. ‘통계’의 습관 카드에서 볼 수 있습니다.\n"
-          "• 기록에서 지난 날을 고칠 수 있습니다. ‘통계’에서 습관의 ‘기록 편집’을 탭하거나 히트맵의 날짜를 탭하세요. 기록에서는 체크인한 날이라면 언제든 메모를 추가하거나 바꿀 수 있습니다.\n"
+          "• ‘기록’에서 지난 날짜를 고칠 수 있습니다. ‘통계’에서 습관의 ‘기록 편집’을 선택하거나 히트맵의 날짜를 선택하세요. ‘기록’에서는 체크인한 날이라면 어느 날이든 메모를 추가하거나 바꿀 수 있습니다.\n"
           "• Stride Pro에는 습관 강도 차트와 연속 기록 상위 5개가 추가됩니다.\n"
           "• 일본력이나 불교력처럼 그레고리력이 아닌 달력으로 설정된 기기에서 체크인이 잘못된 날짜로 저장되었습니다. 이제 올바른 날짜로 저장되며, 이미 저장된 체크인도 올바른 날로 옮겨집니다.",
-    "es-ES": "• Fuerza: una puntuación de 0 a 100 para cada hábito que premia la constancia y se recupera después de fallar un día. La encontrarás en la tarjeta del hábito, en Estadísticas.\n"
-             "• Corrige los días pasados en tu historial: en Estadísticas, toca «Editar historial» en un hábito o toca un día de su mapa de calor. En el historial también puedes añadir o cambiar la nota de cualquier día que hayas registrado.\n"
+    "es-ES": "• Fuerza: una puntuación de 0 a 100 que premia la constancia en cada hábito y se recupera si fallas un día. La encontrarás en la tarjeta del hábito, en Estadísticas.\n"
+             "• Corrige los días pasados en tu historial: en Estadísticas, elige «Editar historial» en un hábito o elige un día de su mapa de calor. En el historial también puedes añadir o cambiar la nota de cualquier día que hayas registrado.\n"
              "• Stride Pro añade un gráfico de fuerza y tus 5 rachas más largas.\n"
              "• En un dispositivo con un calendario no gregoriano, como el japonés o el budista, los registros se guardaban con una fecha equivocada. Ahora se guardan con la correcta, y los que ya estaban guardados pasan a su día real.",
   },
