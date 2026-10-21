@@ -1039,6 +1039,35 @@ go per action.
     Today (details), light Statistics heatmap, light History, dark Today (the live listing also
     has 4). The paywall is left out: the Debug variant's products never load (spinner). The Mac
     sidebar has no Settings tab (`-tab 2` shows Today).
+- 2026-10-22, **"many people cancelled" investigated** (owner; workflow wf_8fc4ae13-677, read-only:
+  ASC sales reports with vendor 94126306, reviews, Sentry, production backups and logs, a code
+  audit of v1.4.0; a skeptic re-checked the ranking):
+  - **Stride has never had a Monthly or Yearly subscriber.** Its only Pro sale is one Lifetime
+    (2026-09-06, US, 1.2.0), not refunded. The account-wide drop the owner saw (4 → 1 active
+    subscriptions, 10-15 → 10-20) is ColorArchive (cancel 10-16, refund 10-21) and RoastMate
+    (first-period cancel 10-20): ASC reports and Trends cover every app unless filtered.
+  - Ruled out for Stride: crashes (1.4.0: 77 production sessions, 0 crashed), sync refusals or
+    errors, account deletions, data loss, an entitlement path that locks payers out, reviews
+    (1 written review ever).
+  - Found and fixed for 1.4.1 instead:
+    - the Mac's Habit Templates sheet showed no templates and New Habit hid its text fields
+      (a146384);
+    - Weekly Review and the paywall had no Mac sheet size (73ea141, the full sheet audit);
+    - Insights picked a random "strongest" day on ties, told every daily user "Toughest on
+      Sunday", and every Monday before check-in said "Down vs last week (100% → 0%)" (Insights
+      and Weekly Review); the Trend drew the weeks before a habit existed as 0 (bab8acf, 86a1e3e,
+      new Shared/StatsInsights.swift, StatsInsightsTests 24, 2 hosted StatsRenderTests);
+    - paywall product-load and purchase failures now reach Sentry (830a551); docs/privacy.html
+      lists 1.4.1's new error reports (06af3a5; publishing it to stride-site is a submission item).
+    Review: 3 lenses, 6 confirmed findings, all fixed. StrideTests 732 (+2 known skips) in Tokyo
+    and Los Angeles, hosted 326 (+12 known StoreKit skips), xcodegen drift clean.
+  - **Correction:** `TZ=America/Los_Angeles xcodebuild …` does not reach the test process; the LA
+    runs logged above before this date ran in Tokyo. The LA zone needs
+    `TEST_RUNNER_TZ=America/Los_Angeles` (HabitStatsParityTests prints its "PARITY zone").
+  - Open for the owner: pricing (Lifetime = Yearly = 19.99 USD, no free trial, grace period off),
+    an ASC Analytics report request for retention, SENTRY_DSN on the server, App Store Server
+    Notifications. Product direction: iCloud sync without an account, Health, skip days, a rating
+    prompt.
 - 2026-10-21, gates while the owner was away (workflow wf_81ac01c3-f52: one run per gate, each
   checked by an adversarial verifier; evidence in the session scratchpad, gates-1.4.1/):
   - **Gate 10.1 PASS:** `build-appstore.sh all` without --upload on 0b91a64 (code = eccdd49):
