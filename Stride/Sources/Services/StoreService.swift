@@ -114,6 +114,15 @@ final class StoreService {
         defer { isLoading = false }
 
         let ids = Set(StrideProduct.allCases.map(\.rawValue))
+        // The latest attempt's failure. A load that ends without products reports it once
+        // (`reportProductLoad`): after the final attempt, and also when the paywall closes during
+        // the retries — they take 30 s behind a spinner, and a user who gives up first is the
+        // usual case, so "after the final attempt" alone would hear of few broken paywalls.
+        // Until 2026-10-22 none reached Sentry: a paywall that could not sell looked healthy.
+        var lastFailure: ProductLoadFailure?
+        defer {
+            if products.isEmpty, let lastFailure { Self.reportProductLoad(lastFailure, attempts: loadAttempts) }
+        }
 
         while loadAttempts < Self.maxRetries {
             guard !Task.isCancelled else { return }
@@ -121,6 +130,7 @@ final class StoreService {
             do {
                 let storeProducts = try await Product.products(for: ids)
                 if storeProducts.isEmpty {
+                    lastFailure = .noProducts
                     loadError = "No products returned by the App Store (attempt \(loadAttempts)/\(Self.maxRetries))"
                     if loadAttempts < Self.maxRetries {
                         let delay = pow(2.0, Double(loadAttempts)) // 2s, 4s, 8s, 16s
@@ -135,6 +145,7 @@ final class StoreService {
             } catch is CancellationError {
                 return
             } catch {
+                lastFailure = .error(error)
                 loadError = error.localizedDescription
                 if loadAttempts < Self.maxRetries {
                     let delay = pow(2.0, Double(loadAttempts))
@@ -182,7 +193,16 @@ final class StoreService {
     /// is `PurchaseOutcome`'s pure mapping (Shared/PurchaseOutcome.swift), pinned host-less by
     /// PurchaseOutcomeTests and end to end by StoreKitStatusTests.
     func purchase(_ product: Product) async throws -> Bool {
-        let result = try await product.purchase()
+        let result: Product.PurchaseResult
+        do {
+            result = try await product.purchase()
+        } catch {
+            // StoreKit's own failure, which the paywall shows as "Purchase Error" and nothing
+            // recorded (2026-10-22). A cancel is not one, though it can arrive thrown as well as
+            // returned; Ask to Buy's pending never throws.
+            if !Self.isCancel(error) { Self.reportPurchaseFailure(error, productID: product.id) }
+            throw error
+        }
 
         var verificationError: Error?
         let mirror: PurchaseResultMirror
@@ -395,6 +415,72 @@ final class StoreService {
         #endif
         #if DEBUG
         print("[StoreKit] unverified transaction (\(context)): \(error)")
+        #endif
+    }
+
+    // MARK: - Paywall failures (2026-10-22)
+
+    /// How a product load's latest attempt failed (`fetchProducts`).
+    private enum ProductLoadFailure {
+        /// The App Store answered with no products: none live in this storefront, or a product
+        /// set that is not configured. No StoreKit error says so.
+        case noProducts
+        case error(Error)
+    }
+
+    /// The domain `reportProductLoad` files an empty answer under, code 0.
+    private nonisolated static let noProductsDomain = "Stride.StoreProducts"
+
+    /// A product load that ended without products, once per load: the paywall said "Unable to load
+    /// subscription options" and nothing else heard of it.
+    private nonisolated static func reportProductLoad(_ failure: ProductLoadFailure, attempts: Int) {
+        var tags = ["storekit.attempts": String(attempts)]
+        switch failure {
+        case .noProducts:
+            tags["storekit.failure"] = "empty"
+            reportFailure(domain: noProductsDomain, code: 0, step: "products", tags: tags)
+        case .error(let error):
+            tags["storekit.failure"] = "error"
+            tags.merge(underlyingTags(of: error)) { $1 }
+            let ns = error as NSError
+            reportFailure(domain: ns.domain, code: ns.code, step: "products", tags: tags)
+        }
+    }
+
+    /// A purchase StoreKit failed (`purchase`): the product's id goes in the step, as `verify` and
+    /// `status` name theirs.
+    private nonisolated static func reportPurchaseFailure(_ error: Error, productID: String) {
+        let ns = error as NSError
+        reportFailure(domain: ns.domain, code: ns.code, step: "purchase \(productID)", tags: underlyingTags(of: error))
+    }
+
+    private nonisolated static func isCancel(_ error: Error) -> Bool {
+        if let storeKit = error as? StoreKitError, case .userCancelled = storeKit { return true }
+        return error is CancellationError
+    }
+
+    /// A network failure's URL error code: StoreKit's own code says only "network", and offline is
+    /// not the same problem as a timeout or a refused certificate.
+    private nonisolated static func underlyingTags(of error: Error) -> [String: String] {
+        guard let storeKit = error as? StoreKitError, case .networkError(let underlying) = storeKit else { return [:] }
+        return ["storekit.underlying_domain": NSURLErrorDomain,
+                "storekit.underlying_code": String(underlying.code.rawValue)]
+    }
+
+    /// To Sentry as AppStoreLaunch reports a store failure: a fresh NSError carrying only the domain
+    /// and code, the step and the rest as tags — nothing from the error's `userInfo`, no Apple ID,
+    /// no price. A no-op under XCTest (SentryBootstrap never starts there), in the Mac variant, and
+    /// wherever Sentry is not linked.
+    private nonisolated static func reportFailure(domain: String, code: Int, step: String,
+                                                  tags: [String: String]) {
+        #if canImport(Sentry)
+        _ = SentrySDK.capture(error: NSError(domain: domain, code: code)) { scope in
+            scope.setTag(value: step, key: "storekit.step")
+            for (key, value) in tags { scope.setTag(value: value, key: key) }
+        }
+        #endif
+        #if DEBUG
+        print("[StoreKit] \(step) failed: \(domain) \(code) \(tags)")
         #endif
     }
 }
