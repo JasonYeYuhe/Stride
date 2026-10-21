@@ -611,18 +611,79 @@ final class HabitStats {
     }
 
     private func rate(from startNumber: Int, to endNumber: Int) -> Double {
+        dueRate(from: startNumber, to: endNumber) ?? 0
+    }
+
+    /// `rate`'s answer, or nil when no day of the range is due: it lies wholly before `startDay` or
+    /// after `today`, or (specific days) holds rest days only. `rate` reads that as 0.
+    private func dueRate(from startNumber: Int, to endNumber: Int) -> Double? {
         let last = min(endNumber, todayNumber)
         let first = max(startNumber, startDayNumber)
-        guard first <= last else { return 0 }
+        guard first <= last else { return nil }
         if schedule == .timesPerWeek { return min(1, weeklyGoalRate(from: first, to: last)) }
         var expected = 0, done = 0
         for day in first...last where isScheduled(day) {
             expected += 1
             if completed.contains(day) { done += 1 }
         }
-        guard expected > 0 else { return 0 }
+        guard expected > 0 else { return nil }
         return min(1, Double(done) / Double(expected))
     }
+
+    // MARK: Weeks as the Pro cards count them (2026-10-22)
+
+    /// The last day the Pro cards' week rates and weekday tallies count: today once it is
+    /// complete, yesterday until then — an unfinished today is not a miss yet. Insights' momentum,
+    /// Weekly Review and the 8-week Trend counted it as one, so every Monday before the check-in a
+    /// user who never misses read 0% and "Down vs last week (100% → 0%)" (churn investigation,
+    /// 2026-10-22). The strength walk waits for today the same way (`todayIsComplete`).
+    private var lastCountedDayNumber: Int {
+        completed.contains(todayNumber) ? todayNumber : todayNumber - 1
+    }
+
+    /// The rate of the Monday-anchored week starting `monday` (a day-key) as the Pro cards show it:
+    /// from `startDay`, through the last counted day. Nil when no day of it has come due — the
+    /// habit had not started, or it is this week and nothing is due or done yet — which the cards
+    /// show as nothing to count, never as a missed week: the Trend drew the weeks before a habit
+    /// existed as grey bars marked 0, so a new Pro user's chart was mostly zeros.
+    func countedRate(ofWeekStarting monday: Date) -> Double? {
+        countedRate(ofWeekStartingDay: dayNumber(of: monday))
+    }
+
+    private func countedRate(ofWeekStartingDay monday: Int) -> Double? {
+        dueRate(from: monday, to: min(monday + 6, lastCountedDayNumber))
+    }
+
+    /// This week so far (`countedRate(ofWeekStarting:)`): Insights' momentum, Weekly Review.
+    var thisWeekRate: Double? { countedRate(ofWeekStartingDay: Self.monday(ofWeekContaining: todayNumber)) }
+
+    /// Last week, all seven days of it (the last counted day is never before last Sunday).
+    var lastWeekRate: Double? { countedRate(ofWeekStartingDay: Self.monday(ofWeekContaining: todayNumber) - 7) }
+
+    /// Per weekday (1 = Sunday … 7 = Saturday): how many scheduled days there have been from
+    /// `startDay` through the last counted day, and how many of them were completed. What
+    /// Insights' strongest and toughest weekday compare (`StatsInsights.weekdayExtremes`) — as
+    /// rates, where `completionsPerWeekday` (By Weekday's bars) counts every completed day. Only
+    /// scheduled weekdays that have come due are present; empty for times-per-week, which has no
+    /// weekday schedule.
+    private(set) lazy var weekdayTallies: [Int: StatsInsights.WeekdayTally] = {
+        guard schedule != .timesPerWeek else { return [:] }
+        let first = startDayNumber, last = lastCountedDayNumber
+        guard first <= last else { return [:] }
+        let span = last - first + 1
+        var due: [Int: Int] = [:]
+        // The span's days at `offset`, `offset + 7`, …: (span − offset + 6) ÷ 7 of each weekday.
+        for offset in 0..<min(7, span) where isScheduled(first + offset) {
+            due[Self.weekday(ofDay: first + offset)] = (span - offset + 6) / 7
+        }
+        var done: [Int: Int] = [:]
+        for day in completed where day >= first && day <= last && isScheduled(day) {
+            done[Self.weekday(ofDay: day), default: 0] += 1
+        }
+        return due.reduce(into: [:]) { tallies, entry in
+            tallies[entry.key] = StatsInsights.WeekdayTally(done: done[entry.key] ?? 0, due: entry.value)
+        }
+    }()
 
     private func weeklyGoalRate(from first: Int, to last: Int) -> Double {
         let goal = Double(max(1, timesPerWeek))

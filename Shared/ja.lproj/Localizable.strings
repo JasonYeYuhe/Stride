@@ -600,3 +600,10 @@
    ("8 glasses a day", "5 km a day", "8 hours a day"). Write the number and unit as this language's
    template names write them ("Sleep 8hrs", "Read 30min"). */
 "%lld %@ a day" = "1日%lld%@";
+
+/* 1.4.1, 2026-10-22 */
+
+/* Statistics' 8-week Trend and Weekly Review: what VoiceOver reads, after the week or the habit, for
+   a week with nothing to count yet — before the habit existed, or this week before anything is due
+   or checked in. Nothing is drawn for it, and it must not sound like 0% or a missed week. */
+"Not started" = "開始前";
