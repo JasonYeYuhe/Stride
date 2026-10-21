@@ -18,6 +18,7 @@ import contextlib
 import importlib.util
 import io
 import os
+import re
 import sys
 import types
 import unittest
@@ -345,6 +346,41 @@ class OtherCommandsKeepTheirFilterTests(ReleaseTestCase):
         posted = sorted(d["data"]["relationships"]["appStoreVersion"]["data"]["id"]
                         for kind, path, d in FAKE.writes if path == "/appStoreVersionReleaseRequests")
         self.assertEqual(posted, ["IOS-1.4.1", "MAC_OS-1.4.1"])
+
+
+def catalog(language):
+    """Shared/<language>.lproj/Localizable.strings as {key: value} (English: the key is the text)."""
+    path = os.path.join(HERE, "..", "Shared", f"{language}.lproj", "Localizable.strings")
+    pair = re.compile(r'^"((?:[^"\\]|\\.)*)"\s*=\s*"((?:[^"\\]|\\.)*)";')
+    with open(path, encoding="utf-8") as f:
+        return {m.group(1): m.group(2) for m in map(pair.match, f) if m}
+
+
+class WhatsNewCopyTests(unittest.TestCase):
+    """WHATS_NEW_BY_VERSION, which `prepare` sends to every locale (added in 1.4.1, W9)."""
+
+    def test_every_version_has_the_six_locales_within_the_limit(self):
+        for version, copy in release.WHATS_NEW_BY_VERSION.items():
+            with self.subTest(version=version):
+                self.assertEqual(sorted(copy), sorted(release.LOCALES))
+                for locale, text in copy.items():
+                    self.assertTrue(text.strip(), f"{version} {locale} is empty")
+                    # UTF-16 units: never fewer than the characters App Store Connect counts.
+                    self.assertLessEqual(len(text.encode("utf-16-le")) // 2, 4000, f"{version} {locale}")
+
+    def test_1_4_1_names_what_the_app_calls_it_and_no_sign_in(self):
+        # The words a user then looks for: the Strength tile, History and its Edit history button
+        # on Statistics' card, the note field, and the Pro card's title. No sign-in sentence.
+        keys = ["Strength", "History", "Edit history", "Statistics", "Note", "Your Top 5 Streaks"]
+        languages = {"en-US": "en", "es-ES": "es", "ja": "ja", "ko": "ko", "zh-Hans": "zh-Hans", "zh-Hant": "zh-Hant"}
+        for locale, language in languages.items():
+            text = release.WHATS_NEW_BY_VERSION["1.4.1"][locale].casefold()
+            words = {k: k for k in keys + ["Sign In", "Log In"]} if language == "en" else catalog(language)
+            with self.subTest(locale=locale):
+                for key in keys:
+                    self.assertIn(words[key].casefold(), text, f"{locale} lacks the app's {key!r}: {words[key]}")
+                for key in ["Sign In", "Log In"]:
+                    self.assertNotIn(words[key].casefold(), text, f"{locale} has a sign-in sentence")
 
 
 if __name__ == "__main__":
