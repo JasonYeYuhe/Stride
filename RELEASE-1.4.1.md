@@ -1064,6 +1064,14 @@ go per action.
     production client). Launched by path, signed out: it opened the mactest container's store
     (its -shm stamped at launch), no default.store, the real group container unchanged, alive with
     no crash report; stopped by pid. The iOS half (a production token pasted by the owner) is open.
+  - **iOS store screenshots (O8), proposed:** `a11y_sweep.sh --size default` on 1.4.1 (23) Debug
+    `-demo`, iPhone 17 Pro Max and iPad Pro 13" (M5), light, 9:41; settle raised to 12 s, and three
+    iPhone Statistics frames that came back blank under load were retaken with a blank-frame check.
+    Sets in build/store-screenshots/1.4.1/: iphone69 (APP_IPHONE_67, 1320×2868), iphone65
+    (APP_IPHONE_65, resized 1284×2778), ipad13 (APP_IPAD_PRO_3GEN_129, 2064×2752), ipad129
+    (APP_IPAD_PRO_129, resized 2048×2732), each 01_today, 02_stats, 03_history (new), 04_settings;
+    `check_files` clean. The live 1.4.0 sets have three (no History). Upload waits for `prepare`
+    and the owner's go per `--yes`.
   - Fixed in the kit (f086529): `upgrade.sh --reminders` refused a correct 1.4.0 starting point (it
     demanded 1.3.x's bare id for the Mon/Wed/Fri habit). Selftest 114/0.
   - DayKeyRepair now logs "nothing to repair" (a0f9cd0), so a Gregorian upgrade's log shows the
