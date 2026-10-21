@@ -1059,6 +1059,11 @@ go per action.
     rate 86→90 %, strength 88→89 and the heatmap cell in the first frame after Done; the server got
     one row on sync). Still to run: B, untick/re-tick, the iPad leg, the widget leg; gate 7 iOS's 4
     legs with a widget and --reminders.
+  - **Gate 12, Mac half, PASS:** `mac_variant/build.sh --release` (persistent mac-variant-release
+    root); the preflight passes (mactest id, ad-hoc, sandboxed, no App Group, no DEBUG code, a
+    production client). Launched by path, signed out: it opened the mactest container's store
+    (its -shm stamped at launch), no default.store, the real group container unchanged, alive with
+    no crash report; stopped by pid. The iOS half (a production token pasted by the owner) is open.
   - Fixed in the kit (f086529): `upgrade.sh --reminders` refused a correct 1.4.0 starting point (it
     demanded 1.3.x's bare id for the Mon/Wed/Fri habit). Selftest 114/0.
   - DayKeyRepair now logs "nothing to repair" (a0f9cd0), so a Gregorian upgrade's log shows the
