@@ -199,8 +199,12 @@ system's own store, not an app log line:
   data directory is simctl's `dataPath`. Scratch copies only, decoded by `notifications.py`
   (python3 plistlib; NSKeyedArchiver). `app.sh reminders <udid> [destdir]` prints the same
   listing for any run.
-- **Before the install** (part of the starting point): both habits' bare ids are pending. Anything
-  else exits 1.
+- **Before the install** (part of the starting point): what the old build schedules. The daily
+  habit has exactly its bare id. The Mon/Wed/Fri habit has its bare id from a 1.3.x build, or
+  exactly `.2`, `.4` and `.6` from 1.4.0 on, which already schedules weekday triggers. Anything
+  else exits 1. (Until 1.4.1 both bare ids were demanded from every build, which refused a correct
+  1.4.0 starting point.) `upgrade.sh check-reminders-before <listing | dir> <ids> <old version>`
+  runs this check alone.
 - **After the first launch**, re-read up to `STRIDE_E2E_REMINDER_TRIES` times (10), every
   `STRIDE_E2E_REMINDER_PAUSE` s (3), because the daemon writes the file after the app's removes
   and adds. PASS needs all of:
@@ -227,7 +231,8 @@ removes the notification permission with the app):
    Sign in and sync as usual (the gate's scenario).
 3. Read their ids: `sql.sh <server> "SELECT id, name FROM habits"` after the sync, or the two
    `stride.habit.reminder.<id>` lines of `app.sh reminders <dev>`.
-4. `app.sh reminders <dev>` shows both bare ids pending. Then run
+4. `app.sh reminders <dev>` shows the daily habit's bare id and, for the Mon/Wed/Fri habit, the
+   bare id from 1.3.x or `.2`, `.4` and `.6` from 1.4.0. Then run
    `upgrade.sh <dev> <old> <new> --server <name> --relaunch --reminders <daily id>,<M/W/F id>`.
 
 A run without `--reminders` reads no notification store, so devices without reminder habits (every
