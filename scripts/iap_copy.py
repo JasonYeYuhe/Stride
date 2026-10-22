@@ -52,8 +52,14 @@ LIFETIME = {
 }
 
 
+class Unmodifiable(Exception):
+    """ASC will not change this localization through the API in its current state."""
+
+
 def call(method, url, **kw):
     r = requests.request(method, url, headers=a.headers(), **kw)
+    if r.status_code == 409 and "UNMODIFIABLE" in r.text:
+        raise Unmodifiable(r.json()["errors"][0].get("detail", "unmodifiable"))
     if not r.ok:
         sys.exit(f"✗ {method} {url.split('.com')[1]} → {r.status_code}: {r.text[:400]}")
     return r.json() if r.content else None
@@ -135,20 +141,37 @@ def main():
         print(f"  {what}")
     if not apply:
         return
+    by_hand = []
     for method, url, body, what in plan:
-        call(method, url, json=body)
-        print(f"  ✓ {what.split(':')[0]}")
+        try:
+            call(method, url, json=body)
+            print(f"  ✓ {what.split(':')[0]}")
+        except Unmodifiable as e:
+            # Measured 2026-10-22: an approved product's existing localization answers 409
+            # "Cannot edit SubscriptionLocalization when it is in ACTIVE state". The ASC web UI
+            # takes the same edit and sends it to review with the next version.
+            print(f"  – {what.split(':')[0]}: {e}")
+            by_hand.append(what)
 
     # Read back.
-    bad = [l["attributes"]["locale"] for l in yearly_localizations()
+    skipped = {w.split(":")[0] for w in by_hand}
+    bad = [f"Yearly {l['attributes']['locale']}" for l in yearly_localizations()
            if YEARLY_DESCRIPTIONS.get(l["attributes"]["locale"], l["attributes"].get("description"))
            != l["attributes"].get("description")]
     _, locs = lifetime()
     got = {l["attributes"]["locale"]: (l["attributes"].get("name"), l["attributes"].get("description")) for l in locs}
     bad += [f"Lifetime {k}" for k, v in LIFETIME.items() if got.get(k) != v]
+    bad = [b for b in bad if b not in skipped]
     if bad:
         sys.exit(f"✗ read-back differs: {', '.join(bad)}")
-    print("✓ Read back: Yearly's 6 descriptions and Lifetime's 6 localizations are as set.")
+    if by_hand:
+        print(f"✓ Read back: everything the API accepts is set. {len(by_hand)} approved localization(s) "
+              "need the same edit in App Store Connect's web UI (Monetization → the product → its "
+              "localization); it goes to review with 1.4.1:")
+        for w in by_hand:
+            print(f"    {w}")
+    else:
+        print("✓ Read back: Yearly's 6 descriptions and Lifetime's 6 localizations are as set.")
 
 
 if __name__ == "__main__":
