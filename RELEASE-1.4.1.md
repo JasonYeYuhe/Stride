@@ -937,7 +937,7 @@ Owner-approved or recommended, not in 1.4.1:
   Pro (themes and icons, groups in Statistics and widgets, a weekly-review notification), Mac
   widgets, import from other habit apps.
 - Carried from 1.4.1: Settings habit rows' #FF9500 "4d" on white (2.1:1); the Spanish iPad sidebar
-  at AX5.
+  at AX5; History's Done button at the bottom edge of a minimum-height (700-pt) Mac window.
 
 ## Progress log
 
@@ -1058,6 +1058,36 @@ Owner-approved or recommended, not in 1.4.1:
     Today (details), light Statistics heatmap, light History, dark Today (the live listing also
     has 4). The paywall is left out: the Debug variant's products never load (spinner). The Mac
     sidebar has no Settings tab (`-tab 2` shows Today).
+- 2026-10-22, **P4 / gate 10.4, second sitting** (full-screen control approved, then background
+  control on a variant rebuilt at the m4 tip):
+  - 7 (Settings key): New Habit, both exports and all of View disabled; Close and Window → Stride
+    ⌘0 enabled. Glyphs: New Habit ⌘N, Sync Now ⌘R, Export Backup… ⇧⌘E, Today ⌘1, Statistics ⌘2,
+    Weekly Review ⇧⌘R, Stride ⌘0. Pass.
+  - 11: closing the main window with Settings open, ⌘0 opens exactly one; ⌘M then ⌘0 restores it;
+    with no windows, a reopen event (what a Dock click sends; `open` by path) opens one. Pass.
+  - 8: in the Add Habit sheet ⌘1/⌘2/⇧⌘E/⇧⌘R/⌘N change nothing; after Cancel ⌘N opens it without a
+    click. Pass.
+  - 9: ⇧⌘R before Statistics was opened shows the paywall; Esc closes it; it reopens. Pass.
+  - 10: an empty-area click and ⌘-click in the sidebar keep Today selected. Pass.
+  - 2: ⇧⌘E opens one panel; a second ⇧⌘E opens none; after Cancel a new one opens. Pass.
+  - 1: the panel, steered with ⇧⌘G, saved Stride-Backup-2026-10-22-000008.json where chosen. Pass.
+  - 4: a second export to the same folder the same day is Stride-Backup-2026-10-22-000058.json, no
+    error (W7's names). Pass.
+  - 3: Erase Local Data (confirmation) → "No habits yet" and Restore from Backup…; its open panel
+    takes .json only (other files greyed); Cancel, then Export still opens its panel; restoring
+    the item-1 file ("5 habits, 63 check-ins, Oct 7–21") brings the five habits back. Pass.
+  - The four Mac sheets after a146384 + 73ea141: New Habit grouped with its prompts inside the
+    fields; Habit Templates lists every category and goal; the paywall sized; Weekly Review is
+    Pro-only and has no DEBUG override, so its frame is verified by code and compile only.
+  - Narrow window (the window stops at 838×700): Statistics fits; History works, but at that
+    height its 620-pt minimum puts the Done button at the window's bottom edge, half visible and
+    still clickable. Minor, 1.4.2.
+  - VoiceOver / Full Keyboard Access: the AX layer is verified (chips, day strip, heatmap and
+    History cells respond to AXPress; labels present). A spoken VoiceOver pass needs the owner to
+    turn VoiceOver on (a system setting): not run.
+  - Still open: 5 and 12 (banners and the Dock badge need the notification permission prompt,
+    which only the owner can answer; Finder/Dock access was declined), and "a History edit syncs
+    to iPhone B" (needs the simulator tool).
 - 2026-10-22, **ASC writes A–E + pricing** (owner: "同意 A–E，定价也按你推荐的来"; the agent's
   own ASC writes were refused by the permission classifier, so the owner ran
   `scripts/asc_writes_1_4_1.sh`, then asked the agent to run it, which went through):
