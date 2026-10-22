@@ -1,6 +1,5 @@
 import SwiftUI
 import SwiftData
-import WidgetKit
 
 struct TodayView: View {
     @Environment(\.modelContext) private var modelContext
@@ -21,7 +20,12 @@ struct TodayView: View {
     @Environment(\.shellUsesRegularLayout) private var regularLayout
     @State private var showingAddHabit = false
     @Environment(\.scenePhase) private var scenePhase
-    @State private var collapsedGroups: Set<UUID> = []
+    /// The folded group headers, per device (RELEASE-1.4.1.md D15): their ids, comma-separated.
+    /// Neither synced nor in a backup — how this screen is folded is this device's — and it
+    /// survives a relaunch, a size-class crossing and the tab being rebuilt, which the 1.4.0
+    /// `@State` did not. An id whose group is gone is never asked about again.
+    @AppStorage("stride_today_collapsed_groups") private var collapsedGroupsStorage = ""
+    private var cache = StatsCache.shared
     /// Pending and held counts for the sync line, read from the store when it changes — not on
     /// every render (`SyncStatusCounts`). Zero while signed out, when nothing reads them.
     @State private var syncCounts = SyncStatusCounts.Counts()
@@ -46,23 +50,32 @@ struct TodayView: View {
     /// The day the screen shows and checks in to.
     private var selectedDate: Date { shell.todayDate }
 
-    /// Habits split into ordered sections by group; falls back to a single flat
-    /// section when the user has no groups.
-    private var groupedSections: [(group: HabitGroup?, habits: [Habit])] {
-        guard !groups.isEmpty else { return [(nil, habits)] }
+    /// The habits the day shows (`shownHabits`) split into ordered sections by group; falls back
+    /// to a single flat section when the user has no groups.
+    private func groupedSections(_ shown: [Habit]) -> [(group: HabitGroup?, habits: [Habit])] {
+        guard !groups.isEmpty else { return [(nil, shown)] }
         let groupIds = Set(groups.map { $0.id })
         var sections: [(group: HabitGroup?, habits: [Habit])] = []
         for g in groups {
-            let hs = habits.filter { $0.groupId == g.id }
+            let hs = shown.filter { $0.groupId == g.id }
             if !hs.isEmpty { sections.append((g, hs)) }
         }
-        let ungrouped = habits.filter { $0.groupId == nil || !groupIds.contains($0.groupId!) }
+        let ungrouped = shown.filter { $0.groupId == nil || !groupIds.contains($0.groupId!) }
         if !ungrouped.isEmpty { sections.append((nil, ungrouped)) }
         return sections
     }
 
-    private var completedCount: Int {
-        habits.filter { $0.isCompletedOn(selectedDate) }.count
+    /// The habits a day shows (RELEASE-1.4.1.md D8, O11). Today shows every habit. A past day shows
+    /// only those that had started by then: min(creation day, earliest live record) on or before
+    /// it (`HabitStats.startDay`), so a habit created today is not on yesterday — until a check-in
+    /// is backfilled there in History, which moves its start. Today itself is never filtered, so
+    /// Today, the widget and the badge (which counts only today) still agree. `stats` are the
+    /// habits' own, in order (`StatsCache.stats(for:)`); `day` is the week strip's local date.
+    static func shownHabits(_ habits: [Habit], stats: [HabitStats], on day: Date, today: Date,
+                            calendar: Calendar) -> [Habit] {
+        let shown = HabitStats.dayNumber(of: day, in: calendar)
+        guard shown < HabitStats.dayNumber(of: today, in: calendar) else { return habits }
+        return zip(habits, stats).filter { HabitStats.dayNumber(ofKey: $0.1.startDay) <= shown }.map(\.0)
     }
 
     var body: some View {
@@ -73,7 +86,15 @@ struct TodayView: View {
     }
 
     private var todayContent: some View {
-        ScrollView {
+        let now = Date()
+        let calendar = Calendar.current
+        // Every habit's stats in one read, so a refill after a clear-all is ONE store fetch; the
+        // rows' own reads below are then dictionary hits (StatsCache).
+        let stats = cache.stats(for: habits, today: now, calendar: calendar)
+        let shown = Self.shownHabits(habits, stats: stats, on: selectedDate, today: now, calendar: calendar)
+        // From the cache (D3), any day: the store's live records, never a ghost.
+        let completed = cache.completedCount(of: shown, on: selectedDate, today: now, calendar: calendar)
+        return ScrollView {
             VStack(spacing: 20) {
                 WeekStripView(selectedDate: $shell.todayDate)
                     .padding(.horizontal)
@@ -83,18 +104,19 @@ struct TodayView: View {
                 // `syncStatus` is nil when signed out, so a signed-out Today — the store
                 // screenshots — is laid out exactly as before: the card alone in its stack.
                 let syncStatus = SyncStatusLine.today(auth: auth, sync: sync, counts: syncCounts)
-                if !habits.isEmpty {
+                if !shown.isEmpty {
                     VStack(spacing: 8) {
                         ProgressSummaryCard(
-                            completed: completedCount,
-                            total: habits.count
+                            completed: completed,
+                            total: shown.count
                         )
                         if let syncStatus {
                             SyncStatusRow(line: syncStatus, signInAgain: signInAgain)
                         }
                     }
                     .padding(.horizontal)
-                } else if let syncStatus, syncStatus == .signInAgain {
+                } else if let syncStatus, !habits.isEmpty || syncStatus == .signInAgain {
+                    // A past day before any habit started: the line is about the store, not the day.
                     SyncStatusRow(line: syncStatus, signInAgain: signInAgain)
                         .padding(.horizontal)
                 }
@@ -102,16 +124,28 @@ struct TodayView: View {
                 if habits.isEmpty {
                     EmptyStateView(showingAddHabit: $showingAddHabit)
                         .padding(.top, 40)
+                } else if shown.isEmpty {
+                    // Every habit started after this day (D8). Backfilling one moves to History.
+                    Text("No habits had started by this day.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal)
+                        .padding(.top, 24)
                 } else if groups.isEmpty {
                     LazyVStack(spacing: 12) {
-                        ForEach(habits) { habit in
+                        ForEach(shown) { habit in
                             HabitRowView(habit: habit, date: selectedDate)
                         }
                     }
                     .padding(.horizontal)
+                    // `-scrollTo todayHabits`: the rows, under the tab bar at accessibility sizes,
+                    // for scripts/a11y_sweep.sh (DEBUG only).
+                    .sweepAnchor("todayHabits")
                 } else {
                     LazyVStack(spacing: 16) {
-                        ForEach(groupedSections, id: \.group?.id) { section in
+                        ForEach(groupedSections(shown), id: \.group?.id) { section in
                             VStack(spacing: 12) {
                                 groupHeader(for: section.group, count: section.habits.count)
                                 if !isCollapsed(section.group) {
@@ -127,6 +161,7 @@ struct TodayView: View {
             }
             .padding(.vertical)
             .shellReadableWidth(regularLayout)
+            .sweepScrollable()
         }
         .background(Color.appBackground)
         // No title of its own: the shell sets it from its own state (ContentView.title).
@@ -191,6 +226,20 @@ struct TodayView: View {
         }
     }
 
+    /// The folded groups' ids (`collapsedGroupsStorage`).
+    private var collapsedGroups: Set<UUID> {
+        Self.collapsedGroups(from: collapsedGroupsStorage)
+    }
+
+    static func collapsedGroups(from storage: String) -> Set<UUID> {
+        Set(storage.split(separator: ",").compactMap { UUID(uuidString: String($0)) })
+    }
+
+    /// Sorted, so the same set is always the same string.
+    static func storage(ofCollapsedGroups ids: Set<UUID>) -> String {
+        ids.map(\.uuidString).sorted().joined(separator: ",")
+    }
+
     private func isCollapsed(_ group: HabitGroup?) -> Bool {
         guard let group else { return false }
         return collapsedGroups.contains(group.id)
@@ -203,8 +252,9 @@ struct TodayView: View {
         let header = Button {
             guard let id = group?.id else { return }
             withAnimation(.easeInOut(duration: 0.2)) {
-                if collapsedGroups.contains(id) { collapsedGroups.remove(id) }
-                else { collapsedGroups.insert(id) }
+                var folded = collapsedGroups
+                if folded.contains(id) { folded.remove(id) } else { folded.insert(id) }
+                collapsedGroupsStorage = Self.storage(ofCollapsedGroups: folded)
             }
         } label: {
             HStack(spacing: 8) {
@@ -407,6 +457,8 @@ private struct ProgressRing: View {
 // MARK: - Habit Row
 struct HabitRowView: View {
     @Environment(\.modelContext) private var modelContext
+    /// nil: the app's own commit (`HabitEntryCommit.Environment.live`); the hosted tests inject one.
+    @Environment(\.habitEntryCommit) private var injectedCommit
     let habit: Habit
     let date: Date
 
@@ -414,13 +466,40 @@ struct HabitRowView: View {
     @State private var showingEdit = false
     @State private var showingNote = false
     @State private var noteText = ""
+    /// A write waiting for the user's go (D7): asked, and only then committed again, unchanged.
+    @State private var confirming: PendingConfirmation?
+    private var cache = StatsCache.shared
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.colorScheme) private var colorScheme
 
+    init(habit: Habit, date: Date) {
+        self.habit = habit
+        self.date = date
+    }
+
+    /// The check and count state is the habit's own, never the cache's (D4): the state the user
+    /// sees is the one a tap flips, and the setter then re-reads the store.
     private var isCompleted: Bool {
         habit.isCompletedOn(date)
     }
 
+    /// The day's kept record — the one a write edits (`Habit.record(on:)`), ghosts skipped.
     private var todayRecord: HabitRecord? {
-        return habit.records.first { HabitCalendar.record($0.date, isOnSameDayAs: date) }
+        habit.record(on: date)
+    }
+
+    /// The streak and "x/y this week" text, from the cache (D3; W1's carried "per-call wrapper
+    /// cost": two aggregate wrapper calls per row per render built two `HabitStats` each). Asked
+    /// on every read, never kept across renders; TodayView's read of every habit has just
+    /// refilled the cache, so this is a dictionary hit.
+    private var stats: HabitStats {
+        cache.stats(for: habit)
+    }
+
+    /// The habit's description (`Habit.note`, D7): one secondary line under the name.
+    private var habitDescription: String? {
+        guard let text = habit.note?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        return text
     }
 
     var body: some View {
@@ -493,10 +572,9 @@ struct HabitRowView: View {
             }
             if isCompleted {
                 Button {
-                    noteText = todayRecord?.note ?? ""
-                    showingNote = true
+                    beginNote()
                 } label: {
-                    Label(todayRecord?.note != nil ? "Edit Note" : "Add Note", systemImage: "note.text")
+                    Label(hasDayNote ? "Edit Note" : "Add Note", systemImage: "note.text")
                 }
             }
         }
@@ -506,13 +584,24 @@ struct HabitRowView: View {
         .alert("Note", isPresented: $showingNote) {
             TextField("How did it go?", text: $noteText)
             Button("Save") {
-                todayRecord?.note = noteText.isEmpty ? nil : noteText
-                todayRecord?.touch()
-                try? modelContext.save()
+                perform(.note(noteText))
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Add a note for today's check-in.")
+        }
+        .alert("Remove the check-in and its note?", isPresented: isConfirming(.removeNote), presenting: confirming) { pending in
+            Button("Remove", role: .destructive) {
+                withAnimation { perform(pending.write, confirmed: pending.about) }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        .alert("This day has more than one note. Combine them into one?", isPresented: isConfirming(.combineNotes),
+               presenting: confirming) { pending in
+            Button("Combine") {
+                withAnimation { perform(pending.write, confirmed: pending.about) }
+            }
+            Button("Cancel", role: .cancel) {}
         }
         .accessibilityElement(children: .combine)
         // A ternary nested inside the interpolation would be a plain String argument, never
@@ -539,12 +628,19 @@ struct HabitRowView: View {
                 }
             }
             if isCompleted {
-                Button(todayRecord?.note != nil ? "Edit Note" : "Add Note") {
-                    noteText = todayRecord?.note ?? ""
-                    showingNote = true
+                Button(hasDayNote ? "Edit Note" : "Add Note") {
+                    beginNote()
                 }
             }
         }
+        // The description, on demand (VoiceOver's More Content): in the value, a count row would
+        // re-speak it on every increment.
+        .accessibilityCustomContent(AccessibilityCustomContentKey("Description"), habitDescription.map { Text(verbatim: $0) })
+    }
+
+    private var hasDayNote: Bool {
+        guard let note = todayRecord?.note else { return false }
+        return !note.isEmpty
     }
 
     /// Everything the row draws besides its name and completion state, in the order it is drawn.
@@ -552,14 +648,16 @@ struct HabitRowView: View {
     /// A count row re-speaks this on every increment (it is the adjustable value), so the note —
     /// the one unbounded part — is left to the binary rows, where nothing re-reads it.
     private var spokenDetail: String {
+        let stats = self.stats
         var parts: [String] = []
         if habit.habitKind == .count { parts.append(spokenCount) }
         if !habit.isScheduled(on: date) {
             parts.append(appLocalized("Rest day"))
         } else if habit.schedule == .timesPerWeek {
-            parts.append(appLocalized("\(habit.weeklyCompletions(containing: date))/\(habit.timesPerWeek) this week"))
+            let current = stats.weeklyCompletions(containing: date)
+            parts.append(appLocalized("\(current)/\(habit.timesPerWeek) this week"))
         }
-        let streak = habit.currentStreak(from: date)
+        let streak = stats.currentStreak(asOf: date)
         if streak > 0 {
             parts.append(habit.streakUnit == "week"
                 ? appLocalized("\(streak) week streak")
@@ -582,9 +680,20 @@ struct HabitRowView: View {
 
     @ViewBuilder
     private var habitInfo: some View {
+        let stats = self.stats
         VStack(alignment: .leading, spacing: 2) {
             Text(habit.name)
                 .font(.body.weight(.medium))
+            if let habitDescription {
+                // One line (D7), but whole at accessibility sizes, as the day's note under the
+                // row is: the name column is about 230 pt there and "Morning Run" itself wraps,
+                // so one line cut nearly every description off after a word or two, and three
+                // still cut "Before breakfast, one lap of the park" (gate 8).
+                Text(habitDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(typeSize.isAccessibilitySize ? nil : 1)
+            }
             if habit.habitKind == .count {
                 Text(countLabel)
                     .font(.caption)
@@ -595,11 +704,12 @@ struct HabitRowView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if habit.schedule == .timesPerWeek {
-                Text("\(habit.weeklyCompletions(containing: date))/\(habit.timesPerWeek) this week")
+                let current = stats.weeklyCompletions(containing: date)
+                Text("\(current)/\(habit.timesPerWeek) this week")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            let streak = habit.currentStreak(from: date)
+            let streak = stats.currentStreak(asOf: date)
             if streak > 0 {
                 HStack(spacing: 2) {
                     Image(systemName: "flame.fill")
@@ -607,9 +717,11 @@ struct HabitRowView: View {
                         .foregroundStyle(.orange)
                     // Not "\(streak) \(habit.streakUnit) streak": the unit would reach every
                     // language as the English word.
+                    // The flame keeps the system orange; the words are a darker shade of it where
+                    // that does not read: #FF9500 is 1.97:1 on the light card (gate 8).
                     Text(habit.streakUnit == "week" ? "\(streak) week streak" : "\(streak) day streak")
                         .font(.caption)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Color.readableText(hex: "#FF9500", in: colorScheme))
                 }
             }
         }
@@ -662,51 +774,84 @@ struct HabitRowView: View {
         .scaleEffect(justCompleted ? 1.2 : 1.0)
     }
 
-    private func toggleCompletion() {
-        // Shared with the widget, the watch and Siri — see HabitCheckIn.
-        let result = HabitCheckIn.tap(habit, on: date, in: modelContext)
-        if result.isCompleted {
-            justCompleted = true
+    // MARK: - Writes (RELEASE-1.4.1.md D4)
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                withAnimation(.easeOut(duration: 0.2)) {
-                    justCompleted = false
-                }
-            }
-
-            #if os(iOS)
-            let generator = UIImpactFeedbackGenerator(style: .medium)
-            generator.impactOccurred()
-            #endif
-        } else {
-            justCompleted = false
-        }
-        do {
-            try modelContext.save()
-            // Queue the tombstone only once the deletion is actually saved.
-            if let id = result.deletedRecordID { SyncService.shared.trackDeletedEntry(id) }
-        } catch {
-            #if DEBUG
-            print("Failed to save habit completion: \(error)")
-            #endif
-        }
-        refresh(checkedIn: result.deletedRecordID == nil)
+    /// What a row asks for. Kept while a confirmation is up, so the write the user confirms is
+    /// exactly the one they asked for — re-resolved against the store again when it runs.
+    enum RowWrite: Equatable {
+        case checked(Bool)
+        case value(Double)
+        case note(String)
     }
 
-    /// After a save: the widgets and the badge, always. A check-in goes through `CheckInEffects`
-    /// (RELEASE-1.4.0.md D4), which also ends the habit's snooze and withdraws its banners, but
-    /// only for a day those can be asking for (`CheckInEffects.endsReminders`): `date` is the week
-    /// strip's, and a backfill of Wednesday at 20:30 on Thursday must leave Thursday's snooze and
-    /// banner alone. Taking a check-in back (an un-check, a unit removed) leaves them too, since
-    /// they still ask for something not done.
-    private func refresh(checkedIn: Bool) {
-        if checkedIn {
-            CheckInEffects.afterCheckIn(habitID: habit.id, container: modelContext.container,
-                                        endsReminders: CheckInEffects.endsReminders(checkingIn: date))
-        } else {
-            WidgetCenter.shared.reloadAllTimelines()
-            NotificationService.shared.updateBadge(modelContainer: modelContext.container)
+    struct PendingConfirmation: Equatable {
+        let write: RowWrite
+        let about: HabitCheckIn.Confirmation
+    }
+
+    /// One alert per kind of question; dismissing it drops the pending write.
+    private func isConfirming(_ about: HabitCheckIn.Confirmation) -> Binding<Bool> {
+        Binding(get: { confirming?.about == about },
+                set: { if !$0 { confirming = nil } })
+    }
+
+    /// Every row write: one HabitCheckIn setter inside `HabitEntryCommit.commit`, which saves,
+    /// undoes on a failed save, queues tombstones only after it, and runs the effects (widgets,
+    /// the snooze and banners for a check-in, the badge) and the stats bump.
+    private func perform(_ write: RowWrite, confirmed: HabitCheckIn.Confirmation? = nil) {
+        let habit = self.habit
+        let date = self.date
+        let context = modelContext
+        let outcome = HabitEntryCommit.commit(habitID: habit.id, day: date, in: context,
+                                              environment: injectedCommit ?? .live) { undo in
+            switch write {
+            case .checked(let checked):
+                return HabitCheckIn.setChecked(checked, on: date, of: habit, in: context, confirmed: confirmed, undo: undo)
+            case .value(let value):
+                return HabitCheckIn.setValue(value, on: date, of: habit, in: context, confirmed: confirmed, undo: undo)
+            case .note(let text):
+                return HabitCheckIn.setNote(text, on: date, of: habit, in: context, confirmed: confirmed, undo: undo)
+            }
         }
+        switch outcome {
+        case .committed(let written):
+            guard written.isCheckIn else {
+                justCompleted = false
+                return
+            }
+            if written.isCompleted { celebrate() }
+            #if os(iOS)
+            // A yes/no check-in, or any unit added — as before 1.4.1.
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            #endif
+        case .needsConfirmation(let about):
+            confirming = PendingConfirmation(write: write, about: about)
+        case .saveFailed:
+            justCompleted = false
+        case .noChange:
+            break
+        }
+    }
+
+    private func celebrate() {
+        justCompleted = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            withAnimation(.easeOut(duration: 0.2)) { justCompleted = false }
+        }
+    }
+
+    /// The note editor opens on the note of the day's kept record — the one a write edits
+    /// (`HabitCheckIn.liveRecords(of:on:)`, `Habit.record(on:)`).
+    private func beginNote() {
+        noteText = habit.record(on: date)?.note ?? ""
+        showingNote = true
+    }
+
+    /// The row's state as the user saw it, flipped: a check the widget already took back is not
+    /// deleted again, and one checked elsewhere is not un-checked by a stale row
+    /// (`setChecked` re-reads the store and writes only what differs).
+    private func toggleCompletion() {
+        perform(.checked(!isCompleted))
     }
 
     // MARK: - Count habit logging
@@ -720,48 +865,20 @@ struct HabitRowView: View {
         return "\(logged)/\(target)\(unit)"
     }
 
+    /// The value the row shows, plus one — set, not added: the user asked for what they saw + 1.
     private func incrementCount() {
-        // A count tap adds one unit and never deletes — shared with the widget, watch and Siri.
-        if HabitCheckIn.tap(habit, on: date, in: modelContext).isCompleted {
-            justCompleted = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                withAnimation(.easeOut(duration: 0.2)) { justCompleted = false }
-            }
-        }
-        #if os(iOS)
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        #endif
-        saveAndRefresh(checkedIn: true)
+        perform(.value(habit.loggedValue(on: date) + 1))
     }
 
+    /// At 1 this deletes the day (and asks first when it carries a note, D7).
     private func decrementCount() {
-        guard let record = habit.record(on: date) else { return }
-        if record.value <= 1 {
-            SyncService.shared.trackDeletedEntry(record.id.uuidString)
-            modelContext.delete(record)
-        } else {
-            record.value -= 1
-            record.touch()
-        }
-        saveAndRefresh(checkedIn: false)
+        let shown = habit.loggedValue(on: date)
+        guard shown > 0 else { return }
+        perform(.value(max(0, shown - 1)))
     }
 
     private func resetCount() {
-        guard let record = habit.record(on: date) else { return }
-        SyncService.shared.trackDeletedEntry(record.id.uuidString)
-        modelContext.delete(record)
-        saveAndRefresh(checkedIn: false)
-    }
-
-    private func saveAndRefresh(checkedIn: Bool) {
-        do {
-            try modelContext.save()
-        } catch {
-            #if DEBUG
-            print("Failed to save count update: \(error)")
-            #endif
-        }
-        refresh(checkedIn: checkedIn)
+        perform(.value(0))
     }
 }
 

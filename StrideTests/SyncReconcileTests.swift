@@ -1008,6 +1008,281 @@ final class SyncReconcileTests: XCTestCase {
         XCTAssertEqual(report.deleted.habits, 1, "the pass still removed the delivered-but-absent habit")
     }
 
+    // MARK: - 1.4.1 X1: the day match never puts one id on two records
+
+    /// W2 review, X1. A day with two local records, one already going by the server's id: what
+    /// 1.3.1–1.4.0 leave when the widget's insert races a Today tap and the push answer's alias is
+    /// not followed because the device already holds that id (rehearsal M6, M9). The day match took
+    /// the day's FIRST record and renamed it onto the id, so two records went by one id and no full
+    /// pull could remove either. It now lands on the record going by the id, whichever comes first,
+    /// in either spelling of the id. The other keeps its own; a full pull removes it (delivered,
+    /// absent), an incremental one leaves it to decision 7's merge.
+    func testThePullLandsOnTheRecordAlreadyGoingByItsID() throws {
+        for otherFirst in [true, false] {
+            for isFullPull in [true, false] {
+                for lowercase in [false, true] {
+                    try tearDownStore()
+                    let habit = Habit(name: "Read")
+                    context.insert(habit)
+                    delivered(habit)
+                    let other = HabitRecord(date: dayKey(2026, 9, 15)), carrier = HabitRecord(date: dayKey(2026, 9, 15))
+                    for record in [other, carrier] {
+                        record.updatedAt = date(early)
+                        delivered(record)
+                    }
+                    habit.records = otherFirst ? [other, carrier] : [carrier, other]
+                    try context.save()
+                    let otherID = other.id, serverID = carrier.id
+                    let wireID = lowercase ? serverID.uuidString.lowercased() : serverID.uuidString
+                    let label = "other first: \(otherFirst), full pull: \(isFullPull), lowercase: \(lowercase)"
+
+                    let report = try SyncReconciler.apply(
+                        pull(habits: [remoteHabit(habit.id.uuidString, name: "Read")],
+                             entries: [remoteEntry(wireID, habit: habit.id.uuidString, date: "2026-09-15", note: "server",
+                                                   updatedAt: late)]),
+                        to: context, isFullPull: isFullPull)
+
+                    let records = try context.fetch(FetchDescriptor<HabitRecord>())
+                    XCTAssertEqual(Set(records.map(\.id)).count, records.count, "\(label): no id on two records")
+                    XCTAssertEqual(carrier.id, serverID, label)
+                    XCTAssertEqual(carrier.note, "server", "\(label): the record going by the id takes the row")
+                    XCTAssertEqual(carrier.updatedAt, date(late), label)
+                    XCTAssertFalse(carrier.isPending, label)
+                    XCTAssertEqual(report.applied.entries, 1, label)
+                    XCTAssertTrue(report.issues.isEmpty, label)
+                    if isFullPull {
+                        XCTAssertEqual(records.map(\.id), [serverID], "\(label): the other, delivered and absent, goes")
+                        XCTAssertEqual(report.deleted.entries, 1, label)
+                    } else {
+                        XCTAssertEqual(Set(records.map(\.id)), [serverID, otherID], "\(label): the other keeps its own id")
+                        XCTAssertNil(other.note, "\(label): and its own fields")
+                    }
+                }
+            }
+        }
+    }
+
+    /// The record going by the pulled id is not renamed, so its own stamp decides, as for any
+    /// record of that id: a value edited here since it was delivered is kept, pending, and goes up.
+    /// Renamed, the day's first record took the server's older value as a realigned delivered row
+    /// (review data-safety-3), beside the edited record of the same id.
+    func testTheRecordGoingByThePulledIDKeepsANewerLocalEdit() throws {
+        for otherFirst in [true, false] {
+            try tearDownStore()
+            let habit = Habit(name: "Water")
+            habit.habitKind = .count
+            habit.targetValue = 8
+            context.insert(habit)
+            delivered(habit)
+            let other = HabitRecord(date: dayKey(2026, 9, 15), value: 2)
+            let carrier = HabitRecord(date: dayKey(2026, 9, 15), value: 5)
+            for record in [other, carrier] {
+                record.updatedAt = date(early)
+                delivered(record)
+            }
+            habit.records = otherFirst ? [other, carrier] : [carrier, other]
+            carrier.value = 6
+            carrier.touch()   // edited here after it was delivered
+            try context.save()
+            let label = "other first: \(otherFirst)"
+
+            let report = try SyncReconciler.apply(
+                pull(entries: [remoteEntry(carrier.id.uuidString, habit: habit.id.uuidString, date: "2026-09-15",
+                                           value: 5, updatedAt: early)]),
+                to: context, isFullPull: false)
+
+            XCTAssertEqual(report.keptLocalNewer, [SyncRowRef(kind: .entry, id: carrier.id.uuidString)], label)
+            XCTAssertEqual(carrier.value, 6, label)
+            XCTAssertTrue(carrier.isPending, "\(label): goes up with the next push")
+            XCTAssertEqual(other.value, 2, label)
+            XCTAssertNotEqual(other.id, carrier.id, label)
+            XCTAssertFalse(other.isPending, label)
+        }
+    }
+
+    /// A pair 1.3.1–1.4.0 already left on a day, two records under the server's id, gets no third
+    /// record, and both records take the row: they are one server row, and the day reads whichever
+    /// outranks (`HabitRecord.outranks`, largest value first), so the day shows the server's value
+    /// whether the pull raised it or lowered it below either record's (X1 review: the pull used to
+    /// land on the outranking record alone, and a lowered value left the day reading the other's).
+    /// The merge removes the pair on the day's next write (rehearsal M7). A full pull keeps both:
+    /// each goes by an id the snapshot holds.
+    func testAPullOntoASameIDPairLandsOnBothRecords() throws {
+        for pulled in [1.0, 3.0, 9.0] {   // below both, between, above both
+            for largerFirst in [true, false] {
+                for isFullPull in [false, true] {
+                    try tearDownStore()
+                    let habit = Habit(name: "Water")
+                    habit.habitKind = .count
+                    habit.targetValue = 8
+                    context.insert(habit)
+                    delivered(habit)
+                    let larger = HabitRecord(date: dayKey(2026, 9, 15), value: 8)
+                    let smaller = HabitRecord(date: dayKey(2026, 9, 15), note: "smaller's", value: 2)
+                    smaller.id = larger.id
+                    for record in [larger, smaller] {
+                        record.updatedAt = date(early)
+                        delivered(record)
+                    }
+                    habit.records = largerFirst ? [larger, smaller] : [smaller, larger]
+                    try context.save()
+                    let serverID = larger.id
+                    let label = "pulled \(pulled), larger first: \(largerFirst), full pull: \(isFullPull)"
+
+                    let report = try SyncReconciler.apply(
+                        pull(habits: [remoteHabit(habit.id.uuidString, name: "Water")],
+                             entries: [remoteEntry(serverID.uuidString.lowercased(), habit: habit.id.uuidString,
+                                                   date: "2026-09-15", note: "server", value: pulled, updatedAt: late)]),
+                        to: context, isFullPull: isFullPull)
+
+                    let records = try context.fetch(FetchDescriptor<HabitRecord>())
+                    XCTAssertEqual(records.count, 2, "\(label): no third record, none deleted")
+                    for record in records {
+                        XCTAssertEqual(record.id, serverID, label)
+                        XCTAssertEqual(record.value, pulled, "\(label): every record of the id takes the row")
+                        XCTAssertEqual(record.note, "server", label)
+                        XCTAssertEqual(record.updatedAt, date(late), label)
+                        XCTAssertFalse(record.isPending, label)
+                    }
+                    XCTAssertEqual(try XCTUnwrap(habit.record(on: dayKey(2026, 9, 15))).value, pulled,
+                                   "\(label): so the day reads the server's value")
+                    XCTAssertEqual(report.applied.entries, 1, "\(label): one entry, counted once")
+                    // The habit's own row, older than the local habit, is the only one kept.
+                    XCTAssertFalse(report.keptLocalNewer.contains { $0.kind == .entry }, label)
+                    XCTAssertTrue(report.issues.isEmpty, label)
+                }
+            }
+        }
+    }
+
+    /// Of a same-id pair, each record's own stamp decides for it: one edited here since it was
+    /// delivered keeps its value, pending, and goes up with the next push, while the other takes
+    /// the row. The entry counts once: as kept when any record's newer value stays, as applied when
+    /// any record took it.
+    func testEachRecordOfASameIDPairKeepsItsOwnNewerEdit() throws {
+        for bothEdited in [false, true] {
+            for editedFirst in [true, false] {
+                try tearDownStore()
+                let habit = Habit(name: "Water")
+                habit.habitKind = .count
+                habit.targetValue = 8
+                context.insert(habit)
+                delivered(habit)
+                let edited = HabitRecord(date: dayKey(2026, 9, 15), value: 2)
+                let other = HabitRecord(date: dayKey(2026, 9, 15), value: 8)
+                other.id = edited.id
+                for record in [edited, other] {
+                    record.updatedAt = date(early)
+                    delivered(record)
+                }
+                habit.records = editedFirst ? [edited, other] : [other, edited]
+                edited.value = 6
+                edited.touch()   // edited here after it was delivered
+                if bothEdited {
+                    other.value = 7
+                    other.touch()
+                }
+                try context.save()
+                let id = edited.id
+                let label = "both edited: \(bothEdited), edited first: \(editedFirst)"
+
+                let report = try SyncReconciler.apply(
+                    pull(entries: [remoteEntry(id.uuidString, habit: habit.id.uuidString, date: "2026-09-15",
+                                               value: 1, updatedAt: late)]),
+                    to: context, isFullPull: false)
+
+                XCTAssertEqual(report.keptLocalNewer, [SyncRowRef(kind: .entry, id: id.uuidString)],
+                               "\(label): reported once")
+                XCTAssertEqual(edited.value, 6, label)
+                XCTAssertTrue(edited.isPending, "\(label): goes up with the next push")
+                if bothEdited {
+                    XCTAssertEqual(other.value, 7, label)
+                    XCTAssertTrue(other.isPending, label)
+                    XCTAssertEqual(report.applied.entries, 0, label)
+                } else {
+                    XCTAssertEqual(other.value, 1, "\(label): the record not edited here takes the row")
+                    XCTAssertEqual(other.updatedAt, date(late), label)
+                    XCTAssertFalse(other.isPending, label)
+                    XCTAssertEqual(report.applied.entries, 1, label)
+                }
+                XCTAssertEqual(try context.fetchCount(FetchDescriptor<HabitRecord>()), 2, "\(label): no third record")
+            }
+        }
+    }
+
+    /// Never onto an id another record of the habit already goes by on another day of the pull:
+    /// renamed (or inserted), the entry's day would be a second record of that id. A record holds
+    /// an id the server keeps on another day only if it changed day — the 1.2.x day-key migration
+    /// re-anchored records in the zone the device was in at upgrade, which for a device that had
+    /// changed zone since moved them a day. The entry is not applied and is reported
+    /// (`duplicate_id`), so a full pull skips its deletion pass, as for any row it cannot apply;
+    /// the day's own record keeps its id.
+    func testAPullNeverGivesASecondRecordAnIDAnotherRecordGoesBy() throws {
+        for isFullPull in [true, false] {
+            try tearDownStore()
+            let read = Habit(name: "Read"), run = Habit(name: "Run")
+            context.insert(read)
+            context.insert(run)
+            let moved = HabitRecord(date: dayKey(2026, 9, 14))   // the id the server keeps on the 15th
+            let fifteenth = HabitRecord(date: dayKey(2026, 9, 15))
+            read.records = [fifteenth, moved]
+            let runDay = HabitRecord(date: dayKey(2026, 9, 14))
+            run.records = [runDay]
+            [read, run].forEach(delivered)
+            for record in [moved, fifteenth, runDay] {
+                record.updatedAt = date(early)
+                delivered(record)
+            }
+            try context.save()
+            let serverID = moved.id, fifteenthID = fifteenth.id
+            let wireID = serverID.uuidString.lowercased()
+            let label = "full pull: \(isFullPull)"
+
+            let report = try SyncReconciler.apply(
+                pull(habits: [remoteHabit(read.id.uuidString, name: "Read"), remoteHabit(run.id.uuidString, name: "Run")],
+                     entries: [remoteEntry(wireID, habit: read.id.uuidString, date: "2026-09-15", note: "server", updatedAt: late),
+                               // Run's check-in puts the 14th inside the days the pull reaches.
+                               remoteEntry(runDay.id.uuidString, habit: run.id.uuidString, date: "2026-09-14", updatedAt: late)]),
+                to: context, isFullPull: isFullPull)
+
+            let records = try context.fetch(FetchDescriptor<HabitRecord>())
+            XCTAssertEqual(records.count, 3, "\(label): nothing inserted, nothing deleted")
+            XCTAssertEqual(Set(records.map(\.id)).count, 3, "\(label): no id on two records")
+            XCTAssertEqual(fifteenth.id, fifteenthID, "\(label): not renamed onto the id")
+            XCTAssertNil(fifteenth.note, label)
+            XCTAssertEqual(moved.id, serverID, label)
+            XCTAssertEqual(report.issues, [SyncPullIssue(kind: .entry, id: wireID, reason: .duplicateID)], label)
+            XCTAssertEqual(report.applied.entries, 1, "\(label): Run's entry still applies")
+            XCTAssertFalse(report.deletionPassRan, label)
+            XCTAssertEqual(report.deleted, SyncRowCounts(), label)
+        }
+    }
+
+    /// The server takes any string as an id, so two spellings of one UUID can be two of its rows —
+    /// on two days, validate's `duplicate_id` — while here they are one id. Only the first lands;
+    /// each day used to get a record of that id. Reported once, as validate reported it.
+    func testTwoSpellingsOfOneIDOnTwoDaysMakeOneRecord() throws {
+        let habit = Habit(name: "Read")
+        context.insert(habit)
+        delivered(habit)
+        try context.save()
+        let id = UUID().uuidString
+
+        let report = try SyncReconciler.apply(
+            pull(habits: [remoteHabit(habit.id.uuidString, name: "Read")],
+                 entries: [remoteEntry(id.lowercased(), habit: habit.id.uuidString, date: "2026-09-14", note: "lower"),
+                           remoteEntry(id, habit: habit.id.uuidString, date: "2026-09-15", note: "upper")]),
+            to: context, isFullPull: true)
+
+        let records = try context.fetch(FetchDescriptor<HabitRecord>())
+        XCTAssertEqual(records.map(\.id.uuidString), [id])
+        XCTAssertEqual(records.first?.note, "lower")
+        XCTAssertEqual(records.first.map { HabitCalendar.dayStringFormatter.string(from: $0.date) }, "2026-09-14")
+        XCTAssertEqual(report.issues, [SyncPullIssue(kind: .entry, id: id, reason: .duplicateID)])
+        XCTAssertEqual(report.applied.entries, 1)
+        XCTAssertFalse(report.deletionPassRan)
+    }
+
     // MARK: - The first full pull proves the account (owner decision, 2026-09-28)
 
     /// A migrated store: two delivered habits with a delivered check-in each, a delivered group,

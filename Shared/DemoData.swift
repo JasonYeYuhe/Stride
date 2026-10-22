@@ -19,6 +19,12 @@ enum DemoData {
         /// One 3-times-a-week habit whose current streak (4 weeks) and best streak (5 weeks)
         /// differ, so the Stats card shows the weeks unit beside two different numbers.
         case weekly
+        /// The standard set with what it never draws, for scripts/a11y_sweep.sh's `15_details_*`
+        /// captures (RELEASE-1.4.1.md gate 8, 2026-10-17): Morning Run in Yellow — the palette's
+        /// lowest contrast, as text on a card and under white — with a Description (D7) and notes
+        /// on today's and two days back's check-ins (the note dot, D5); Drink Water counted, 8
+        /// glasses a day, with 5 today (History's stepper, a ring under its goal).
+        case details
         #endif
 
         /// `-demoScenario <name>`; anything else (or nothing) is the standard set.
@@ -52,6 +58,8 @@ enum DemoData {
             insertPluralsSet(into: context)
         case .weekly:
             insertWeeklySet(into: context)
+        case .details:
+            insertDetailsSet(into: context)
         #endif
         }
 
@@ -59,7 +67,8 @@ enum DemoData {
     }
 
     @MainActor
-    private static func insertStandardSet(into context: ModelContext) {
+    @discardableResult
+    private static func insertStandardSet(into context: ModelContext) -> [Habit] {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
 
@@ -89,8 +98,10 @@ enum DemoData {
             [true, true, true, true, true],
         ]
 
+        var inserted: [Habit] = []
         for (i, info) in habits.enumerated() {
             let habit = Habit(name: info.0, emoji: info.1, colorHex: info.2)
+            inserted.append(habit)
             habit.createdAt = calendar.date(byAdding: .second, value: i, to: calendar.date(byAdding: .day, value: -30, to: today)!)!
             context.insert(habit)
 
@@ -102,9 +113,35 @@ enum DemoData {
                 }
             }
         }
+        return inserted
     }
 
     #if DEBUG
+    @MainActor
+    private static func insertDetailsSet(into context: ModelContext) {
+        let habits = insertStandardSet(into: context)
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        func key(daysBack: Int) -> Date {
+            HabitCalendar.dayKey(for: calendar.date(byAdding: .day, value: -daysBack, to: today)!)
+        }
+        if let run = habits.first(where: { $0.name == "Morning Run" }) {
+            run.colorHex = "#FFCC00"
+            run.note = "Before breakfast, one lap of the park"
+            for (daysBack, note) in [(0, "Felt strong"), (2, "Rain, so a shorter loop")] {
+                run.records.first { $0.date == key(daysBack: daysBack) }?.note = note
+            }
+        }
+        if let water = habits.first(where: { $0.name == "Drink Water" }) {
+            water.habitKind = .count
+            water.targetValue = 8
+            water.unit = "glasses"
+            for record in water.records {
+                record.value = record.date == key(daysBack: 0) ? 5 : 8
+            }
+        }
+    }
+
     @MainActor
     private static func insertPluralsSet(into context: ModelContext) {
         let calendar = Calendar.current

@@ -97,7 +97,7 @@ enum SharedModelContainer {
 
     static var storeURL: URL { location.url }
 
-    /// The App Group's defaults: the schema marker, the day-key migration's flag and, through
+    /// The App Group's defaults: the schema marker, the day-key migrations' flags and, through
     /// `SyncDeletionQueue.live`, the widget's deletion queue. nil in the Mac test variant: like the
     /// store, it must not reach the real app's suite (the marker is skipped for a `.noAppGroup`
     /// store and nil defaults anyway, and the migration flag falls back to `.standard`).
@@ -262,6 +262,31 @@ enum SharedModelContainer {
             Logger(subsystem: "yyh.stride.habittracker", category: "Migration")
                 .error("Day-key migration failed: \(error.localizedDescription)")
         }
+    }
+
+    /// The v3 day-key repair (X2, `DayKeyRepair`): keys builds before 1.4.1 wrote on a device whose
+    /// calendar is not Gregorian, put back on their real days. Every launch, after the v2 migration
+    /// above and before `SyncService.prepareLaunch` — the first time for the install's own keys,
+    /// after that for keys pulled from devices still on an older build (one fetch that finds
+    /// nothing, normally). Its flag (`DayKeyRepair.doneKey`) goes where the v2 flag does, the App
+    /// Group's defaults, which the widget reads: on a non-Gregorian device it opens the store only
+    /// once the flag is set (`ExtensionStoreOpen`), so `reloadWidgets` runs when this pass set it
+    /// (and whenever it changed the store).
+    ///
+    /// Only on the real store (`isRealStore`, upgrade race U123), as above. Tombstones go to the
+    /// app's own deletion queue (`SyncDeletionQueue.live`).
+    @MainActor
+    static func repairDayKeysIfNeeded(_ container: ModelContainer, reloadWidgets: () -> Void) {
+        guard isRealStore(container) else {
+            Logger(subsystem: "yyh.stride.habittracker", category: "Migration")
+                .error("Day-key repair refused: not the real store")
+            return
+        }
+        let pass = DayKeyRepair.launchPass(in: ModelContext(container), flags: appGroupDefaults ?? .standard,
+                                           syncDefaults: .standard, deletionQueue: .live)
+        var changed = false
+        if case .repaired(let outcome) = pass.result { changed = outcome.changedStore }
+        if pass.flagSet || changed { reloadWidgets() }
     }
 }
 
@@ -516,12 +541,21 @@ enum StoreUnavailableAdvice: Equatable {
 /// depends on had no test). In this order, and `makeContainer` only at the end:
 /// - an App Group store, with the App Group's defaults to read the marker from;
 /// - the marker equal to this schema and the file there (`StoreSchemaGate`);
+/// - on a device whose calendar is not Gregorian, the app's first day-key repair done (X2,
+///   `DayKeyRepair.doneKey`): until then the store holds the keys builds before 1.4.1 wrote there
+///   (0008-10-15 for 2026-10-15 on a Japanese-calendar phone), and this build reads and writes
+///   Gregorian ones — today would read as not checked, and a tap would check it a second time
+///   beside the old record. The app writes the marker before that repair runs, so without this
+///   the widget could open the store in between. A Gregorian device never waits for it;
 /// - the file's own model hashes equal to these models (`storeMatchesModels`);
 /// - then, and only then, the open — never retried: the next reload asks again.
 struct ExtensionStoreOpen {
     var location: SharedModelContainer.Location
     /// The App Group's defaults, where the app writes the marker. Nil: nothing to read it from.
     var defaults: UserDefaults?
+    /// The device's calendar: only a non-Gregorian one waits for the day-key repair. The widget
+    /// sees only the system setting, which is the one the app's old builds keyed with.
+    var calendar: Calendar = .current
     var storeExists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }
     var storeMatchesModels: (URL) -> Bool = SharedModelContainer.storeMatchesModels(at:)
     var makeContainer: (URL) throws -> ModelContainer = SharedModelContainer.makeContainer(at:)
@@ -548,6 +582,9 @@ struct ExtensionStoreOpen {
         if case .waitForApp(let reason) = StoreSchemaGate.decide(marker: StoreSchemaGate.marker(in: defaults),
                                                                   storeExists: storeExists(url)) {
             return .failure(.waitForApp(reason))
+        }
+        if !HabitCalendar.wroteGregorianKeys(calendar), !DayKeyRepair.isDone(in: defaults) {
+            return .failure(.waitForApp(.dayKeyRepair))
         }
         // The marker says the app opened the store at this schema; the file must say the same.
         guard storeMatchesModels(url) else { return .failure(.waitForApp(.otherModel)) }
@@ -585,6 +622,9 @@ enum StoreSchemaGate: Equatable {
         /// The marker matched, but the file was written with other models
         /// (`SharedModelContainer.storeMatchesModels`; decided by `ExtensionStoreOpen`).
         case otherModel
+        /// A non-Gregorian device whose store the app has not yet run its first day-key repair on
+        /// (X2, `DayKeyRepair.doneKey`; decided by `ExtensionStoreOpen`).
+        case dayKeyRepair
     }
 
     static let markerKey = "stride_store_schema_version"

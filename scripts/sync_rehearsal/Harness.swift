@@ -272,6 +272,39 @@ func sweepTombstones(olderThanDays days: Double = 0) async throws -> Int {
     return tombstones
 }
 
+/// The test server's entry-date-guard switch (server/lib/testHooks.js). Off, a push stores entries
+/// on any date, as the server did before the guard was deployed on 2026-10-20; on is the default
+/// and what production runs. Use `withEntryDateGuardOff`, which always switches it back on.
+@MainActor
+func setEntryDateGuard(enabled: Bool) async throws {
+    var request = URLRequest(url: Rehearsal.base.appendingPathComponent("__test/entry-date-guard"))
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.httpBody = try JSONSerialization.data(withJSONObject: ["enabled": enabled])
+    let (data, response) = try await URLSession(configuration: .ephemeral).data(for: request)
+    guard (response as? HTTPURLResponse)?.statusCode == 200,
+          let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+          json["enabled"] as? Bool == enabled
+    else { throw RehearsalError.http("entry-date-guard: \(String(decoding: data, as: UTF8.self))") }
+}
+
+/// Runs `body` against the server as it was before 2026-10-20 (entry-date guard off), to seed rows
+/// stored back then, and switches the guard back on before returning or rethrowing: nothing after
+/// `body`, in this scenario or a later one, runs with it off.
+@MainActor
+func withEntryDateGuardOff<T>(_ body: () async throws -> T) async throws -> T {
+    let result: T
+    do {
+        try await setEntryDateGuard(enabled: false)
+        result = try await body()
+    } catch {
+        try? await setEntryDateGuard(enabled: true)
+        throw error
+    }
+    try await setEntryDateGuard(enabled: true)
+    return result
+}
+
 /// A full pull straight from the server, for comparing devices with what the server holds.
 @MainActor
 func serverSnapshot(_ account: Account, clientHeader: String? = Rehearsal.client131) async throws -> SyncPullResponse {
@@ -466,8 +499,57 @@ class StoreDevice {
     func tapAndSave(_ habit: Habit, day: Int) throws -> HabitCheckIn.Result {
         let result = tap(habit, day: day)
         try save()
-        if let id = result.deletedRecordID { queueEntryDeletion(id) }
+        result.deletedRecordIDs.forEach(queueEntryDeletion)
         return result
+    }
+
+    /// History's write of one day (RELEASE-1.4.1.md D4): HabitCheckIn's setters — the shipping
+    /// ones, from Shared/ — with one undo journal, then the save, then the tombstones of what they
+    /// deleted. That is `HabitEntryCommit.commit`'s order (Stride/Sources, app-only, so mirrored
+    /// here; its effects and stats bump have no counterpart on a rehearsal device). Each argument
+    /// is the state the user asks for (nil: leave it); `.needsConfirmation` writes nothing, as in
+    /// the app, until the same write comes again with `confirmed:`.
+    @discardableResult
+    func history(_ habit: Habit, day: Int, checked: Bool? = nil, value: Double? = nil, note: String? = nil,
+                 confirmed: HabitCheckIn.Confirmation? = nil) throws -> HabitCheckIn.Change {
+        let undo = HabitCheckIn.Undo()
+        let date = Scenario.day(day)
+        var steps: [() -> HabitCheckIn.Change] = []
+        if let checked {
+            steps.append { HabitCheckIn.setChecked(checked, on: date, of: habit, in: self.context, confirmed: confirmed, undo: undo) }
+        }
+        if let value {
+            steps.append { HabitCheckIn.setValue(value, on: date, of: habit, in: self.context, confirmed: confirmed, undo: undo) }
+        }
+        if let note {
+            steps.append { HabitCheckIn.setNote(note, on: date, of: habit, in: self.context, confirmed: confirmed, undo: undo) }
+        }
+        var deleted: [String] = []
+        var last: HabitCheckIn.Change = .noChange
+        for step in steps {
+            switch step() {
+            case .needsConfirmation(let about):
+                undo.revert(in: context)
+                return .needsConfirmation(about)
+            case .changed(let written):
+                deleted += written.deletedRecordIDs
+                last = .changed(written)
+            case .noChange:
+                break
+            }
+        }
+        guard case .changed = last else {
+            undo.revert(in: context)
+            return .noChange
+        }
+        do {
+            try save()
+        } catch {
+            undo.revert(in: context)
+            throw error
+        }
+        deleted.forEach(queueEntryDeletion)
+        return last
     }
 
     /// Settings → delete habit: the habit's id and every record's id are queued, then the

@@ -11,6 +11,11 @@
 #
 # Shared by CI (.github/workflows/ci.yml) and the pre-push hook, so both run exactly this.
 # Run from anywhere; it works on the repo it lives in.
+#
+# Outside CI: Swift packages come from the shared checkout (scripts/ci/build_cache.sh,
+# spm_cache_args) unless the extra args name -clonedSourcePackagesDirPath (CI passes its own),
+# and the build holds the derived data's lock (build_lock_path), so a direct call and the
+# pre-push hook never build into one derived data at once.
 set -euo pipefail
 
 [[ $# -ge 1 ]] || { echo "Usage: $0 <derived-data-dir> [extra xcodebuild args...]"; exit 2; }
@@ -18,6 +23,14 @@ DERIVED="$1"; shift
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# shellcheck source=build_cache.sh
+source "$SCRIPT_DIR/build_cache.sh"
+spm_cache_args "$PROJECT_DIR" "$@" || exit 1
+if [[ "${CI:-}" != "true" ]]; then
+    DD_LOCK="$(build_lock_path "$DERIVED")"
+    build_lock_take "$DD_LOCK" "build_ios_generic.sh" || exit 1
+    trap 'build_lock_release "$DD_LOCK"' EXIT
+fi
 
 PRODUCTS="$DERIVED/Build/Products/Debug-iphoneos"
 
@@ -38,6 +51,7 @@ xcodebuild build \
     -destination 'generic/platform=iOS' \
     -derivedDataPath "$DERIVED" \
     -quiet \
+    "${SPM_ARGS[@]+"${SPM_ARGS[@]}"}" \
     CODE_SIGNING_ALLOWED=NO \
     "$@"
 

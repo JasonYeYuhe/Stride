@@ -19,6 +19,11 @@
 # App Review demo account: add today's check-ins. Daily, not weekly — streaks read 0 two
 # days after the last check-in, which is what check_demo_account.sh calls STALE (exit 3).
 50 3 * * * /usr/bin/node /root/stride-server/ops/demo-topup.js >> /root/backups/stride-demo-topup.log 2>&1
+# The same top-up again after Los Angeles midnight (00:20 PST / 01:20 PDT). Its entry-day cap is
+# min(UTC today, LA today), so the 03:50 run, the previous evening in the US, cannot fill a US
+# reviewer's own day; this one does, in their morning (RELEASE-1.4.1.md Q3a). Idempotent: a run
+# with nothing due adds nothing. Installed on the host 2026-10-20.
+20 8 * * * /usr/bin/node /root/stride-server/ops/demo-topup.js >> /root/backups/stride-demo-topup.log 2>&1
 
 # Restore drill: newest nightly backup → temp copy → integrity/FK check, row counts, age.
 10 4 * * * /usr/bin/node /root/stride-server/ops/restore-drill.js >> /root/backups/stride-restore-drill.log 2>&1
