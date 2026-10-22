@@ -936,6 +936,8 @@ Owner-approved or recommended, not in 1.4.1:
   Apple Health auto-check-ins, skip/vacation days (M6), more than one reminder per habit, deeper
   Pro (themes and icons, groups in Statistics and widgets, a weekly-review notification), Mac
   widgets, import from other habit apps.
+- Rotate the App Review demo token after 1.4.1 ships (the 2026-06-07 one is still live and sat in an
+  agent memory file until 2026-10-22): seed-demo.js installs DEMO_TOKEN; update ASC's review Password.
 - Carried from 1.4.1: Settings habit rows' #FF9500 "4d" on white (2.1:1); the Spanish iPad sidebar
   at AX5; History's Done button at the bottom edge of a minimum-height (700-pt) Mac window.
 
