@@ -204,11 +204,17 @@ def push_metadata(version_id, platform):
 def push_app_info(app_id):
     """Push localized app name and subtitle via appInfoLocalizations."""
     infos = get(f"/apps/{app_id}/appInfos")
-    info_list = infos.get("data", [])
-    if not info_list:
-        print("  No appInfo found, skipping name/subtitle push.")
+    # Not info_list[0]: while a version is being prepared the app has two appInfos, the live one
+    # (READY_FOR_DISTRIBUTION, whose name ASC refuses to change: 409 "The field 'name' can not
+    # be modified in the current state", 2026-10-22) and the editable one the new version made.
+    editable = [i for i in infos.get("data", [])
+                if i["attributes"].get("state", i["attributes"].get("appStoreState"))
+                in ("PREPARE_FOR_SUBMISSION", "DEVELOPER_REJECTED", "REJECTED")]
+    if len(editable) != 1:
+        print(f"  {len(editable)} editable appInfos (want 1), skipping name/subtitle push. "
+              "Run release.py prepare <version> first.")
         return
-    info_id = info_list[0]["id"]
+    info_id = editable[0]["id"]
     locs = get(f"/appInfos/{info_id}/appInfoLocalizations")
     existing = {l["attributes"]["locale"]: l["id"] for l in locs.get("data", [])}
     print(f"  Existing appInfo localizations: {list(existing.keys())}")
@@ -298,10 +304,12 @@ def main():
             continue
         print("  Pushing version metadata...")
         push_metadata(vid, platform)
-        if "--app-info" in flags:
-            print("  Pushing app name & subtitle...")
-            push_app_info(app_id)
         pushed += 1
+
+    # Once, not per version record: the name and subtitle belong to the app, not to a platform.
+    if "--app-info" in flags and pushed:
+        print("\nPushing app name & subtitle...")
+        push_app_info(app_id)
 
     print(f"\nPushed metadata to {pushed} version record(s) of {target}. Nothing was submitted; "
           f"submit with: scripts/release.py finish {target} <build>")
