@@ -920,6 +920,25 @@ go per action.
   - macOS widgets, Swift Charts;
   - any schema change.
 
+## 1.4.2 backlog (from the 2026-10-22 investigation)
+
+Owner-approved or recommended, not in 1.4.1:
+- **Free trial:** a 7-day introductory offer on Yearly (approved pricing). The paywall must show
+  its terms first (StoreKit `introductoryOffer`, "1 week free, then …/year"), so: paywall code,
+  Configuration.storekit, hosted StoreKit tests on iOS 18.5, then the ASC offer
+  (`subscriptionIntroductoryOffers`) when 1.4.2 is approved.
+- **StrengthCard** draws the weeks before a habit's start as grey 0 bars, as the Trend did.
+- **Measure, then grow:** an ONGOING ASC Analytics report request (retention, deletions); App
+  Store Server Notifications V2 to a small server endpoint (event type and product only);
+  `SENTRY_DSN` on the server (sign-in and sync errors alert nobody today); pm2-logrotate retain
+  7 → 30; a `requestReview` prompt after a streak milestone (Stride has 2 ratings).
+- **What paying users expect and Stride lacks:** sync without an account (iCloud/CloudKit),
+  Apple Health auto-check-ins, skip/vacation days (M6), more than one reminder per habit, deeper
+  Pro (themes and icons, groups in Statistics and widgets, a weekly-review notification), Mac
+  widgets, import from other habit apps.
+- Carried from 1.4.1: Settings habit rows' #FF9500 "4d" on white (2.1:1); the Spanish iPad sidebar
+  at AX5.
+
 ## Progress log
 
 - 2026-10-14: Plan drafted from four read-only mappers (spec, client, server, ops) at 376e69b. The
@@ -1039,6 +1058,32 @@ go per action.
     Today (details), light Statistics heatmap, light History, dark Today (the live listing also
     has 4). The paywall is left out: the Debug variant's products never load (spinner). The Mac
     sidebar has no Settings tab (`-tab 2` shows Today).
+- 2026-10-22, **ASC writes A–E + pricing** (owner: "同意 A–E，定价也按你推荐的来"; the agent's
+  own ASC writes were refused by the permission classifier, so the owner ran
+  `scripts/asc_writes_1_4_1.sh`, then asked the agent to run it, which went through):
+  - in-app purchase copy (`iap_copy.py`): Lifetime has es-ES, ja, ko, zh-Hans, zh-Hant. Not
+    possible through the API: an approved (ACTIVE) localization answers 409 UNMODIFIABLE, so
+    Yearly's six descriptions (without "save 44%") and Lifetime's en-US one (with Weekly Review)
+    are **owner web-UI edits**; they go to review with 1.4.1.
+  - pricing (`iap_pricing.py`): Lifetime 19.99 → **39.99 USD** (other storefronts equalized by
+    Apple); Billing Grace Period on (16 days, all renewals, sandbox). The 7-day free trial on
+    Yearly waits for 1.4.2's paywall (below).
+  - `release.py prepare 1.4.1`: both records PREPARE_FOR_SUBMISSION, What's New ×6.
+  - `push_metadata.py 1.4.1 --app-info`: both records' descriptions, keywords and promotional
+    text (the Mac's own `promotional_text.macos.txt`, no widgets); the localized names and
+    subtitles on the editable appInfo. Two script bugs found and fixed on the way: approved
+    localizations were fatal (46b587e), and `--app-info` wrote the live appInfo and ran inside
+    the per-record loop (61682a2).
+  - `review_notes.py 1.4.1 --yes`: both records' notes from docs/review-notes-1.4.1.md, read back;
+    the demo sign-in fields untouched.
+  - screenshots: Mac APP_DESKTOP ×4; iOS APP_IPHONE_67, _65, APP_IPAD_PRO_3GEN_129, _129 ×4 each,
+    all COMPLETE; the three Watch sets carried over from 1.4.0.
+  - E: stride-site privacy page published (3245737), live with 1.4.1's three error reports.
+  - **Gate 11 PASS (pre-check):** check_email_auth.sh passes (SPF/MX/DKIM; DMARC p=none and no
+    rua are advisory); Resend says stride.colorarchive.me verified; an email.js send to
+    delivered@resend.dev went out; one production request-link to the plus-address at 12:58:20Z
+    → 200, and the mail from hello@stride.colorarchive.me was in the inbox at 12:58:21Z. Repeat
+    on submission day.
 - 2026-10-22, **"many people cancelled" investigated** (owner; workflow wf_8fc4ae13-677, read-only:
   ASC sales reports with vendor 94126306, reviews, Sentry, production backups and logs, a code
   audit of v1.4.0; a skeptic re-checked the ranking):
