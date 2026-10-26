@@ -38,6 +38,10 @@ struct StrideApp: App {
         // terminated app in the background with no scene at all, and its response goes to whoever
         // is the delegate when launch finishes. After the store open, which the handler writes to.
         NotificationActionHandler.install()
+        // Statistics' cache (RELEASE-1.4.1.md D3): its save, day, zone and activation observers,
+        // for the process and not for a window, on both platforms — a scene-less save (that
+        // reminder action, Siri) must reach it as surely as a window's.
+        StatsCache.shared.installObservers()
         #if os(iOS)
         // The background refresh's launch handler (RELEASE-1.4.0.md D5), here for the same reason:
         // registration must be complete before launch finishes, and a refresh launches the app in
@@ -83,6 +87,12 @@ struct StrideApp: App {
         // Re-anchor legacy local-midnight records to UTC day-keys before any
         // streak math or sync runs (idempotent — see SharedModelContainer).
         SharedModelContainer.migrateRecordDayKeysIfNeeded(modelContainer)
+        // Then the keys builds before 1.4.1 wrote on a non-Gregorian device, put back on their
+        // real days (X2, DayKeyRepair): every launch, before any sync can push them or a widget on
+        // such a device opens the store. It runs the delivery-state rule below first when it has
+        // something to repair (a 1.3.0 store's rows are "never delivered" until that rule).
+        SharedModelContainer.repairDayKeysIfNeeded(modelContainer,
+                                                   reloadWidgets: { WidgetCenter.shared.reloadAllTimelines() })
         // Before any sync: the 1.3.1 migrated-rows rule (rows a 1.3.0 snapshot already pushed
         // count as delivered, so a full pull may delete them if another device did) and the
         // owner-unknown note. Once per install each; the Keychain read is the one AuthService
@@ -137,6 +147,10 @@ struct StrideApp: App {
         WindowGroup(id: MainWindows.id) {
             mainWindowContent
                 .countsAsMainWindow()
+                #if DEBUG
+                // `-windowSize <W>x<H>`: the store-screenshot frame (LaunchWindowSize, below).
+                .background(LaunchWindowSize.Applier())
+                #endif
         }
         .windowStyle(.titleBar)
         .defaultSize(width: 900, height: 650)
@@ -165,9 +179,19 @@ struct StrideApp: App {
         .environment(\.locale, languageManager.locale ?? .current)
     }
 
-    /// The app itself, over the opened store.
+    /// The app itself, over the opened store, in a window of its own: the window's shell is made
+    /// here (`WindowShell`) rather than inside ContentView, so a URL the window receives can ask it
+    /// to present History (`openURL`), and with it what tells whether the window already shows a
+    /// presentation (`WindowPresentation`).
     private func app(over modelContainer: ModelContainer) -> some View {
-        ContentView()
+        WindowShell { shell, presentation in
+            window(over: modelContainer, shell: shell, presentation: presentation)
+        }
+    }
+
+    private func window(over modelContainer: ModelContainer, shell: ShellState,
+                        presentation: WindowPresentation) -> some View {
+        ContentView(shell: shell)
             .task {
                 // Entitlements FIRST. Transaction.currentEntitlements is a local read that works
                 // offline and returns in milliseconds. It used to be the last of four awaits,
@@ -180,6 +204,11 @@ struct StrideApp: App {
                 await Self.syncIfLoggedIn(modelContainer)
                 await StoreService.shared.loadProducts()
             }
+            #if DEBUG
+            // `-openHistory <habit> [-historyDay <days>]`: History over the launch, for the a11y
+            // sweep (`launchHistoryRequest`).
+            .task { @MainActor in Self.openLaunchHistory(in: shell, context: modelContainer.mainContext) }
+            #endif
             #if os(iOS)
             // The Mac has these two, and its activation pass, once per process instead
             // (`installProcessTriggers`): a Mac app outlives its windows, and its Dock badge with it.
@@ -222,10 +251,14 @@ struct StrideApp: App {
             // AuthService ignores a second delivery of the same tap. Links that fail to
             // open the app (Gmail's link proxy, in-app mail browsers) land on the /login
             // page with the token to paste, as before.
-            .onOpenURL { url in handleLoginLink(url, modelContainer) }
+            //
+            // And since 1.4.1 a checked, noted widget row: `stride://history?…` opens that habit's
+            // History (D7). The two never meet (`AppURLRoute`): a history link goes nowhere near
+            // AuthService, and only a login link's exact shape reaches it.
+            .onOpenURL { url in openURL(url, shell: shell, presentation: presentation, modelContainer) }
             .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
                 guard let url = activity.webpageURL else { return }
-                handleLoginLink(url, modelContainer)
+                openURL(url, shell: shell, presentation: presentation, modelContainer)
             }
             // Deliver links to the window that is already open. Without this, macOS opens a
             // second main window for every incoming URL (WindowGroup's default).
@@ -323,6 +356,110 @@ struct StrideApp: App {
     /// The SyncServices a foreground pass is under way for (`syncIfLoggedIn`).
     @MainActor private static var foregroundPasses: Set<ObjectIdentifier> = []
 
+    /// A URL handed to this window: History for a history link, the sign-in path for a login
+    /// link, nothing for anything else (`AppURLRoute`).
+    @MainActor
+    private func openURL(_ url: URL, shell: ShellState, presentation: WindowPresentation,
+                         _ modelContainer: ModelContainer) {
+        switch AppURLRoute.of(url, calendar: .current) {
+        case .history:
+            if let request = Self.historyRequest(for: url, in: modelContainer.mainContext) {
+                Self.present(request, in: shell, presenting: presentation.isPresenting)
+            }
+        case .signIn:
+            handleLoginLink(url, modelContainer)
+        case .other:
+            break
+        }
+    }
+
+    /// The shell request a history link asks for (`ShellRequest.history`), or nil: not a history
+    /// link, or its habit is not here (deleted, archived, or never synced to this device) — then
+    /// the app just opens. A day after today opens on today (History never shows a future day,
+    /// D8). Static, for the hosted tests.
+    @MainActor
+    static func historyRequest(for url: URL, in context: ModelContext, now: Date = Date(),
+                               calendar: Calendar = .current) -> ShellRequest? {
+        guard case .history(let habitID, let day) = AppURLRoute.of(url, calendar: calendar) else { return nil }
+        let descriptor = FetchDescriptor<Habit>(predicate: #Predicate { $0.id == habitID && !$0.isArchived })
+        guard let count = try? context.fetchCount(descriptor), count > 0 else { return nil }
+        let opensOn = HabitCalendar.dayKey(forInstant: day, calendar: calendar)
+            > HabitCalendar.dayKey(forInstant: now, calendar: calendar) ? now : day
+        return .history(habitID: habitID, day: opensOn)
+    }
+
+    #if DEBUG
+    /// `-openHistory <habit> [-historyDay <days>]`: the request for that habit's History, so
+    /// scripts/a11y_sweep.sh can capture it — `simctl` has no touch input, and the sweep can only
+    /// capture what a launch argument opens (RELEASE-1.4.1.md gate 8: History at default and AX5
+    /// sizes). DEBUG-only like `-paywall` and `-statsScrollTo`; the sweep passes it with `-demo`,
+    /// whose set `prepareStore` has written by the time the window asks.
+    ///
+    /// - `<habit>`: a habit's exact name, or else its index among the habits Stats lists (not
+    ///   archived; by `sortOrder`, then creation): `"Read 30 min"` or `1` in the demo set.
+    /// - `<days>`: days from today, 0 by default, so `-20` is twenty days back. A day after today
+    ///   opens on today, as a history link's does (D8).
+    ///
+    /// Nil without `-openHistory`, or when no habit matches: the app then just opens.
+    @MainActor
+    static func launchHistoryRequest(arguments: [String] = CommandLine.arguments, in context: ModelContext,
+                                     now: Date = Date(), calendar: Calendar = .current) -> ShellRequest? {
+        guard let flag = arguments.firstIndex(of: "-openHistory"), flag + 1 < arguments.count else { return nil }
+        let wanted = arguments[flag + 1]
+        let descriptor = FetchDescriptor<Habit>(predicate: #Predicate { !$0.isArchived },
+                                                sortBy: [SortDescriptor(\.sortOrder), SortDescriptor(\.createdAt)])
+        guard let habits = try? context.fetch(descriptor),
+              let habit = habits.first(where: { $0.name == wanted })
+                ?? Int(wanted).flatMap({ habits.indices.contains($0) ? habits[$0] : nil })
+        else { return nil }
+        var days = 0
+        if let dayFlag = arguments.firstIndex(of: "-historyDay"), dayFlag + 1 < arguments.count,
+           let asked = Int(arguments[dayFlag + 1]) {
+            days = min(asked, 0)
+        }
+        guard let day = calendar.date(byAdding: .day, value: days, to: now) else { return nil }
+        return .history(habitID: habit.id, day: day)
+    }
+
+    /// Whether a window has asked yet: once per process, as the Mac's `-tab 2` (a second iPad
+    /// window parses the same arguments).
+    @MainActor private static var launchHistoryAsked = false
+
+    /// Sets the shell's request straight away, as `-paywall` presents its sheet: the sweep skips
+    /// the onboarding (`-stride_onboarding_completed YES`), so nothing else is up at launch.
+    @MainActor
+    private static func openLaunchHistory(in shell: ShellState, context: ModelContext) {
+        guard !launchHistoryAsked else { return }
+        launchHistoryAsked = true
+        if let request = launchHistoryRequest(in: context) { shell.request = request }
+    }
+    #endif
+
+    /// Hands a history link's request to the window's shell — or leaves the shell as it is, and the
+    /// app just comes forward, as for a habit that is not here (W2 review, "W2-URL-1"):
+    /// - while a menu Export is in progress (the Mac's; the widget that sends these is iOS-only);
+    /// - while the window already shows a presentation (`presenting`): a sheet, cover or alert a
+    ///   view in it put up — Today's Add Habit, a row's Edit sheet or Note alert, the login sheet,
+    ///   the account screen, the onboarding — or the shell's own, History included. SwiftUI cannot
+    ///   present the shell's sheet over it ("already presenting"), and the request stayed set:
+    ///   measured on the iOS 26.5 simulator, SwiftUI then presents it by itself the moment the
+    ///   other one closes — History popping up over Today when the user finishes adding a habit,
+    ///   long after the tap — and until then an equal request from the next tap changes nothing.
+    ///   What is up is never dismissed for the link either: that would throw away an Add Habit or
+    ///   Edit draft, or cut a sign-in short. The Mac's menu commands follow the same rule under a
+    ///   sheet (`MenuCommandPress`).
+    ///
+    /// Otherwise the request is set, replacing any earlier one not yet on screen. Not cleared and
+    /// set again on a later turn, either (the review's suggestion for a request SwiftUI had
+    /// dropped): measured, that races SwiftUI's own retry of the dropped sheet and can leave the
+    /// request set with nothing presented — the dead link itself. Static, for the hosted tests.
+    @MainActor
+    static func present(_ request: ShellRequest, in shell: ShellState, presenting: Bool) {
+        if case .export = shell.request { return }
+        guard !presenting else { return }
+        shell.request = request
+    }
+
     /// Signs in from a login link when signed out, then syncs — the same sync SettingsView runs
     /// when `isLoggedIn` turns true, needed here because Settings may not be on screen (or, on
     /// macOS, open at all). SyncService ignores the second of two overlapping syncs.
@@ -364,6 +501,111 @@ struct StrideApp: App {
         // Re-schedule per-habit reminders
         NotificationService.shared.rescheduleAllHabitReminders(modelContainer: modelContainer)
     }
+}
+
+/// One window's shell, made for the window and handed to its ContentView (which would otherwise
+/// make its own, `ContentView.init(shell:)`), so the window's URL handlers can set its request —
+/// with the window's `WindowPresentation`, which they ask first. `@State`, so each window has its
+/// own and keeps it for the window's life, as ContentView's did.
+private struct WindowShell<Content: View>: View {
+    @State private var shell = ShellState()
+    @State private var presentation = WindowPresentation()
+    @ViewBuilder let content: (ShellState, WindowPresentation) -> Content
+
+    var body: some View {
+        content(shell, presentation)
+            .background(WindowPresentation.Reader(presentation: presentation))
+    }
+}
+
+/// Whether one window already shows a presentation (`StrideApp.present(_:in:presenting:)`). On
+/// iOS: its root view controller has presented one — every sheet, full-screen cover and alert
+/// SwiftUI puts up in the window, the shell's or a view's inside it, is a modal presentation
+/// there. On the Mac: a sheet is attached to it (an alert is a sheet there too), or it is one.
+/// The window is the one `Reader`, a view in the window's content, finds itself in.
+@MainActor
+final class WindowPresentation {
+    #if os(iOS)
+    weak var window: UIWindow?
+
+    var isPresenting: Bool { Self.isPresenting(window) }
+
+    static func isPresenting(_ window: UIWindow?) -> Bool {
+        window?.rootViewController?.presentedViewController != nil
+    }
+
+    /// An empty view that hands its window to `presentation` (as LaunchWindowSize's Applier and
+    /// MenuCommands' MainWindowReader do on the Mac). It draws nothing and takes no touches.
+    struct Reader: UIViewRepresentable {
+        let presentation: WindowPresentation
+
+        func makeUIView(context: Context) -> ProbeView {
+            let view = ProbeView()
+            view.presentation = presentation
+            return view
+        }
+
+        func updateUIView(_ view: ProbeView, context: Context) {
+            view.presentation = presentation
+        }
+
+        final class ProbeView: UIView {
+            weak var presentation: WindowPresentation? {
+                didSet { presentation?.window = window }
+            }
+
+            override init(frame: CGRect) {
+                super.init(frame: frame)
+                isUserInteractionEnabled = false
+                accessibilityElementsHidden = true
+            }
+
+            required init?(coder: NSCoder) { nil }
+
+            override func didMoveToWindow() {
+                super.didMoveToWindow()
+                presentation?.window = window
+            }
+        }
+    }
+    #else
+    weak var window: NSWindow?
+
+    var isPresenting: Bool { Self.isPresenting(window) }
+
+    static func isPresenting(_ window: NSWindow?) -> Bool {
+        guard let window else { return false }
+        return window.attachedSheet != nil || window.sheetParent != nil
+    }
+
+    /// An empty view that hands its window to `presentation`. It draws nothing and takes no clicks.
+    struct Reader: NSViewRepresentable {
+        let presentation: WindowPresentation
+
+        func makeNSView(context: Context) -> ProbeView {
+            let view = ProbeView()
+            view.presentation = presentation
+            return view
+        }
+
+        func updateNSView(_ view: ProbeView, context: Context) {
+            view.presentation = presentation
+        }
+
+        final class ProbeView: NSView {
+            weak var presentation: WindowPresentation? {
+                didSet { presentation?.window = window }
+            }
+
+            override func viewDidMoveToWindow() {
+                super.viewDidMoveToWindow()
+                presentation?.window = window
+            }
+
+            override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        }
+    }
+    #endif
 }
 
 #if os(macOS)
@@ -437,6 +679,79 @@ extension StrideApp {
         ]
     }
 }
+
+#if DEBUG
+/// `-windowSize <W>x<H>` (e.g. `-windowSize 1440x900`): the main window's FRAME, title bar
+/// included, in points — DEBUG builds on the Mac only (RELEASE-1.4.1.md W0, P3b). It is what
+/// `screencapture -o -l <window id>` captures, so at @2x a 1440x900 frame is exactly the
+/// 2880×1800 the Mac App Store's APP_DESKTOP slot takes; scripts/mac_variant/capture.sh asserts
+/// that size. `.defaultSize` (900×650) is only a first-launch default that a restored frame
+/// overrides, and it sizes the content rather than the frame, so the frame is set on the
+/// NSWindow itself, once per process, on the first main window: a window ⌘0 opens later keeps
+/// its own size. Centred on that window's screen; a frame larger than the screen's visible area
+/// is set anyway and macOS may shrink it, which capture.sh's size check then reports.
+///
+/// Compiled out of Release, so no shipping build reads the flag (the variant is always Debug:
+/// mac_variant/build.sh); iOS has no such code at all. A missing or malformed value changes
+/// nothing. AppKit
+/// also reads `-windowSize 1440x900` as a `windowSize` argument-domain default, which nothing
+/// uses.
+enum LaunchWindowSize {
+    /// The requested frame size, or nil.
+    static let requested: CGSize? = parse(CommandLine.arguments)
+
+    /// `<W>x<H>`, whole points, each 200…10000.
+    static func parse(_ arguments: [String]) -> CGSize? {
+        guard let flag = arguments.firstIndex(of: "-windowSize") else { return nil }
+        let valueIndex = arguments.index(after: flag)
+        guard valueIndex < arguments.endIndex else {
+            print("[LaunchWindowSize] -windowSize needs a value such as 1440x900; ignored")
+            return nil
+        }
+        let parts = arguments[valueIndex].lowercased().split(separator: "x", omittingEmptySubsequences: false)
+        guard parts.count == 2, let width = Int(parts[0]), let height = Int(parts[1]),
+              (200...10_000).contains(width), (200...10_000).contains(height) else {
+            print("[LaunchWindowSize] -windowSize \(arguments[valueIndex]) is not <W>x<H>; ignored")
+            return nil
+        }
+        return CGSize(width: width, height: height)
+    }
+
+    /// Once per process.
+    @MainActor private static var applied = false
+
+    @MainActor fileprivate static func apply(to window: NSWindow) {
+        guard let size = requested, !applied else { return }
+        applied = true
+        // After SwiftUI has finished placing the new window (its default size, or a restored
+        // frame), so this frame is the last word.
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                let visible = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
+                let origin = NSPoint(x: (visible.midX - size.width / 2).rounded(),
+                                     y: (visible.midY - size.height / 2).rounded())
+                window.setFrame(NSRect(origin: origin, size: size), display: true)
+                print("[LaunchWindowSize] main window frame \(Int(window.frame.width))x\(Int(window.frame.height)) pt, backing scale \(window.backingScaleFactor)")
+            }
+        }
+    }
+
+    /// An empty view that hands its window to `apply` (as MenuCommands' MainWindowReader does).
+    struct Applier: NSViewRepresentable {
+        func makeNSView(context: Context) -> NSView { WindowSizingView() }
+        func updateNSView(_ view: NSView, context: Context) {}
+
+        private final class WindowSizingView: NSView {
+            override func viewDidMoveToWindow() {
+                super.viewDidMoveToWindow()
+                if let window { LaunchWindowSize.apply(to: window) }
+            }
+
+            override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        }
+    }
+}
+#endif
 #endif
 
 extension Notification.Name {

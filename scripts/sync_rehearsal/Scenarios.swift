@@ -697,7 +697,7 @@ struct Scenarios {
                 habit.records.append(HabitRecord(date: Scenario.day(0)))
                 try d.save()
             }
-            return untap.deletedRecordID ?? "none"
+            return untap.deletedRecordIDs.first ?? "none"
         }
 
         for mode in ["first 1.3.1 sync (no cursor)", "Full resync"] {
@@ -1300,4 +1300,565 @@ struct Missing: Error, CustomStringConvertible {
 func unwrap<T>(_ value: T?, _ what: String) throws -> T {
     guard let value else { throw Missing(description: "missing: \(what)") }
     return value
+}
+
+// MARK: - M4 (1.4.1): History's edits of past days (RELEASE-1.4.1.md Data safety 2)
+
+/// The five M4 scenarios. Every write is History's (`StoreDevice.history`: HabitCheckIn's D4
+/// setters, then the save, then the tombstones), on a day in the past, and every check compares
+/// the devices with each other and with what the server holds.
+extension Scenarios {
+    /// The records of one day in a store, read through the store (`habit.records` may still list
+    /// a record deleted in this context; the fetch never does).
+    private func storedRecords(_ d: StoreDevice, day: Int) throws -> [HabitRecord] {
+        let key = HabitCalendar.dayKey(for: Scenario.day(day))
+        return try d.context.fetch(FetchDescriptor<HabitRecord>()).filter { $0.date == key }
+    }
+
+    private func serverEntries(_ account: Account, habit: UUID, day: Int) async throws -> [SyncEntry] {
+        let dayString = HabitCalendar.dayStringFormatter.string(from: HabitCalendar.dayKey(for: Scenario.day(day)))
+        return try await serverSnapshot(account).entries.filter {
+            SyncReconciler.canonicalID($0.habitId) == habit.uuidString && $0.date == dayString
+        }
+    }
+
+    private func entries(_ records: [HabitRecord]) -> String {
+        records.map { "\($0.id.uuidString.prefix(8)) v\($0.value) \($0.note.map { "“\($0)”" } ?? "no note")" }
+            .joined(separator: ", ")
+    }
+
+    // M1 — a past-day edit on A, pulled by B. History lowers one day's amount, notes another,
+    // backfills a third (to the goal: a count day is never written at 0) and checks a yes/no day
+    // that never had a record. Only those four rows go up, and B ends with exactly A's store.
+    func pastDayEditPulledByB() async throws {
+        let account = try Account.create()
+        let a = Device131("A", account: account), b = Device131("B", account: account)
+        defer { a.remove(); b.remove() }
+        let water = a.habit("Water", days: Array(0..<14))
+        water.habitKind = .count
+        water.targetValue = 8
+        water.records.forEach { $0.value = 8 }
+        let read = a.habit("Read", days: Array(0..<14))
+        try a.save()
+        guard isSynced(await a.sync()), isSynced(await b.sync()) else { throw Missing(description: "the first syncs") }
+
+        try a.history(water, day: 3, value: 5)
+        try a.history(water, day: 5, note: "felt tired")
+        try a.history(water, day: 20, checked: true)
+        try a.history(read, day: 16, checked: true)
+        let mark = a.transport.mark()
+        let pushed = await a.sync()
+        let ex = a.transport.since(mark)
+        let sent = totalPushed(ex)
+        report.check("History edits of four past days on A push exactly those four entries, and nothing else",
+                     isSynced(pushed) && sent.entries == 4 && sent.habits == 0 && sent.deletions == 0,
+                     "\(describe(pushed)); \(describe(ex))")
+
+        let pulled = await b.sync()
+        let server = StoreDigest(pull: try await serverSnapshot(account))
+        let day3 = try b.record(of: water.id, day: 3), day5 = try b.record(of: water.id, day: 5)
+        let day20 = try b.record(of: water.id, day: 20), day16 = try b.record(of: read.id, day: 16)
+        let aDigest = try a.digest(), bDigest = try b.digest()
+        let pendingA = try a.pendingCount(), pendingB = try b.pendingCount()
+        report.check("…and B pulls each one (the lower amount, the note, the backfill at the goal, the new check-in); A, B and the server agree",
+                     isSynced(pulled) && day3?.value == 5 && day5?.note == "felt tired" && day5?.value == 8
+                        && day20?.value == 8 && day16 != nil && aDigest == bDigest && bDigest == server
+                        && pendingB == 0 && pendingA == 0,
+                     "\(describe(pulled)); B day 3 \(day3?.value ?? -1), day 5 \(day5?.note ?? "no note"), day 20 \(day20?.value ?? -1), Read day 16 \(day16 == nil ? "missing" : "checked"); \(aDigest.difference(from: bDigest) ?? "A = B"), \(bDigest.difference(from: server) ?? "B = server")")
+    }
+
+    // M2 — un-check and re-check of a past day in History: delete-and-replace (sync.js's
+    // tombstone, then the new row). The day had a note, so the un-check asks first and writes
+    // nothing until confirmed. Then X goes and Y comes, and every device — and the server — ends
+    // with exactly one record of that day: Y.
+    func pastDayUntapAndReTap() async throws {
+        let account = try Account.create()
+        let a = Device131("A", account: account), b = Device131("B", account: account)
+        defer { a.remove(); b.remove() }
+        let read = a.habit("Read", days: Array(0..<10), note: { $0 == 4 ? "rainy" : nil })
+        try a.save()
+        guard isSynced(await a.sync()), isSynced(await b.sync()) else { throw Missing(description: "the first syncs") }
+        let original = try unwrap(storedRecords(a, day: 4).first, "A's day 4").id
+
+        let asked = try a.history(read, day: 4, checked: false)
+        let afterAsking = try storedRecords(a, day: 4)
+        let pendingAfterAsking = try a.pendingCount()
+        let untouched = afterAsking.map(\.id) == [original] && a.queue.pending().isEmpty && pendingAfterAsking == 0
+        report.check("un-checking a noted past day in History asks first (removeNote), and writes and queues nothing",
+                     asked == .needsConfirmation(.removeNote) && untouched,
+                     "\(asked); A day 4 \(entries(afterAsking)), queue \(a.queue.pending().entries.count)")
+
+        try a.history(read, day: 4, checked: false, confirmed: .removeNote)
+        try a.history(read, day: 4, checked: true)
+        let replacement = try unwrap(storedRecords(a, day: 4).first, "A's re-check").id
+        let queued = a.queue.pending().entries
+        let aSynced = await a.sync()
+        let bSynced = await b.sync()
+        let onServer = try await serverEntries(account, habit: read.id, day: 4)
+        let onA = try storedRecords(a, day: 4), onB = try storedRecords(b, day: 4)
+        let pendingA = try a.pendingCount(), pendingB = try b.pendingCount()
+        report.check("…confirmed, then re-checked: X's tombstone and Y go up, and A, B and the server each hold exactly Y, without the note",
+                     replacement != original && queued == [original.uuidString] && isSynced(aSynced) && isSynced(bSynced)
+                        && onServer.map { SyncReconciler.canonicalID($0.id) } == [replacement.uuidString]
+                        && onServer.first?.note == nil
+                        && onA.map(\.id) == [replacement] && onB.map(\.id) == [replacement] && onB.first?.note == nil
+                        && a.queue.pending().isEmpty && a.logItems().isEmpty && b.logItems().isEmpty
+                        && pendingA == 0 && pendingB == 0,
+                     "queued \(queued.map { $0.prefix(8) }); server [\(onServer.map { $0.id.prefix(8) }.joined(separator: ","))], A [\(entries(onA))], B [\(entries(onB))]")
+    }
+
+    // M3 — last writer wins, for a note edited in History on two devices. A edits first, B a few
+    // milliseconds later, but B's edit reaches the server first: A's older one, arriving second,
+    // changes nothing there and is fed back the winner, so every device ends with B's note.
+    func lastWriterWinsNoteEdit() async throws {
+        let account = try Account.create()
+        let a = Device131("A", account: account), b = Device131("B", account: account)
+        defer { a.remove(); b.remove() }
+        let read = a.habit("Read", days: [7])
+        try a.save()
+        guard isSynced(await a.sync()), isSynced(await b.sync()) else { throw Missing(description: "the first syncs") }
+        let bRead = try unwrap(b.habit(id: read.id), "B has Read")
+
+        try a.history(read, day: 7, note: "from A")
+        try await Task.sleep(nanoseconds: 5_000_000)
+        try b.history(bRead, day: 7, note: "from B")
+        let bFirst = await b.sync()
+        let aSecond = await a.sync()
+        let bAgain = await b.sync()
+        let onServer = try await serverEntries(account, habit: read.id, day: 7)
+        let onA = try storedRecords(a, day: 7), onB = try storedRecords(b, day: 7)
+        let pendingA = try a.pendingCount(), pendingB = try b.pendingCount()
+        report.check("two History note edits of one past day: the newer one wins on A, B and the server, whichever was pushed last",
+                     isSynced(bFirst) && isSynced(aSecond) && isSynced(bAgain)
+                        && onServer.map(\.note) == ["from B"] && onA.map(\.note) == ["from B"] && onB.map(\.note) == ["from B"]
+                        && onA.map(\.id) == onB.map(\.id)
+                        && pendingA == 0 && pendingB == 0,
+                     "server \(onServer.map { $0.note ?? "no note" }), A [\(entries(onA))], B [\(entries(onB))]")
+    }
+
+    // M4 — a record dated before the habit was created: History lets a day up to a year before
+    // creation be checked (D8). The record goes up and down like any other; `createdAt` is never
+    // written (the server sets it only on insert), and the rate starts at the earlier of the two.
+    // On past days from `Scenario.day0`, never before 2025-01-02: inside the server's entry-date
+    // window, and read by the stats' start, which since X2 ignores a record before 2025-01-01
+    // (only a non-Gregorian device's key can be one).
+    func recordBeforeCreatedAt() async throws {
+        let account = try Account.create()
+        let a = Device131("A", account: account), b = Device131("B", account: account)
+        defer { a.remove(); b.remove() }
+        let stretch = a.habit("Stretch")
+        let created = SyncTimestamp.floorToMillisecond(Scenario.day(10))
+        stretch.createdAt = created
+        stretch.updatedAt = created
+        try a.save()
+        guard isSynced(await a.sync()), isSynced(await b.sync()) else { throw Missing(description: "the first syncs") }
+
+        let day = 3
+        try a.history(stretch, day: day, checked: true)
+        let aSynced = await a.sync()
+        let bSynced = await b.sync()
+        let server = try await serverSnapshot(account)
+        let serverHabit = server.habits.first { SyncReconciler.canonicalID($0.id) == stretch.id.uuidString }
+        let onServer = try await serverEntries(account, habit: stretch.id, day: day)
+        let bStretch = try unwrap(b.habit(id: stretch.id), "B has Stretch")
+        let onB = try storedRecords(b, day: day)
+        let createdEverywhere = stretch.createdAt == created && bStretch.createdAt == created
+            && SyncTimestamp.parse(serverHabit?.createdAt) == created
+        let start = HabitCalendar.dayKey(for: Scenario.day(day))
+        let startA = HabitStats(habit: stretch, live: HabitStats.liveRecords(of: stretch), today: Scenario.day(20)).startDay
+        let startB = HabitStats(habit: bStretch, live: HabitStats.liveRecords(of: bStretch), today: Scenario.day(20)).startDay
+        let pendingA = try a.pendingCount(), pendingB = try b.pendingCount()
+        report.check("a check-in a week before the habit was created reaches B and the server; createdAt is unchanged everywhere, and the rate starts at the check-in",
+                     isSynced(aSynced) && isSynced(bSynced) && onServer.count == 1 && onB.count == 1
+                        && createdEverywhere && startA == start && startB == start
+                        && pendingA == 0 && pendingB == 0,
+                     "server \(onServer.count), B \(onB.count); createdAt A \(stretch.createdAt), B \(bStretch.createdAt), server \(serverHabit?.createdAt ?? "missing"); start A \(startA), B \(startB)")
+    }
+
+    // M5 — the stale cursor (Risk 3). B checks day X with a note and syncs. A, whose cursor is
+    // from before that, ticks X in History and syncs: its push goes first (a live cursor; push
+    // before pull), carrying a different id and NO note for the same day. The server keeps the
+    // stored note (the note-keeping upsert, #9) and tells A the id it keeps; A's pull then brings
+    // the note. X's note is intact on A, B and the server, under one id.
+    func staleCursorKeepsTheNote() async throws {
+        let account = try Account.create()
+        let a = Device131("A", account: account), b = Device131("B", account: account)
+        defer { a.remove(); b.remove() }
+        let read = a.habit("Read", days: [0])
+        try a.save()
+        guard isSynced(await a.sync()), isSynced(await b.sync()) else { throw Missing(description: "the first syncs") }
+        let staleCursor = a.cursor
+        let bRead = try unwrap(b.habit(id: read.id), "B has Read")
+
+        try b.history(bRead, day: 9, checked: true, note: "ran in the rain")
+        guard isSynced(await b.sync()) else { throw Missing(description: "B's check-in") }
+        let bID = try unwrap(storedRecords(b, day: 9).first, "B's day 9").id
+
+        try a.history(read, day: 9, checked: true)
+        let aID = try unwrap(storedRecords(a, day: 9).first, "A's day 9").id
+        let mark = a.transport.mark()
+        let aSynced = await a.sync()
+        let ex = a.transport.since(mark)
+        let bAgain = await b.sync()
+        let onServer = try await serverEntries(account, habit: read.id, day: 9)
+        let onA = try storedRecords(a, day: 9), onB = try storedRecords(b, day: 9)
+        let pendingA = try a.pendingCount(), pendingB = try b.pendingCount()
+        report.check("a stale-cursor History tick of a day another device noted pushes first, with a different id and no note",
+                     isSynced(aSynced) && staleCursor != nil && aID != bID && ex.first?.endpoint == .push
+                        && ex.contains { $0.endpoint == .pull && $0.since != nil },
+                     "\(describe(aSynced)); \(describe(ex))")
+        report.check("…and the note is intact on the server, A and B, under the one id the server keeps",
+                     isSynced(bAgain) && onServer.count == 1 && onServer.first?.note == "ran in the rain"
+                        && SyncReconciler.canonicalID(onServer.first?.id ?? "") == bID.uuidString
+                        && onA.map(\.id) == [bID] && onA.first?.note == "ran in the rain"
+                        && onB.map(\.id) == [bID] && onB.first?.note == "ran in the rain"
+                        && pendingA == 0 && pendingB == 0
+                        && a.logItems().isEmpty && b.logItems().isEmpty,
+                     "server [\(onServer.map { "\($0.id.prefix(8)) \($0.note ?? "no note")" }.joined(separator: ","))], A [\(entries(onA))], B [\(entries(onB))]")
+    }
+}
+
+// MARK: - M4 (1.4.1): a day merge across devices (W2 review)
+
+/// Decision 7's day merge when the duplicates are not this device's alone (W2 review: findings
+/// "merge-tombstones-server-row", SYNC-1 and SYNC-2). The server holds ONE row per habit and day
+/// (routes/sync.js upsertEntry, `ON CONFLICT(habit_id, date)`), so a merge never has a second
+/// server row to remove: a tombstone for a dropped duplicate could only delete the day's one row.
+/// Each scenario puts a device in a duplicate state the engine really reaches, merges through
+/// HabitCheckIn's setters (`StoreDevice.history`), and then checks, after the merging device
+/// syncs, the other device syncs, and the merging device full-pulls, that the server and both
+/// devices each hold exactly one record of the day — under one id, with its note.
+extension Scenarios {
+    /// What one day looks like on the server and on two devices.
+    @MainActor
+    private struct DayState {
+        var server: [SyncEntry]
+        var a: [HabitRecord]
+        var b: [HabitRecord]
+
+        /// One record everywhere, under the same id, carrying `note` and `value`.
+        func isOne(note: String?, value: Double) -> Bool {
+            guard server.count == 1, a.count == 1, b.count == 1,
+                  let row = server.first, let onA = a.first, let onB = b.first else { return false }
+            let id = SyncReconciler.canonicalID(row.id)
+            return onA.id.uuidString == id && onB.id.uuidString == id
+                && row.note == note && onA.note == note && onB.note == note
+                && (row.value ?? 1) == value && onA.value == value && onB.value == value
+        }
+
+        var summary: String {
+            let rows = server.map { "\($0.id.prefix(8)) v\($0.value ?? 1) \($0.note.map { "“\($0)”" } ?? "no note")" }
+            func local(_ records: [HabitRecord]) -> String {
+                records.map { "\($0.id.uuidString.prefix(8)) v\($0.value) \($0.note.map { "“\($0)”" } ?? "no note")" }
+                    .joined(separator: ", ")
+            }
+            return "server [\(rows.joined(separator: ", "))], A [\(local(a))], B [\(local(b))]"
+        }
+    }
+
+    private func dayState(_ account: Account, _ a: StoreDevice, _ b: StoreDevice, habit: UUID, day: Int) async throws -> DayState {
+        DayState(server: try await serverEntries(account, habit: habit, day: day),
+                 a: try storedRecords(a, day: day), b: try storedRecords(b, day: day))
+    }
+
+    /// Nothing left over on either device: no pending row, no queued deletion, nothing archived.
+    private func settled(_ a: Device131, _ b: Device131) throws -> Bool {
+        try a.pendingCount() == 0 && b.pendingCount() == 0 && a.queue.pending().isEmpty && b.queue.pending().isEmpty
+            && a.logItems().isEmpty && b.logItems().isEmpty
+    }
+
+    /// A Read (yes/no) and a Water (count, 8) habit on A, synced to B.
+    private func twoHabits(_ a: Device131, _ b: Device131) async throws -> (read: Habit, water: Habit, bRead: Habit, bWater: Habit) {
+        let read = a.habit("Read")
+        let water = a.habit("Water")
+        water.habitKind = .count
+        water.targetValue = 8
+        try a.save()
+        guard isSynced(await a.sync()), isSynced(await b.sync()) else { throw Missing(description: "the first syncs") }
+        return (read, water, try unwrap(b.habit(id: read.id), "B has Read"), try unwrap(b.habit(id: water.id), "B has Water"))
+    }
+
+    // M6 — the server keeps the OTHER record's id (finding (b), SYNC-2). B checks Read on day 9 and
+    // logs 3 glasses of Water on day 11 with a note; A pulls both (W). A then gains a second
+    // record of each day (T), appended outside HabitCheckIn the way the widget's insert racing a
+    // Today tap is, and pushes it while its post-push pull never arrives: T lands on W's row, and
+    // the server's alias is not followed because A still holds W. Both records are delivered; T
+    // outranks W (Read: the newer stamp; Water: 5 glasses). A merge-only write of Read (a stale
+    // row's check of a checked day) and a Water write whose merge moves W's note onto T then keep
+    // T and drop W.
+    func mergeWhereTheServerKeepsTheOtherID() async throws {
+        let account = try Account.create()
+        let a = Device131("A", account: account), b = Device131("B", account: account)
+        defer { a.remove(); b.remove() }
+        let (read, water, bRead, bWater) = try await twoHabits(a, b)
+        try b.history(bRead, day: 9, checked: true)
+        try b.history(bWater, day: 11, value: 3, note: "from B")
+        guard isSynced(await b.sync()), isSynced(await a.sync()) else { throw Missing(description: "B's check-ins, pulled by A") }
+        let readW = try unwrap(storedRecords(b, day: 9).first, "B's Read").id
+        let waterW = try unwrap(storedRecords(b, day: 11).first, "B's Water").id
+
+        try await Task.sleep(nanoseconds: 5_000_000)   // T's stamps after W's
+        read.records.append(HabitRecord(date: Scenario.day(9)))
+        water.records.append(HabitRecord(date: Scenario.day(11), value: 5))
+        try a.save()
+        a.transport.transformPull = { _, _ in .noAnswer }   // the post-push pull never arrives
+        _ = await a.sync()
+        a.transport.transformPull = nil
+        let readBefore = try await dayState(account, a, b, habit: read.id, day: 9)
+        let waterBefore = try await dayState(account, a, b, habit: water.id, day: 11)
+        let delivered = (readBefore.a + waterBefore.a).allSatisfy { $0.hasBeenDelivered && !$0.isPending }
+        report.check("setup: A holds two delivered records of each day, and the server one row each, under B's ids",
+                     readBefore.a.count == 2 && waterBefore.a.count == 2 && delivered
+                        && readBefore.server.map { SyncReconciler.canonicalID($0.id) } == [readW.uuidString]
+                        && waterBefore.server.map { SyncReconciler.canonicalID($0.id) } == [waterW.uuidString],
+                     "Read: \(readBefore.summary); Water: \(waterBefore.summary)")
+
+        try a.history(read, day: 9, checked: true)    // merge only: T is kept unchanged
+        try a.history(water, day: 11, value: 5)       // the merge moves W's note onto T
+        let queued = a.queue.pending().entries
+        let aSynced = await a.sync()
+        let bSynced = await b.sync()
+        var readDay = try await dayState(account, a, b, habit: read.id, day: 9)
+        var waterDay = try await dayState(account, a, b, habit: water.id, day: 11)
+        var calm = try settled(a, b)
+        report.check("A's merges keep both days: after A and B sync, the server, A and B each hold one record of each, under one id, Water's note included",
+                     isSynced(aSynced) && isSynced(bSynced) && readDay.isOne(note: nil, value: 1)
+                        && waterDay.isOne(note: "from B", value: 5) && calm,
+                     "queued by the merges \(queued.map { $0.prefix(8) }); Read: \(readDay.summary); Water: \(waterDay.summary)")
+
+        a.cursor = nil   // the next sync is a full pull, with its absence pass
+        let full = await a.sync()
+        let bAgain = await b.sync()
+        readDay = try await dayState(account, a, b, habit: read.id, day: 9)
+        waterDay = try await dayState(account, a, b, habit: water.id, day: 11)
+        calm = try settled(a, b)
+        report.check("…and still after A's full pull",
+                     isSynced(full) && isSynced(bAgain) && readDay.isOne(note: nil, value: 1)
+                        && waterDay.isOne(note: "from B", value: 5) && calm,
+                     "\(describe(full)); Read: \(readDay.summary); Water: \(waterDay.summary)")
+    }
+
+    // M7 — the same-id pair (finding (a), SYNC-1). When the pull after a push like M6's reached T
+    // first, 1.3.1–1.4.0's day match renamed T onto the server's id although A's W already carried
+    // it, and gave T the row's fields: A held two delivered records that are both W. 1.4.1's match
+    // no longer makes the pair (X1, M9), but stores those builds wrote can hold one, so it is made
+    // here by hand and the rest is the engine's. A note edit of Read's day and a merge-only write of
+    // Water's must not tombstone W: it is the id of the record they keep.
+    func mergeOfTwoRecordsWithOneID() async throws {
+        let account = try Account.create()
+        let a = Device131("A", account: account), b = Device131("B", account: account)
+        defer { a.remove(); b.remove() }
+        let (read, water, bRead, bWater) = try await twoHabits(a, b)
+        try b.history(bRead, day: 9, checked: true)
+        try b.history(bWater, day: 11, value: 3, note: "from B")
+        guard isSynced(await b.sync()), isSynced(await a.sync()) else { throw Missing(description: "B's check-ins, pulled by A") }
+        for (habit, day) in [(read, 9), (water, 11)] {
+            let w = try unwrap(storedRecords(a, day: day).first, "A's day \(day)")
+            let twin = HabitRecord(date: Scenario.day(day), note: w.note, value: w.value)
+            twin.id = w.id
+            twin.updatedAt = w.updatedAt
+            twin.adoptRemoteState()
+            habit.records.append(twin)
+        }
+        try a.save()
+        let readBefore = try storedRecords(a, day: 9), waterBefore = try storedRecords(a, day: 11)
+        report.check("setup: A holds two delivered records of each day, both under the server's id",
+                     readBefore.count == 2 && Set(readBefore.map(\.id)).count == 1
+                        && waterBefore.count == 2 && Set(waterBefore.map(\.id)).count == 1
+                        && (readBefore + waterBefore).allSatisfy { $0.hasBeenDelivered && !$0.isPending },
+                     "Read \(readBefore.map { $0.id.uuidString.prefix(8) }), Water \(waterBefore.map { $0.id.uuidString.prefix(8) })")
+
+        try a.history(read, day: 9, note: "from A")   // Edit Note → Save on the merged day
+        try a.history(water, day: 11, value: 3)       // merge only
+        let queued = a.queue.pending().entries
+        let aSynced = await a.sync()
+        let bSynced = await b.sync()
+        var readDay = try await dayState(account, a, b, habit: read.id, day: 9)
+        var waterDay = try await dayState(account, a, b, habit: water.id, day: 11)
+        var calm = try settled(a, b)
+        report.check("merging a same-id pair keeps the day: after A and B sync, one record of each everywhere, Read with A's new note",
+                     isSynced(aSynced) && isSynced(bSynced) && queued.isEmpty
+                        && readDay.isOne(note: "from A", value: 1) && waterDay.isOne(note: "from B", value: 3)
+                        && calm,
+                     "queued by the merges \(queued.map { $0.prefix(8) }); Read: \(readDay.summary); Water: \(waterDay.summary)")
+
+        a.cursor = nil
+        let full = await a.sync()
+        let bAgain = await b.sync()
+        readDay = try await dayState(account, a, b, habit: read.id, day: 9)
+        waterDay = try await dayState(account, a, b, habit: water.id, day: 11)
+        calm = try settled(a, b)
+        report.check("…and still after A's full pull",
+                     isSynced(full) && isSynced(bAgain) && readDay.isOne(note: "from A", value: 1)
+                        && waterDay.isOne(note: "from B", value: 3) && calm,
+                     "\(describe(full)); Read: \(readDay.summary); Water: \(waterDay.summary)")
+    }
+
+    // M8 — a merge while the chunk carrying the dropped duplicate is in flight (finding, point 4).
+    // B checks Read on day 6 (W). A, before pulling it, checks day 6 in History (K) and gains a
+    // second record of it (R, the widget's racing insert, newer, so the one kept; its id sorts
+    // last, so K goes first in the chunk). Both go up in one chunk and land on W's row, the server
+    // answering an alias for each; while that chunk is in flight, A's merge-only write of the day
+    // drops K. The resolver must not turn the drop into a deletion of W (`followAlias` passes on
+    // only a deletion that was queued): the server, A and B end with one record of the day.
+    func mergeWhileTheDuplicateIsInFlight() async throws {
+        let account = try Account.create()
+        let a = Device131("A", account: account), b = Device131("B", account: account)
+        defer { a.remove(); b.remove() }
+        let (read, _, bRead, _) = try await twoHabits(a, b)
+        try b.history(bRead, day: 6, checked: true)
+        guard isSynced(await b.sync()) else { throw Missing(description: "B's check-in") }
+        let w = try unwrap(storedRecords(b, day: 6).first, "B's day 6").id
+
+        try a.history(read, day: 6, checked: true)
+        let k = try unwrap(storedRecords(a, day: 6).first, "A's K").id
+        try await Task.sleep(nanoseconds: 5_000_000)
+        let r = HabitRecord(date: Scenario.day(6))
+        r.id = UUID(uuidString: "FFFFFFFF-FFFF-4FFF-BFFF-\(String(UUID().uuidString.suffix(12)))") ?? r.id
+        read.records.append(r)
+        try a.save()
+        let rID = r.id   // `r` takes the server's id once its chunk is answered
+
+        var merged: HabitCheckIn.Change?
+        a.transport.afterPush = { _ in
+            guard merged == nil else { return }
+            merged = try? a.history(read, day: 6, checked: true)
+        }
+        let first = await a.sync()
+        a.transport.afterPush = nil
+        let queued = a.queue.pending().entries
+        let second = await a.sync()
+        let bSynced = await b.sync()
+        var day = try await dayState(account, a, b, habit: read.id, day: 6)
+        let mergedInFlight: Bool
+        if case .changed? = merged { mergedInFlight = true } else { mergedInFlight = false }
+        var calm = try settled(a, b)
+        report.check("a merge while its dropped duplicate is in flight deletes nothing on the server: one record of the day everywhere, under W",
+                     mergedInFlight && isSynced(first) && isSynced(second) && isSynced(bSynced)
+                        && day.isOne(note: nil, value: 1) && day.server.first.map { SyncReconciler.canonicalID($0.id) } == w.uuidString
+                        && calm,
+                     "merge \(merged.map { "\($0)" } ?? "did not run"); K \(k.uuidString.prefix(8)), R \(rID.uuidString.prefix(8)), W \(w.uuidString.prefix(8)); queued after the chunk \(queued.map { $0.prefix(8) }); \(day.summary)")
+
+        a.cursor = nil
+        let full = await a.sync()
+        day = try await dayState(account, a, b, habit: read.id, day: 6)
+        calm = try settled(a, b)
+        report.check("…and still after A's full pull",
+                     isSynced(full) && day.isOne(note: nil, value: 1) && calm,
+                     "\(describe(full)); \(day.summary)")
+    }
+}
+
+// MARK: - M4 (1.4.1): the day match never puts one id on two records (X1)
+
+extension Scenarios {
+    // M9 — W2 review's X1: the engine itself making M7's same-id pair. A, between syncs, gains two
+    // records of each of six past days (the widget's insert racing a Today tap), each pair appended
+    // in the other order from the last. One chunk carries both records of every day, sorted by day and
+    // id, so each server row takes the id that sorts first and the other record lands on it with an
+    // alias A does not follow: A already holds that id. The pull after the push brings each row
+    // back. The day match used to rename the day's FIRST record onto the row's id, so on every day
+    // where `habit.records` listed the other record first, two records went by one id, and no full
+    // pull could remove either. It lands on the record going by the id instead: no id is on two
+    // records, and A's full pull removes the other (delivered, absent), so the server, A and B each
+    // end with one record of every day.
+    func dayMatchNeverPutsOneIDOnTwoRecords() async throws {
+        let account = try Account.create()
+        let a = Device131("A", account: account), b = Device131("B", account: account)
+        defer { a.remove(); b.remove() }
+        let read = a.habit("Read")
+        try a.save()
+        guard isSynced(await a.sync()), isSynced(await b.sync()) else { throw Missing(description: "the first syncs") }
+
+        let days = Array(2...7)
+        var kept: [Int: UUID] = [:]   // the id each day's server row takes: the one that sorts first
+        for (n, day) in days.enumerated() {
+            let suffix = String(UUID().uuidString.suffix(12))
+            let low = HabitRecord(date: Scenario.day(day)), high = HabitRecord(date: Scenario.day(day))
+            low.id = try unwrap(UUID(uuidString: "00000000-0000-4000-8000-\(suffix)"), "a low id")
+            high.id = try unwrap(UUID(uuidString: "FFFFFFFF-FFFF-4FFF-BFFF-\(suffix)"), "a high id")
+            read.records.append(contentsOf: n.isMultiple(of: 2) ? [high, low] : [low, high])
+            kept[day] = low.id
+        }
+        try a.save()
+        let mark = a.transport.mark()
+        let pushed = await a.sync()
+        let ex = a.transport.since(mark)
+        let sent = totalPushed(ex)
+        var states: [Int: DayState] = [:]
+        for day in days { states[day] = try await dayState(account, a, b, habit: read.id, day: day) }
+        let onePerDay = days.allSatisfy { day in
+            guard let state = states[day], let id = kept[day] else { return false }
+            return state.server.map { SyncReconciler.canonicalID($0.id) } == [id.uuidString]
+        }
+        let pendingA = try a.pendingCount()
+        report.check("setup: one chunk delivers both records of six days; the server keeps one row of each, under the id that sorts first",
+                     isSynced(pushed) && sent.entries == 2 * days.count && onePerDay && pendingA == 0,
+                     "\(describe(pushed)); \(describe(ex)); pending \(pendingA)")
+
+        let doubled = days.filter { day in
+            guard let records = states[day]?.a else { return true }
+            return Set(records.map(\.id)).count < records.count
+        }
+        let onTheRow = days.allSatisfy { day in
+            guard let records = states[day]?.a, let id = kept[day] else { return false }
+            return records.filter { $0.id == id }.count == 1
+        }
+        report.check("…and the pull after the push puts no id on two records: each day's row lands on the record already going by its id",
+                     doubled.isEmpty && onTheRow,
+                     "days whose two records went by one id: \(doubled); "
+                        + days.map { "day \($0): \(states[$0]?.summary ?? "missing")" }.joined(separator: "; "))
+
+        let bSynced = await b.sync()
+        a.cursor = nil   // the next sync is a full pull, with its absence pass
+        let full = await a.sync()
+        for day in days { states[day] = try await dayState(account, a, b, habit: read.id, day: day) }
+        let whole = days.filter { states[$0]?.isOne(note: nil, value: 1) != true }
+        let calm = try settled(a, b)
+        report.check("…and after B's sync and A's full pull, the server, A and B each hold one record of every day, under the server's id; nothing pending, queued or archived",
+                     isSynced(bSynced) && isSynced(full) && whole.isEmpty && calm,
+                     "\(describe(full)); days not one record everywhere: \(whole); "
+                        + whole.map { "day \($0): \(states[$0]?.summary ?? "missing")" }.joined(separator: "; "))
+    }
+
+    // M10 — X1 review: a pull onto M7's same-id pair. A holds two delivered records of Water's day
+    // 11 under the server's id (made by hand, as in M7: stores 1.3.1–1.4.0 wrote can hold one), both
+    // at 5 glasses. B lowers the day to 3 and syncs; A's incremental pull brings the row back. The day
+    // match landed on one record of the pair alone, so the other kept 5 and, outranking (the larger
+    // value), was what A's day read, with nothing pending to correct it. Every record of the id takes
+    // the row now, so A reads 3, as the server and B do.
+    func pullOntoASameIDPair() async throws {
+        let account = try Account.create()
+        let a = Device131("A", account: account), b = Device131("B", account: account)
+        defer { a.remove(); b.remove() }
+        let (_, water, _, bWater) = try await twoHabits(a, b)
+        try b.history(bWater, day: 11, value: 5, note: "from B")
+        guard isSynced(await b.sync()), isSynced(await a.sync()) else { throw Missing(description: "B's day, pulled by A") }
+        let w = try unwrap(storedRecords(a, day: 11).first, "A's day 11")
+        let twin = HabitRecord(date: Scenario.day(11), note: w.note, value: w.value)
+        twin.id = w.id
+        twin.updatedAt = w.updatedAt
+        twin.adoptRemoteState()
+        water.records.append(twin)
+        try a.save()
+        let before = try storedRecords(a, day: 11)
+        report.check("setup: A holds two delivered records of Water's day, both under the server's id, at 5",
+                     before.count == 2 && Set(before.map(\.id)).count == 1
+                        && before.allSatisfy { $0.value == 5 && $0.hasBeenDelivered && !$0.isPending },
+                     before.map { "\($0.id.uuidString.prefix(8)) v\($0.value)" }.joined(separator: ", "))
+
+        try b.history(bWater, day: 11, value: 3)   // lowered on B
+        let bSynced = await b.sync()
+        let aSynced = await a.sync()   // incremental: brings the row back at 3
+        let state = try await dayState(account, a, b, habit: water.id, day: 11)
+        let reads = water.record(on: Scenario.day(11))?.value
+        let row = state.server.first
+        let calm = try settled(a, b)
+        report.check("…and A's pull of B's lower value lands on both: A's day reads 3, as the server and B do; nothing pending",
+                     isSynced(bSynced) && isSynced(aSynced) && reads == 3
+                        && state.server.count == 1 && (row?.value ?? 1) == 3 && row?.note == "from B"
+                        && state.a.count == 2 && state.a.allSatisfy { $0.value == 3 && $0.note == "from B" }
+                        && state.b.count == 1 && state.b.first?.value == 3 && calm,
+                     "A reads \(reads.map { "\($0)" } ?? "nothing"); \(state.summary)")
+    }
 }

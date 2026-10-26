@@ -1,9 +1,12 @@
 # mac_variant — a StrideMac that cannot touch the real store
 
-`build.sh` builds StrideMac Debug as **`yyh.stride.habittracker.mactest`**, ad-hoc signed, with
-the compile-time flag `STRIDE_MAC_VARIANT`. It is how the macOS half of a release is checked by an
-agent on this Mac (RELEASE-1.4.0.md D7): the menu commands, Settings, the Dock badge, Restore's
-open panel, Export's save panels, Mark Done on a Mac banner, and the Mac store screenshots.
+`build.sh` builds StrideMac Debug (or Release, with `--release`) as
+**`yyh.stride.habittracker.mactest`**, ad-hoc signed, with the compile-time flag
+`STRIDE_MAC_VARIANT`. It is how the macOS half of a release is checked by an agent on this Mac
+(RELEASE-1.4.0.md D7): the menu commands, Settings, the Dock badge, Restore's open panel, Export's
+save panels, Mark Done on a Mac banner, and the Mac store screenshots. The Release variant is the
+Release-build smoke and the production sign-in check (RELEASE-1.4.1.md gate 12, P1 step 6); see
+[Release](#release---release).
 
 **This Mac holds the owner's real Stride store**, at
 `~/Library/Group Containers/group.yyh.stride.habittracker/Stride.store`. Never launch the shipping
@@ -54,14 +57,25 @@ before its preflight has passed.
 
 ```bash
 scripts/mac_variant/build.sh                       # build + preflight; prints the launch commands
+scripts/mac_variant/build.sh --release             # the same, Release configuration (below)
 scripts/mac_variant/build.sh --entitlements-only   # just generate and check the entitlements
 scripts/mac_variant/build.sh --preflight [<app>]   # re-check a built variant before launching it
+scripts/mac_variant/build.sh --preflight --release [<app>]   # the same for a Release variant
 ```
 
-Everything goes under `$STRIDE_MAC_VARIANT_ROOT` (default `${TMPDIR}stride-mac-variant`; a root
-under `~/Documents` is refused): the entitlements, `DerivedData/`, `build.log`,
-`build-settings.txt`. The app is `<root>/DerivedData/Build/Products/Debug/Stride.app`. Extra
-arguments go to xcodebuild.
+The options go in any order (`--preflight <app> --release` is the same check). `--preflight`
+takes one app path at most and `--entitlements-only` none: anything else with either is refused
+with exit 2, never ignored.
+
+Everything goes under `$STRIDE_MAC_VARIANT_ROOT` (default
+`~/Library/Caches/Stride-build/mac-variant`, persistent so a rebuild is incremental; a root under
+`~/Documents` is refused): the entitlements, `DerivedData/`, `build.log`, `build-settings.txt`.
+The app is `<root>/DerivedData/Build/Products/Debug/Stride.app`. Extra arguments go to
+xcodebuild. Swift packages come from the shared checkout (`scripts/ci/build_cache.sh`), and two
+builds into one root wait for each other. A build that must outlive the next one, such as the old
+version of the Mac in-place upgrade gate, gets its own root
+(`STRIDE_MAC_VARIANT_ROOT=~/Library/Caches/Stride-build/mac-variant-1.4.0`). The default was
+`${TMPDIR}stride-mac-variant` until 1.4.1; macOS purges `$TMPDIR` on low disk.
 
 **Preflight** (after every build, and on `--preflight`); a failure means do not launch:
 
@@ -70,14 +84,21 @@ arguments go to xcodebuild.
 - `codesign -d --entitlements -` shows no App Group and no `com.apple.developer.*` key, and shows
   `com.apple.security.app-sandbox`;
 - `files.user-selected.read-write` is reported. Missing is a warning, not a failure: the variant
-  then shows the shipped panel bug, which is what the panel checks are for.
+  then shows the shipped panel bug, which is what the panel checks are for;
+- the server the build talks to, read from the binary (the executable and, in Debug,
+  `Stride.debug.dylib`): Debug must hold `http://localhost:3002`, and a Debug preflight of a build
+  that holds the production URL instead fails. The Release checks are below.
 
-**Launch** only by path or bundle id:
+**Launch** only by path:
 
 ```bash
-open "<root>/DerivedData/Build/Products/Debug/Stride.app"            # or: open -b yyh.stride.habittracker.mactest
+open "<root>/DerivedData/Build/Products/Debug/Stride.app"
 open "<root>/DerivedData/Build/Products/Debug/Stride.app" --args -tab 2
 ```
+
+Never `open -a Stride`. Not `open -b yyh.stride.habittracker.mactest` either: once a Release
+variant has been built, LaunchServices knows two bundles with that id, and it may start the
+Release one, a production client ([Release](#release---release)).
 
 **Right after the first launch, before any UI action and before any `-demo`:**
 
@@ -92,6 +113,56 @@ ls -la ~/Library/Group\ Containers/group.yyh.stride.habittracker/
 ```
 
 Anything else (no log line, an App Group path, the store error screen): quit the variant and stop.
+
+## Release (`--release`)
+
+For RELEASE-1.4.1.md gate 12 (a Release-configuration variant launches and passes the store
+preflight) and P1 step 6 (sign in on the Mac by token paste). Never the exported real-id app.
+
+```bash
+scripts/mac_variant/build.sh --release COMPILER_INDEX_STORE_ENABLE=NO
+#   → ~/Library/Caches/Stride-build/mac-variant-release/DerivedData/Build/Products/Release/Stride.app
+scripts/mac_variant/build.sh --preflight --release
+```
+
+**Unchanged from Debug:** the variant id, `STRIDE_MAC_VARIANT` (it is the flag, not `DEBUG`, that
+forces the store into the variant's container, gives the Keychain its own service and keeps
+Sentry off), ad-hoc signing with the generated entitlements, the launch check
+(`MacVariantLaunchCheck.enforce()` is a `precondition`, which `-O` keeps), and every preflight
+check above. The launch and the first-launch checks are the same.
+
+**What Release changes, and what the build and the preflight check:**
+
+- `DEBUG` is not defined. The settings check requires it absent and the optimization not
+  `-Onone`. The preflight requires no `Stride.debug.dylib` and no DEBUG-only code in the binary
+  (the text of `LaunchWindowSize`'s messages; launch flags such as `-demo` are too short to find
+  as text, because Swift keeps literals of up to 15 bytes inside the instructions). So `-demo`,
+  `-demoScenario`, `-paywall`, `-statsScrollTo`, `-scrollTo`, `-syncStatus` and `-windowSize` do
+  nothing: no demo data and no screenshot frame. Screenshots come from the Debug variant. `-tab`
+  works in every build.
+- **It is a production client.** `APIClient.defaultBaseURL` is
+  `https://stride-api.colorarchive.me` in every non-DEBUG build (APIClient.swift:7-11), and the
+  preflight requires that URL in the binary and `http://localhost:3002` absent. Every sign-in
+  creates or uses a real account, so (RELEASE-1.4.1.md decision 4):
+  - sign in only with the owner's plus-address `<owner>+stride-smoke@gmail.com`, by token paste
+    (the variant has no associated domains, so a universal link opens nothing); never the owner's
+    primary address, never the demo account;
+  - before any `delete-account`, `GET /v1/auth/session` with the same token, and delete only if
+    `user.email` is exactly that address;
+  - at most one `request-link` per sitting: 3 per 15 min per IP, shared with every device and
+    curl on this network. A 429 means wait.
+- Its default root is its own, `~/Library/Caches/Stride-build/mac-variant-release` (persistent,
+  like the Debug root), so neither configuration makes the other's next build cold.
+  `STRIDE_MAC_VARIANT_ROOT` overrides it as for Debug.
+- **Both variants have the same bundle id.** While a Debug and a Release variant are both built,
+  `open -b yyh.stride.habittracker.mactest` may start either one, and the Release one is a
+  production client. So every launch in this README is by path, and `capture.sh` refuses a
+  running variant that is not a Debug build. Both also share
+  one container, `~/Library/Containers/yyh.stride.habittracker.mactest/`, so the same store,
+  defaults and Keychain service: a session signed in on one is signed in on the other, and a
+  Debug session check against the local server answers no user and deletes a production token.
+  Sign out before switching configurations.
+- `-configuration` is refused as an extra argument: Debug, or `--release`.
 
 ## The computer-use pass (RELEASE-1.4.0.md D7)
 
@@ -110,14 +181,66 @@ In the variant, after the checks above:
 ## Store screenshots
 
 The Mac App Store slot (`APP_DESKTOP`) takes only exact 16:10 sizes: 1280×800, 1440×900,
-2560×1600 or 2880×1800. Capture the variant's window (`screencapture -o -l <window id>`) sized to
-one of them, into a fresh `build/store-screenshots/<version>/mac/`, with no widget slide (the Mac
-has no widgets). `scripts/store_screenshots.py` uploads them.
+2560×1600 or 2880×1800. Capture the variant's window sized to one of them, into a fresh
+`build/store-screenshots/<version>/mac/`, with no widget slide (the Mac has no widgets).
+`scripts/store_screenshots.py` uploads them.
+
+**Size the window** with the DEBUG launch flag `-windowSize <W>x<H>` (RELEASE-1.4.1.md W0;
+`LaunchWindowSize` in StrideApp.swift). It sets the main window's frame, title bar included, in
+points, once per process, so a 1440×900 frame on a 2x display (the owner's 4K display at 2x) is
+the 2880×1800 the slot takes. It exists only in DEBUG builds, so screenshots come from the Debug
+variant (the Release one, `--release`, has no `-windowSize`), and iOS ignores it. `--args` reach
+only a new process, so quit a running variant first, then launch the Debug variant by its path
+(never `-a Stride`, and not `-b`, which may start the Release variant):
+
+```bash
+osascript -e 'if application id "yyh.stride.habittracker.mactest" is running then tell application id "yyh.stride.habittracker.mactest" to quit'
+open "$HOME/Library/Caches/Stride-build/mac-variant/DerivedData/Build/Products/Debug/Stride.app" --args -windowSize 1440x900
+```
+
+**Capture** with `capture.sh`. It launches, activates and quits nothing. It finds the variant by
+bundle id and its window by that process's PID, never by the name "Stride".
+
+```bash
+scripts/mac_variant/capture.sh --list                     # what it would capture; no capture
+scripts/mac_variant/capture.sh build/store-screenshots/1.4.1/mac/01-today.png
+scripts/mac_variant/capture.sh --size 2560x1600 <out.png> # another APP_DESKTOP size
+scripts/mac_variant/capture.sh --window-id <id> <out.png> # not the largest window (see --list)
+scripts/mac_variant/capture.sh --force <out.png>          # replace an existing file
+```
+
+Before it captures, it checks:
+
+- exactly one variant instance is running;
+- nothing runs as the real `yyh.stride.habittracker`;
+- that instance is a Debug build: its executable or `Stride.debug.dylib` holds DEBUG-only code
+  (`LaunchWindowSize`'s text, the probe `build.sh` uses). The Release variant has the same
+  bundle id, and is a production client without `-windowSize`;
+- the variant is the frontmost app, so the window has active chrome.
+
+Then it runs `screencapture -x -o -l <window id>`, where `-o` drops the shadow so the image is the
+window's frame exactly. It keeps the capture only if:
+
+- the image is not blank (nearly all transparent, or one colour);
+- it is exactly 2880×1800 px (`sips`), or the `--size` given.
+
+A rejected capture stays in a temp directory, whose path is printed. Exit status: 0 captured,
+1 failed or blank, 2 usage, 3 not running or no on-screen window, 4 refused (not a Debug build,
+not frontmost, the real app running, more than one instance, an unknown `--window-id`), 5 wrong
+size.
+
+**Screen Recording.** A blank or failed capture almost always means the app running the script
+(Terminal, iTerm or the Claude app) has no Screen Recording permission. `capture.sh` prints how
+to grant it: System Settings → Privacy & Security → Screen & System Audio Recording, then
+relaunch that app. The owner grants it for the sitting and revokes it afterwards
+(RELEASE-1.4.1.md P3b).
 
 ## Cleaning up
 
 - Quit the variant (⌘Q, or `osascript -e 'tell application id "yyh.stride.habittracker.mactest" to quit'`).
-- `/usr/bin/trash "$STRIDE_MAC_VARIANT_ROOT"` (or `${TMPDIR}stride-mac-variant`) when the build is no
-  longer needed.
+- Leave the default roots in place (`mac-variant` and `mac-variant-release`): the next build
+  reuses them. Trash a root of its own (an upgrade gate's old version) when that release ships.
+- After a Release sitting, sign the variant out, and delete the plus-address account as above if
+  the step calls for it.
 - The variant's data lives in `~/Library/Containers/yyh.stride.habittracker.mactest/`. It is test
   data, but leave it to the owner to remove: macOS protects other apps' containers.

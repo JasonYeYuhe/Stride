@@ -6,7 +6,12 @@
     scripts/release.py release 1.2.1     # after approval + the device check: go live
     scripts/release.py cancel  1.2.1     # pull a version out of review (e.g. to swap its build)
     scripts/release.py show    1.2.1     # report state without changing anything
-    scripts/release.py finish  1.4.0 22 --platform IOS   # one platform only (prepare/finish/release)
+    scripts/release.py finish  1.4.0 22 --platform IOS   # one platform only
+                                         # (prepare/finish/release/cancel; show reports both)
+
+Nothing else is accepted: `--platform` is written as two words, and an argument the command does
+not take (`--platform=MAC_OS`, `-p MAC_OS`, a bare `MAC_OS`, a misspelt option) is refused before
+anything reaches App Store Connect.
 
 Versions are created with releaseType MANUAL: an approved version waits in
 PENDING_DEVELOPER_RELEASE until `release` is run. It used to be AFTER_APPROVAL, so an
@@ -20,7 +25,7 @@ Chrome. Every step here is re-runnable: it looks for the object first and only
 creates what is missing, so a half-finished release is fixed by running it again.
 """
 
-import sys, time
+import re, sys, time
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 import asc_api as a
 
@@ -388,6 +393,41 @@ WHATS_NEW_BY_VERSION = {
              "• Exportar una copia de seguridad se abre al instante.\n"
              "• El mapa de calor de Estadísticas muestra ahora cada día bajo su día de la semana y, en el iPad y el Mac, ocupa toda la tarjeta.",
   },
+  # RELEASE-1.4.1.md's draft copy, checked against the code: Strength is the detail card's tile
+  # (HabitScore.displayValue, 0-100, free); History opens from Edit history and from a heatmap
+  # day; notes are not new (1.4.0's Today rows had Add Note), so the line says what is: History
+  # adds or changes the note of any day with a check-in. Pro: StrengthCard and BestStreaksCard.
+  # Last line: W10 (docs/X2-non-gregorian-day-keys.md section 8). Each locale uses its catalog's
+  # words (Shared/<lang>.lproj/Localizable.strings: Strength, History, Edit history, Statistics,
+  # Your Top 5 Streaks). No sign-in sentence (W9). ensure_localizations sends this to the Mac
+  # record too, so the verbs fit both (choose, not tap). The calendar names are iOS Settings'
+  # own (Language & Region > Calendar).
+  "1.4.1": {
+    "en-US": "• Strength: a 0–100 score for each habit that rewards consistency and recovers after a missed day. Find it on the habit’s card in Statistics.\n"
+             "• Fix past days in your history: in Statistics, choose Edit history on a habit, or choose a day on its heatmap. In History you can also add or change the note on any day you checked in.\n"
+             "• Stride Pro adds a strength chart and your top 5 streaks.\n"
+             "• On a device set to a non-Gregorian calendar, such as Japanese or Buddhist, check-ins were saved under the wrong date. They are now saved under the right one, and the ones already saved are moved to the right day.",
+    "zh-Hans": "• 习惯强度：用 0–100 的分数衡量每个习惯，坚持越久分数越高，错过一天后也会回升。可以在「统计」的习惯卡片上查看。\n"
+               "• 可以在历史记录里修正过去的日子：在「统计」中选择习惯的「编辑历史记录」，或选择热力图上的某一天。在历史记录中，还可以为任何一个已打卡的日子添加或修改备注。\n"
+               "• Stride Pro 新增习惯强度图表和连续记录前 5 名。\n"
+               "• 在日历设置为日本日历、佛教日历等非公历日历的设备上，打卡曾被保存到错误的日期。现在会保存到正确的日期，已经保存的打卡也会移回正确的那一天。",
+    "zh-Hant": "• 習慣強度：用 0–100 的分數衡量每個習慣，越持之以恆分數越高，錯過一天後也會回升。可以在「統計」的習慣卡片上查看。\n"
+               "• 可以在歷史紀錄中修正過去的日子：在「統計」中選擇習慣的「編輯歷史紀錄」，或選擇熱力圖上的某一天。在歷史紀錄中，也可以為任何一個已打卡的日子新增或修改備註。\n"
+               "• Stride Pro 新增習慣強度圖表和連續紀錄前 5 名。\n"
+               "• 在設定為民國曆、日本曆或佛曆等非公曆曆法的裝置上，打卡曾被儲存到錯誤的日期。現在會儲存到正確的日期，已經儲存的打卡也會移回正確的那一天。",
+    "ja": "• 定着度：習慣ごとに 0〜100 で表すスコアです。続けるほど上がり、できなかった日のあとも回復します。「統計」の習慣のカードに表示されます。\n"
+          "• 履歴から過去の日を修正できるようになりました。「統計」で習慣の「履歴を編集」を選択するか、ヒートマップで日付を選択します。履歴では、チェックインした日であれば、どの日でもメモを追加・変更できます。\n"
+          "• Stride Pro では、定着度のグラフと連続記録トップ5が加わります。\n"
+          "• 暦法を和暦やタイ仏暦など西暦（グレゴリオ暦）以外に設定したデバイスでは、チェックインが違う日付で保存されていました。正しい日付で保存されるようになり、すでに保存されたチェックインも正しい日に移されます。",
+    "ko": "• 습관 강도: 습관마다 0~100으로 나타내는 점수로, 꾸준할수록 오르고 하루를 놓쳐도 다시 회복됩니다. ‘통계’의 습관 카드에서 볼 수 있습니다.\n"
+          "• ‘기록’에서 지난 날짜를 고칠 수 있습니다. ‘통계’에서 습관의 ‘기록 편집’을 선택하거나 히트맵의 날짜를 선택하세요. ‘기록’에서는 체크인한 날이라면 어느 날이든 메모를 추가하거나 바꿀 수 있습니다.\n"
+          "• Stride Pro에는 습관 강도 차트와 연속 기록 상위 5개가 추가됩니다.\n"
+          "• 일본력이나 불교력처럼 그레고리력이 아닌 달력으로 설정된 기기에서 체크인이 잘못된 날짜로 저장되었습니다. 이제 올바른 날짜로 저장되며, 이미 저장된 체크인도 올바른 날로 옮겨집니다.",
+    "es-ES": "• Fuerza: una puntuación de 0 a 100 que premia la constancia en cada hábito y se recupera si fallas un día. La encontrarás en la tarjeta del hábito, en Estadísticas.\n"
+             "• Corrige los días pasados en tu historial: en Estadísticas, elige «Editar historial» en un hábito o elige un día de su mapa de calor. En el historial también puedes añadir o cambiar la nota de cualquier día que hayas registrado.\n"
+             "• Stride Pro añade un gráfico de fuerza y tus 5 rachas más largas.\n"
+             "• En un dispositivo con un calendario no gregoriano, como el japonés o el budista, los registros se guardaban con una fecha equivocada. Ahora se guardan con la correcta, y los que ya estaban guardados pasan a su día real.",
+  },
 }
 
 
@@ -546,23 +586,84 @@ def submit(app_id, platform, version_id):
     return True
 
 
-def main():
-    global PLATFORMS
-    args = sys.argv[1:]
-    # `--platform IOS|MAC_OS` limits prepare/finish/release to one platform. Added for 1.4.0,
-    # whose iOS half was submitted while the Mac half still waited on its own UI pass: finish
-    # used to submit every platform that had a version record.
+def parse_platform(args):
+    """Takes `--platform IOS|MAC_OS` out of `args` (a list, changed in place).
+
+    Returns the platforms the command acts on — the one named, or every one in PLATFORMS when
+    the option is absent — or None when the option has no value, an unknown one, or is given
+    twice. A second `--platform` used to stay in the arguments: ignored after the build number,
+    read as the version or the build before them.
+    """
+    if "--platform" not in args:
+        return list(PLATFORMS)
+    i = args.index("--platform")
+    if i + 1 >= len(args) or args[i + 1] not in PLATFORMS:
+        return None
+    platforms = [args[i + 1]]
+    del args[i:i + 2]
     if "--platform" in args:
-        i = args.index("--platform")
-        if i + 1 >= len(args) or args[i + 1] not in PLATFORMS:
-            print(f"--platform takes one of {PLATFORMS}"); return 1
-        PLATFORMS = [args[i + 1]]
-        del args[i:i + 2]
-    cmd = args[0] if len(args) > 0 else "show"
-    version_string = args[1] if len(args) > 1 else None
-    build_number = args[2] if len(args) > 2 else None
-    if not version_string:
-        print(__doc__); return 1
+        return None
+    return platforms
+
+
+# The positional arguments each command takes, the command included: exactly these.
+ARITY = {"show": 2, "prepare": 2, "cancel": 2, "release": 2, "finish": 3}
+# A version string or a build number: one to three dot-separated integers (CFBundleShortVersionString
+# and CFBundleVersion).
+DOTTED_NUMBER = re.compile(r"[0-9]+(\.[0-9]+){0,2}")
+
+
+def usage_error(args):
+    """Why `args`, with `--platform` already taken out, is not a command line; None if it is one.
+
+    Every argument has to be accounted for. Until the 1.4.1 W7 review only the exact
+    `--platform <value>` pair was taken out and nothing else was checked, so
+    `cancel 1.4.1 --platform=MAC_OS`, `--plaform MAC_OS`, `-p MAC_OS` or a bare `MAC_OS` landed in
+    the build-number slot or past it. cancel and release never read that slot and finish read only
+    the build there, so `platforms` stayed at both: the command pulled an iOS review in progress
+    out of review, released iOS too, or submitted the Mac before its gate. None of those App Store
+    Connect writes can be undone: a release is public, and a cancelled review starts over.
+    """
+    options = [x for x in args if x.startswith("-")]
+    if options:
+        if options[0].startswith("--platform="):
+            value = options[0].split("=", 1)[1]
+            return f"write `--platform {value}`, two words, not {options[0]!r}"
+        return f"unknown option {options[0]!r}: the only option is `--platform IOS|MAC_OS`"
+    if not args:
+        return "no command"
+    cmd = args[0]
+    if cmd not in ARITY:
+        return f"unknown command {cmd!r}"
+    if cmd == "finish" and len(args) == 2:
+        return "finish needs a build number"
+    if len(args) != ARITY[cmd]:
+        takes = "a version and a build number" if cmd == "finish" else "a version"
+        got = " ".join(args[1:]) or "nothing"
+        return f"{cmd} takes {takes} and nothing else; got: {got}"
+    for label, value in zip(("version", "build number"), args[1:]):
+        if not DOTTED_NUMBER.fullmatch(value):
+            return f"{value!r} is not a {label}: one to three dot-separated integers"
+    return None
+
+
+def main(argv=None):
+    args = list(sys.argv[1:] if argv is None else argv)
+    # `--platform IOS|MAC_OS` limits prepare/finish/release/cancel to one platform. Added for
+    # 1.4.0, whose iOS half was submitted while the Mac half still waited on its own UI pass:
+    # finish used to submit every platform that had a version record. `cancel` honours it since
+    # 1.4.1: it used to pull every platform's submission of the version out of review, so
+    # cancelling the Mac submission to swap its build also cancelled an iOS review in progress.
+    # `show` reports every platform either way. The whole command line is checked before anything
+    # reaches the network (usage_error).
+    platforms = parse_platform(args)
+    if platforms is None:
+        print(f"--platform takes one of {PLATFORMS}, once, as `--platform <value>`"); return 1
+    problem = usage_error(args)
+    if problem:
+        print(f"{problem}\n{__doc__}"); return 1
+    cmd, version_string = args[0], args[1]
+    build_number = args[2] if cmd == "finish" else None
     app_id = a.find_app()
 
     if cmd == "show":
@@ -575,16 +676,20 @@ def main():
         return 0
 
     if cmd == "prepare":
-        for p in PLATFORMS:
+        for p in platforms:
             vid = ensure_version(app_id, p, version_string)
             ensure_localizations(app_id, p, vid, version_string)
         return 0
 
     if cmd == "cancel":
         # Only a submission that holds THIS version is cancelled — never "the first open one"
-        # (the mistake `submit` used to make, see its docstring).
+        # (the mistake `submit` used to make, see its docstring) — and only on `platforms`.
         not_cancelled = []
-        for p, v in versions(app_id, version_string).items():
+        found = {p: v for p, v in versions(app_id, version_string).items() if p in platforms}
+        for p in platforms:
+            if p not in found:
+                print(f"  [{p}] no {version_string} version — nothing to cancel")
+        for p, v in found.items():
             d = a.get("/reviewSubmissions", params={
                 "filter[app]": app_id, "filter[platform]": p,
                 "filter[state]": "READY_FOR_REVIEW,WAITING_FOR_REVIEW,IN_REVIEW,UNRESOLVED_ISSUES",
@@ -599,9 +704,11 @@ def main():
                     "type": "reviewSubmissions", "id": sub["id"], "attributes": {"canceled": True}}})
                 print(f"  [{p}] cancel requested for submission {sub['id']} "
                       f"(was {sub['attributes']['state']})")
-        for _ in range(20):                  # cancelling is asynchronous on Apple's side
+        # Cancelling is asynchronous on Apple's side. Only the platforms asked for are waited on
+        # and reported: another platform's review is none of this command's business.
+        for _ in range(20):
             states = {p: v["attributes"]["appStoreState"]
-                      for p, v in versions(app_id, version_string).items()}
+                      for p, v in versions(app_id, version_string).items() if p in platforms}
             if not any(st in ("WAITING_FOR_REVIEW", "IN_REVIEW") for st in states.values()):
                 break
             time.sleep(15)
@@ -617,7 +724,7 @@ def main():
         # Only an approved, held version can be released; anything else is reported, not forced.
         not_released = []
         for p, v in versions(app_id, version_string).items():
-            if p not in PLATFORMS:
+            if p not in platforms:
                 continue
             state = v["attributes"]["appStoreState"]
             if state == "READY_FOR_SALE":
@@ -635,12 +742,10 @@ def main():
         return 0
 
     if cmd == "finish":
-        if not build_number:
-            print("finish needs a build number"); return 1
         # Every platform that doesn't end up submitted is named here and makes the exit code
         # non-zero. Each of these used to be a `continue` and the command still exited 0.
         not_submitted = []
-        for p in PLATFORMS:
+        for p in platforms:
             vid = versions(app_id, version_string).get(p, {}).get("id")
             if not vid:
                 print(f"  [{p}] no {version_string} version — run prepare first")

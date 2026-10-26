@@ -296,6 +296,14 @@ unless you know nothing else sends as it.
 
 #### The Resend side: DNS passing proves nothing about sending
 
+**Fixed 2026-10-15.** Stride now sends as `hello@stride.colorarchive.me` from its own Resend team
+("u-tokyo", region us-east-1), with its own `RESEND_API_KEY`, so it no longer shares a key or a
+quota with ColorArchive. The return path is Resend's current CNAME setup: `send.stride` and
+`rsend.stride` are CNAMEs to `send.forge.rmta.net` / `rsend.forge.rmta.net`. `check_email_auth.sh`
+accepts it, as well as the older SES MX/TXT form. To rotate the key, the owner runs
+`scripts/ops/set_resend_key.sh` (hidden input, test send, automatic rollback); an agent never
+handles the key. The history below is why the checks exist.
+
 On 2026-10-12 both sign-in attempts in the retained logs answered 500 with
 `Resend validation_error: The stride.colorarchive.me domain is not verified`, while every
 record in the table above was still present and `check_email_auth.sh` passed. What the
@@ -365,8 +373,9 @@ editing `.env` run `sudo pm2 restart stride-server --update-env` before trusting
 - `FRONTEND_ORIGIN` — the origin this process answers on: CORS allowlist and the host in
   magic-link emails (default `https://stride-api.colorarchive.me`, see `origins.js`; the old
   default had no DNS record).
-- `RESEND_API_KEY` — magic-link email delivery. Shared with ColorArchive (see
-  [The Resend side](#the-resend-side-dns-passing-proves-nothing-about-sending)).
+- `RESEND_API_KEY` — magic-link email delivery, Stride's own Resend team since 2026-10-15
+  ([The Resend side](#the-resend-side-dns-passing-proves-nothing-about-sending)). Rotate it with
+  `scripts/ops/set_resend_key.sh`, run by the owner.
 - `FROM_EMAIL` — the magic link's sender. Its domain must be **verified in the Resend account
   that `RESEND_API_KEY` belongs to**, or every sign-in fails. The default in `email.js`
   (`hello@strideapp.me`) is not a domain in that account either; production always sets this.
@@ -389,11 +398,12 @@ editing `.env` run `sudo pm2 restart stride-server --update-env` before trusting
   `GLOBAL_RATE_LIMIT_PER_15MIN` (100, per IP, everything except sync). None is set on
   production; the defaults are the intended values.
 - `STRIDE_TEST_HOOKS` — **never set on the host.** With `NODE_ENV=test` it mounts
-  `POST /__test/sweep-tombstones` for `scripts/sync_rehearsal.sh` (M2's swept-tombstone case);
-  under `NODE_ENV=production` nothing is mounted even with it set, and a mounted route still
-  404s any request carrying the proxy headers the nginx block above sets (`X-Real-IP`,
-  `X-Forwarded-For` — nginx adds neither by default, so keep those lines) — see
-  `lib/testHooks.js` and its tests.
+  `POST /__test/sweep-tombstones` (M2's swept-tombstone case) and `POST /__test/entry-date-guard`
+  (switches the [entry-date guard](#entry-dates) off and on, for the day-key repair's K1–K3) for
+  `scripts/sync_rehearsal.sh`; under `NODE_ENV=production` nothing is mounted even with it set,
+  and a mounted route still 404s any request carrying the proxy headers the nginx block above
+  sets (`X-Real-IP`, `X-Forwarded-For` — nginx adds neither by default, so keep those lines) —
+  see `lib/testHooks.js` and its tests.
 
 ### Error reporting (Sentry)
 
@@ -607,7 +617,13 @@ too, and how it recovers depends on the version:
 window: `Scenario.day0` is noon UTC 600 days before today (never before 2025-01-02), and no
 scenario spans more than 500 days. The 3,000-entry chunk scenarios (S5, S11) use 6 habits ×
 500 days instead of 3 × 1,000. A fixture dated before 2025-01-01 is held or refused like a real
-one, so the old 2023 fixtures fail the gate against this server.
+one, so the old 2023 fixtures fail the gate against this server. The one exception is the day-key
+repair's K1–K3, which repair rows stored before the guard: their old build's first syncs run with
+the guard switched off through the test hook `POST /__test/entry-date-guard` (`lib/testHooks.js`;
+test servers only), only to put those keys on the server and onto the second device, and switch
+it back on before the 1.4.1 repair and every sync after it. K4 rehearses the guarded path, with
+the guard on throughout: the old build's keys are held as `invalid_value` on the device, and its
+1.4.1 repair re-keys them in place, lifts the holds and pushes the real days.
 
 **Notes on a day held under two ids.** Entries conflict on (habit, day), so two devices that
 checked a day before either pulled the other's hold one row under two ids. Two rules keep the note
@@ -795,7 +811,8 @@ PM2 `reload`/`restart` leaves the DB in a clean state.
 ### Scheduled jobs (root crontab)
 
 [`ops/crontab.stride`](ops/crontab.stride) lists Stride's lines: the 03:30 backup, the
-03:50 demo top-up and the 04:10 restore drill, each logging to `/root/backups/`. It is a
+03:50 demo top-up, the 04:10 restore drill and the 08:20 second top-up, each logging to
+`/root/backups/`. It is a
 **fragment** — root's crontab also holds ColorArchive's jobs, and `crontab <file>` would
 replace them. The block below installs the two new lines (the 03:30 one was already there)
 once an rsync has put `backup.sh` and `ops/` on the host. **Done on production 2026-09-27**
@@ -812,6 +829,11 @@ sudo bash -c 'crontab -l | grep -q ops/restore-drill.js ||
 sudo crontab -l | grep -c stride-server        # 3
 diff <(sudo crontab -l | grep -v stride-server) <(grep -v stride-server ~/root-crontab.bak-$(date +%Y%m%d))  # no output: ColorArchive's jobs untouched
 ```
+
+The 08:20 line (a second top-up after Los Angeles midnight, RELEASE-1.4.1.md Q3a) was added on
+production 2026-10-20, by hand after the 03:50 line, with the crontab before and after saved as
+`/root/backups/root-crontab-{before,new}-20261020-142220.txt`. On a rebuilt host, add it from the
+fragment the same way (`grep -E "^20 8 "`); `grep -c stride-server` then reads 4.
 
 Then run each once by hand, in this order, and read the output:
 
@@ -872,29 +894,99 @@ rm "$TMPDIR/check.db"                          # it holds every user's email
 
 ### App Review demo account top-up
 
-[`ops/demo-topup.js`](ops/demo-topup.js), daily 03:50. **Never put `seed-demo.js` on a
+[`ops/demo-topup.js`](ops/demo-topup.js), daily at 03:50 and again at 08:20 UTC, after Los
+Angeles midnight. **Never put `seed-demo.js` on a
 timer**: it deletes the demo account's sessions and magic-link tokens and re-creates its
 habits under new ids, so a scheduled run during a review signs the reviewer out and
 replaces everything on their device. The top-up only adds check-ins — for each seeded
-habit, from the day after its last entry through today (UTC, at most 30 days back),
-following that habit's seed pattern by a hash of habit id + date. It is idempotent (a second
-run the same day adds nothing), never deletes, and refuses to run if the account or its
-seeded habits are missing ("run seed-demo.js first"). Two rules keep it from changing what a
-reviewer did:
+habit, from the day after its last entry through the entry-day cap (at most 30 days back),
+by that habit's rule:
 
-- **Un-checked stays un-checked.** It never writes on or before the UTC day of the account's
-  newest entry tombstone. A tombstone names only the entry id, so the first version, which
-  skipped just its own hashed ids, re-checked a day the reviewer had cleared whenever that
-  check-in had come from `seed-demo.js` or the app. Costs at most one day of streak, which the
-  one day of grace absorbs; a re-seed clears the tombstones and the floor with them.
-- **Only habits `seed-demo.js` made**: a seeded name *and* `created_at` before the 30-day
-  window (the seed back-dates it 45 days), and never a day before the habit's own creation.
-  A reviewer who deletes "Journal" and adds it back gets no invented history.
+- a daily habit follows its 30-day pattern in order, each day at its place in a cycle fixed by
+  the calendar (`patternIndex`), where `seed-demo.js` and `demo-add-habits.js` lay it down too.
+  So any 30 days hold exactly the pattern's count, and only Read 30 Minutes (27) and Journal
+  (25) ever reach gate 2's 25 of 30, scoring at least 0.79 wherever the cycle stands. (Until
+  1.4.1 the place was picked by a hash of habit id + date, which let a weaker habit reach 25 of
+  30 by luck and score 0.72-0.75, an exit 4.)
+- "Stretch" (3 times a week) is checked every Monday, Wednesday and Friday, because a per-day
+  hash can leave a Monday-to-Sunday week short of three and break its weekly streak;
+- a count habit ("Water") is filled at its target, the only value that counts as done;
+- a habit whose pattern holds fewer than 25 of 30 is never written on the day that would bring
+  the 30 days ending there up to 25. In order that never happens; it only acts while the
+  hash-picked days from before 1.4.1 are still in the window, the 30 days after the W8 deploy.
+
+The entry-day cap is min(UTC today, America/Los_Angeles today), the same for all three demo
+scripts (RELEASE-1.4.1.md D13): 03:50 UTC is the previous evening in the US, so a UTC date gave
+every US reviewer a check-in for tomorrow. It is idempotent (a second run the same day adds
+nothing), never deletes, and refuses to run if the account or its seeded habits are missing
+("run seed-demo.js first"). Two rules keep it from changing what a reviewer did:
+
+- **Un-checked stays un-checked.** An entry tombstone names the deleted row's habit and day
+  (both delete paths, since the 1.3.1 server), and a habit never gets a check-in on or before
+  the newest day un-checked on it — not that day, and not an earlier one the fill would read
+  again because the habit's last entry moved back. Every other habit is filled as usual, so one
+  un-check costs no other habit a day. (The first version skipped just its own hashed ids, and
+  re-checked a day the reviewer had cleared whenever that check-in had come from `seed-demo.js`
+  or the app. Until W8 the floor was account-wide, at the UTC day of the newest deletion; with
+  the cap on the Los Angeles day, that left the reviewer's own day empty on all eight habits.)
+  A tombstone with no habit and day is one whose DELETE removed nothing (a retry, an id the
+  server never held, an entry of a habit deleted in the same push) and sets no floor;
+  production had no tombstones when the 1.3.1 server shipped, so none is older than that. A
+  re-seed clears the tombstones.
+- **Only habits `seed-demo.js` or `demo-add-habits.js` made**, by identity: since 1.4.1 both
+  give a habit the id `demoHabitId(account, name, created_at)`, which no app sends. The six
+  seeded before 1.4.1 (random ids, production's) are recognised by name, age (created before the
+  30-day window) and the one `created_at` that seed run gave all six, until a habit of that name
+  has a demo id (after a re-seed only demo ids count). The habit must also still be what the
+  script made (kind, schedule, target): one a reviewer changes is theirs from then on. Never a
+  day before the habit's own creation. So a reviewer's own "Stretch", "Morning Run" or
+  "Meditate" (template names) from an earlier review, or a "Journal" deleted and added back, gets
+  no invented history.
 
 Daily, not weekly: streaks count back from today with one day of grace, so two days after
 the last check-in every streak is 0 — `scripts/check_demo_account.sh` exit 3. Before a
-submission, run it once by hand and then the check. Still re-seed with `seed-demo.js` if the
-account itself is broken (habits deleted, token rotated) — and only when no review is open.
+submission, run it once by hand and then the check. In a zone ahead of UTC (Tokyo), between
+local midnight and the next run (12:50 JST) the newest check-in is the day before yesterday:
+daily streaks read 0 and strength ends on an empty yesterday. Run the check in the
+afternoon there, and under `TZ=America/Los_Angeles`.
+
+**Adding habits to the live account:** [`ops/demo-add-habits.js`](ops/demo-add-habits.js)
+(1.4.1: "Water", a count habit of 8 glasses, and "Stretch", 3 times a week, each with 90 days of
+history ending on the cap and three notes). It only inserts: no session, token, tombstone or
+existing row is touched, so a signed-in reviewer stays signed in and gets both habits on their
+next sync. A habit whose name the account already has is left alone, and the script still exits
+0. Run it once by hand, in the W8 deploy after the rehearsal, and only while no review is open:
+
+```bash
+sudo /usr/bin/node /root/stride-server/ops/demo-add-habits.js --dry-run
+#   [demo-add-habits] …Z DRY RUN 2 habit(s) added — Water +84 check-ins (<first>..<cap>), Stretch +<n> check-ins (…)
+sudo /usr/bin/node /root/stride-server/ops/demo-add-habits.js
+#   the same without DRY RUN, plus the notes and created dates; a second run says
+#   "0 habit(s) added — Water already there, left alone, Stretch already there, left alone"
+```
+
+then `sudo /usr/bin/node /root/stride-server/ops/demo-topup.js --dry-run`, which must name all
+eight habits (`+k`, or `+0 (current)`); "N habit(s) not from the demo scripts left alone" should
+count only the reviewers' own. If one of the original six is missing, its `created_at` is not
+the one the other five share: look at the rows before re-seeding. Do the same on the production
+copy in the rehearsal. Then `scripts/check_demo_account.sh` (gate 2), in the default zone and
+under `TZ=America/Los_Angeles`.
+
+Until the second night after the deploy, every day gate 2 reads was written before it, by the
+hash-picked top-up, so it keeps the small chance of exit 4 it had then (8 of 900 simulated
+accounts, on Morning Run, Meditate, Drink 8 Glasses or Journal at 25 of 30). That is the old
+days, not a fault in the new data, and needs no re-seed. From the second night on, the guard
+above and the in-order fill hold it while the hash-picked days leave the window: simulated for
+900 random sets of habit ids over 40 nights after a deploy, checked six times a day, gate 2
+failed twice (0.748 and 0.749, both in Tokyo before the 12:50 JST run, with hash-picked days
+still in the window). From the 31st night on, a habit whose pattern holds fewer than 25 can no
+longer reach 25 of 30, which leaves Read 30 Minutes and Journal, in order. If the owner wants it
+certain on the deploy day, re-seed instead of adding, while no review is open.
+
+Still re-seed with `seed-demo.js` (`cd /root/stride-server && sudo node seed-demo.js`) if the
+account itself is broken (habits deleted, token rotated) — and only when no review is open. It
+installs `DEMO_TOKEN` from `.env` and never prints it; without `DEMO_TOKEN` it refuses, unless
+`--print-token` asks it to generate one and print it.
 
 ### VM snapshots
 

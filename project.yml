@@ -16,8 +16,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.9"
-    MARKETING_VERSION: "1.4.0"
-    CURRENT_PROJECT_VERSION: 22
+    MARKETING_VERSION: "1.4.1"
+    CURRENT_PROJECT_VERSION: 23
     DEVELOPMENT_TEAM: KHMK6Q3L3K
     CODE_SIGN_STYLE: Automatic
 
@@ -143,6 +143,13 @@ targets:
     platform: iOS
     sources:
       - StrideAppTests
+      # RELEASE-1.4.1.md D14: the app's StoreKit configuration, copied into the test bundle, so
+      # the hosted SKTestSession tests load it with `Bundle(for:)` wherever the bundle runs —
+      # this Mac, CI's simulator, or a test-without-building on another machine — instead of
+      # reaching back into the source tree. Resources phase of THIS target only: the app never
+      # ships it, and the schemes' `storeKitConfiguration` (run actions) is unchanged.
+      - path: Stride/Configuration.storekit
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: yyh.stride.habittracker.apptests

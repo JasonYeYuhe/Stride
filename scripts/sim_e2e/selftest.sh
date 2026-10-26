@@ -659,6 +659,14 @@ expect "check-reminders: unknown record keys fall back to the archive's strings"
   "$KIT/upgrade.sh" check-reminders "$T/fixtures/un/new-strings" "$REM_D,$REM_M"
 expect "check-reminders: one id is refused" 1 "<daily habit id>,<Mon/Wed/Fri habit id>" \
   "$KIT/upgrade.sh" check-reminders "$T/fixtures/un/new-ok" "$REM_D"
+expect "check-reminders-before: a 1.3.x build starts from both bare ids" 0 "single daily trigger" \
+  "$KIT/upgrade.sh" check-reminders-before "$T/fixtures/un/new-legacy" "$REM_D,$REM_M" 1.3.1
+expect "check-reminders-before: 1.4.0 starts from .2 .4 .6, which 1.3.x refused" 0 "exactly \.2 \.4 \.6 \(1\.4\.0's weekday triggers\)" \
+  "$KIT/upgrade.sh" check-reminders-before "$T/fixtures/un/new-ok" "$REM_D,$REM_M" 1.4.0
+expect "check-reminders-before: weekday ids from a 1.3.x build are a wrong starting point" 1 "knows no weekday id" \
+  "$KIT/upgrade.sh" check-reminders-before "$T/fixtures/un/new-ok" "$REM_D,$REM_M" 1.3.0
+expect "check-reminders-before: a bare M/W/F id from 1.4.0 is a wrong starting point" 1 "schedules weekday triggers" \
+  "$KIT/upgrade.sh" check-reminders-before "$T/fixtures/un/new-legacy" "$REM_D,$REM_M" 1.4.0
 
 device "$OLD130" un:new-ok; un_install old
 expect "upgrade --reminders: the 1.3.x ids converted, categories registered: PASS" 0 "^PASS: .*the reminders converted" \
