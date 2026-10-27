@@ -299,8 +299,15 @@ change serves.
    (dry run first). If a live note names anything but D11's three things, the owner decides O22: a
    `--yes` PATCH, or a web-UI edit if the API answers 409 (as for approved localizations,
    NEXT_SESSION_PROMPT.md:15).
+   - **Done 2026-10-27 (GET):** Monthly and Yearly (APPROVED) both say "unlocks unlimited habits,
+     advanced statistics, widgets, smart reminders, and iCloud sync"; Lifetime (APPROVED) says
+     "unlocks Pro (habit groups + advanced analytics)", without Weekly Review. Neither is D11's
+     set, so O22 is live.
 6. **Agent, GET only:** `store_screenshots.py list` for each of the 6 locales, to see which locales
    have their own sets (D19).
+   - **Done 2026-10-27 (iOS 1.4.1):** only en-US has sets (iPhone 6.9"/6.5", iPad 13"/12.9" with 4
+     each, three Watch sets with 1 each); es-ES, ja, ko, zh-Hans and zh-Hant have none and fall
+     back to en-US.
 7. **Agent, read-only:** write W9's `scripts/metrics_snapshot.py` first. Record the 1.4.0/1.4.1
    baseline in the progress log:
    - weekly active production devices, by release;
