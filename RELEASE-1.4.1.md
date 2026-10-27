@@ -1060,6 +1060,33 @@ Owner-approved or recommended, not in 1.4.1:
     Today (details), light Statistics heatmap, light History, dark Today (the live listing also
     has 4). The paywall is left out: the Debug variant's products never load (spinner). The Mac
     sidebar has no Settings tab (`-tab 2` shows Today).
+- 2026-10-27, **the kit on Xcode 27.1's iOS 27.0 devices** (PLAN-1.4.2.md Phase 0 item 1, O20):
+  - `sim_e2e/lib.sh` and its README: A = iPhone 17 Pro `C53F6992-0C4E-4D44-8833-B7878C5407E2`,
+    B = iPhone 17 Pro Max `8C431EC3-6480-449C-A60E-9EAB6BBDBF16` (iOS 27.0). The other scripts pick
+    by name, and each name is unique on 27.0 (the 27.1 runtime has only iPhone Duo), so they are
+    unchanged.
+  - Baselines at c9c3d8e (code = 86a1e3e), Xcode 27.1, the same counts as 10-22 on 26.5:
+    - selftest 114/0;
+    - StrideTests (macOS) 732 run, 730 passed + 2 known skips, in Tokyo and under
+      `TEST_RUNNER_TZ=America/Los_Angeles` (the PARITY line names each zone);
+    - hosted 326 passed + 12 skipped, on the Pro Max (iPhone 17 had never been booted and the disk
+      was under 30 GB), into the warm Stride-hosted-tests root. The Pro Max then needs
+      `app.sh reset` before kit use (done by `clean`).
+  - **O21 answered: SKTestSession still fails on iOS 27.0** (Build 24A434): StoreKitStatusTests 11
+    of 11 and StoreKitConfigurationLoadTests 1 of 1 skip, as on 26.5 (FB22774836). StoreKit tests
+    still need iOS 18.5.
+  - Signing preflight passes (console unlocked, login keychain no-timeout, a 1 s Apple
+    Distribution codesign probe). `release.py show 1.4.1`: both records PREPARE_FOR_SUBMISSION,
+    What's New ×6. `iap_copy.py` dry run: the 7 web-UI edits (Yearly ×6, Lifetime en-US) are
+    still open.
+  - **Found: iCloud evicts the repo when the disk is low.** With 28 GB free, 253 files of
+    `server/node_modules` (and 3 under `build/`) were `dataless`. The kit's server copy symlinks
+    `node_modules`, so `start-server.sh` hung 6 min until fileproviderd fetched what `index.js`
+    required. `brctl download server/node_modules` requests the rest. Keep the disk above 30 GB on
+    gate days.
+  - Blocked: gate 3, gate 7 iOS and X2's signed-in branch need the iOS Simulator tool, and access to
+    the Pro Max was declined at the prompt. The Pro was held by another project's session from
+    21:55. The 1.4.0 (22) build is left installed on the Pro Max, signed out.
 - 2026-10-22, **P4 / gate 10.4, second sitting** (full-screen control approved, then background
   control on a variant rebuilt at the m4 tip):
   - 7 (Settings key): New Habit, both exports and all of View disabled; Close and Window → Stride

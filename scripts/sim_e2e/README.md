@@ -36,8 +36,8 @@ when called without arguments, and every script's header comment is its full ref
   purges when the disk runs low (on 2026-10-11 that took the kit's builds; 2.7 GB were rebuilt). The kit refuses a root under `~/Documents`, which is iCloud-synced,
   and its only recursive delete refuses any path outside the root. Every DB script refuses a
   database that is not under `$ROOT/servers/`.
-- **Two simulators only:** iPhone 17 Pro `F5510EA3-65E5-45D2-8E64-C599625E0873` (alias `pro`) and
-  iPhone 17 Pro Max `F54C8C41-12C7-4D02-A579-B2633C3330EF` (alias `promax`). `app.sh` refuses any
+- **Two simulators only:** iPhone 17 Pro `C53F6992-0C4E-4D44-8833-B7878C5407E2` (alias `pro`) and
+  iPhone 17 Pro Max `8C431EC3-6480-449C-A60E-9EAB6BBDBF16` (alias `promax`). `app.sh` refuses any
   other device. It never creates, erases, deletes or shuts down a simulator, and never runs
   `simctl keychain reset`, because other projects' items are in that Keychain. It may boot a
   shut-down one.
