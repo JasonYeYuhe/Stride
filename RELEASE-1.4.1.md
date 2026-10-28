@@ -1087,7 +1087,7 @@ Owner-approved or recommended, not in 1.4.1:
   - Blocked: gate 3, gate 7 iOS and X2's signed-in branch need the iOS Simulator tool, and access to
     the Pro Max was declined at the prompt. The Pro was held by another project's session from
     21:55. The 1.4.0 (22) build is left installed on the Pro Max, signed out.
-- 2026-10-27/28, **gate 7 iOS, legs 1–2 of 4 PASS** on the Pro Max (owner granted access; the Pro was
+- 2026-10-27/29, **gate 7 iOS PASS: all 4 legs** on the Pro Max (owner granted access; the Pro was
   still held by another session). Kit server `gate7` (fresh, seeded demo); a Stride widget placed on
   page 1 once (it survives `reset`); two reminder habits made on 1.4.0 and synced: "Daily"
   `304F1BEE-B5DA-4731-9C32-A57A9A402B7B` and "MWF" (Mon/Wed/Fri) `72FFDF1A-8692-43CC-80B8-EA9047222711`.
@@ -1099,15 +1099,22 @@ Owner-approved or recommended, not in 1.4.1:
     1.4.1 launch the M/W/F habit has exactly `.2 .4 .6` and no bare id, the daily habit keeps its
     bare id. Same store-gate, default.store and recovered-edit results; no whole-store push on the
     relaunch.
-  - Evidence: `~/Library/Caches/Stride-build/sim-e2e/upgrades/w1-140to141-widget-rem`, `w2-131to141-widget-rem`.
-  - Open: w3 (1.3.0) and w4 (1.2.3). 1.3.0 (19) is installed on the Pro Max, signed in to `gate7`
-    (Keychain session), notifications not yet allowed. Resume: `start-server.sh gate7` (no
-    `--fresh`, keeps the DB and the session), `lock.sh acquire promax`, turn on Settings → Daily
-    Reminder, Allow, turn it off again (`app.sh reminders promax` should list the two bare ids),
-    terminate, delete one check-in remotely, then `upgrade.sh … --server gate7 --relaunch --reminders
-    304F1BEE-…,72FFDF1A-…`. For 1.2.3: `clean` with a 1.3.0+ build first (1.2.3 never drops a dead
-    token), then `reset` to v1.2.3 and sign in with a fresh `seed-demo` token only if the session
-    is gone.
+  - **w3, 1.3.0 (19) → 1.4.1 (23): PASS** (2026-10-29, screen unlocked). 1.3.0 writes no marker, so
+    this leg exercises the gate itself: the widget was turned away once (`waitForApp(noMarker)`) and
+    opened the store only after the app wrote marker 1. 529 rows marked, the first full pull asked
+    `?deletionsSince=`, the remote deletion arrived as `deletions:1` (519 → 518 records), no
+    recovered edit, no default.store. Reminders: bare id + bare id → bare id + `.2 .4 .6`, both
+    categories registered. The relaunch pushed no whole store.
+  - **w4, 1.2.3 (17) → 1.4.1 (23): PASS.** Same results as w3 (528 rows marked, 518 → 517 records,
+    widget turned away once, then opened after marker 1). 1.2.3 schedules habit reminders only at
+    launch (`StrideApp.swift:123`), so after Allow it needs one relaunch before `app.sh reminders`
+    lists the bare ids. That relaunch pushed 1.2.3's whole store (as 1.2.3 always does); the server
+    kept the M/W/F habit's `specificDays`/mask 42 (`updated_at` unchanged), and 1.4.1 then converted
+    it to `.2 .4 .6`.
+  - No `clean` was needed for 1.2.3: the gate7 session was still live, so `reset` to v1.2.3 came back
+    signed in (`user=1`). `clean` is only for a signed-out start.
+  - Evidence: `~/Library/Caches/Stride-build/sim-e2e/upgrades/w1-140to141-widget-rem`,
+    `w2-131to141-widget-rem`, `w3-130to141-widget-rem`, `w4-123to141-widget-rem`.
   - **Found: the iOS Simulator tool's input does not reach the simulator while the Mac's console
     is locked.** From the 01:34 lock every tap and swipe failed or was dropped; screenshots and
     simctl kept working. Before that, at load 400–900 (other sessions), inputs were slow and

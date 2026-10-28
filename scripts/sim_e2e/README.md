@@ -226,7 +226,8 @@ removes the notification permission with the app):
 1. Allow notifications. `simctl privacy` cannot grant them, so: in the app, turn on a habit's
    reminder, and answer the system prompt **Allow** with the iOS Simulator MCP
    (`mcp__Claude_Code_iOS_Simulator__control`, screenshot, then tap). An in-place install keeps
-   the permission.
+   the permission. **1.2.3** schedules habit reminders only at launch (and on a habit edit), so
+   after Allow terminate and launch it once more before reading `app.sh reminders`.
 2. Create two habits with reminders on: one daily, and one on specific days **Mon, Wed and Fri**.
    Sign in and sync as usual (the gate's scenario).
 3. Read their ids: `sql.sh <server> "SELECT id, name FROM habits"` after the sync, or the two
