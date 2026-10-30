@@ -1087,6 +1087,33 @@ Owner-approved or recommended, not in 1.4.1:
   - Blocked: gate 3, gate 7 iOS and X2's signed-in branch need the iOS Simulator tool, and access to
     the Pro Max was declined at the prompt. The Pro was held by another project's session from
     21:55. The 1.4.0 (22) build is left installed on the Pro Max, signed out.
+- 2026-10-30, **gate 3, B leg started, stopped on a simulator hang** (kit server `gate7`, A = Pro,
+  B = Pro Max, both on 1.4.1 (23)). Both phones were found shut down after the iOS 27.0 runtime image
+  was re-copied by `simdiskimaged` (nobody here touched it); booting them pushed load to ~960 and
+  swap to its last 370 MB, and both went down again once while RoastMate's UI tests booted a third
+  simulator. Load swung 5–960 throughout; taps landed 10–30 s late or not at all.
+  - **A:** signed in with a pasted login token; History opened on "Read 30 Minutes" 2026-10-09
+    (21 days back, the nearest unticked day) with `-openHistory … -historyDay -21`; Completed
+    switched on (a drag; taps on the Toggle never registered): 80 → 81 check-ins and the cell
+    filled in the same render. Sync Now pushed exactly one entry, `5344236B@2026-10-09`.
+  - **B:** its pull received that entry (`since … out=entries:1`), but it never reached B's store
+    (517 records). `sample` shows B's main thread blocked in a synchronous XPC reply inside
+    `UNUserNotificationCenter.removePendingNotificationRequests`, called from
+    `setupNotifications` (StrideApp.swift:502) → `rescheduleAllHabitReminders` →
+    `replaceReminder` (NotificationService.swift:406); the simulator's usernotificationsd was
+    itself waiting on the notification-settings service. The same block explains two earlier B
+    launches that got a 200 session answer yet showed "Sign In" and never synced. A restart of B
+    did not clear it. B is the only device with notification permission and reminder habits (from
+    gate 7); on 10-28 the same B synced normally.
+  - Not an app defect as far as we can tell (the daemon never answers), but it shows that a stuck
+    notification daemon freezes sign-in and sync with it: rescheduling runs on the main actor
+    before the launch sync. Candidate hardening for 1.4.2, not a 1.4.1 blocker.
+  - Evidence: `~/Library/Caches/Stride-build/sim-e2e/evidence/gate3-2026-10-30/` (both samples of
+    B's Stride, usernotificationsd's sample, the day's server log lines).
+  - Still to run: B shows the day (rerun on a quiet machine, or with B's notification state
+    reset by `app.sh reset` + a fresh sign-in), untick/re-tick → B has one record, the iPad leg,
+    the widget leg. Server `gate7` stopped (DB kept; A and B both hold its session), locks
+    released, Stride terminated on both phones.
 - 2026-10-27/29, **gate 7 iOS PASS: all 4 legs** on the Pro Max (owner granted access; the Pro was
   still held by another session). Kit server `gate7` (fresh, seeded demo); a Stride widget placed on
   page 1 once (it survives `reset`); two reminder habits made on 1.4.0 and synced: "Daily"
