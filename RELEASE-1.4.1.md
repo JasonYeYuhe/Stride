@@ -1087,7 +1087,7 @@ Owner-approved or recommended, not in 1.4.1:
   - Blocked: gate 3, gate 7 iOS and X2's signed-in branch need the iOS Simulator tool, and access to
     the Pro Max was declined at the prompt. The Pro was held by another project's session from
     21:55. The 1.4.0 (22) build is left installed on the Pro Max, signed out.
-- 2026-10-30, **gate 3, B leg started, stopped on a simulator hang** (kit server `gate7`, A = Pro,
+- 2026-10-30, **gate 3: B sync and untick/re-tick PASS; iPad and widget legs open** (kit server `gate7`, A = Pro,
   B = Pro Max, both on 1.4.1 (23)). Both phones were found shut down after the iOS 27.0 runtime image
   was re-copied by `simdiskimaged` (nobody here touched it); booting them pushed load to ~960 and
   swap to its last 370 MB, and both went down again once while RoastMate's UI tests booted a third
@@ -1110,10 +1110,29 @@ Owner-approved or recommended, not in 1.4.1:
     before the launch sync. Candidate hardening for 1.4.2, not a 1.4.1 blocker.
   - Evidence: `~/Library/Caches/Stride-build/sim-e2e/evidence/gate3-2026-10-30/` (both samples of
     B's Stride, usernotificationsd's sample, the day's server log lines).
-  - Still to run: B shows the day (rerun on a quiet machine, or with B's notification state
-    reset by `app.sh reset` + a fresh sign-in), untick/re-tick → B has one record, the iPad leg,
-    the widget leg. Server `gate7` stopped (DB kept; A and B both hold its session), locks
-    released, Stride terminated on both phones.
+  - **Rerun 17:50–18:20 (owner: "reset B, sign in again, rerun once the load drops"):** `app.sh
+    reset promax` (no notification permission any more); B came back signed in through the
+    Keychain session and pulled in full (518 records, `5344236B` among them).
+    - **B shows the day: PASS.** B's History on 10-09: cell filled, Completed on, 81 check-ins.
+    - **Untick and re-tick: PASS.** A unticked (A: 517 records, `5344236B` gone); A's launch sync
+      pushed `deletedEntryIds=1[5344236B]`; B's pull applied `deletions:1` (B: 517, gone). A
+      re-ticked; A's sync pushed one new entry `A2A10918@2026-10-09`; B pulled it. End state:
+      exactly one 10-09 record for "Read 30 Minutes" on A, on B and on the server
+      (`A2A10918…`, value 1). Syncs were taken as launch syncs (relaunch), not Sync Now.
+    - **iPad leg: not run.** iPad Pro 13-inch (M5) booted and 1.4.1 installed, but the iOS
+      Simulator tool's access to it was never granted (the request went unanswered), and
+      `app.sh` only drives the two iPhones (`simctl launch` works). Shut down again, its lock
+      removed.
+    - **Widget leg: not run.** The Stride widget is gone from B's home screen (SpringBoard's
+      layout was reset by today's forced shutdowns); re-placing it failed at load 200–500, where
+      home-screen taps landed late and out of order. B has today (10-30) ticked for "Read 30
+      Minutes" (`24A0A472…`, local only, not synced), ready for the widget's un-check.
+    - Toggles: drags work, taps never do (History and Settings alike); after a while with no
+      input landing at all, reopening the simulator panel (detach + attach) brought it back.
+    - Evidence adds `b1-has-1009.png`, `a2-unticked.png`, `b2-deleted.png`, `a3-reticked.png`,
+      `b3-one-record.png`. Server `gate7` stopped (DB kept), locks released.
+  - Still to run: the iPad leg (needs the owner to grant the iOS Simulator tool access to iPad
+    Pro 13-inch (M5)) and the widget leg (re-place the widget on B first).
 - 2026-10-27/29, **gate 7 iOS PASS: all 4 legs** on the Pro Max (owner granted access; the Pro was
   still held by another session). Kit server `gate7` (fresh, seeded demo); a Stride widget placed on
   page 1 once (it survives `reset`); two reminder habits made on 1.4.0 and synced: "Daily"
