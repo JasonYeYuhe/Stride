@@ -1087,6 +1087,43 @@ Owner-approved or recommended, not in 1.4.1:
   - Blocked: gate 3, gate 7 iOS and X2's signed-in branch need the iOS Simulator tool, and access to
     the Pro Max was declined at the prompt. The Pro was held by another project's session from
     21:55. The 1.4.0 (22) build is left installed on the Pro Max, signed out.
+- 2026-11-03 02:06–02:24, **gate 10.4 "a History edit syncs to iPhone B" PASS; X2 signed-in branch
+  PASS** (owner: "可以的"; kit server `gate7`; load 6–60).
+  - **Gate 10.4, the open item.** Mac variant (Debug, built 2026-10-22 21:58 after the last code
+    change; preflight passed: localhost:3002). Its own test store (5 demo habits, 63 records, from
+    the October sittings) was copied to the scratchpad and moved to the Trash so the sign-in would
+    not merge it into the kit demo account. Launched by path: "Store opened by the app, outside the
+    App Group", the store only in `…mactest/Data/Documents/`, the real group `Stride.store` still
+    dated Sep 9 (checked again after quitting). Computer use granted on the variant only
+    (background). Settings → Sign In → token (pull: 10 habits, 520 entries). Statistics → Read 30
+    Minutes → History on Wednesday 2026-10-28 (no server row): ticked → `370ED188`, 84 check-ins,
+    the heatmap cell and By Weekday (Wed 9 → 10) updated; File → Sync Now pushed
+    `370ED188@2026-10-28`; **B's launch pull stored it, and B's History shows the 28th completed**
+    (`b1-has-1028.png`). Untick → Sync Now → `deletedEntryIds=1[370ED188]` → B: 0 rows. Re-tick →
+    `B6ABAFBA` → B pulled it. End state: **exactly one 10-28 record, `B6ABAFBA…`, on the Mac, on B
+    and on the server** (`b2-one-record-1028.png`). Variant quit from its menu.
+    - The heatmap's AX press (what the tool's click becomes) opens History on today, as designed
+      (`accessibilityAction { openHistory(on: Date()) }`); a pointer click on a cell opening its day
+      passed in the first sitting. The day was picked in History's calendar.
+    - File → Sync Now does nothing while the History sheet is up; Done first.
+    - Gate 10.4 still open: the spoken VoiceOver pass (needs the owner to turn VoiceOver on).
+  - **X2, signed-in branch (gate 7, non-Gregorian).** B (Pro Max) `app.sh clean … 1.4.0 --revoke`
+    (revoked the kit demo account's 6 sessions; B ended signed out), then the global locale
+    `ja_JP@calendar=japanese`. 1.4.0 (22) with `-demo`: 5 habits, 63 records, all keyed in year
+    0008. Signed in to a fresh kit account `x2-signedin@stride-review.com` (user 10). 1.4.0's push:
+    `applied=habits:5,entries:0`, **63 entries `invalid_value`** (the server guard); Settings
+    "63 changes can't sync / A value the server doesn't accept 63" (`n1-140-signedin-held.png`);
+    server: 5 habits, 0 entries. `upgrade.sh … --label ng-140to141-japanese-signedin` (exit 0,
+    PASS). First 1.4.1 launch: "**Day-key repair: 63 found, 63 re-keyed, 0 replaced, 63 holds
+    lifted, 0 undecodable, 0 left held**, 0 days merged, 0 tombstones"; its push `applied=entries:63
+    skipped=0` with the same ids at their real days. **Server: 63 entries, 2026-10-20 to
+    2026-11-03, none at 0008.** Second launch: no repair line, nothing pushed, Settings has no held
+    row (`n2-141-settings-after.png`); the store still 63 records. Locale back to `en_US`.
+  - B is left on 1.4.1 (23), signed in as `x2-signedin@…` (5 habits), widget still on page 1; the
+    kit demo account's sessions are revoked (the iPad shows signed out on its next launch).
+  - Evidence: `~/Library/Caches/Stride-build/sim-e2e/evidence/gate104-2026-11-03/` and
+    `…/x2-signedin-2026-11-03/` (screens, `upgrade-output.txt`, `server-e2e.txt`); the upgrade's
+    own record in `…/upgrades/ng-140to141-japanese-signedin/`. Server `gate7` stopped, lock released.
 - 2026-11-03 01:11–01:36, **gate 3 PASS: iPad leg and widget leg** (owner granted the iOS Simulator
   tool; kit server `gate7`; iPad Pro 13-inch (M5) and B = Pro Max, both 1.4.1 (23)). Load was 15 at
   the start, then another session pushed it to 290–450; taps landed but some needed a retry.
@@ -1230,7 +1267,7 @@ Owner-approved or recommended, not in 1.4.1:
     turn VoiceOver on (a system setting): not run.
   - Still open: 5 and 12 (banners and the Dock badge need the notification permission prompt,
     which only the owner can answer; Finder/Dock access was declined), and "a History edit syncs
-    to iPhone B" (needs the simulator tool).
+    to iPhone B" (needs the simulator tool; PASS on 2026-11-03, entry at the top).
 - 2026-10-22, **ASC writes A–E + pricing** (owner: "同意 A–E，定价也按你推荐的来"; the agent's
   own ASC writes were refused by the permission classifier, so the owner ran
   `scripts/asc_writes_1_4_1.sh`, then asked the agent to run it, which went through):
@@ -1304,7 +1341,7 @@ Owner-approved or recommended, not in 1.4.1:
     its real 2026 day; later launches do nothing; Today, Statistics (By Weekday now right) and
     History ("October 8 Reiwa") are right. The kit server's guard answers a 1.4.0 push of 0008 with
     invalid_value and a 1.3.0 push with 426. Not run: the signed-in branch (held rows lifted, the
-    server ending with the real days), which needs UI input.
+    server ending with the real days), which needs UI input. PASS on 2026-11-03 (entry at the top).
   - **Blocked: gate 3 (partly) and gate 7 iOS.** The iOS Simulator MCP crashed repeatedly while the
     host ran at load average 400–1000 with swap nearly full (other sessions' builds plus this
     archive), then refused every call until the simulator panel is reopened. Done before that, on
