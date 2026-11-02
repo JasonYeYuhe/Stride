@@ -782,6 +782,24 @@ Find everything else by screenshot.
 
 Then read `log.sh <name> since <mark>`.
 
+**Input that the tool's plain `tap` does not deliver** (1.4.1 gates, 2026-10-30 to 11-03):
+
+- **Toggles** (History's Completed, Settings): drag the knob with `swipe` (≈35 pt, 0.4 s); a tap
+  never registers.
+- **SpringBoard menus and sheets** (edit-mode "Add Widget", the widget gallery rows, its Add
+  Widget button, edit-mode Done): a `tap` closes edit mode instead. A `touch_path` press and
+  release on the same point (three samples, ≈200 ms in all) works.
+- **Paste into the token field:** long-press the field (`tap` with `duration` 1.2) → Paste. On the
+  iPad, the keyboard bar's paste button works when the callout's Paste does not.
+- When no input lands at all for a while and the panel is open (the owner opened it, or allowed
+  `attach` for that run), `detach` then `attach` it.
+
+**iPad (iPad Pro 13-inch (M5), 1032×1376 pt).** `app.sh` takes only the two iPhones, so drive it
+with `xcrun simctl install/launch/terminate` directly. After a fresh install, skip onboarding as
+`app.sh install` does: `xcrun simctl spawn <udid> defaults write yyh.stride.habittracker
+stride_onboarding_completed -bool YES`. The heatmap is on Statistics (sidebar), one column per
+week, Sunday on top.
+
 ## Gotchas
 
 **Keychain, signing and containers**

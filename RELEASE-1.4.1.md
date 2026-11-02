@@ -1087,6 +1087,42 @@ Owner-approved or recommended, not in 1.4.1:
   - Blocked: gate 3, gate 7 iOS and X2's signed-in branch need the iOS Simulator tool, and access to
     the Pro Max was declined at the prompt. The Pro was held by another project's session from
     21:55. The 1.4.0 (22) build is left installed on the Pro Max, signed out.
+- 2026-11-03 01:11–01:36, **gate 3 PASS: iPad leg and widget leg** (owner granted the iOS Simulator
+  tool; kit server `gate7`; iPad Pro 13-inch (M5) and B = Pro Max, both 1.4.1 (23)). Load was 15 at
+  the start, then another session pushed it to 290–450; taps landed but some needed a retry.
+  - **iPad leg: PASS.** Fresh install, so onboarding was marked done with `simctl spawn … defaults
+    write yyh.stride.habittracker stride_onboarding_completed -bool YES` (`app.sh` is iPhone-only);
+    signed in with a pasted token (pull: 10 habits, 518 entries). Statistics → "Read 30 Minutes" →
+    tapped the 2026-10-18 heatmap cell (the nearest unticked past day on the server): **History
+    opened on Sunday, October 18** (`ipad1-history-opens-1018.png`). Ticked (a drag): 81 → 82,
+    heatmap and Best streak (17 → 27) updated on Done. Sync Now pushed `364FCAE9@2026-10-18`; B's
+    launch pull stored it (**B sees it**). Unticked → Sync Now pushed `deletedEntryIds=1[364FCAE9]`;
+    B's pull removed it. Re-ticked → new record `4B68AD5C@2026-10-18`, Sync Now, B pulled it. End
+    state: **exactly one 10-18 record, `4B68AD5C…`, on the iPad, on B and on the server**
+    (`b4-one-record-1018.png`: B's History on 10-18, Completed on, 83 check-ins).
+    - History edits do not sync by themselves (sync runs at launch, foreground, background and on
+      Sync Now: StrideApp.swift syncIfLoggedIn, SettingsView); the gate's "after Sync Now" matches.
+    - B's first launch here also pushed its local-only 10-30 tick from 10-30 (`24A0A472`).
+  - **Widget leg (D14): PASS.** Stride's large widget re-placed on B's page 1 (it has the per-habit
+    check buttons; the small one is a ring only). Setup: the widget ticked today (2026-11-03) →
+    `F51D751D`; the app opened on Statistics showed it (Current streak 1, Tue 14). Home → the
+    widget **un-checked** it (B's store: `F51D751D` gone, tombstone queued) while the app process
+    stayed alive (pid 93339) → `simctl launch` brought **the same process** to the foreground:
+    **Stats show the day cleared** (0/10, Current streak 0, Tue 13, 30-day 83 → 80 %) and
+    **History's cell for the 3rd is clear** (Completed off, 83 check-ins). **History's re-check
+    created a new record** `B11DC3A2` (84 check-ins, exactly one 11-03 row). Evidence
+    `w1-stats-today-ticked.png` … `w5-history-rechecked.png`.
+    - Sync follow-through: the next push sent `B11DC3A2` but no deletion for `F51D751D`; the
+      server has one 11-03 row (`B11DC3A2`). A second widget un-check, this time not re-checked,
+      queued `B11DC3A2` in `stride_deleted_entry_ids_widget` and the next launch pushed
+      `deletedEntryIds=1[B11DC3A2]` (server: 0 rows for 11-03). So the widget's tombstones do
+      reach the server; in the first run the same-day re-check superseded the queued one.
+  - SpringBoard menus (Add Widget, the gallery rows, the Add Widget button, edit-mode Done) ignore
+    the iOS Simulator tool's plain `tap`, which closed edit mode instead (the 10-30 failure);
+    a `touch_path` press-and-release on the same point (hold ~200 ms) works every time.
+  - Evidence: `~/Library/Caches/Stride-build/sim-e2e/evidence/gate3-2026-11-03/` (screens above,
+    `ipad2-unticked.png`, `ipad3-reticked.png`, `server-e2e.txt`). The widget stays on B's page 1
+    for the rest of the release work; remove it when 1.4.1 is done.
 - 2026-10-30, **gate 3: B sync and untick/re-tick PASS; iPad and widget legs open** (kit server `gate7`, A = Pro,
   B = Pro Max, both on 1.4.1 (23)). Both phones were found shut down after the iOS 27.0 runtime image
   was re-copied by `simdiskimaged` (nobody here touched it); booting them pushed load to ~960 and
@@ -1131,8 +1167,7 @@ Owner-approved or recommended, not in 1.4.1:
       input landing at all, reopening the simulator panel (detach + attach) brought it back.
     - Evidence adds `b1-has-1009.png`, `a2-unticked.png`, `b2-deleted.png`, `a3-reticked.png`,
       `b3-one-record.png`. Server `gate7` stopped (DB kept), locks released.
-  - Still to run: the iPad leg (needs the owner to grant the iOS Simulator tool access to iPad
-    Pro 13-inch (M5)) and the widget leg (re-place the widget on B first).
+  - Still to run: the iPad leg and the widget leg. Both PASS on 2026-11-03 (entry above).
 - 2026-10-27/29, **gate 7 iOS PASS: all 4 legs** on the Pro Max (owner granted access; the Pro was
   still held by another session). Kit server `gate7` (fresh, seeded demo); a Stride widget placed on
   page 1 once (it survives `reset`); two reminder habits made on 1.4.0 and synced: "Daily"
