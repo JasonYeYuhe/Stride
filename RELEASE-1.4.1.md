@@ -142,6 +142,8 @@ Plan-text consequences, applied below:
   review-notes edits, IAP and subscription localization edits, `finish 1.4.1`, `release 1.4.1`.
 - **Pre-approved:** only `release.py release 1.4.0 --platform MAC_OS` (NEXT_SESSION_PROMPT.md:9).
   Any further pre-approval is one line from the owner, recorded here.
+- **2026-11-04, owner: "你直接上传吧 如果可以的话"** — `build-appstore.sh all --upload` for 1.4.1 (23).
+  Upload only: `finish` (attach and submit) still needs its own go per platform.
 
 **P1. Magic-link fix. Step 0: now, on the owner's go, whatever the Mac review state.**
 The first action of the next session is to ask the owner for a go on A and for O5's answer. No app
@@ -1087,6 +1089,27 @@ Owner-approved or recommended, not in 1.4.1:
   - Blocked: gate 3, gate 7 iOS and X2's signed-in branch need the iOS Simulator tool, and access to
     the Pro Max was declined at the prompt. The Pro was held by another project's session from
     21:55. The 1.4.0 (22) build is left installed on the Pro Max, signed out.
+- 2026-11-04 00:58–01:32, **1.4.1 (23) UPLOADED, iOS and macOS** (owner's go above; upload only,
+  nothing attached or submitted). Tree `30e783b` (code = 86a1e3e). Preflight: console unlocked,
+  login keychain unlocked (no-timeout), the script's own signing and Xcode-license checks passed;
+  no dataless file in the sources; `release.py show 1.4.1`: both records PREPARE_FOR_SUBMISSION,
+  What's New ×6. `build-appstore.sh all --upload`: both archives passed `verify_archive` (ids,
+  1.4.1 (23), privacy manifests, Sentry, background modes, widget appex) and `--exported`; dSYMs
+  kept in `build/dsyms/1.4.1-23/{ios,macos}` and sent to Sentry stride-apple; "Upload succeeded"
+  for Stride.ipa and Stride.pkg. The exportArchive "Upload Symbols Failed" warnings name only the
+  prebuilt Sentry.framework's UUIDs. Log: `~/Library/Caches/Stride-build/build-appstore-1.4.1-23.log`.
+  - **Found: iCloud sync duplicates break a regenerated project.** `xcodegen` takes whole folders,
+    so the untracked `Shared/SentryBootstrap 3.swift` (a second `enum SentryBootstrap`) and three
+    `StrideTests/* 2.swift` went into the regenerated pbxproj (22 references; the tracked one has
+    none), which would have failed the archive. They were moved to the scratchpad for the build
+    and moved back afterwards, untouched. Check `git status --untracked-files=all` for `* [0-9].swift`
+    before any release build.
+  - The previous `build/appstore` (gate 10.1's 1.4.1 (23) archives, and duplicate 1.2.0/1.2.1 Mac
+    archives) was moved, not deleted, to `~/Library/Caches/Stride-build/appstore-kept-2026-11-04`
+    before the script's `rm -rf`.
+  - Next for the owner: the 7 web-UI IAP edits; gate 11 (production `request-link`) and gate 12's
+    iOS half (a production token); the privacy page; then `finish 1.4.1 23 --platform IOS` with its
+    own go. Mac `finish` waits for gate 10 (items 5 and 12, the VoiceOver pass).
 - 2026-11-03 02:06–02:24, **gate 10.4 "a History edit syncs to iPhone B" PASS; X2 signed-in branch
   PASS** (owner: "可以的"; kit server `gate7`; load 6–60).
   - **Gate 10.4, the open item.** Mac variant (Debug, built 2026-10-22 21:58 after the last code
