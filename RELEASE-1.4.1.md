@@ -1089,6 +1089,34 @@ Owner-approved or recommended, not in 1.4.1:
   - Blocked: gate 3, gate 7 iOS and X2's signed-in branch need the iOS Simulator tool, and access to
     the Pro Max was declined at the prompt. The Pro was held by another project's session from
     21:55. The 1.4.0 (22) build is left installed on the Pro Max, signed out.
+- 2026-11-05..07, **iOS 1.4.1 (23) SUBMITTED** (owner: "没问题的话 都上传asc吧", then chose "edit
+  the purchase text first, then submit iOS"; "你直接改吧"; "你直接来加吧"). Submission
+  `6dab069d-66c1-41b6-86f0-949e50935cc4`, WAITING_FOR_REVIEW since 2026-11-07T04:27:27Z, 3 items:
+  the iOS version, Stride Pro Yearly, Stride Pro Lifetime. Mac stays PREPARE_FOR_SUBMISSION until
+  gate 10 (items 5, 12, the spoken VoiceOver pass).
+  - Build 23 was VALID on both platforms (uploaded 2026-11-03 08:31 / 08:34 PST).
+  - The 7 IAP web-UI edits, made by the agent in Chrome (the built-in browser would not render
+    Apple's sign-in): Yearly ×6 descriptions without "save 44%", Lifetime en-US with Weekly
+    Review. `iap_copy.py --yes` first confirmed the API still answers 409 for ACTIVE
+    localizations. Read back through the API: each has an APPROVED copy (live until approval)
+    and a PREPARE_FOR_SUBMISSION copy with the new text. Both products were then added to the
+    draft review submission with **Add for Review**; Lifetime's 5 non-English localizations
+    from 2026-10-22 ride along.
+  - Trap: an IAP-only draft review submission has `platform: null`, so `filter[platform]` matches
+    it for IOS **and** MAC_OS. `release.py submit` reused it for IOS, as intended.
+  - **New Apple age-rating question.** The first submit failed: 409 STATE_ERROR on the version,
+    associated error ENTITY_ERROR.ATTRIBUTE.REQUIRED `socialMedia` on the age-rating
+    declaration. Answered `socialMedia: false` on the editable appInfo's declaration
+    (`c22766fd…`; Stride has no social features); `socialMediaAgeRestricted` left null, and
+    Apple accepted the submit. The declaration is app-wide, so the Mac submit needs nothing more.
+    `ageRatingDeclarations/{id}` GET answers 403; read it through
+    `appInfos/{id}/ageRatingDeclaration`. asc_api.py truncates `associatedErrors`; post the
+    request with `requests` to see them.
+  - Gate 11 on submission day: check_email_auth.sh PASS (DMARC and apex-SPF advisories as before);
+    production `/health` ok.
+  - Gate 12 iOS half (production token in the Release build) was not run; the owner chose to
+    submit iOS once the IAP edits were in, and that path did not include it. Still open, before
+    `release.py release 1.4.1`.
 - 2026-11-04 00:58–01:32, **1.4.1 (23) UPLOADED, iOS and macOS** (owner's go above; upload only,
   nothing attached or submitted). Tree `30e783b` (code = 86a1e3e). Preflight: console unlocked,
   login keychain unlocked (no-timeout), the script's own signing and Xcode-license checks passed;
