@@ -326,6 +326,22 @@ change serves.
 10. The owner takes O1–O25 or their defaults.
 11. **Optional, independent of the release:** **[owner]** set `SENTRY_DSN` on the server, and raise
     pm2-logrotate's retention from 7 to 30 (RELEASE-1.4.1.md:932-933).
+12. **Carried from 1.4.1's Mac gate 10 (2026-11-07; owner: "角标 1.4.2 修").** Mac 1.4.1 (23) shipped
+    without these; none is new in 1.4.1 (RELEASE-1.4.1.md, "Mac gate 10 remainder").
+    - **The Mac Dock badge never shows (gate 10 item 12, FAIL since 1.4.0).** NotificationService's
+      updateBadge / updateBadgeAndWait / setBadge call only `center.setBadgeCount`; usernoted
+      stores the count (10→9 on a check-in) but the Dock shows nothing, while
+      `NSApp.dockTile.badgeLabel = "10"` (set through lldb on the variant) shows at once. Fix: on
+      macOS also set `NSApp.dockTile.badgeLabel` (nil at 0), only while
+      `notificationSettings().badgeSetting == .enabled`, so turning Badges off still hides it.
+      Test it on the variant by reading the Dock's `AXStatusLabel` (scripts/mac_variant/README.md).
+      X2 later moves the count onto DailyProgress; this fix only changes where it is shown.
+    - **VoiceOver, from the AX audit (scripts/mac_variant/axdump.swift):** Settings' Language
+      pop-up has no title link ("System Default, pop-up button"); Settings' habit rows speak their
+      emoji; Add Habit's two text fields are titled by their placeholders, not "Habit Name". Every
+      new string in 6 languages.
+    - **Mac banner actions (item 5) are still unrun by anyone:** the owner marks Done on a banner
+      once with the app running and once quit, in 1.4.2's gate 10. Agents cannot reach the buttons.
 
 ## Spec corrections
 

@@ -826,7 +826,7 @@ about 2 agent-days from branch cut to iOS submission (2026-10-10 to 2026-10-11, 
   October 22, 2026, and is verified live, as 1.3.1's was (RELEASE-1.3.1.md). The page lists
   exactly what the app sends Sentry, so these captures do not ship before it says so
   (SyncService.logDiagnostic holds its own back for that reason; review of 830a551, 2026-10-22).
-- [ ] **[owner]** `release.py finish 1.4.1 <build> --platform IOS` first. Mac follows only after gate
+- [x] **[owner]** `release.py finish 1.4.1 <build> --platform IOS` first. Mac follows only after gate
   10 passes, with its owner sitting done: `finish 1.4.1 <build> --platform MAC_OS`. Each platform
   needs its own go.
 - [ ] **[owner]** After approval, `release.py release 1.4.1`; merge the m4 PR with a merge commit;
@@ -1089,6 +1089,12 @@ Owner-approved or recommended, not in 1.4.1:
   - Blocked: gate 3, gate 7 iOS and X2's signed-in branch need the iOS Simulator tool, and access to
     the Pro Max was declined at the prompt. The Pro was held by another project's session from
     21:55. The 1.4.0 (22) build is left installed on the Pro Max, signed out.
+- 2026-11-07, **Mac 1.4.1 (23) submitted** (owner: "提交 Mac 吧，角标 1.4.2 修"):
+  `release.py finish 1.4.1 23 --platform MAC_OS` attached build 23, created review submission
+  7906d145-6c9d-4953-beff-eff31a2e7d42 and submitted; `show` reads WAITING_FOR_REVIEW on both
+  platforms. The Dock badge fix, the three VoiceOver findings and the unrun banner-action check
+  go to PLAN-1.4.2.md Phase 0 item 12. Still before `release.py release 1.4.1`: gate 12's iOS
+  half (the production token in the Release build).
 - 2026-11-07 17:42–18:30, **Mac gate 10 remainder, agent-run** (owner: "你直接来弄吧 你全权负责").
   Debug variant launched by path (launch checks passed each time; the real group store still dated
   Sep 9), quit by its menu. System Settings and Finder grants were declined, full-screen control
