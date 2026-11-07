@@ -1089,6 +1089,27 @@ Owner-approved or recommended, not in 1.4.1:
   - Blocked: gate 3, gate 7 iOS and X2's signed-in branch need the iOS Simulator tool, and access to
     the Pro Max was declined at the prompt. The Pro was held by another project's session from
     21:55. The 1.4.0 (22) build is left installed on the Pro Max, signed out.
+- 2026-11-07 13:35–13:47, **Mac items 5 and 12, agent's part** (owner: "Mac 那几项你能做的先做吧";
+  Debug variant built 2026-10-22 21:58, launched by path; launch checks passed: "Store opened by
+  the app, outside the App Group", the real group store still dated Sep 9; quit by its menu):
+  - **Notification permission is already granted** to `…mactest`, so neither item waits on a
+    permission prompt any more. Settings → Daily Reminder was on; set to 13:39, the
+    `stride.daily.evening` request was delivered at 13:39:00 (usernoted: "scheduled for delivery",
+    "Presenting … as banner", alertStyle banner). The variant was frontmost, so its willPresent
+    answered `[]` (no banner on screen while active), as designed. Reminder time put back to 8:00 PM.
+  - **12, open, likely a settings question:** the app set the badge (Stride log "Setting badge count
+    to 10", no error; usernoted's db2 `app` row for `…mactest` holds badge 10), yet the Dock shows
+    none, before and after another app became active (Hide Stride). The Dock's AX `AXStatusLabel`
+    reads badges reliably (Messages = 2 at the same moment). Most likely "Badge application icon"
+    is off for the variant in System Settings → Notifications; the agent's read-only look at
+    System Settings was declined. **Owner:** check that toggle for the Stride entry whose banner
+    you saw; if it is on and the Dock still shows no badge, it is a 1.4.1 bug.
+  - **5, open:** banner actions (Mark Done / Add 1 / Snooze) are clicks in Notification Center's
+    own UI, outside the granted app. Owner, or grant Notification Center for one sitting.
+  - VoiceOver spoken pass: still the owner's (turning VoiceOver on is a system setting).
+  - New probes for the kit: per-app notification settings are no longer in
+    `com.apple.ncprefs.plist` (123 apps there, no Stride); `osascript` over the Dock's
+    `AXStatusLabel` reads every visible badge without screen control.
 - 2026-11-05..07, **iOS 1.4.1 (23) SUBMITTED** (owner: "没问题的话 都上传asc吧", then chose "edit
   the purchase text first, then submit iOS"; "你直接改吧"; "你直接来加吧"). Submission
   `6dab069d-66c1-41b6-86f0-949e50935cc4`, WAITING_FOR_REVIEW since 2026-11-07T04:27:27Z, 3 items:
