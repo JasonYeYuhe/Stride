@@ -1089,6 +1089,40 @@ Owner-approved or recommended, not in 1.4.1:
   - Blocked: gate 3, gate 7 iOS and X2's signed-in branch need the iOS Simulator tool, and access to
     the Pro Max was declined at the prompt. The Pro was held by another project's session from
     21:55. The 1.4.0 (22) build is left installed on the Pro Max, signed out.
+- 2026-11-07 17:42–18:30, **Mac gate 10 remainder, agent-run** (owner: "你直接来弄吧 你全权负责").
+  Debug variant launched by path (launch checks passed each time; the real group store still dated
+  Sep 9), quit by its menu. System Settings and Finder grants were declined, full-screen control
+  was approved and released unused.
+  - **12, FAIL, and it is 1.4.0's, not 1.4.1's.** The Badges switch is on for `…mactest` (bit 1 of
+    its `flags`, 310386702, the same value as Telegram's, whose badge shows). `setBadgeCount(10)`
+    succeeds and usernoted stores it (db2 `app.badge` 10, then 9 after a check-in, so the count
+    tracks within the second), yet the Dock's `AXStatusLabel` stays empty. Setting
+    `NSApp.dockTile.badgeLabel = "10"` in the same process (lldb, Debug's get-task-allow) put
+    "10" on the Dock at once. So on this Mac, `UNUserNotificationCenter.setBadgeCount` does not
+    reach the Dock tile; D3's Dock badge has never been seen working (1.4.0 shipped it unrun,
+    RELEASE-1.4.0.md:922). Not proven for the App Store build (the real-id app is never run here),
+    but nothing in the code differs. Fix for 1.4.2: on macOS also set `NSApp.dockTile.badgeLabel`
+    (nil at 0), only while `notificationSettings().badgeSetting == .enabled`.
+  - **5, not run.** Both test reminders were delivered as banners with the app hidden (17:54,
+    17:56, 17:57; usernoted "Presenting … as banner"), but no agent path reaches their buttons:
+    banners are not in NotificationCenter's accessibility tree (0 windows while shown), and
+    opening Notification Center needs the menu-bar clock, a Finder grant (declined). The action
+    path is unchanged since 1.4.0 apart from one line in `NotificationActionHandler.swift`
+    (`git diff v1.4.0..HEAD`), and `NotificationRouterTests` covers the routing, so the risk is
+    the live Mac 1.4.0's.
+  - **VoiceOver, the accessibility-tree substitute, PASS** (`scripts/mac_variant/axdump.swift`,
+    new: what VoiceOver reads, without turning it on). Today, Statistics, History, the paywall,
+    Settings and Add Habit: every control has a spoken name; rows carry their state, value
+    ("0 of 8 glasses" on the count row, as AXValueDescription) and custom actions (Edit Habit,
+    Mark … complete, Add 1); History's days are "Saturday, November 7" + "Completed". Not covered:
+    speech order and the icon/colour grids (opaque groups; labelled in code, AddHabitView:146,175).
+    Small, pre-existing, for 1.4.2: Settings' Language pop-up has no title link (VoiceOver says
+    "System Default, pop-up button"); Settings' habit rows speak their emoji; Add Habit's two
+    text fields are titled by their placeholders ("e.g., Read 30 minutes"), not "Habit Name".
+  - Test state restored: Read 30 Minutes and Water reminders off again (the relaunch rescheduled
+    only the original five requests); Morning Run stays checked for Nov 7 (variant data).
+  - **Gate 10 outcome:** nothing found is new in 1.4.1. The Mac submission of 1.4.1 (23) is
+    the owner's go, as every submission is.
 - 2026-11-07 13:35–13:47, **Mac items 5 and 12, agent's part** (owner: "Mac 那几项你能做的先做吧";
   Debug variant built 2026-10-22 21:58, launched by path; launch checks passed: "Store opened by
   the app, outside the App Group", the real group store still dated Sep 9; quit by its menu):

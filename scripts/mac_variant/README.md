@@ -178,6 +178,22 @@ In the variant, after the checks above:
 - Restore's open panel, and Export's save panels;
 - Mark Done on a Mac banner, once with the app running and once with it quit.
 
+What the agent can and cannot reach here (measured 2026-11-07, macOS 27):
+
+- **What VoiceOver reads:** `axdump.swift` prints every window's labels, values and actions and
+  flags unlabeled controls, without turning VoiceOver on (a system setting the agent leaves
+  alone). It does not cover speech order or the icon and colour grids (opaque groups).
+- **Banner buttons:** out of reach. A banner is not in Notification Center's accessibility tree
+  (0 windows while it is on screen), and opening Notification Center needs the menu-bar clock,
+  which is a Finder-level grant. The owner presses them.
+- **Reminder time:** the DatePicker takes no background keys or stepper clicks. With the variant
+  quit, set `ZREMINDERENABLED/ZREMINDERHOUR/ZREMINDERMINUTE` on its own store
+  (`~/Library/Containers/yyh.stride.habittracker.mactest/Data/Documents/Stride.store`), then
+  launch it; the launch pass reschedules. Never the App Group store.
+- **The Dock badge:** `osascript` over the Dock's `AXStatusLabel`. The per-app Badges switch is
+  bit 1 of `flags` in `~/Library/Group Containers/group.com.apple.usernoted/Library/Preferences/group.com.apple.usernoted.plist`
+  (`apps[]`, by `bundle-id`).
+
 ## Store screenshots
 
 The Mac App Store slot (`APP_DESKTOP`) takes only exact 16:10 sizes: 1280×800, 1440×900,
