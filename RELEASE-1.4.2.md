@@ -1,18 +1,20 @@
 # Stride 1.4.2+ — Pro worth paying for
 
 App ID `6761262334`, bundle `yyh.stride.habittracker`. **Plan dated 2026-10-27, revised the same day
-after three reviews (Review log, at the end); no code yet.** Every code citation is at `7fbb3ec`, the
+after three reviews (Review log, at the end); re-planned 2026-11-08 (N1–N6, below); `m5/1.4.2` cut
+2026-11-09 at `5ba863d` (Progress log, at the end).** Every code citation is at `7fbb3ec`, the
 `m4/1.4.1` tip.
 
-- **Branch:** `m5/1.4.2`, cut from the `m4/1.4.1` tip on the day 1.4.1 (23) is submitted for iOS.
+- **Branch:** `m5/1.4.2`, cut from the `m4/1.4.1` tip `5ba863d` on 2026-11-09, while iOS 1.4.1 (23)
+  is in review (a rejection fix goes on m4 and is merged forward).
 - **Version:** **1.4.2 (24)** (RELEASE-1.4.1.md:297). project.yml:19-20 still says 1.4.1 (23).
   DEV-PLAN-1.3.md:54 still says "build 22"; W12 corrects it.
 - **Scope of 1.4.2:**
   - **Wave A** (must ship): a trial-ready paywall, purchase and trial states, Pro that is right in a
     trial's first week, and Pro that a free user and the agent's sweep can see.
-  - **Wave B** (out by default): the rest of DEV-PLAN-1.3.md M5 (`:1253-1276`): any week, at risk,
-    notes, groups, and Today's free "N more". It comes in only if W0–W9 are merged and green on
-    **2026-11-10** (D1).
+  - **Wave B** (**out, N1**): the rest of DEV-PLAN-1.3.md M5 (`:1253-1276`): any week, at risk,
+    notes, groups, and Today's free "N more". By N1 it is X0 at the top of 1.5.0, with no
+    checkpoint; W10 and W11 below are kept only as X0's spec.
   - Also in scope: the items of RELEASE-1.4.1.md's "1.4.2 backlog" (`:923-942`) that serve this goal,
     and two acquisition items that need no code: localized store screenshots and a keyword pass
     (D19).
@@ -54,8 +56,8 @@ recorded under the table once given.
   so StoreKit tests still need iOS 18.5). Open: items 2 (1.4.1's release), 3, 4, 7, 8, 9 (Gemini 4
   Argon rerun; agy offers it again), 10 (now N1–N6), 11, and the new item 12 (Mac carry-overs from
   1.4.1's gate 10: the Dock badge, three VoiceOver labels, banner actions unrun).
-- **Branch:** `m5/1.4.2` is not cut yet. It is cut from the m4 tip at the start of the next session
-  (iOS 1.4.1 is in review; a rejection fix goes on m4 and is merged forward, as planned).
+- **Branch:** `m5/1.4.2` was cut from the m4 tip `5ba863d` on 11-09 (iOS 1.4.1 still in review; a
+  rejection fix goes on m4 and is merged forward, as planned).
 - **Disk:** about 43 GB free on 11-08 after the owner's clean-up.
 
 ### The calendar, re-dated (replaces the table under Milestones)
@@ -100,6 +102,18 @@ PENDING_DEVELOPER_RELEASE and release both, then gate 14; if the Mac is more tha
   that a Release-config path cannot call it under `-demo`/UI-test flags; gate 8's sweep never meets it.
 N4 = (a), N5 = yes (inside W9), N6 = (b). Gemini's other suggestions (R9–R12): none adopted; O5,
 O8, X2 and D15 stay as planned. Every other O takes its default.
+
+**Where N1–N6 change the rest of this file** (the sections below keep their 10-27 text; these
+override it):
+
+| N | Overrides |
+|---|---|
+| N1 | Scope and D1: no Wave B checkpoint; W10 and W11 become 1.5.0's X0. W0 makes no Wave B stub (`Views/WeeklyReviewShare.swift`) and puts no Wave B string in the copy deck. W8's sweep has no Wave B navigation. W12's D11 lockstep runs after W3 and W4 only |
+| N2 | O3 and D5: the offer is created in the release sitting while iOS and Mac 1.4.2 are both PENDING_DEVELOPER_RELEASE, both are released, then gate 14; if the Mac is more than 3 days behind iOS, on iOS release day |
+| N3 | O10, D13, rule 4 and "Out of scope": one system `requestReview(in:)` from W7 under the conditions above, through a pure `Shared/ReviewPromptRule.swift` (W7's files) with `StrideTests/ReviewPromptRuleTests.swift` and a hosted no-call test under `-demo`/UI-test flags. The Settings → About row (D13) stays. W12 records the amendment in DEV-PLAN-1.3.md rule 4. W0's copy deck needs no string for it (the system prompt has none) |
+| N4 | O15: no new Pro category in 1.4.2 |
+| N5 | Phase 0 item 12 runs inside W9. Its Dock-badge fix is W9's (NotificationService.swift). Its three VoiceOver labels touch SettingsView.swift, AddHabitView.swift and `Shared/*.lproj`, which W0 owns, so the integrator lands them after W0 merges |
+| N6 | Phase 0 item 9 is cancelled. Gemini 4 Argon High reviews the finished 1.4.2 branch before the 11-19 freeze, with Gemini 3.8 Flash High, on a throwaway `git archive` copy |
 
 ## Why this plan
 
@@ -390,11 +404,12 @@ change serves.
    naming it), then ask the owner or the Soundpost session before borrowing it. Create
    `Stride-StoreKit-iOS18` (iOS 18.5, 2–5 GB) only if it cannot be borrowed, tell the owner, and
    give the `xcrun simctl delete` command when 1.4.2 is submitted. Never delete Soundpost-iOS18.
-9. **Plan review rerun:** Gemini 4 Argon High via agy (`gemini-4-argon-high`, passed by its full id)
+9. **Cancelled by N6 (2026-11-08).** Argon reviews the finished branch before the freeze instead.
+   The original item: **Plan review rerun:** Gemini 4 Argon High via agy (`gemini-4-argon-high`, passed by its full id)
    did not run on 10-27 (429 quota, Review log). Rerun it on a throwaway `git archive` copy of the
    cut tip plus this file, never on the repo and never in Chrome, when its quota resets (about
    11-02), before W0's merge. Its findings go into "Plan review (rerun)" with the same format.
-10. The owner takes O1–O25 or their defaults.
+10. **Done 2026-11-08:** N1–N6 (Re-plan, above) replace this; every other O takes its default.
 11. **Optional, independent of the release:** **[owner]** set `SENTRY_DSN` on the server, and raise
     pm2-logrotate's retention from 7 to 30 (RELEASE-1.4.1.md:932-933).
 12. **Carried from 1.4.1's Mac gate 10 (2026-11-07; owner: "角标 1.4.2 修").** Mac 1.4.1 (23) shipped
@@ -1200,13 +1215,14 @@ download, still need a go for each action.
 
 - The branch is cut from m5's tip at 1.4.2's iOS submission.
 - **The order is fixed now, on reasoning, not on readouts:** about 2 of 17 recent installs come back,
-  so X2 (the daily loop) goes first whatever the readouts show. Then X1, then X3. Readout 1 can only
+  so X2 (the daily loop) goes first after X0 (N1) whatever the readouts show. Then X1, then X3. Readout 1 can only
   put a fix first if S1 or S4 show breakage, and trim X1's size.
 - No `@Model` change and no wire change.
 
 | X | Scope | Files | Tests | Size |
 |---|---|---|---|---|
-| **X2** the daily loop (free), first | One pure `DailyProgress` (done, due, rest, met for the week, not started) for Today's card, the badge, the Dock, the widget and group headers. Perfect days join the review. Reminders stay quiet for a habit that is done or not due today, on the answer of the spike run during 1.4.2's review wait (can the widget remove the app's pending requests?). The Daily Reminder skips a perfect day (`.timeSensitive` already gone in 1.4.2). A reminder offer whose permission prompt appears on the tap. A "missed yesterday?" row that opens History | Shared/DailyProgress.swift, TodayView.swift, NotificationService.swift, Shared/ReminderPlan.swift, StrideWidget/Sources/StrideWidget.swift, Shared/WidgetTimelinePlan.swift | Parity across the five surfaces; a reminder never under-fires; over budget, the plan is unchanged; `notifications.py` checks against the pending store; `upgrade.sh --reminders` | L |
+| **X0** Wave B of 1.4.2 (N1), first | W10 and W11 as specified under Workstreams, and Wave B's strings, sweep frames and D11 lines | As W10 and W11 | As W10 and W11 | L + S |
+| **X2** the daily loop (free), after X0 | One pure `DailyProgress` (done, due, rest, met for the week, not started) for Today's card, the badge, the Dock, the widget and group headers. Perfect days join the review. Reminders stay quiet for a habit that is done or not due today, on the answer of the spike run during 1.4.2's review wait (can the widget remove the app's pending requests?). The Daily Reminder skips a perfect day (`.timeSensitive` already gone in 1.4.2). A reminder offer whose permission prompt appears on the tap. A "missed yesterday?" row that opens History | Shared/DailyProgress.swift, TodayView.swift, NotificationService.swift, Shared/ReminderPlan.swift, StrideWidget/Sources/StrideWidget.swift, Shared/WidgetTimelinePlan.swift | Parity across the five surfaces; a reminder never under-fires; over budget, the plan is unchanged; `notifications.py` checks against the pending store; `upgrade.sh --reminders` | L |
 | **X1** Groups worth paying for | Statistics chips: All, then groups, then habits (StatsView.swift:108-129). An Overview card: the 30-day rate and mean strength, each with its 30-day change; members ranked by strength; an 8-week combined trend. "All habits" sits under Advanced Analytics, a group's Overview under Habit Groups. One cache read per render. Today's group header shows "2/3", free (TodayView.swift:268-281). New Group becomes a small sheet with a name and a colour; New Group in Settings (Pro); recolour, reorder (`sortOrder` and `touch()`), a confirmation before delete, and a Mac context menu with accessibility actions. Editing existing groups stays free. The D11 lockstep for the Groups and Analytics sentences. O18 | StatsView.swift, Views/OverviewCard.swift, TodayView.swift, Views/GroupsSection.swift, SettingsView.swift, AddHabitView.swift | The Overview equals its members' cached stats; StatsPerformanceTests; a rehearsal in which a recolour and a reorder on A arrive on B (SyncModels.swift:60-67; sync.js:779-791); a lapsed user keeps every group | M–L |
 | **X3** review notification (O16) | A switch in Settings; the permission prompt only when it is turned on; Mondays 09:00; a tap opens last week; removed on lapse; re-titled on a language change (NotificationService.swift:356-360); budget 64 − 3 − 4 (ReminderPlan.swift:35) | Shared/ReminderPlan.swift, NotificationService.swift, SettingsView.swift | ReminderPlanTests; hosted tests that it is scheduled only for Pro users who opted in | S |
 | **X4** carried | Whatever 1.4.2 cut or left out (D1), Wave B first | — | — | — |
@@ -1368,3 +1384,10 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
 | R11 | P | Reminders that fire after a habit is done hurt a trial week; pull "quiet when done" from 1.5.0's X2 into 1.4.2 | Owner's call: X2's spike (can the widget remove the app's pending requests?) has not run; pulling it in adds risk to Wave A | Put to the owner; the spike runs during 1.4.2's review wait either way |
 | R12 | P | `metrics_snapshot.py` and the ASC Analytics request (O13) are over-built for ~12 downloads a month | Partly: the reports are thresholded at this volume (the plan says so), but the script lets the agent report without the owner reading dashboards | Put to the owner |
 
+## Progress log
+
+- 2026-11-09, **branch cut.** `m5/1.4.2` cut from the `m4/1.4.1` tip `5ba863d`; PLAN-1.4.2.md
+  renamed to this file (pure rename, its own commit); N1–N6 written into the sections they
+  override (Re-plan, "Where N1–N6 change the rest of this file"). `release.py show 1.4.1`: iOS
+  WAITING_FOR_REVIEW, Mac READY_FOR_SALE. Disk 26 GB free, so no simulator is booted for now (global
+  rule: under 30 GB).
