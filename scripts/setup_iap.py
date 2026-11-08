@@ -12,6 +12,9 @@ from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
+# One App Review note per product, kept in iap_copy.py, which sets it on the live products.
+from iap_copy import REVIEW_NOTES  # noqa: E402
+
 API_KEY_ID = os.environ["ASC_API_KEY_ID"]
 ISSUER_ID = os.environ["ASC_ISSUER_ID"]
 KEY_PATH = os.path.expanduser(os.environ["ASC_KEY_PATH"])
@@ -201,7 +204,9 @@ def get_or_create_subscription(group_id, sub_def):
                 "subscriptionPeriod": sub_def["period"],
                 "groupLevel": sub_def["group_level"],
                 "familySharable": False,
-                "reviewNote": "Stride Pro subscription unlocks unlimited habits, advanced statistics, widgets, smart reminders, and iCloud sync.",
+                # D11's three things (RELEASE-1.4.2.md D16), the text iap_copy.py sets on the live
+                # products. The old note named only features that are free.
+                "reviewNote": REVIEW_NOTES[sub_def["product_id"]],
             },
             "relationships": {
                 "group": {
