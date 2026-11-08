@@ -47,7 +47,11 @@ final class StoreService {
     private(set) var isLoading = false
 
     var isPro: Bool {
-        !purchasedProductIDs.isEmpty
+        #if DEBUG
+        // `-demoPro` (RELEASE-1.4.2.md D14): the Pro sweep without a purchase. DEBUG-only.
+        if StrideDebugLaunchFlags.current.demoPro { return true }
+        #endif
+        return !purchasedProductIDs.isEmpty
     }
 
     /// What Settings shows about Pro (RELEASE-1.4.1.md D12): the plan, its renewal date, a

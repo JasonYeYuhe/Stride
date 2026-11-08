@@ -131,8 +131,10 @@
 		63AE8BA4D976A6C9F7919E7A /* HabitTemplatesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48E2B457B97506287B51D6F1 /* HabitTemplatesView.swift */; };
 		64735E9130ADE8C8F668DF0D /* StatsProCards.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B9364DC086DDD860EA9F187 /* StatsProCards.swift */; };
 		64DF0DDAC0C73552E543B47F /* HabitScore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5D84E11762AB647CF9AAC3D /* HabitScore.swift */; };
+		6535ACC3841CAF549B9BF659 /* PaywallTriggerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 902D141A20413D3A1B5936EB /* PaywallTriggerTests.swift */; };
 		67E694E85ABCB88CF15DC769 /* HabitTemplatesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48E2B457B97506287B51D6F1 /* HabitTemplatesView.swift */; };
 		67FAB06E9AA751ED11EC093D /* LoginLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = E487614C26A5FF3218B8C55C /* LoginLink.swift */; };
+		685058353DDABC26CDF3E9CF /* DebugLaunchFlagScanTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7C5208C0F2D18C5D929925C /* DebugLaunchFlagScanTests.swift */; };
 		68697CC61774EF6ED710D3C6 /* PaywallModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0150B7F4F03D22B8560BF4FA /* PaywallModel.swift */; };
 		68E2EC98D625A85205ADE15C /* DateHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4D33C9D974E05236A60E17E /* DateHelpers.swift */; };
 		6908530293997DB9FF513990 /* Habit.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21336DA7BBDF96DEA4D3407 /* Habit.swift */; };
@@ -435,6 +437,7 @@
 		87EBFD93F5E7421D2855B6A1 /* AuthServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthServiceTests.swift; sourceTree = "<group>"; };
 		8835383E3F4F875072106E6C /* StatsCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatsCache.swift; sourceTree = "<group>"; };
 		8F7762020997DD0185475C26 /* StrideWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrideWidget.swift; sourceTree = "<group>"; };
+		902D141A20413D3A1B5936EB /* PaywallTriggerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaywallTriggerTests.swift; sourceTree = "<group>"; };
 		93F4F75995BDDDDD6E82FBF2 /* ShellState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellState.swift; sourceTree = "<group>"; };
 		959D8F9B20752F9970811A22 /* LocalDataFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalDataFlowTests.swift; sourceTree = "<group>"; };
 		974CEA934E4182E2D7BC2B8E /* NotificationRouterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationRouterTests.swift; sourceTree = "<group>"; };
@@ -493,6 +496,7 @@
 		E3A539D58EA22EE106655329 /* SyncCopies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncCopies.swift; sourceTree = "<group>"; };
 		E46A69EC212056911AEE9949 /* zh-Hant */ = {isa = PBXFileReference; lastKnownFileType = text.plist.stringsdict; name = "zh-Hant"; path = "zh-Hant.lproj/Localizable.stringsdict"; sourceTree = "<group>"; };
 		E487614C26A5FF3218B8C55C /* LoginLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginLink.swift; sourceTree = "<group>"; };
+		E7C5208C0F2D18C5D929925C /* DebugLaunchFlagScanTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugLaunchFlagScanTests.swift; sourceTree = "<group>"; };
 		E7C6CB942A40E1B2BCC2061C /* StrideTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = StrideTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		E86D916650771883E92B7E68 /* ko */ = {isa = PBXFileReference; lastKnownFileType = text.plist.stringsdict; name = ko; path = ko.lproj/Localizable.stringsdict; sourceTree = "<group>"; };
 		EB59FC2420F0C656244B3006 /* SyncReconciler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncReconciler.swift; sourceTree = "<group>"; };
@@ -697,6 +701,7 @@
 				236C079BC5AADCCE973359EB /* DateHelpersTests.swift */,
 				DAD33B99BB5A3FF23D8FDB18 /* DayKeyCalendarTests.swift */,
 				6E3404C6C5744CBFBF768FC7 /* DayKeyRepairTests.swift */,
+				E7C5208C0F2D18C5D929925C /* DebugLaunchFlagScanTests.swift */,
 				D288EEDE821222AD59C7BF9F /* FrequencyTests.swift */,
 				3D9FD5D56D18C97078DAD4C5 /* HabitCheckInTests.swift */,
 				047D2DAF3BF47EBEFABF791C /* HabitScoreTests.swift */,
@@ -779,6 +784,7 @@
 				959D8F9B20752F9970811A22 /* LocalDataFlowTests.swift */,
 				B4201CA17BA28A6E53121CB3 /* NotificationActionHandlerTests.swift */,
 				3F54DD53A85952D6DB6D05AC /* NotificationServiceTests.swift */,
+				902D141A20413D3A1B5936EB /* PaywallTriggerTests.swift */,
 				CE6BBADAD14A22204B4E31DB /* ShellTests.swift */,
 				091449EDD0994DE39A217FAB /* StatsCacheTests.swift */,
 				09898BF910AFBC10D4E3BED2 /* StatsRenderTests.swift */,
@@ -1103,6 +1109,7 @@
 				52E8D28E56088612B8B8F9F6 /* DayKeyCalendarTests.swift in Sources */,
 				0CCD32A5B8B56D5560242FFE /* DayKeyRepair.swift in Sources */,
 				79F7885FA7970F7BA51BE09F /* DayKeyRepairTests.swift in Sources */,
+				685058353DDABC26CDF3E9CF /* DebugLaunchFlagScanTests.swift in Sources */,
 				C469689F6F45748C336BAE46 /* DemoData.swift in Sources */,
 				AA79D7EAAAE9D47C30294A1B /* FrequencyTests.swift in Sources */,
 				E83F02CD837080DFA6C5CE7F /* Habit.swift in Sources */,
@@ -1317,6 +1324,7 @@
 				8CE9D355B0142547201A2DAA /* LocalDataFlowTests.swift in Sources */,
 				B2448DA585773A634E8356EF /* NotificationActionHandlerTests.swift in Sources */,
 				13B2134CFB1BA48CBBA87A8D /* NotificationServiceTests.swift in Sources */,
+				6535ACC3841CAF549B9BF659 /* PaywallTriggerTests.swift in Sources */,
 				A192294946B6C442C3671FD4 /* ShellTests.swift in Sources */,
 				437E2AE72DFF4173DB103442 /* StatsCacheTests.swift in Sources */,
 				022E4437EAD2A03C6653CA4F /* StatsRenderTests.swift in Sources */,
