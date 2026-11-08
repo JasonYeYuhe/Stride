@@ -11,6 +11,20 @@ struct ProPaywallView: View {
     @State private var showError = false
     @State private var errorMessage = ""
 
+    /// Why it was opened (RELEASE-1.4.2.md D4). W3 words the header's subtitle by it and puts its
+    /// feature row first; until then it is only stored.
+    let trigger: PaywallTrigger
+    /// What the presenter resumes once Stride Pro is unlocked: W3's Continue calls it (D4). Not
+    /// called yet.
+    let onUnlock: () -> Void
+
+    /// Every presenter passes its trigger (W0); `.settings` is the default only so that a new
+    /// presenter compiles before it picks one.
+    init(trigger: PaywallTrigger = .settings, onUnlock: @escaping () -> Void = {}) {
+        self.trigger = trigger
+        self.onUnlock = onUnlock
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {

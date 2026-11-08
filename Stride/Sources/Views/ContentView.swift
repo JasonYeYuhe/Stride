@@ -43,7 +43,7 @@ struct ContentView: View {
 
     var body: some View {
         #if DEBUG
-        shellBody.sheet(isPresented: $showingLaunchPaywall) { ProPaywallView() }
+        shellBody.sheet(isPresented: $showingLaunchPaywall) { ProPaywallView(trigger: .settings) }
         #else
         shellBody
         #endif
@@ -250,11 +250,15 @@ struct ContentView: View {
             AddHabitView()
         case .weeklyReview:
             // As Stats' button: the review for Pro, the paywall for anyone else. Read when the
-            // sheet is built, so a purchase made since the request was issued counts.
+            // sheet is built, so a purchase made since the request was issued counts. W4 moves
+            // this choice to the issuer (RELEASE-1.4.2.md D8), and W6 opens the requested week.
             switch MenuCommandRules.weeklyReviewDestination(isPro: store.isPro) {
             case .review: WeeklyReviewView()
-            case .paywall: ProPaywallView()
+            case .paywall: ProPaywallView(trigger: .weeklyReview)
             }
+        case .paywall(let trigger, _):
+            // The resume request is Continue's (W3, W4); nothing issues this case before W4.
+            ProPaywallView(trigger: trigger)
         case .history(let habitID, let day):
             HabitHistoryView(habitID: habitID, day: day)
         case .export:

@@ -59,7 +59,9 @@ struct SettingsView: View {
     @State private var eraseError: String?
 
     // Store
-    @State private var showingPaywall = false
+    /// The paywall, and why it is open (RELEASE-1.4.2.md D4): Upgrade to Pro passes `.settings`,
+    /// the "Pro ended" row `.lapsed` (`paywallTrigger(for:)`). One sheet for both.
+    @State private var paywallTrigger: PaywallTrigger?
     /// Manage Subscription on iOS: `manageSubscriptionsSheet` (the Mac opens Apple's page instead,
     /// `SubscriptionManagement.manageRoute`).
     @State private var showingManageSubscriptions = false
@@ -621,8 +623,8 @@ struct SettingsView: View {
             .sheet(item: $habitToEdit) { habit in
                 AddHabitView(editingHabit: habit)
             }
-            .sheet(isPresented: $showingPaywall) {
-                ProPaywallView()
+            .sheet(item: $paywallTrigger) { trigger in
+                ProPaywallView(trigger: trigger)
             }
             #if os(iOS)
             .manageSubscriptionsSheet(isPresented: $showingManageSubscriptions)
@@ -1003,6 +1005,17 @@ struct SettingsView: View {
 
     // MARK: - Stride Pro (D12)
 
+    /// The paywall trigger of a Stride Pro row that opens the paywall (RELEASE-1.4.2.md D4):
+    /// Upgrade to Pro `.settings`, "Pro ended on <date>" `.lapsed`; nil for every other row.
+    /// Pinned by StrideAppTests' PaywallTriggerTests.
+    static func paywallTrigger(for row: ProSettingsRow) -> PaywallTrigger? {
+        switch row {
+        case .upgrade: return .settings
+        case .lapsed: return .lapsed
+        case .restore, .unlocked, .plan, .billingIssue, .stillRenews, .manage: return nil
+        }
+    }
+
     /// One row of the Stride Pro section, worded (`ProSettingsRow`).
     @ViewBuilder
     private func proRow(_ row: ProSettingsRow) -> some View {
@@ -1016,7 +1029,7 @@ struct SettingsView: View {
                 .foregroundStyle(.yellow)
                 .accessibilityHidden(true)
             Button {
-                showingPaywall = true
+                paywallTrigger = Self.paywallTrigger(for: row)
             } label: {
                 HStack(spacing: 12) {
                     if !typeSize.isAccessibilitySize { crown }
@@ -1095,7 +1108,7 @@ struct SettingsView: View {
             // One row (D12): what happened and the way back, which is the paywall.
             let dateLabel = Self.proDate(endedOn)
             Button {
-                showingPaywall = true
+                paywallTrigger = Self.paywallTrigger(for: row)
             } label: {
                 HStack(spacing: 12) {
                     Image(systemName: "crown")

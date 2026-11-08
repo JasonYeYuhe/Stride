@@ -19,7 +19,9 @@ struct StatsView: View {
         habits.first { $0.id == shell.statsHabitID } ?? habits.first
     }
     @State private var showingWeeklyReview = false
-    @State private var showingPaywall = false
+    /// The paywall, and why it is open (RELEASE-1.4.2.md D4): the locked card `.analytics`, the
+    /// Weekly Review button `.weeklyReview`. W4 replaces this sheet with the shell's request (D8).
+    @State private var paywallTrigger: PaywallTrigger?
     private var store = StoreService.shared
     /// Every number on this screen comes from here (RELEASE-1.4.1.md D3), read once per render
     /// and handed down — never kept across renders.
@@ -153,7 +155,7 @@ struct StatsView: View {
                                     ProLockedCard(
                                         title: "Advanced Analytics",
                                         message: "Insights, the 8-week trend, the strength chart and your top 5 streaks"
-                                    ) { showingPaywall = true }
+                                    ) { paywallTrigger = .analytics }
                                     .statsLaunchAnchor("analytics")
                                 }
                                 WeeklyBarChart(habit: habit, stats: stats)
@@ -178,7 +180,7 @@ struct StatsView: View {
             if isActive && !habits.isEmpty {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
-                        if store.isPro { showingWeeklyReview = true } else { showingPaywall = true }
+                        if store.isPro { showingWeeklyReview = true } else { paywallTrigger = .weeklyReview }
                     } label: {
                         Image(systemName: "calendar.badge.clock")
                     }
@@ -189,8 +191,8 @@ struct StatsView: View {
         .sheet(isPresented: $showingWeeklyReview) {
             WeeklyReviewView()
         }
-        .sheet(isPresented: $showingPaywall) {
-            ProPaywallView()
+        .sheet(item: $paywallTrigger) { trigger in
+            ProPaywallView(trigger: trigger)
         }
     }
 }
