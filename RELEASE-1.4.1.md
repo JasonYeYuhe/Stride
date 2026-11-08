@@ -1089,6 +1089,22 @@ Owner-approved or recommended, not in 1.4.1:
   - Blocked: gate 3, gate 7 iOS and X2's signed-in branch need the iOS Simulator tool, and access to
     the Pro Max was declined at the prompt. The Pro was held by another project's session from
     21:55. The 1.4.0 (22) build is left installed on the Pro Max, signed out.
+- 2026-11-08 20:18–20:22, **Gate 12, iOS half, PASS** (owner: "你先把 gate 12 做了吧"). Release
+  1.4.1 (23) iphonesimulator build, ad-hoc signed (scratchpad build_release_sim.sh, root
+  ~/Library/Caches/Stride-build/sim-e2e/builds/release-current), on iPhone 17 Pro C53F6992 (iOS
+  27.0), talking to https://stride-api.colorarchive.me. A fresh install first showed "Sign in again
+  to keep syncing" (a keychain token left by the localhost kit, not a production sign-out).
+  - Production `request-link` for `<owner>+stride-smoke@gmail.com` (decision 4) answered "Check
+    your email" twice; the 17:59 token expired unused, the owner pasted the 20:18 one. No agent
+    saw or entered the token.
+  - Signed in, Settings showed the smoke address. Added "Gate 12 smoke", ticked it: Today read
+    "Synced just now"; Sync Now ran clean. Home-screen "Stride Habits" widget placed: "1 of 1, All
+    done!". Background → foreground: still signed in, no crash.
+  - Deleted through the app (Settings → Delete Account → Continue → Delete My Account, the sheet
+    reading "Signed in as" the smoke address): signed out, 0 habits, no crash. No API call by
+    the agent.
+  - So gates 11 and 12 are both green; nothing of 1.4.1's own is left before `release.py release
+    1.4.1` except App Review.
 - 2026-11-08, **Mac 1.4.1 (23) is LIVE** (READY_FOR_SALE, releaseType still MANUAL, so it was
   released by hand; no agent transcript ran `release.py release 1.4.1`, so presumably the owner in
   ASC). iOS 1.4.1 still WAITING_FOR_REVIEW. Sentry production, 3 days: 1.4.1+23 2 healthy
