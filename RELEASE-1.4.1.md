@@ -1096,14 +1096,16 @@ Owner-approved or recommended, not in 1.4.1:
   to keep syncing" (a keychain token left by the localhost kit, not a production sign-out).
   - Production `request-link` for `<owner>+stride-smoke@gmail.com` (decision 4) answered "Check
     your email" twice; the 17:59 token expired unused, the owner pasted the 20:18 one. No agent
-    saw or entered the token.
+    saw or entered the token. Two sends breaks gate 11's "at most one per sitting" (the second
+    replaced an expired token); next time ask the owner to be ready before sending.
   - Signed in, Settings showed the smoke address. Added "Gate 12 smoke", ticked it: Today read
     "Synced just now"; Sync Now ran clean. Home-screen "Stride Habits" widget placed: "1 of 1, All
     done!". Background → foreground: still signed in, no crash.
   - Deleted through the app (Settings → Delete Account → Continue → Delete My Account, the sheet
     reading "Signed in as" the smoke address): signed out, 0 habits, no crash. No API call by
     the agent.
-  - So gates 11 and 12 are both green; nothing of 1.4.1's own is left before `release.py release
+  - Gate 11 is green too: production `request-link` returned success and the mail arrived (the
+    owner read the token from it). Nothing of 1.4.1's own is left before `release.py release
     1.4.1` except App Review.
 - 2026-11-08, **Mac 1.4.1 (23) is LIVE** (READY_FOR_SALE, releaseType still MANUAL, so it was
   released by hand; no agent transcript ran `release.py release 1.4.1`, so presumably the owner in
