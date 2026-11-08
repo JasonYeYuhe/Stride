@@ -30,6 +30,77 @@ after three reviews (Review log, at the end); no code yet.** Every code citation
   - six locales for every string;
   - worktree implementers, then review lenses, then an adversarial verify.
 
+## Re-plan of 2026-11-08 (read this first; it overrides the dates below)
+
+The plan below was written on 10-27 for a 1.4.1 that would be submitted the week of 11-02. iOS 1.4.1
+went in on 11-07 and the Mac on 11-07, so every date below slipped by about a week, and Phase 0's
+owner sitting (O1–O25) never happened. Nothing else in the design changed. This section records
+where things stand, the new calendar, and the decisions put to the owner on 11-08 (N1–N6, which
+replace "the owner takes O1–O25" in Phase 0 item 10). Gemini 3.8 Flash reviewed this section and
+the plan with two lenses on 11-08 (Review log, "Re-plan review, 2026-11-08"). The owner's answers are
+recorded under the table once given.
+
+### Where things stand on 2026-11-08
+
+- **1.4.1 (23):** Mac **live** since 11-08 (released by the owner). iOS **WAITING_FOR_REVIEW** since
+  11-07 04:27Z, with Stride Pro Yearly and Lifetime in the same submission. Gate 12's iOS half (a
+  Release simulator build signed in to a production test account) runs on 11-08 (RELEASE-1.4.1.md).
+  After iOS approval: `release.py release 1.4.1` (owner's go), merge PR JasonYeYuhe/Stride#10 with a
+  merge commit, tag v1.4.1, rotate the demo token (Phase 0 item 3).
+- **Production, Sentry, 3 days to 11-08:** 1.4.0+22 62 sessions / 15 users, 1.4.1+23 2 / 2, 0 crashed.
+  Still 0 subscribers and one Lifetime ever (10-22).
+- **Phase 0:** done: item 1 (kit on iOS 27.0, baselines 732 / 326+12 on Xcode 27.1; O20 taken), item 5
+  (IAP notes GET), item 6 (screenshot sets GET), O21 answered (SKTestSession still fails on iOS 27.0,
+  so StoreKit tests still need iOS 18.5). Open: items 2 (1.4.1's release), 3, 4, 7, 8, 9 (Gemini 4
+  Argon rerun; agy offers it again), 10 (now N1–N6), 11, and the new item 12 (Mac carry-overs from
+  1.4.1's gate 10: the Dock badge, three VoiceOver labels, banner actions unrun).
+- **Branch:** `m5/1.4.2` is not cut yet. It is cut from the m4 tip at the start of the next session
+  (iOS 1.4.1 is in review; a rejection fix goes on m4 and is merged forward, as planned).
+- **Disk:** about 43 GB free on 11-08 after the owner's clean-up.
+
+### The calendar, re-dated (replaces the table under Milestones)
+
+Both 11-08 reviewers found the first re-date too loose after the freeze (1.4.1 took 16 days from
+code freeze to iOS submission) and too tight around Thanksgiving. This calendar assumes N1 = Wave A
+only.
+
+| Date | Step |
+|---|---|
+| 11-09 | Cut `m5/1.4.2`; this file becomes RELEASE-1.4.2.md; W0 (baselines, pure moves, draft PR); N1–N6 recorded; W9 starts (Phase 0 item 7) |
+| 11-09 to 11-18 | Wave A (W1–W9; Phase 0 item 12 inside W9, which already owns NotificationService.swift). Day 1: the StoreKit simulator (O21), W2's SKTestSession cases and the paywall fixtures |
+| **11-19** | Code freeze. Anything not green follows D1's cut order |
+| 11-19 to 11-24 | Gates 1–13 on agents' time; Mac gate 10 (agent part, plus the owner's banner click, item 5); the submission sitting |
+| **11-25** | Target: iOS and Mac `finish` (the day before US Thanksgiving) |
+| **12-01** | Fallback `finish` if any gate is red on 11-24; **12-04** is the latest that leaves a rejection round before the late-December slowdown |
+| ~12-01 to 12-08 | Approval, MANUAL release, the trial offer per N2, gate 14, then the promotional text |
+
+### Decisions put to the owner on 11-08
+
+Everything not listed here takes the default in "Owner decisions" (O2, O4–O9, O11–O14, O16–O25).
+Each ASC write, download and deploy still needs its own go.
+
+| # | Question | Options | Recommended |
+|---|---|---|---|
+| N1 | 1.4.2's scope, now that the calendar slipped a week (O1) | (a) Wave A only; Wave B moves to the top of 1.5.0 now, no checkpoint. (b) Keep the checkpoint, moved to 11-18: Wave B only if W0–W9 are merged and green. (c) Commit to A + B and submit about 12-11 | **(a)**: both reviewers; Wave B serves users with history, not a 7-day trial |
+| N2 | When the 7-day Yearly trial goes live (O3) | (a) after iOS and Mac 1.4.2 are both live, then gate 14. (d) in the release sitting, while both are PENDING_DEVELOPER_RELEASE. (b) on iOS release day even if the Mac lags | **(d), falling back to (b)** if the Mac is more than 3 days behind iOS: the reviewers split (product b, engineering a); (d) gives both platforms a paywall that states the trial on day one, and almost all volume is iOS |
+| N3 | Ratings (O10) | (a) a Settings → About row only (rule 4 unchanged). (b) amend rule 4 for one system `requestReview(in:)` after a streak milestone | **(b)**, as a narrow amendment: Apple's own prompt (the system caps it at 3 a year), once per version at most, only after a 7-day streak or a met week, never in the first 3 days or during onboarding. 2 ratings in 7 months is the store page's weakest point. It is the owner's rule, so the owner decides |
+| N4 | A new Pro category (O15) | (a) none in 1.4.2. (b) alternate app icons. (c) a Today group focus filter | **(a)**: both reviewers; revisit for 1.5.0 |
+| N5 | The Mac Dock badge (1.4.0's gap, owner 11-07: "角标 1.4.2 修") | In Wave A as Phase 0 item 12; Mac gate 10 checks it through the Dock's `AXStatusLabel` | Yes (already the owner's call) |
+| N6 | Gemini 4 Argon rerun (Phase 0 item 9) | (a) run it on the cut tip before W0 merges. (b) skip; Flash's 11-08 review stands | **(b)**: both reviewers; Argon reviews 1.4.2's finished branch before the freeze instead |
+
+**The owner's answers (2026-11-08, all as recommended):** N1 = (a) Wave A only; Wave B is X0 at the
+top of 1.5.0. N2 = (d): create the offer in the release sitting while iOS and Mac 1.4.2 are both
+PENDING_DEVELOPER_RELEASE and release both, then gate 14; if the Mac is more than 3 days behind iOS,
+(b) on iOS release day. N3 = (b), the narrow amendment of rule 4 (DEV-PLAN-1.3.md:34-38):
+- only `requestReview(in:)` (StoreKit's system prompt), from W7, at most once per app version
+  (`UserDefaults.standard`, never synced or backed up), only right after a check-in that completes
+  a 7-day streak or meets a week, never in the first 3 days after install, during onboarding, or
+  with a sheet showing; the Settings → About "Rate Stride" row (D13) stays;
+- W7 adds a pure `ReviewPromptRule` (Shared/) with unit tests for each condition, and a hosted test
+  that a Release-config path cannot call it under `-demo`/UI-test flags; gate 8's sweep never meets it.
+N4 = (a), N5 = yes (inside W9), N6 = (b). Gemini's other suggestions (R9–R12): none adopted; O5,
+O8, X2 and D15 stay as planned. Every other O takes its default.
+
 ## Why this plan
 
 - **The premise, corrected.** Stride has never sold a Monthly or Yearly subscription. Its only Pro
@@ -1274,3 +1345,26 @@ throwaway `git archive` copy. Gemini 4 Argon stays Phase 0 item 9.
 | G2-8 | Weekly Review share image belongs in Wave A (medium) | Owner option on O1; default unchanged (Wave B) |
 | G2-9 | Cut Wave B formally now (medium) | Rejected: Wave B is already out by default and enters only at the 11-10 checkpoint (D1); the checkpoint costs nothing |
 | G2-10 | `AppStore.sync()` throws `userCancelled` on a cancelled Apple Account sheet (low) | Accepted: D6, `RestoreOutcome.cancelled` |
+
+### Re-plan review, 2026-11-08 (Gemini 3.8 Flash High, two lenses, fact-checked by Claude)
+
+Run through the agy MCP bridge on throwaway `git archive` copies of `8003f04`+this file (never the
+repo). Lens P = product and business, lens E = engineering, release and schedule.
+
+**Votes.** N1: P (a), E (a). N2: P (b), E (a). N3: P (b). N4: P (a). N5: E yes. N6: P (b), E (b).
+
+| # | Lens | Finding | Verdict | Change |
+|---|---|---|---|---|
+| R1 | E | The 11-25 freeze leaves 8 days for gates and sittings, against 1.4.1's 16 from freeze to submission, and lands on Thanksgiving | Confirmed (RELEASE-1.4.1.md:1065-1186) | Calendar above: freeze 11-19, target `finish` 11-25, fallback 12-01, latest 12-04 |
+| R2 | E | Phase 0 item 12 (the Dock badge) and W9 (`.timeSensitive`) both edit NotificationService.swift, breaking "parallel workstreams never share a file" | Confirmed (NotificationService.swift:274, :698-718) | Item 12's code goes into W9 |
+| R3 | E | D8's text says MenuCommands "reads `StoreService.shared.isPro` when clicked"; it only sets `shell.request = .weeklyReview` and ContentView decides (MenuCommands.swift:92-95, ContentView.swift:251-257) | Confirmed | W4 latches the destination at issue (D8), as already designed; the sentence is wrong, not the design |
+| R4 | E | Workstream paths like `Views/TodayCards.swift` and bare `ShellState.swift` could be created at the repo root, outside project.yml's `Stride/Sources` | Confirmed as a risk (ShellState.swift is Stride/Sources/Views/) | Convention: `Views/` = `Stride/Sources/Views/`; every new file is created under `Stride/Sources/` or `Shared/`, and xcodegen drift must be clean (W0) |
+| R5 | E | Gate 3's shell purchase lives in ShellTests, but the iOS 18.5 StoreKit run is usually limited to StoreKitStatusTests and StoreKitConfigurationLoadTests | Confirmed as a gap | Gate 3's 18.5 run adds `-only-testing:StrideAppTests/ShellTests` |
+| R6 | E | Gate 10 item 5 (banner actions) cannot be run by an agent | Confirmed (RELEASE-1.4.1.md, 11-07) | Owner-only in the Mac sitting; NotificationRouterTests are the agent's gate |
+| R7 | E | Dock badge: AppKit off the main thread | **Refuted**: NotificationService is `@MainActor` (:92-93); `setBadge`'s `Task {}` inherits it | — |
+| R8 | E | Dock badge: NSDockTile's label exists only while the app runs; updates from other devices or midnight are not shown while it is quit; concurrent settings reads can land out of order; turning Badges off must clear it | Confirmed | Item 12: set the label at every `setBadge`, at launch and at scene activation; read `badgeSetting` once per activation and cache it; nil when off or 0; a hosted macOS test of the label rule |
+| R9 | P | The Today week card ends for good after 3 free weeks or one ×; long-term users, the likeliest buyers, never see it again | Owner's call (O5) | Put to the owner |
+| R10 | P | Pro in onboarding is a small text button; make the last page a skippable Pro page with "Start 7-Day Free Trial" | Rejected by default: that is the onboarding paywall that Out of scope and rule 4 rule out | Put to the owner |
+| R11 | P | Reminders that fire after a habit is done hurt a trial week; pull "quiet when done" from 1.5.0's X2 into 1.4.2 | Owner's call: X2's spike (can the widget remove the app's pending requests?) has not run; pulling it in adds risk to Wave A | Put to the owner; the spike runs during 1.4.2's review wait either way |
+| R12 | P | `metrics_snapshot.py` and the ASC Analytics request (O13) are over-built for ~12 downloads a month | Partly: the reports are thresholded at this volume (the plan says so), but the script lets the agent report without the owner reading dashboards | Put to the owner |
+
