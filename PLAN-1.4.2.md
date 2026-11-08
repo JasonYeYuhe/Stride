@@ -44,7 +44,7 @@ recorded under the table once given.
 
 - **1.4.1 (23):** Mac **live** since 11-08 (released by the owner). iOS **WAITING_FOR_REVIEW** since
   11-07 04:27Z, with Stride Pro Yearly and Lifetime in the same submission. Gate 12's iOS half (a
-  Release simulator build signed in to a production test account) runs on 11-08 (RELEASE-1.4.1.md).
+  Release simulator build signed in to a production test account) passed on 11-08 (RELEASE-1.4.1.md).
   After iOS approval: `release.py release 1.4.1` (owner's go), merge PR JasonYeYuhe/Stride#10 with a
   merge commit, tag v1.4.1, rotate the demo token (Phase 0 item 3).
 - **Production, Sentry, 3 days to 11-08:** 1.4.0+22 62 sessions / 15 users, 1.4.1+23 2 / 2, 0 crashed.
