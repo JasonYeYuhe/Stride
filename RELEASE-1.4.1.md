@@ -1089,6 +1089,11 @@ Owner-approved or recommended, not in 1.4.1:
   - Blocked: gate 3, gate 7 iOS and X2's signed-in branch need the iOS Simulator tool, and access to
     the Pro Max was declined at the prompt. The Pro was held by another project's session from
     21:55. The 1.4.0 (22) build is left installed on the Pro Max, signed out.
+- 2026-11-08, **Mac 1.4.1 (23) is LIVE** (READY_FOR_SALE, releaseType still MANUAL, so it was
+  released by hand; no agent transcript ran `release.py release 1.4.1`, so presumably the owner in
+  ASC). iOS 1.4.1 still WAITING_FOR_REVIEW. Sentry production, 3 days: 1.4.1+23 2 healthy
+  sessions / 2 users, 0 crashed; 1.4.0+22 62 / 15, 0 crashed. No new production issue since
+  STRIDE-APPLE-3 (11-02). m4/1.4.1 stays unmerged until iOS is approved and released.
 - 2026-11-07, **Mac 1.4.1 (23) submitted** (owner: "提交 Mac 吧，角标 1.4.2 修"):
   `release.py finish 1.4.1 23 --platform MAC_OS` attached build 23, created review submission
   7906d145-6c9d-4953-beff-eff31a2e7d42 and submitted; `show` reads WAITING_FOR_REVIEW on both
