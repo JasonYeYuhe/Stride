@@ -1413,3 +1413,14 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
     the same `minHeight: 620` (W0's file): checked after W0 merges.
   - docs/terms.html changed in the repo only; the public copy (stride-site) is updated with the
     release, on the owner's go.
+- 2026-11-09, **W0 merged** (d4fb6a8; worktree agent, reviewed by the integrator). Version 1.4.2
+  (24); the two moves byte-identical (`cmp`); `PaywallTrigger` (7 cases) passed by every presenter,
+  Settings and Statistics on `.sheet(item:)`; `ShellRequest.weeklyReview(week:)` and
+  `.paywall(trigger:resume:)`; stubs PaywallModel (W2), WeeklyReviewMath (W1), InlinePrompts and
+  TodayCards (W7), no WeeklyReviewShare (N1); D14's four switches and the 24-byte sentinel, all
+  under `#if DEBUG`, with DebugLaunchFlagScanTests; the Wave A copy deck, 40 keys plus 8 plurals ×
+  6 locales, positional in every two-argument key (W12 prunes what ends up unused).
+  - **Baselines on Xcode 27.1 at a7d8e67:** StrideTests (macOS, host-less) 732 run, 2 skipped, in
+    Tokyo and in Los Angeles; after W0 734 / 2 in both. Hosted (732 on iOS 27.0, Phase 0 item 1)
+    not re-run: disk below 30 GB, so `PaywallTriggerTests` and ShellTests' new call sites are
+    compiled only. xcodegen drift clean.
