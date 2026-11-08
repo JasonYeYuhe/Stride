@@ -1456,3 +1456,24 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
     owner's call under the global rules. The release lens asked for a review-notes line on the
     trial: D5 already keeps the trial out of What's New and off the paywall until the offer
     exists. W12 adds one sentence to the notes.
+- 2026-11-09, **W1 and W2's pure half merged** (939501f; worktree agents, reviewed by the
+  integrator). StrideTests on macOS at the merge: 769 run, 2 skipped, 0 failed, in Tokyo and Los
+  Angeles (734 + W2's 14 + W1's 21).
+  - **W2 (pure):** `PaywallModel` (kind order, Yearly selected, trial only when eligible == true and
+    not Pro, P1W = P7D = 7, per-month rounded up to the currency's minor unit, savings rounded
+    down), `PaywallPhase`, 15 DEBUG fixtures; additive `RestoreOutcome`, `ProductLoadError`,
+    `OfferMirror` on the status mirror, `ProStatus.trial`, and `ProSettingsRow.trialLine` (a
+    separate line rather than a new row case, since SettingsView is W7's). The hosted half
+    (StoreService adoption, 8 listed steps; Configuration.storekit; SKTestSession on
+    Soundpost-iOS18) waits for disk over 30 GB.
+  - **W1:** `WeeklyReviewMath` (week ranges, the opening week switching at Thursday 00:00, rows
+    with the 4-counted-day rule, highlights, group sections, `weekGoal`, `isAtRisk`, the evening
+    time), the 12-week weekday tally, strength on a day. One review render of 50 × 1,095 takes
+    0.0013 s. Choices beyond the spec text, for the lenses: (1) at risk for a times-per-week habit
+    created mid-week compares only the creation week's share of the goal (goal × days owned / 7,
+    rounded up); (2) the "90 % never Slipped" test uses 85 % (one week cannot make 90 %); (3) the
+    performance bound leaves out notes (Wave B's read).
+  - demo_check's new "last week" block was run once against the production demo account through
+    `check_demo_account.sh` (read-only pull; the token is read over SSH from the server's .env and
+    never printed). It shows Journal as most improved, Meditate as slipped, and Read 30 Minutes
+    (−15 to 85 %) correctly not slipped.
