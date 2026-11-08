@@ -271,7 +271,6 @@ final class NotificationService {
         content.title = appLocalized("Stride Reminder 🏃")
         content.body = randomEveningMessage()
         content.sound = .default
-        content.interruptionLevel = .timeSensitive
 
         var dateComponents = DateComponents()
         dateComponents.hour = reminderHour
