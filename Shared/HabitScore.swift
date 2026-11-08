@@ -66,6 +66,13 @@ enum HabitScore {
             return current - score(onDay: lastDayNumber - days)
         }
 
+        /// The score at the end of the Monday-anchored week starting `monday` (the latest score
+        /// for a week not over yet), and at the end of the week before it: Weekly Review's
+        /// strength change (RELEASE-1.4.2.md D9). 0 for a week that ended before the walk.
+        func weekEndScores(ofWeekStartingDay monday: Int) -> (previous: Double, end: Double) {
+            (score(onDay: monday - 1), score(onDay: min(monday + 6, todayNumber)))
+        }
+
         /// The score at the end of each Monday-anchored week, the last `weeks` weeks up to and
         /// including the one containing today (the current week holds its latest score), oldest
         /// first (StrengthCard's bars, D10).
