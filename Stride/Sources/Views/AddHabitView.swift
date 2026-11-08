@@ -70,6 +70,10 @@ struct AddHabitView: View {
                     TextField("e.g., Read 30 minutes", text: $name)
                         #if os(macOS)
                         .textFieldStyle(.plain)
+                        // The Mac titles a field by its placeholder, so VoiceOver said "e.g., Read
+                        // 30 minutes" (axdump, 1.4.1 gate 10). Named as its section; the
+                        // placeholder is still read after the name.
+                        .accessibilityLabel(Text("Habit Name"))
                         #endif
                 }
 
@@ -78,6 +82,7 @@ struct AddHabitView: View {
                         .lineLimit(1...4)
                         #if os(macOS)
                         .textFieldStyle(.plain)
+                        .accessibilityLabel(Text("Description"))
                         #endif
                 }
 
