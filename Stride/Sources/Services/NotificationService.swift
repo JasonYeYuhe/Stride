@@ -706,9 +706,12 @@ final class NotificationService {
     func updateBadgeAndWait(modelContainer: ModelContainer) async {
         guard let habits = unarchivedHabits(in: modelContainer) else { return }
         let count = Self.remaining(of: habits, now: Date())
+        #if os(macOS)
+        let generation = nextDockBadgeGeneration()
+        #endif
         try? await center.setBadgeCount(count)
         #if os(macOS)
-        await showOnDock(count)
+        await showOnDock(count, generation: generation)
         #endif
     }
 
@@ -719,18 +722,28 @@ final class NotificationService {
 
     private func setBadge(_ count: Int) {
         let center = self.center
+        #if os(macOS)
+        // Taken now, in call order, not when `setBadgeCount` answers: replies can come back out of
+        // order, and the newest count must win.
+        let generation = nextDockBadgeGeneration()
+        #endif
         Task {
             try? await center.setBadgeCount(count)
             #if os(macOS)
-            await showOnDock(count)
+            await showOnDock(count, generation: generation)
             #endif
         }
     }
 
     #if os(macOS)
-    /// The last `showOnDock` call, so one whose settings read returns late cannot overwrite a newer
-    /// count.
+    /// The newest badge request, numbered when it is made (not when its awaits return), so an
+    /// older count whose replies come back late cannot overwrite a newer one.
     private var dockBadgeGeneration = 0
+
+    private func nextDockBadgeGeneration() -> Int {
+        dockBadgeGeneration += 1
+        return dockBadgeGeneration
+    }
 
     /// The Dock tile's label (RELEASE-1.4.2.md Phase 0 item 12, N5). On the Mac `setBadgeCount`
     /// only stores the count: usernoted had it (10→9 on a check-in) while the Dock showed nothing
@@ -743,10 +756,9 @@ final class NotificationService {
     /// Settings clears it at the next activation, i.e. on coming back to the app.
     ///
     /// Only over the real center: a test's recording center never touches the host's Dock tile.
-    private func showOnDock(_ count: Int) async {
+    private func showOnDock(_ count: Int, generation: Int) async {
         guard let real = center as? UNUserNotificationCenter else { return }
-        dockBadgeGeneration += 1
-        let generation = dockBadgeGeneration
+        guard generation == dockBadgeGeneration else { return }
         let enabled = await real.notificationSettings().badgeSetting == .enabled
         guard generation == dockBadgeGeneration else { return }
         NSApp.dockTile.badgeLabel = Self.dockLabel(count: count, badgesEnabled: enabled)

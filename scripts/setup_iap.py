@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Create subscription group and products in App Store Connect, then resubmit for review."""
+"""Create subscription group and products in App Store Connect, then resubmit for review.
+
+    scripts/setup_iap.py --check   read-only: list the subscription groups and products
+    scripts/setup_iap.py --yes     create/price/localize, submit the IAPs AND resubmit the iOS version
+
+Without an argument it does nothing: a bare run used to write to ASC (prices, IAP submissions and a
+resubmission of whatever iOS version is open), which is never what someone checking the file wants.
+"""
 
 import json
 import os
@@ -426,5 +433,8 @@ if __name__ == "__main__":
             for s in subs.get("data", []):
                 attrs = s["attributes"]
                 print(f"    {attrs['productID']}: {attrs.get('state', '?')} ({attrs['name']})")
-    else:
+    elif "--yes" in sys.argv:
         main()
+    else:
+        print(__doc__)
+        sys.exit("Refusing to write to App Store Connect without --yes (use --check to read).")
