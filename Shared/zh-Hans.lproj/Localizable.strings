@@ -606,3 +606,92 @@
 /* Statistics' 8-week Trend: what VoiceOver reads, after the week, for a week that ended before the
    habit existed. Nothing is drawn for it, and it must not sound like 0% or a missed week. */
 "Not started" = "尚未开始";
+
+/* 1.4.2 W0 */
+
+/* 1.4.2 (W0): the Wave A copy deck (RELEASE-1.4.2.md). Every key below is added before the code
+   that uses it, so the parallel workstreams never touch these files.
+
+   The paywall's subtitle under "Stride Pro", by why it was opened (D4): Statistics' locked card;
+   the Weekly Review button and Today's week card; New Group; Settings and onboarding; the
+   "Pro ended" row. "Pro adds three things" are the three feature rows under it. */
+"See what's changing, not just where you are" = "不只看现在的位置，更看清正在发生的变化";
+"See how your week went" = "看看你这一周过得怎么样";
+"Organize your habits into groups" = "把你的习惯整理成分组";
+"Almost everything is free. Pro adds three things." = "几乎所有功能都免费。Pro 额外提供三项功能。";
+"Welcome back" = "欢迎回来";
+
+/* The paywall's one buy button (D4), for the selected plan: Monthly or Yearly without a trial,
+   and Lifetime. The trial's button is "Start %lld-day free trial" in Localizable.stringsdict. */
+"Subscribe" = "订阅";
+"Buy Lifetime" = "购买终身版";
+
+/* The selected plan's terms, beside the buy button (D4). Each %@ is a price as the App Store
+   formats it ("$19.99", "¥3,000"). "/year" and "/month" are this catalog's words, never the App
+   Store's: the in-app language can differ from the device's. These are legal terms: say exactly
+   when a subscription renews and how to stop it, as the line below them does. "%@/month" alone is
+   the small per-month figure on the Yearly plan (its price divided by 12). The trial's terms are
+   in Localizable.stringsdict. */
+"%@/year. Renews automatically unless cancelled at least 24 hours before the end of the period." = "%@/年。除非在当前周期结束前至少 24 小时取消，否则将自动续订。";
+"%@/month. Renews automatically unless cancelled at least 24 hours before the end of the period." = "%@/月。除非在当前周期结束前至少 24 小时取消，否则将自动续订。";
+"One payment of %@. No subscription." = "一次性支付 %@，无需订阅。";
+"%@/month" = "%@/月";
+
+/* The trial clause the paywall's legal line gains (D4), the same words as the App Store
+   description's (D16). It must stay true whether or not a trial is offered. "Any unused part of a
+   trial ends when you subscribe": buying a plan during a free trial ends what is left of it. */
+"If a free trial is offered, you are charged when it ends unless you cancel at least 24 hours before it ends. Any unused part of a trial ends when you subscribe." = "如提供免费试用，除非在试用结束前至少 24 小时取消，否则将在试用结束时扣费。如果你在试用期间购买订阅，试用期的剩余部分将作废。";
+
+/* The paywall's states (D4, D6): the plans could not load (with Try Again); a purchase waiting
+   for approval (Ask to Buy); the three answers of Restore Purchases, shown inline; and a purchase
+   that went through, with Continue. */
+"Stride Pro options couldn't load. Check your connection and try again." = "无法加载 Stride Pro 选项。请检查网络连接后重试。";
+"Waiting for approval. Stride Pro unlocks when it's approved." = "正在等待批准。获批后将解锁 Stride Pro。";
+"Purchases restored" = "已恢复购买";
+"No purchases found for this Apple ID" = "未找到此 Apple ID 的购买记录";
+"Couldn't reach the App Store" = "无法连接 App Store";
+"Stride Pro is unlocked" = "Stride Pro 已解锁";
+
+/* Settings' Stride Pro rows during a free trial (D6). In "first charge of %@ on %@" the first %@
+   is the price, the second the date; without a loaded price the row drops it ("first charge on
+   %@"); "Trial ends on %@" is a trial whose auto-renew is off; "Free trial" alone when the
+   renewal date cannot be verified. "Rate Stride" is a row in Settings > About that opens the App
+   Store's review page (D13). */
+"Free trial · first charge of %@ on %@" = "免费试用 · 将于 %2$@ 首次扣款 %1$@";
+"Free trial · first charge on %@" = "免费试用 · 将于 %@ 首次扣款";
+"Trial ends on %@" = "试用将于 %@ 结束";
+"Free trial" = "免费试用";
+"Rate Stride" = "为 Stride 评分";
+
+/* Statistics' Pro cards in a habit's first weeks (D7). Insights explains itself instead of
+   hiding: before the habit's first full Monday-to-Sunday week, and when recent weeks hold too few
+   check-ins to compare. "Level with last week": momentum with no change. "Since start" is
+   the Strength card's change since the habit began, for a habit younger than 30 days. "PRO" is
+   the small chip on each Pro card's header; VoiceOver does not read it. */
+"Insights appear after your first full week" = "完成第一个完整周后会显示洞察";
+"Not enough recent check-ins to compare" = "近期打卡不足，无法比较";
+"Level with last week" = "与上周持平";
+"Since start" = "自开始以来";
+"PRO" = "PRO";
+
+/* Weekly Review (D8): the title of an unfinished week once 4 of its days have passed, or of
+   last week; the change against the previous week when nothing moved (a change in points is in
+   Localizable.stringsdict); and the highlights: the habit that rose most, the habit that dropped
+   most ("Slipped"), and their heading while the week is unfinished. */
+"This week so far" = "本周至今";
+"Last week" = "上周";
+"Level with the previous week" = "与前一周持平";
+"Most improved" = "进步最大";
+"Slipped" = "有所下滑";
+"Highlights so far" = "目前亮点";
+
+/* Today's "Your week" card (D12), on Monday and Tuesday: for Pro, last week's overall rate
+   and a button to the review; for a free user, no number, and the same button opens the paywall.
+   Its close button hides it until next week (Pro), or for good (free).
+   "What's in Stride Pro" is a text button on onboarding's last page that opens the paywall. */
+"Last week: %lld%%" = "上周：%lld%%";
+"Your Weekly Review is ready" = "你的每周回顾已准备好";
+"See your Weekly Review" = "查看每周回顾";
+"Hide until next week" = "隐藏至下周";
+"Don't show again" = "不再显示";
+"What's in Stride Pro" = "Stride Pro 包含什么";
