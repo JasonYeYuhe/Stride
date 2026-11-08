@@ -1391,3 +1391,25 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
   override (Re-plan, "Where N1–N6 change the rest of this file"). `release.py show 1.4.1`: iOS
   WAITING_FOR_REVIEW, Mac READY_FOR_SALE. Disk 26 GB free, so no simulator is booted for now (global
   rule: under 30 GB).
+- 2026-11-09, **W9 merged** (18d82c5; worktree agent, reviewed by the integrator). Builds green (iOS
+  generic simulator, macOS); StrideTests on macOS 732 run, 2 skipped, 0 failed (ReminderPlanTests
+  12/12 unchanged); `test_metrics_snapshot.py` 8/8.
+  - **Phase 0 item 7, baseline** (`metrics_snapshot.py`, production, 2026-11-08 11:36Z, Monday weeks
+    in UTC): 8 weeks 87 devices, 592 sessions, 99.8 % crash-free (one crash, 1.2.1+15, week of
+    09-14); 1.4.0+22 44 devices / 353 sessions, 1.4.1+23 3 / 4, both 100 %. Week of 11-02 (partial):
+    21 devices, 121 sessions. First downloads 23, updates 35 over 8 weeks. Pro: no sale in 8 weeks;
+    0 active subscriptions, 0 trials, no subscription event. Written reviews: 1 (2026-04-04).
+    Ratings count: the owner reads it at the next sitting.
+  - **Phase 0 item 5 / O22, dry run only:** live notes unchanged since 10-27 (Monthly and Yearly
+    name "smart reminders, and iCloud sync"; Lifetime omits Weekly Review). The proposed notes say
+    D11's three things. The same dry run still lists 7 of 1.4.1's localization edits as not live
+    (Yearly's 6 descriptions still say "save 44%", Lifetime en-US's old description): `--yes`, or
+    the web UI on a 409, is the owner's go.
+  - **Phase 0 item 12, Dock badge:** on the Mac variant the Dock's `AXStatusLabel` read 10 within
+    2 s of two launches and after an activation. Open for Mac gate 10: once, on the first launch
+    right after a rebuild, the label stayed nil until the next activation (not reproduced); and
+    Badges off was not toggled (a system setting).
+  - History's sheet `minHeight` 620 → 520: Done ends 60 pt inside a 700-pt window. AddHabitView has
+    the same `minHeight: 620` (W0's file): checked after W0 merges.
+  - docs/terms.html changed in the repo only; the public copy (stride-site) is updated with the
+    release, on the owner's go.
