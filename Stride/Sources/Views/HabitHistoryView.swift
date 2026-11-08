@@ -161,8 +161,11 @@ struct HabitHistoryView: View {
             Button("Cancel", role: .cancel) {}
         }
         #if os(macOS)
-        // A bare ScrollView has no ideal height, and a sheet sized to it would be a sliver.
-        .frame(minWidth: 460, idealWidth: 520, minHeight: 620)
+        // A bare ScrollView has no ideal height, and a sheet sized to it would be a sliver. 520,
+        // as Weekly Review's and Templates': at 620 the sheet and its Done bar were taller than a
+        // minimum-size (700-pt) main window below its toolbar, and Done sat half off its bottom
+        // edge (RELEASE-1.4.1.md, Mac gate 10 remainder). The page scrolls to the day's editor.
+        .frame(minWidth: 460, idealWidth: 520, minHeight: 520)
         #endif
         // On iPad the form sheet ended inside the Note field at the default size, and below the
         // month grid at AX5 (gate 8).
