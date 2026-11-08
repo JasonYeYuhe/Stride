@@ -90,6 +90,7 @@
 		49320565D1FB566EFE9766E8 /* TodayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE8B83FBCDEE947B0A5A87D6 /* TodayView.swift */; };
 		4A39339F6542452BC12FCAB4 /* ExportShareButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58BB1FBCFBE4EA263B876F87 /* ExportShareButton.swift */; };
 		4B4ADE07E11E4960DE24489A /* SharedModelContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14E5DE1DF2EA723656AA788 /* SharedModelContainer.swift */; };
+		4BA883BFB7270944A312B21F /* ProPaywallView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4969B436D84DF2EB31ED1501 /* ProPaywallView.swift */; };
 		4BF29878BAB3689496013E81 /* StubServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB8F005CB15B0E4B6D7A17EC /* StubServer.swift */; };
 		4D79CE874EC7381C52D0E28C /* SyncTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC115BC5A06991EB0E415310 /* SyncTestSupport.swift */; };
 		4E329F5FF840F876F5599252 /* StoreOpenTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C351B7A606C8B9D696645AD5 /* StoreOpenTests.swift */; };
@@ -98,6 +99,7 @@
 		51245CCB7926EB3AD751A54B /* SyncBackoff.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4B0A70A5971FE316AD618E3 /* SyncBackoff.swift */; };
 		5180D70AA751503357192ED9 /* ShellState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93F4F75995BDDDDD6E82FBF2 /* ShellState.swift */; };
 		51F8069FE3FAA8ABDE0E0F04 /* SyncDeletionQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A03A0804A4B45B28F362FA2 /* SyncDeletionQueue.swift */; };
+		5227A3050D3B9A4BE32D780C /* ProPaywallView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4969B436D84DF2EB31ED1501 /* ProPaywallView.swift */; };
 		526A767FF73E75CF289F6D54 /* HabitCheckIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADB968D6EC1637C4FCB0926B /* HabitCheckIn.swift */; };
 		52E8D28E56088612B8B8F9F6 /* DayKeyCalendarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAD33B99BB5A3FF23D8FDB18 /* DayKeyCalendarTests.swift */; };
 		53F998AE21294E01537005FF /* ReminderPlan.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F157FDCAEB26F8B19CFC923 /* ReminderPlan.swift */; };
@@ -374,6 +376,7 @@
 		46F51F44342B3269637FE386 /* LocalizationCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalizationCatalogTests.swift; sourceTree = "<group>"; };
 		48E2B457B97506287B51D6F1 /* HabitTemplatesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HabitTemplatesView.swift; sourceTree = "<group>"; };
 		4941D1BB0D89A2006A52E455 /* StatsMathTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatsMathTests.swift; sourceTree = "<group>"; };
+		4969B436D84DF2EB31ED1501 /* ProPaywallView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProPaywallView.swift; sourceTree = "<group>"; };
 		4BF44B6E74C40A2F7E664752 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		4EA67CF2EE47ECE75C3802D7 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4F6FB4858E9419D020CD5CB9 /* ReminderPlanTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReminderPlanTests.swift; sourceTree = "<group>"; };
@@ -599,6 +602,7 @@
 				48E2B457B97506287B51D6F1 /* HabitTemplatesView.swift */,
 				846D324A474DC86FFFE7DCA4 /* LoginView.swift */,
 				0B0FADDB35158E7A8EFD42A6 /* OnboardingView.swift */,
+				4969B436D84DF2EB31ED1501 /* ProPaywallView.swift */,
 				220A85358D1D1E1378966E20 /* RestoreHandoverView.swift */,
 				2AC83A4314C26492BF0BAEC8 /* SettingsView.swift */,
 				7AD5CC02C52CBD646618317B /* ShareStreakView.swift */,
@@ -1011,6 +1015,7 @@
 				3A885C548100CDCF47CC565C /* NotificationRouter.swift in Sources */,
 				47B9B48865AD8666665DDA25 /* NotificationService.swift in Sources */,
 				604566D2DFC1EC1A45B00DEA /* OnboardingView.swift in Sources */,
+				5227A3050D3B9A4BE32D780C /* ProPaywallView.swift in Sources */,
 				09E98D733093D4B1AE0B2429 /* PurchaseOutcome.swift in Sources */,
 				437278B67A80851089BBB731 /* ReminderPlan.swift in Sources */,
 				8806AB1C02D88848098EAE1B /* RestoreHandoverView.swift in Sources */,
@@ -1210,6 +1215,7 @@
 				5F8D05D07A7CCD0CC156A085 /* NotificationRouter.swift in Sources */,
 				3D038F4D40A1494A7D907F53 /* NotificationService.swift in Sources */,
 				D2F9EBB9B68B1A8B955F6F20 /* OnboardingView.swift in Sources */,
+				4BA883BFB7270944A312B21F /* ProPaywallView.swift in Sources */,
 				A6663F4B32EB3BEA758043C5 /* PurchaseOutcome.swift in Sources */,
 				53F998AE21294E01537005FF /* ReminderPlan.swift in Sources */,
 				CCB4F56B9DCBA6C2E2DD9074 /* RestoreHandoverView.swift in Sources */,
