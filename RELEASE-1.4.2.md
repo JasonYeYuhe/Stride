@@ -1424,3 +1424,17 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
     Tokyo and in Los Angeles; after W0 734 / 2 in both. Hosted (732 on iOS 27.0, Phase 0 item 1)
     not re-run: disk below 30 GB, so `PaywallTriggerTests` and ShellTests' new call sites are
     compiled only. xcodegen drift clean.
+- 2026-11-09, **W0+W9 review and N5's Mac carry-overs.**
+  - An independent read-only review of a7d8e67..d4fb6a8 found no high-severity defect; three low
+    ones are fixed in e63f4b7: the Dock label's generation is taken in call order (an older count
+    whose `setBadgeCount` reply came back late could win); `setup_iap.py` refuses to write without
+    `--yes` (a bare run priced, submitted the IAPs and resubmitted the open iOS version);
+    terms.html says a trial is charged when it ends.
+  - **N5 merged** (affdee4), checked with `axdump` on the Mac variant: Settings' Language pop-up
+    is "Language" (macOS); Settings' habit rows no longer speak the emoji (iOS and macOS, as Today
+    and History already did); Add Habit's fields are "Habit Name" and "Description" (macOS). No new
+    string. New Habit's sheet `minHeight` 620 → 520: at a 700-pt window it ended 37 pt below the
+    window, now Cancel and Save end 60 pt inside it.
+  - For W3: ProPaywallView.swift:184 still has a 620-pt `minHeight` on macOS (same 700-pt check).
+    For W12/gate 8: Add Habit's preview still reads "⭐, Your Habit".
+  - StrideTests on macOS at affdee4: 734 run, 2 skipped, 0 failed.
