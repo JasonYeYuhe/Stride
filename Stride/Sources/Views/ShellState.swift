@@ -134,7 +134,14 @@ enum ShellRequest: Hashable, Identifiable {
     case newHabit
     /// View → Weekly Review ⇧⌘R: the review for Pro, the paywall otherwise
     /// (`MenuCommandRules.weeklyReviewDestination`), whether or not Stats was ever opened.
-    case weeklyReview
+    /// `week`: the Monday of the week to open on, or nil for the review's own choice
+    /// (RELEASE-1.4.2.md D8). W6 opens on it; until then the review ignores it.
+    case weeklyReview(week: Date?)
+    /// The paywall, latched when the request is issued (RELEASE-1.4.2.md D8): `trigger` says why
+    /// it opened (D4), and `resume` is the request its Continue issues once Pro is unlocked (the
+    /// review that was asked for), or nil. W4 makes the issuers pick it from `isPro`; in W0 the
+    /// shell presents it, and nothing issues it yet.
+    indirect case paywall(trigger: PaywallTrigger, resume: ShellRequest?)
     /// File → Export Backup… / Export as CSV…: written first, then a save panel (D3, D6).
     case export(Export)
     /// A habit's History, opened on `day` (RELEASE-1.4.1.md D6): the detail card's Edit history
@@ -164,7 +171,7 @@ enum ShellRequest: Hashable, Identifiable {
     /// menu Export brings with it (W6).
     var isSheet: Bool {
         switch self {
-        case .newHabit, .weeklyReview, .history: return true
+        case .newHabit, .weeklyReview, .paywall, .history: return true
         case .export: return false
         }
     }

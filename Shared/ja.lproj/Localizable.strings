@@ -606,3 +606,92 @@
 /* Statistics' 8-week Trend: what VoiceOver reads, after the week, for a week that ended before the
    habit existed. Nothing is drawn for it, and it must not sound like 0% or a missed week. */
 "Not started" = "開始前";
+
+/* 1.4.2 W0 */
+
+/* 1.4.2 (W0): the Wave A copy deck (RELEASE-1.4.2.md). Every key below is added before the code
+   that uses it, so the parallel workstreams never touch these files.
+
+   The paywall's subtitle under "Stride Pro", by why it was opened (D4): Statistics' locked card;
+   the Weekly Review button and Today's week card; New Group; Settings and onboarding; the
+   "Pro ended" row. "Pro adds three things" are the three feature rows under it. */
+"See what's changing, not just where you are" = "今の位置だけでなく、何が変わっているかがわかる";
+"See how your week went" = "1週間の成果をチェック";
+"Organize your habits into groups" = "習慣をグループに整理";
+"Almost everything is free. Pro adds three things." = "ほとんどの機能は無料です。Proでは3つの機能が加わります。";
+"Welcome back" = "おかえりなさい";
+
+/* The paywall's one buy button (D4), for the selected plan: Monthly or Yearly without a trial,
+   and Lifetime. The trial's button is "Start %lld-day free trial" in Localizable.stringsdict. */
+"Subscribe" = "登録する";
+"Buy Lifetime" = "買い切りを購入";
+
+/* The selected plan's terms, beside the buy button (D4). Each %@ is a price as the App Store
+   formats it ("$19.99", "¥3,000"). "/year" and "/month" are this catalog's words, never the App
+   Store's: the in-app language can differ from the device's. These are legal terms: say exactly
+   when a subscription renews and how to stop it, as the line below them does. "%@/month" alone is
+   the small per-month figure on the Yearly plan (its price divided by 12). The trial's terms are
+   in Localizable.stringsdict. */
+"%@/year. Renews automatically unless cancelled at least 24 hours before the end of the period." = "%@/年。期間終了の24時間前までに解約しない限り、自動更新されます。";
+"%@/month. Renews automatically unless cancelled at least 24 hours before the end of the period." = "%@/月。期間終了の24時間前までに解約しない限り、自動更新されます。";
+"One payment of %@. No subscription." = "%@の1回払い。サブスクリプションではありません。";
+"%@/month" = "%@/月";
+
+/* The trial clause the paywall's legal line gains (D4), the same words as the App Store
+   description's (D16). It must stay true whether or not a trial is offered. "Any unused part of a
+   trial ends when you subscribe": buying a plan during a free trial ends what is left of it. */
+"If a free trial is offered, you are charged when it ends unless you cancel at least 24 hours before it ends. Any unused part of a trial ends when you subscribe." = "無料トライアルが提供されている場合、トライアル終了の24時間前までに解約しない限り、終了時に料金が請求されます。サブスクリプションを購入すると、トライアルの未使用期間は失効します。";
+
+/* The paywall's states (D4, D6): the plans could not load (with Try Again); a purchase waiting
+   for approval (Ask to Buy); the three answers of Restore Purchases, shown inline; and a purchase
+   that went through, with Continue. */
+"Stride Pro options couldn't load. Check your connection and try again." = "Stride Pro のプランを読み込めませんでした。接続を確認して、もう一度お試しください。";
+"Waiting for approval. Stride Pro unlocks when it's approved." = "承認を待っています。承認されると Stride Pro のロックが解除されます。";
+"Purchases restored" = "購入を復元しました";
+"No purchases found for this Apple ID" = "この Apple ID の購入は見つかりませんでした";
+"Couldn't reach the App Store" = "App Store に接続できませんでした";
+"Stride Pro is unlocked" = "Stride Pro のロックが解除されました";
+
+/* Settings' Stride Pro rows during a free trial (D6). In "first charge of %@ on %@" the first %@
+   is the price, the second the date; without a loaded price the row drops it ("first charge on
+   %@"); "Trial ends on %@" is a trial whose auto-renew is off; "Free trial" alone when the
+   renewal date cannot be verified. "Rate Stride" is a row in Settings > About that opens the App
+   Store's review page (D13). */
+"Free trial · first charge of %@ on %@" = "無料トライアル・%2$@に%1$@を初回請求";
+"Free trial · first charge on %@" = "無料トライアル・%@に初回請求";
+"Trial ends on %@" = "トライアルは%@に終了";
+"Free trial" = "無料トライアル";
+"Rate Stride" = "Stride を評価";
+
+/* Statistics' Pro cards in a habit's first weeks (D7). Insights explains itself instead of
+   hiding: before the habit's first full Monday-to-Sunday week, and when recent weeks hold too few
+   check-ins to compare. "Level with last week": momentum with no change. "Since start" is
+   the Strength card's change since the habit began, for a habit younger than 30 days. "PRO" is
+   the small chip on each Pro card's header; VoiceOver does not read it. */
+"Insights appear after your first full week" = "インサイトは最初の1週間が終わると表示されます";
+"Not enough recent check-ins to compare" = "比較できるだけの最近のチェックインがありません";
+"Level with last week" = "先週と同じ";
+"Since start" = "開始から";
+"PRO" = "PRO";
+
+/* Weekly Review (D8): the title of an unfinished week once 4 of its days have passed, or of
+   last week; the change against the previous week when nothing moved (a change in points is in
+   Localizable.stringsdict); and the highlights: the habit that rose most, the habit that dropped
+   most ("Slipped"), and their heading while the week is unfinished. */
+"This week so far" = "今週ここまで";
+"Last week" = "先週";
+"Level with the previous week" = "前週と同じ";
+"Most improved" = "最も伸びた習慣";
+"Slipped" = "下がった習慣";
+"Highlights so far" = "ここまでのハイライト";
+
+/* Today's "Your week" card (D12), on Monday and Tuesday: for Pro, last week's overall rate
+   and a button to the review; for a free user, no number, and the same button opens the paywall.
+   Its close button hides it until next week (Pro), or for good (free).
+   "What's in Stride Pro" is a text button on onboarding's last page that opens the paywall. */
+"Last week: %lld%%" = "先週：%lld%%";
+"Your Weekly Review is ready" = "週間レビューの準備ができました";
+"See your Weekly Review" = "週間レビューを見る";
+"Hide until next week" = "来週まで非表示";
+"Don't show again" = "今後表示しない";
+"What's in Stride Pro" = "Stride Pro の内容";

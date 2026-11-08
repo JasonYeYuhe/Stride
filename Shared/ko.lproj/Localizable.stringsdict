@@ -588,5 +588,126 @@
 			<string>%lld</string>
 		</dict>
 	</dict>
+	<!-- 1.4.2 (W0): the Wave A copy deck's plurals (RELEASE-1.4.2.md). One plural variable per
+	     entry; a key with two arguments gives both their positions (%1$, %2$).
+	     - The trial (D4): the button, the Yearly card's label and its terms. The day count comes
+	       from the offer's period (a week reads "7 days"); %2$@ is the yearly price.
+	     - Insights' record line (D7): the current run is %1$ days (or weeks) short of the
+	       habit's longest streak, %2$.
+	     - Weekly Review's change against the previous week, in percentage points (D8): "+" for a
+	       rise; a drop is passed as a positive number after "−".
+	     - Statistics' locked card (D12): how many insights Pro has for this habit, 1 or more. -->
+	<key>Start %lld-day free trial</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@days@ 무료 체험 시작</string>
+		<key>days</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld일</string>
+		</dict>
+	</dict>
+	<key>%lld-day free trial</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@days@ 무료 체험</string>
+		<key>days</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld일</string>
+		</dict>
+	</dict>
+	<key>Free for %lld days, then %@/year. Renews automatically unless cancelled at least 24 hours before the trial ends.</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%1$#@days@ 무료, 이후 %2$@/년. 체험 종료 최소 24시간 전에 해지하지 않으면 자동으로 갱신됩니다.</string>
+		<key>days</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld일간</string>
+		</dict>
+	</dict>
+	<key>%lld days from your record of %lld</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>최고 연속 %2$lld일까지 %1$#@days@ 남음</string>
+		<key>days</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld일</string>
+		</dict>
+	</dict>
+	<key>%lld weeks from your record of %lld</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>최고 연속 %2$lld주까지 %1$#@weeks@ 남음</string>
+		<key>weeks</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld주</string>
+		</dict>
+	</dict>
+	<key>+%lld points vs previous week</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>전주 대비 +%#@points@</string>
+		<key>points</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld포인트</string>
+		</dict>
+	</dict>
+	<key>−%lld points vs previous week</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>전주 대비 −%#@points@</string>
+		<key>points</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld포인트</string>
+		</dict>
+	</dict>
+	<key>Stride Pro has %lld insights about this habit</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>이 습관에 대한 Stride Pro 인사이트가 %#@insights@ 있습니다</string>
+		<key>insights</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld개</string>
+		</dict>
+	</dict>
 </dict>
 </plist>

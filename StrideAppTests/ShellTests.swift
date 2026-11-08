@@ -162,7 +162,7 @@ final class ShellTests: XCTestCase {
         let window = try await hostShell(shell)
         try await waitUntil("Today is created") { shell.tabCreations[.today] == 1 }
 
-        shell.request = .weeklyReview
+        shell.request = .weeklyReview(week: nil)
         try await waitUntil("the sheet is presented") { self.host?.presentedViewController != nil }
         let sheet = try XCTUnwrap(host?.presentedViewController)
         // WeeklyReviewView's Done, or the paywall's Restore Purchases.
@@ -174,7 +174,7 @@ final class ShellTests: XCTestCase {
         try await dismissSheet()
         try await waitUntil("the dismissal clears the request") { shell.request == nil }
 
-        shell.request = .weeklyReview
+        shell.request = .weeklyReview(week: nil)
         try await waitUntil("a second request is presented again") { self.host?.presentedViewController != nil }
         _ = try await element(labeled: marker, in: try XCTUnwrap(host?.presentedViewController).view)
         try await dismissSheet()

@@ -308,7 +308,7 @@ struct AddHabitView: View {
             Text("Organize related habits together.")
         }
         .sheet(isPresented: $showingPaywall) {
-            ProPaywallView()
+            ProPaywallView(trigger: .groups)
         }
     }
 

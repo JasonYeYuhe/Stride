@@ -91,7 +91,7 @@ struct StrideCommands: Commands {
             // the sheet is built — whether or not Stats was ever opened in this window.
             WindowCommandButton(.weeklyReview, title: appLocalized("Weekly Review"), window: window,
                                 shortcut: KeyboardShortcut("r", modifiers: [.command, .shift])) {
-                $0.shell.request = .weeklyReview
+                $0.shell.request = .weeklyReview(week: nil)
             }
             Divider()
         }
