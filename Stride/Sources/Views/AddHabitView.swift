@@ -70,6 +70,10 @@ struct AddHabitView: View {
                     TextField("e.g., Read 30 minutes", text: $name)
                         #if os(macOS)
                         .textFieldStyle(.plain)
+                        // The Mac titles a field by its placeholder, so VoiceOver said "e.g., Read
+                        // 30 minutes" (axdump, 1.4.1 gate 10). Named as its section; the
+                        // placeholder is still read after the name.
+                        .accessibilityLabel(Text("Habit Name"))
                         #endif
                 }
 
@@ -78,6 +82,7 @@ struct AddHabitView: View {
                         .lineLimit(1...4)
                         #if os(macOS)
                         .textFieldStyle(.plain)
+                        .accessibilityLabel(Text("Description"))
                         #endif
                 }
 
@@ -288,7 +293,10 @@ struct AddHabitView: View {
         }
         #if os(macOS)
         // A grouped Form has no ideal height either; without this the sheet's size is a guess.
-        .frame(minWidth: 460, idealWidth: 520, minHeight: 620)
+        // 520, as History's, Weekly Review's and Templates': at 620 the sheet was 685 pt tall,
+        // and in a minimum-size (700-pt) main window it ended 37 pt below the window's bottom,
+        // with Cancel and Save across that edge (RELEASE-1.4.2.md N5). The form scrolls.
+        .frame(minWidth: 460, idealWidth: 520, minHeight: 520)
         #endif
         .sheet(isPresented: $showingTemplates) {
             // A picked template is the new habit (D15): this sheet closes with the templates

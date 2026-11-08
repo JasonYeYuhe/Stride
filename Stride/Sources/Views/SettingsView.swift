@@ -319,7 +319,10 @@ struct SettingsView: View {
                         ForEach(activeHabits) { habit in
                             let habitStats = stats[habit.id]
                             HStack {
+                                // Decorative, as on Today's rows and History's header: the
+                                // combined row speaks the name, not "person running, Morning Run".
                                 Text(habit.emoji)
+                                    .accessibilityHidden(true)
                                 Text(habit.name)
                                 Spacer()
                                 VStack(alignment: .trailing, spacing: 2) {
@@ -427,6 +430,7 @@ struct SettingsView: View {
                         ForEach(archivedHabits) { habit in
                             HStack {
                                 Text(habit.emoji)
+                                    .accessibilityHidden(true)
                                 Text(habit.name)
                                     .foregroundStyle(.secondary)
                                 Spacer()
@@ -475,6 +479,12 @@ struct SettingsView: View {
                     } label: {
                         Label("Language", systemImage: "globe")
                     }
+                    #if os(macOS)
+                    // The Mac's grouped Form did not link this pop-up to its Label, as it does
+                    // Add Habit's plain-text Frequency and Group, so VoiceOver said only
+                    // "System Default, pop-up button" (axdump, 1.4.1 gate 10).
+                    .accessibilityLabel(Text("Language"))
+                    #endif
                 } header: {
                     Text("Language")
                 } footer: {
