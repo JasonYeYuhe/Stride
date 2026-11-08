@@ -37,6 +37,7 @@
 		191B23287E7BAA5262EB27C6 /* DataBackupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F6E7BB05532EC926C50A57F /* DataBackupTests.swift */; };
 		1969E94250F2CCAF6177E003 /* ShellTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDB7EA5A81A91D86F79290E0 /* ShellTab.swift */; };
 		1A1FB104E19E15DE6C7501B1 /* StatsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 447E56E91A805C7FB349BA2A /* StatsView.swift */; };
+		1A22791D0DE03CA9D8056BC0 /* PaywallModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D343B89A2C867120FC72A6C8 /* PaywallModelTests.swift */; };
 		1A62B0E20D86EE9F19E4CE49 /* SyncDeletionQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A03A0804A4B45B28F362FA2 /* SyncDeletionQueue.swift */; };
 		1DA5B013F50AD53315F88C6C /* SharedModelContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14E5DE1DF2EA723656AA788 /* SharedModelContainer.swift */; };
 		1E97CEBCDB9DE3BC9F9B88A1 /* StoreLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8F829D10AC86E72860890BE /* StoreLaunchTests.swift */; };
@@ -483,6 +484,7 @@
 		D21336DA7BBDF96DEA4D3407 /* Habit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Habit.swift; sourceTree = "<group>"; };
 		D288EEDE821222AD59C7BF9F /* FrequencyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FrequencyTests.swift; sourceTree = "<group>"; };
 		D2981C8DD76AD702328406DA /* SyncPerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncPerformanceTests.swift; sourceTree = "<group>"; };
+		D343B89A2C867120FC72A6C8 /* PaywallModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaywallModelTests.swift; sourceTree = "<group>"; };
 		D5D84E11762AB647CF9AAC3D /* HabitScore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HabitScore.swift; sourceTree = "<group>"; };
 		DA2F1E7DDF3EBA00949CA1F4 /* SyncDelivery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncDelivery.swift; sourceTree = "<group>"; };
 		DAD33B99BB5A3FF23D8FDB18 /* DayKeyCalendarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DayKeyCalendarTests.swift; sourceTree = "<group>"; };
@@ -713,6 +715,7 @@
 				C2C20ED0BF4B828B745266DE /* LoginLinkTests.swift */,
 				9E43FC8CBEE1090FE4854DC9 /* MacVariantLaunchCheckTests.swift */,
 				974CEA934E4182E2D7BC2B8E /* NotificationRouterTests.swift */,
+				D343B89A2C867120FC72A6C8 /* PaywallModelTests.swift */,
 				BEAA67E2D5B37263EAF364A7 /* PurchaseOutcomeTests.swift */,
 				3A8E200F35F79D42B56503CD /* ReminderDayTests.swift */,
 				4F6FB4858E9419D020CD5CB9 /* ReminderPlanTests.swift */,
@@ -1132,6 +1135,7 @@
 				B722FBF95DA37DC04BA50F08 /* NotificationRouter.swift in Sources */,
 				8256ABD447AF2F7A78410B5D /* NotificationRouterTests.swift in Sources */,
 				DAB8DDD67D3B95476B4CF79E /* PaywallModel.swift in Sources */,
+				1A22791D0DE03CA9D8056BC0 /* PaywallModelTests.swift in Sources */,
 				CB2E1EC1EE05757080CC449A /* PaywallTrigger.swift in Sources */,
 				B01DC9DBC903EB429957FFBE /* PurchaseOutcome.swift in Sources */,
 				89B6704D335E847848C5352F /* PurchaseOutcomeTests.swift in Sources */,

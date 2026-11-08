@@ -12,6 +12,10 @@ import Foundation
 // cover the adapter.
 //
 // Shared/ rules: no user-facing text (SettingsView words the rows), no `appCalendar`.
+//
+// 1.4.2 (RELEASE-1.4.2.md D6, W2) adds Restore's outcome, the products' load-error kind, the
+// offer on the status mirror (`OfferMirror`, with its below-17.2 fallback) and the trial's
+// status and Settings line.
 
 /// StoreKit's answer to a purchase, mirrored: `Product.PurchaseResult` with its
 /// `VerificationResult` already unwrapped by the adapter.
@@ -49,6 +53,95 @@ enum PurchaseOutcome: Equatable {
     }
 }
 
+/// How `AppStore.sync()` ended, mirrored (RELEASE-1.4.2.md D6).
+enum RestoreSyncResult: Equatable {
+    case synced
+    /// `StoreKitError.userCancelled`: the user closed the Apple Account sheet (G2-10).
+    case userCancelled
+    /// Any other error: offline, the App Store unreachable.
+    case failed
+}
+
+/// What Restore Purchases did (D6), for the paywall and Settings to word inline: "Purchases
+/// restored", "No purchases found for this Apple ID", "Couldn't reach the App Store"; a cancel
+/// shows nothing.
+enum RestoreOutcome: Equatable {
+    case restored
+    case nothingFound
+    case cancelled
+    case failed
+
+    /// - Parameters:
+    ///   - sync: how `AppStore.sync()` ended.
+    ///   - entitledAfter: whether `Transaction.currentEntitlements` holds a verified Stride Pro
+    ///     product after the refresh that follows the sync (the real entitlements, never DEBUG's
+    ///     `-demoPro`).
+    ///
+    /// A failed or cancelled sync says so, whatever is entitled: the sync restored nothing.
+    init(sync: RestoreSyncResult, entitledAfter: Bool) {
+        switch sync {
+        case .synced: self = entitledAfter ? .restored : .nothingFound
+        case .userCancelled: self = .cancelled
+        case .failed: self = .failed
+        }
+    }
+}
+
+/// Why the paywall's products did not load (D6): a kind for the view to word ("Stride Pro options
+/// couldn't load. Check your connection and try again."), in place of the raw text `loadError`
+/// holds today. The raw detail goes only to the existing Sentry report.
+enum ProductLoadError: Equatable {
+    /// The App Store answered with no products (none live in this storefront, or not configured).
+    case noProducts
+    /// StoreKit threw: offline, a timeout, a store error.
+    case storeError
+}
+
+/// The offer a subscription transaction was bought under, as Settings needs it (D6). StoreService's
+/// adapter (`mirror(_:products:)`) fills it on each `SubscriptionStatusMirror`.
+///
+/// Only the **introductory** offer counts, on every OS: Stride creates no promotional, code or
+/// win-back offer (D16), and below iOS 17.2 / macOS 14.2 the other kinds' payment mode cannot be
+/// read at all, so one purchase reads the same on every version.
+enum OfferMirror: Equatable {
+    /// The introductory free trial.
+    case freeTrial
+    /// An introductory offer not known to be free (a paid intro price, or a mode StoreKit did not
+    /// say): an ordinary active row.
+    case introductoryPrice
+    /// No introductory offer.
+    case none
+
+    /// `Transaction.OfferType`, mirrored.
+    enum OfferType: Equatable {
+        case introductory, promotional, code, winBack, unknown
+    }
+
+    /// `Transaction.Offer.PaymentMode` and `Product.SubscriptionOffer.PaymentMode`, mirrored.
+    enum PaymentMode: Hashable {
+        case freeTrial, payAsYouGo, payUpFront, unknown
+    }
+
+    /// iOS 17.2 / macOS 14.2 and later: from `transaction.offer`, its type and payment mode (both
+    /// nil when the transaction has no offer).
+    static func fromTransactionOffer(type: OfferType?, paymentMode: PaymentMode?) -> OfferMirror {
+        introductory(type, paymentMode)
+    }
+
+    /// Below iOS 17.2 / macOS 14.2 only `transaction.offerType` exists, and `.introductory` does
+    /// not say which kind: it is the trial only when the loaded product's
+    /// `subscription?.introductoryOffer?.paymentMode` is `.freeTrial` (nil when the products have
+    /// not loaded or the product has no intro offer); otherwise an ordinary active row (G2-3).
+    static func fromLegacyOfferType(_ type: OfferType?, productIntroPaymentMode: PaymentMode?) -> OfferMirror {
+        introductory(type, productIntroPaymentMode)
+    }
+
+    private static func introductory(_ type: OfferType?, _ mode: PaymentMode?) -> OfferMirror {
+        guard type == .introductory else { return .none }
+        return mode == .freeTrial ? .freeTrial : .introductoryPrice
+    }
+}
+
 /// One subscription's status, mirrored from `Product.SubscriptionInfo.Status` and its
 /// verified transaction and renewal info. A status whose transaction fails verification is not
 /// mirrored at all (the adapter reports it and drops it).
@@ -71,15 +164,19 @@ struct SubscriptionStatusMirror: Equatable {
     var gracePeriodExpirationDate: Date?
     /// Set for a refund or a revocation.
     var revocationDate: Date?
+    /// The offer the transaction was bought under (1.4.2 D6). `.freeTrial` on a subscribed status:
+    /// the user is in the trial, and `expirationDate` is the first charge.
+    var offer: OfferMirror
 
     init(productID: String, state: State, expirationDate: Date? = nil, willAutoRenew: Bool? = nil,
-         gracePeriodExpirationDate: Date? = nil, revocationDate: Date? = nil) {
+         gracePeriodExpirationDate: Date? = nil, revocationDate: Date? = nil, offer: OfferMirror = .none) {
         self.productID = productID
         self.state = state
         self.expirationDate = expirationDate
         self.willAutoRenew = willAutoRenew
         self.gracePeriodExpirationDate = gracePeriodExpirationDate
         self.revocationDate = revocationDate
+        self.offer = offer
     }
 
     /// Apple is still charging, or trying to: the "payment problem" states.
@@ -110,6 +207,10 @@ enum ProStatus: Equatable {
     /// Entitled to a subscription. Both optionals nil when its status could not be read: an
     /// entitled subscriber is never shown as lapsed, and no date is shown.
     case active(productID: String, renewsOn: Date?, willAutoRenew: Bool?)
+    /// Entitled through the introductory free trial (RELEASE-1.4.2.md D6). `firstChargeOn` is the
+    /// trial's end (the transaction's expiration); `willAutoRenew` is nil when the renewal info
+    /// could not be verified, and then claims nothing: no date, no charge.
+    case trial(productID: String, firstChargeOn: Date?, willAutoRenew: Bool?)
     /// Billing retry or grace period: "Payment problem — update your payment method" + Manage.
     /// `graceUntil`: while in the grace period, when Pro ends unless the payment goes through.
     case billingIssue(productID: String, graceUntil: Date?)
@@ -133,8 +234,9 @@ enum ProStatus: Equatable {
     /// 1. Lifetime entitled → `.lifetime`; it never lapses, whatever a subscription says.
     /// 2. A subscription entitled → `.billingIssue` when a status is in the grace period (or
     ///    billing retry), else `.active` from the subscribed status — preferring the entitled
-    ///    product's. When no status agrees (unavailable, unverified, stale), `.active` with no
-    ///    date: an entitled subscriber is never lapsed.
+    ///    product's — or `.trial` when that status was bought under the free trial (1.4.2 D6).
+    ///    When no status agrees (unavailable, unverified, stale), `.active` with no date: an
+    ///    entitled subscriber is never lapsed.
     /// 3. Nothing entitled → `.billingIssue` while Apple retries the charge; `.never` while a
     ///    status still says subscribed (the entitlement failed verification: Restore is the way
     ///    back, not "ended"); else `.lapsed` at the latest end date — an expiry, or a refund or
@@ -155,6 +257,10 @@ enum ProStatus: Equatable {
             }
             let subscribed = statuses.filter { $0.state == .subscribed }
             if let live = subscribed.first(where: { entitledSubscriptions.contains($0.productID) }) ?? subscribed.first {
+                if live.offer == .freeTrial {
+                    return .trial(productID: live.productID, firstChargeOn: live.expirationDate,
+                                  willAutoRenew: live.willAutoRenew)
+                }
                 return .active(productID: live.productID, renewsOn: live.expirationDate, willAutoRenew: live.willAutoRenew)
             }
             return .active(productID: fallback, renewsOn: nil, willAutoRenew: nil)
@@ -232,6 +338,11 @@ enum ProSettingsRow: Hashable {
         case .active(let productID, let renewsOn, let willAutoRenew):
             guard isPro else { return [.upgrade, .restore] }
             return [.unlocked, .plan(.subscription(productID: productID), dateLine(renewsOn, willAutoRenew)), .manage]
+        case .trial(let productID, _, _):
+            // The plan row carries no date line: the trial's own line (`trialLine`) says when the
+            // first charge comes, or when the trial ends.
+            guard isPro else { return [.upgrade, .restore] }
+            return [.unlocked, .plan(.subscription(productID: productID), nil), .manage]
         case .billingIssue(let productID, let graceUntil):
             let plan = ProSettingsRow.plan(.subscription(productID: productID), graceUntil.map(DateLine.expires))
             return isPro ? [.unlocked, plan, .billingIssue, .manage] : [plan, .billingIssue, .manage, .restore]
@@ -246,6 +357,30 @@ enum ProSettingsRow: Hashable {
     private static func dateLine(_ date: Date?, _ willAutoRenew: Bool?) -> DateLine? {
         guard let date, let willAutoRenew else { return nil }
         return willAutoRenew ? .renews(date) : .expires(date)
+    }
+
+    /// What `trialLine` says (RELEASE-1.4.2.md D6).
+    enum TrialLine: Hashable {
+        /// "Free trial · first charge of %@ on %@" (price, date); without a loaded price, "Free
+        /// trial · first charge on %@".
+        case firstCharge(on: Date, price: String?)
+        /// "Trial ends on %@": auto-renew is off.
+        case endsOn(Date)
+        /// "Free trial": the renewal info could not be verified (or there is no date), so no date
+        /// and no charge is claimed, as `dateLine` does.
+        case undated
+    }
+
+    /// The free trial's line, drawn under the plan row that `rows(for:isPro:)` gives a `.trial`
+    /// status (that plan row has no date line of its own), with Manage after it. Nil for every
+    /// other status, and without the entitlement (whose rows are the upsell).
+    /// - Parameter displayPrices: the loaded products' `displayPrice` by product id; empty when
+    ///   the products have not loaded (they load at launch and can be missing offline). Without
+    ///   the trial product's price the line keeps the date and drops the price.
+    static func trialLine(for status: ProStatus, isPro: Bool, displayPrices: [String: String]) -> TrialLine? {
+        guard isPro, case .trial(let productID, let firstChargeOn, let willAutoRenew) = status else { return nil }
+        guard let firstChargeOn, let willAutoRenew else { return .undated }
+        return willAutoRenew ? .firstCharge(on: firstChargeOn, price: displayPrices[productID]) : .endsOn(firstChargeOn)
     }
 }
 
