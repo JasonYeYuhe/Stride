@@ -1438,3 +1438,21 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
   - For W3: ProPaywallView.swift:184 still has a 620-pt `minHeight` on macOS (same 700-pt check).
     For W12/gate 8: Add Habit's preview still reads "⭐, Your Habit".
   - StrideTests on macOS at affdee4: 734 run, 2 skipped, 0 failed.
+- 2026-11-09, **four operating decisions** (owner, after Gemini 3.8 Flash High with two lenses,
+  release/product and engineering/risk, on a `git archive` copy; both lenses picked the same option
+  each time, and the owner took all four):
+  - **A, hosted tests:** CI runs the hosted suite on every push to PR #12 (it ran 338 cases on
+    10-22 and 10-26; 10-26 failed one, LocalDataFlowTests
+    `testAnEraseRemovesTheExportFilesButTheLastTenMinutes`). Local simulators wait for free disk
+    over 30 GB. The owner emptied the Trash on 11-09; free space is still 23.4 GB.
+  - **B, iOS 18.5:** borrow Soundpost-iOS18 (DAF29479, iOS 18.5, Shutdown, no lock) for W2's
+    SKTestSession cases and gate 3, under `/tmp/lock-soundpost-ios18`, never erased.
+  - **C, `iap_copy.py --yes`:** after iOS 1.4.1 is approved and released, while no review is open.
+    Re-run the dry run first to see which of the 7 localization edits went live with the approval.
+    Any 409 goes through the web UI.
+  - **D:** m5 pushed; draft PR JasonYeYuhe/Stride#12 into main, marked as stacked on #10.
+  - Fact-checks: the engineering lens said the CI hosted step had never run on xcode-27 (false,
+    above). Both lenses suggested `simctl delete unavailable` and pruning DerivedData; both are the
+    owner's call under the global rules. The release lens asked for a review-notes line on the
+    trial: D5 already keeps the trial out of What's New and off the paywall until the offer
+    exists. W12 adds one sentence to the notes.
