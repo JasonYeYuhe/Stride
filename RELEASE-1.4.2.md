@@ -1487,3 +1487,25 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
   accessibility tree. Test-only fix: scroll History to its top before picking a day, and on the 1st
   show the month before (yesterday is not in this month's grid). Compiled for the simulator; CI
   decides. Owner OK'd the push.
+- 2026-11-09, **W2's hosted half and W3 merged** (a861b7b; one worktree agent, f7ee729 + e1c34d5,
+  then an independent adversarial review whose nine findings were fixed in b431802). CI on 2ddb2d4
+  was green (330 hosted passed, 12 skipped): the History test fix held.
+  - **W2 (hosted):** StoreService builds `paywallModel` from product mirrors; `purchase` returns
+    `PurchaseOutcome` (`.pending` included); `restorePurchases() -> RestoreOutcome` from the real
+    entitlements; `loadError` is a `ProductLoadError`; the status mirror carries the offer (17.2
+    `transaction.offer`, legacy `offerType` fallback); `displayPrices`. Intro-offer eligibility is
+    re-read on each paywall appearance and on every entitlement change, and no trial is stated
+    while it is read (review finding: one read per process would sell a lapsed user a trial
+    StoreKit charges at once). Configuration.storekit: Lifetime 39.99, Yearly "Full access billed
+    yearly" with a P1W free trial. StoreKitStatusTests gains the W2 SKTestSession cases, compiled
+    only: they run on the iOS 18.5 device (watch the 10 s renewal racing `.trial`).
+  - **W3:** D4's paywall: Yearly first and selected, one CTA, the billed price largest, the
+    per-month figure and savings from the model; the bar (`safeAreaInset`) with CTA, terms and
+    links, inline at accessibility sizes or above 45 % of the height; every state with
+    `-paywallFixture`; trigger subtitles (pinned in LocalizationSourceScanTests) and row order;
+    Continue → `onUnlock`. No close mid-purchase; a thrown cancel is silent; any action that ends
+    with Pro goes to "unlocked". Mac sheet `minHeight` 520 (was 620), `idealHeight` 570: **gate 10
+    measures the bar in a 700-pt window and the cards on the first screen.** PaywallRenderTests
+    (new) compiled only; CI runs them. No new strings; "BEST VALUE", "Unlock the full experience"
+    and the two old load-error strings are now unused (W12 prunes them). StrideTests 770 / 2 / 0
+    in both zones. Mac variant captures not taken (window on another Space): W8.
