@@ -1477,3 +1477,13 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
     `check_demo_account.sh` (read-only pull; the token is read over SSH from the server's .env and
     never printed). It shows Journal as most improved, Meditate as slipped, and Read 30 Minutes
     (−15 to 85 %) correctly not slipped.
+- **11-09, CI.** iOS 1.4.1 still WAITING_FOR_REVIEW (unchanged). PR #12's hosted suite failed on
+  496cd4a, on 11-08 and again on a re-run 11-09, at one test only:
+  `HabitHistoryTests.testAChangedNoteOverTheCapIsNeverDroppedWithoutAsking` could not find
+  yesterday's day cell (329 passed, 12 skipped). Not 1.4.2's code: the only History change since
+  the cut is macOS-only, and the test passed on m4's 10-26 run with the same Xcode (27A9275); the
+  runner image moved from 20261023 to 20261103. Likely cause (not proven locally, disk under
+  30 GB): focusing the note scrolls the page to the editor and the LazyVGrid's rows leave the
+  accessibility tree. Test-only fix: scroll History to its top before picking a day, and on the 1st
+  show the month before (yesterday is not in this month's grid). Compiled for the simulator; CI
+  decides. Owner OK'd the push.
