@@ -86,6 +86,7 @@ final class LocalizationSourceScanTests: XCTestCase {
             "preview.groups", "habit.weeklyCompletions(containing: date)",
             "currentPage + 1", "targetValue", "todayCount",
             "failure.code",   // StoreOpenFailure.code: the store error screen's number
+            "days",           // the paywall's trial length (PaywallModel.trialDays), 1.4.2 D4
         ]
         let strings = [
             "error", "newError", "email", "habitName", "habit.emoji", "habit.name", "unit",
@@ -94,6 +95,7 @@ final class LocalizationSourceScanTests: XCTestCase {
             "template.displayName",
             "Self.amount(result.loggedValue)", "Self.amount(habit.targetValue)", "status",
             "failure.domain", // StoreOpenFailure.domain, e.g. NSCocoaErrorDomain
+            "price", "perMonth", // the paywall's prices, formatted by StoreKit (1.4.2 D4)
         ]
         var table: [String: String] = [:]
         for e in ints { table[e] = "%lld" }
@@ -219,6 +221,37 @@ final class LocalizationSourceScanTests: XCTestCase {
         let retired = "8-week trends, insights & weekly review"
         XCTAssertFalse(keys.contains(retired), "the source uses the retired Pro subtitle again")
         XCTAssertFalse(try Self.japaneseKeys().contains(retired), "the retired Pro subtitle is back in the catalogs")
+    }
+
+    /// The paywall's header subtitle by trigger (RELEASE-1.4.2.md D4) joins D11's pin: it is the
+    /// line right above the three rows, so W12's D11 commit changes it with them or not at all.
+    /// Each trigger has exactly one, in the switch `ProPaywallView.triggerSubtitle`, and every
+    /// subtitle is in all five catalogs. The rows' order by trigger is a runtime permutation of
+    /// the literals `testProClaimsNameExactlyD11sSet` pins (PaywallRenderTests checks it).
+    func testThePaywallsTriggerSubtitlesAreD11s() throws {
+        let paywall = Self.repositoryRoot.appendingPathComponent("Stride/Sources/Views/ProPaywallView.swift")
+        let body = try XCTUnwrap(
+            Self.captures(#"var triggerSubtitle: some View \{\s*switch trigger \{([^}]*)\}"#, in: [paywall]).first?.first,
+            "ProPaywallView.triggerSubtitle's switch")
+        let regex = try NSRegularExpression(pattern: #"case ([.A-Za-z, ]+): Text\("([^"]*)"\)"#)
+        let ns = body as NSString
+        let cases = regex.matches(in: body, range: NSRange(location: 0, length: ns.length)).map {
+            [ns.substring(with: $0.range(at: 1)), ns.substring(with: $0.range(at: 2))]
+        }
+        XCTAssertEqual(cases, [
+            [".analytics", "See what's changing, not just where you are"],
+            [".weeklyReview, .today", "See how your week went"],
+            [".groups", "Organize your habits into groups"],
+            [".settings, .onboarding", "Almost everything is free. Pro adds three things."],
+            [".lapsed", "Welcome back"],
+        ], "the paywall's trigger subtitles (D4, D11)")
+
+        for language in ["es", "ja", "ko", "zh-Hans", "zh-Hant"] {
+            let catalog = try Self.catalog(language)
+            for subtitle in cases.map({ $0[1] }) {
+                XCTAssertNotNil(catalog[subtitle], "\(language) has no \"\(subtitle)\"")
+            }
+        }
     }
 
     /// The App Store descriptions (metadata/<locale>/description.txt, which push_metadata.py sends
