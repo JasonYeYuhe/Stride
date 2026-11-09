@@ -115,7 +115,7 @@ final class StoreKitStatusTests: XCTestCase {
     }
 
     /// The paywall's path, `StoreService.purchase(_:)`, under a time limit.
-    private func buy(_ id: StrideProduct) async throws -> Bool {
+    private func buy(_ id: StrideProduct) async throws -> PurchaseOutcome {
         let product = try await product(id)
         let store = self.store!
         return try await completing("buying \(id.rawValue)") { try await store.purchase(product) }
@@ -186,7 +186,7 @@ final class StoreKitStatusTests: XCTestCase {
     func testBuyingMonthlyShowsThePlanAndItsRenewalDate() async throws {
         let bought = try await buy(.monthlyPro)
 
-        XCTAssertTrue(bought)
+        XCTAssertEqual(bought, .purchased(productID: monthlyID))
         XCTAssertTrue(store.isPro)
         guard case .active(let productID, let renewsOn?, let willAutoRenew) = store.proStatus else {
             return XCTFail("bought Monthly: \(store.proStatus)")
@@ -282,7 +282,7 @@ final class StoreKitStatusTests: XCTestCase {
     func testLifetimeIsLifetime() async throws {
         let bought = try await buy(.lifetimePro)
 
-        XCTAssertTrue(bought)
+        XCTAssertEqual(bought, .purchased(productID: lifetimeID))
         XCTAssertTrue(store.isPro)
         XCTAssertEqual(store.proStatus, .lifetime(subscriptionStillRenews: false))
         XCTAssertEqual(rows, [.unlocked, .plan(.lifetime, nil)])
@@ -367,6 +367,162 @@ final class StoreKitStatusTests: XCTestCase {
                               .billingIssue, .manage])
     }
 
+    // MARK: - The trial, Ask to Buy, Restore (RELEASE-1.4.2.md D4, D6, D16; W2)
+
+    private let yearlyID = StrideProduct.yearlyPro.rawValue
+
+    /// The paywall's load on this test's store: the products, and each subscription's intro-offer
+    /// eligibility, read once.
+    private func loadThePaywall() async throws {
+        let store = self.store!
+        try await completing("loading the paywall's products", within: 30) { await store.retryLoadProducts() }
+        XCTAssertEqual(Set(store.products.map(\.id)), Set(StrideProduct.allCases.map(\.rawValue)), "every product loaded")
+    }
+
+    private var trialLine: ProSettingsRow.TrialLine? {
+        ProSettingsRow.trialLine(for: store.proStatus, isPro: store.isPro, displayPrices: store.displayPrices)
+    }
+
+    /// A clean session is eligible for Yearly's 7-day free trial (D16's P1W): the paywall states
+    /// it, on Yearly, selected.
+    func testACleanSessionIsEligibleForYearlysTrial() async throws {
+        try await loadThePaywall()
+
+        XCTAssertEqual(store.introOfferEligibility[yearlyID], true)
+        let yearly = try XCTUnwrap(store.paywallMirrors.first { $0.kind == .yearly })
+        XCTAssertEqual(yearly.introOffer, PaywallProductMirror.IntroOffer(
+            paymentMode: .freeTrial, period: SubscriptionPeriodMirror(value: 1, unit: .week)))
+        XCTAssertEqual(yearly.eligible, true)
+        XCTAssertEqual(yearly.currencyCode, "USD")
+        XCTAssertEqual(yearly.currencyFractionDigits, 2)
+
+        let model = store.paywallModel
+        XCTAssertEqual(model.plans.map(\.kind), [.yearly, .monthly, .lifetime], "by kind, never by price")
+        XCTAssertEqual(model.selectedPlan?.kind, .yearly)
+        XCTAssertEqual(model.trialDays, 7)
+        XCTAssertEqual(model.cta, .startTrial(days: 7))
+        XCTAssertEqual(model.terms, .trial(days: 7))
+        XCTAssertEqual(model.plans.first?.perMonthPrice, Decimal(string: "1.67"), "19.99 / 12, rounded up")
+        XCTAssertEqual(model.plans.first?.savingsPercent, 44)
+        XCTAssertEqual(store.displayPrices[StrideProduct.lifetimePro.rawValue], "$39.99")
+        XCTAssertNil(store.loadError)
+    }
+
+    /// Buying the trial: Pro at once, and Settings' trial row with its first charge — the trial's
+    /// end, a week out — and the loaded price. The plan row carries no date of its own.
+    func testBuyingTheTrialShowsTheTrialRowWithItsFirstCharge() async throws {
+        try await loadThePaywall()
+        let bought = try await buy(.yearlyPro)
+
+        XCTAssertEqual(bought, .purchased(productID: yearlyID))
+        XCTAssertTrue(store.isPro)
+        guard case .trial(let productID, let firstCharge?, let willAutoRenew) = store.proStatus else {
+            return XCTFail("bought Yearly's trial: \(store.proStatus)")
+        }
+        XCTAssertEqual(productID, yearlyID)
+        XCTAssertEqual(willAutoRenew, true)
+        let days = firstCharge.timeIntervalSinceNow / 86_400
+        XCTAssertGreaterThan(days, 6, "the first charge is the trial's end, a week out (\(firstCharge))")
+        XCTAssertLessThan(days, 8, "the first charge is the trial's end, a week out (\(firstCharge))")
+        XCTAssertEqual(rows, [.unlocked, .plan(.subscription(productID: yearlyID), nil), .manage])
+        XCTAssertEqual(trialLine, .firstCharge(on: firstCharge, price: "$19.99"))
+        XCTAssertNil(store.paywallModel.trialDays, "Pro states no trial")
+    }
+
+    /// Past the trial's week (an accelerated session clock), Yearly renews: an ordinary active
+    /// row, no longer the trial, and Pro throughout.
+    func testTheTrialRenewsOnceItsWeekIsOver() async throws {
+        session.timeRate = .oneRenewalEveryTenSeconds
+        try await loadThePaywall()
+        _ = try await buy(.yearlyPro)
+        if case .trial = store.proStatus {} else { XCTFail("bought Yearly's trial: \(store.proStatus)") }
+
+        await refresh(until: {
+            if case .active(let productID, _, _) = store.proStatus { return productID == yearlyID } else { return false }
+        }, isPro: true, timeout: .seconds(60), "the trial renewed")
+        XCTAssertNil(trialLine)
+    }
+
+    /// Auto-renew switched off during the trial: "Trial ends on <date>" while it lasts, then one
+    /// lapsed row and locked cards once it ends.
+    func testAutoRenewOffDuringTheTrialEndsItThenLapses() async throws {
+        try await loadThePaywall()
+        _ = try await buy(.yearlyPro)
+        try session.disableAutoRenewForTransaction(identifier: try testTransaction(yearlyID).identifier)
+
+        await refresh(until: {
+            if case .trial(_, _?, false) = store.proStatus { return true } else { return false }
+        }, isPro: true, "auto-renew off in the trial")
+        guard case .trial(_, let ends?, false) = store.proStatus else { return }
+        XCTAssertEqual(trialLine, .endsOn(ends))
+
+        try session.expireSubscription(productIdentifier: yearlyID)
+        await refresh(until: {
+            if case .lapsed = store.proStatus { return true } else { return false }
+        }, isPro: false, "the trial ended")
+        guard case .lapsed(let endedOn) = store.proStatus else { return }
+        XCTAssertEqual(rows, [.lapsed(endedOn: endedOn), .restore])
+        XCTAssertNil(trialLine)
+    }
+
+    /// Eligibility is per subscription group: an Apple ID that had Monthly is ineligible for
+    /// Yearly's trial, and the paywall then states none ("Subscribe", the renewal terms).
+    func testAnEarlierMonthlyMakesYearlysTrialIneligible() async throws {
+        _ = try await buy(.monthlyPro)
+        try session.expireSubscription(productIdentifier: monthlyID)
+        await refresh(until: {
+            if case .lapsed = store.proStatus { return true } else { return false }
+        }, isPro: false, "Monthly expired")
+
+        try await loadThePaywall()
+        XCTAssertEqual(store.introOfferEligibility[yearlyID], false)
+        let model = store.paywallModel
+        XCTAssertNil(model.trialDays)
+        XCTAssertEqual(model.cta, .subscribe)
+        XCTAssertEqual(model.terms, .renewsYearly)
+    }
+
+    /// Ask to Buy: the purchase is pending and grants nothing; once approved, Pro arrives.
+    func testAskToBuyIsPendingThenApproved() async throws {
+        session.askToBuyEnabled = true
+        try await loadThePaywall()
+        let outcome = try await buy(.yearlyPro)
+
+        XCTAssertEqual(outcome, .pending)
+        XCTAssertFalse(store.isPro)
+        XCTAssertFalse(store.isPurchasing, "the purchase returned")
+
+        let pending = try XCTUnwrap(session.allTransactions().last { $0.productIdentifier == yearlyID && $0.pendingAskToBuyConfirmation },
+                                    "the Ask to Buy transaction")
+        try session.approveAskToBuyTransaction(identifier: pending.identifier)
+        await refresh(until: { store.isPro }, isPro: true, "Ask to Buy approved")
+        XCTAssertTrue(rows.contains(.unlocked))
+    }
+
+    /// Restore with nothing bought: "No purchases found", and still no Pro.
+    func testRestoreWithNothingFindsNothing() async throws {
+        let store = self.store!
+        let outcome = try await completing("restoring") { await store.restorePurchases() }
+
+        XCTAssertEqual(outcome, .nothingFound)
+        XCTAssertFalse(store.isPro)
+        XCTAssertFalse(store.isRestoring)
+    }
+
+    /// Restore after Lifetime was bought outside this store (another device): restored, Pro.
+    func testRestoreWithLifetimeRestoresIt() async throws {
+        let session = self.session!, lifetimeID = self.lifetimeID
+        _ = try await completing("Lifetime bought elsewhere") {
+            _ = try await session.buyProduct(identifier: lifetimeID)
+            return true
+        }
+        let store = self.store!
+        let outcome = try await completing("restoring") { await store.restorePurchases() }
+
+        XCTAssertEqual(outcome, .restored)
+        XCTAssertTrue(store.isPro)
+        XCTAssertEqual(store.proStatus, .lifetime(subscriptionStillRenews: false))
+    }
 }
 
 /// Settings' Manage Subscription and Redeem Code on iOS (D12, O9): no StoreKit needed, so not

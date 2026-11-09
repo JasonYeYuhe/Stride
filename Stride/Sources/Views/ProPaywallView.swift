@@ -74,17 +74,10 @@ struct ProPaywallView: View {
                             Text("Unable to load subscription options.")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
-                            if let error = store.loadError {
-                                Text(error)
-                                    .font(.caption)
-                                    .foregroundStyle(.tertiary)
-                                    .multilineTextAlignment(.center)
-                            } else {
-                                Text("Please check your internet connection and try again.")
-                                    .font(.caption)
-                                    .foregroundStyle(.tertiary)
-                                    .multilineTextAlignment(.center)
-                            }
+                            Text("Please check your internet connection and try again.")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                                .multilineTextAlignment(.center)
                             Button("Try Again") {
                                 Task { await store.retryLoadProducts() }
                             }
@@ -188,7 +181,7 @@ struct ProPaywallView: View {
     /// "SAVE 44%": the interpolation is typed as a LocalizedStringKey here, outside the ternary
     /// that picks it, so the runtime key is "SAVE %lld%%" — never a pre-formatted String.
     private var yearlyBadge: LocalizedStringKey? {
-        guard let percent = store.yearlySavingsPercent else { return nil }
+        guard let percent = store.paywallModel.plans.first(where: { $0.kind == .yearly })?.savingsPercent else { return nil }
         return "SAVE \(percent)%"
     }
 
@@ -196,9 +189,9 @@ struct ProPaywallView: View {
         isPurchasing = true
         Task {
             do {
-                let success = try await store.purchase(product)
+                let outcome = try await store.purchase(product)
                 isPurchasing = false
-                if success {
+                if case .purchased = outcome {
                     dismiss()
                 }
             } catch {
