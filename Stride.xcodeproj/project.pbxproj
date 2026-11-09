@@ -75,6 +75,7 @@
 		373597125ADE10F7547F22D6 /* SyncReconciler.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB59FC2420F0C656244B3006 /* SyncReconciler.swift */; };
 		374160EBC0FE379E372C394D /* SyncCopiesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB4B77B1D295440D05D9D8E5 /* SyncCopiesTests.swift */; };
 		38CEF68BDD3BC6F51401EC45 /* SyncStatusRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = A993909BE286C927911BBD34 /* SyncStatusRow.swift */; };
+		3A0C7F6DB863BB87EB440738 /* PaywallRenderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 133DE53C38710DDC95C4153A /* PaywallRenderTests.swift */; };
 		3A885C548100CDCF47CC565C /* NotificationRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B58F8D005EDDA647327B621 /* NotificationRouter.swift */; };
 		3B28921BABA281FE29526243 /* SyncPushPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81B1CD1D3E2FC59544AC4C8C /* SyncPushPlanner.swift */; };
 		3D038F4D40A1494A7D907F53 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5E1940DEB8CA019D623342D /* NotificationService.swift */; };
@@ -366,6 +367,7 @@
 		0FFE777F7EB29D7BDF02CC23 /* HabitStatsParityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HabitStatsParityTests.swift; sourceTree = "<group>"; };
 		1092BA034105D314062CB5E9 /* NotificationActionHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationActionHandler.swift; sourceTree = "<group>"; };
 		1194AFE4DBCEA8AD9DE1B32A /* DemoData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoData.swift; sourceTree = "<group>"; };
+		133DE53C38710DDC95C4153A /* PaywallRenderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaywallRenderTests.swift; sourceTree = "<group>"; };
 		13F2ABF32A87F9E49DD8FFD0 /* WidgetTimelinePlanTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetTimelinePlanTests.swift; sourceTree = "<group>"; };
 		14E65DB3F54110A255BF1E2C /* AddHabitView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddHabitView.swift; sourceTree = "<group>"; };
 		169185A02281694B56C07F52 /* SyncDeletionQueueTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncDeletionQueueTests.swift; sourceTree = "<group>"; };
@@ -790,6 +792,7 @@
 				959D8F9B20752F9970811A22 /* LocalDataFlowTests.swift */,
 				B4201CA17BA28A6E53121CB3 /* NotificationActionHandlerTests.swift */,
 				3F54DD53A85952D6DB6D05AC /* NotificationServiceTests.swift */,
+				133DE53C38710DDC95C4153A /* PaywallRenderTests.swift */,
 				902D141A20413D3A1B5936EB /* PaywallTriggerTests.swift */,
 				CE6BBADAD14A22204B4E31DB /* ShellTests.swift */,
 				091449EDD0994DE39A217FAB /* StatsCacheTests.swift */,
@@ -1332,6 +1335,7 @@
 				8CE9D355B0142547201A2DAA /* LocalDataFlowTests.swift in Sources */,
 				B2448DA585773A634E8356EF /* NotificationActionHandlerTests.swift in Sources */,
 				13B2134CFB1BA48CBBA87A8D /* NotificationServiceTests.swift in Sources */,
+				3A0C7F6DB863BB87EB440738 /* PaywallRenderTests.swift in Sources */,
 				6535ACC3841CAF549B9BF659 /* PaywallTriggerTests.swift in Sources */,
 				A192294946B6C442C3671FD4 /* ShellTests.swift in Sources */,
 				437E2AE72DFF4173DB103442 /* StatsCacheTests.swift in Sources */,
