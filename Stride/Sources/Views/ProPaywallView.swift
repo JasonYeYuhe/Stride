@@ -44,6 +44,10 @@ struct ProPaywallView: View {
     @State private var unlockedByRestore = false
     /// The probe's answer (`barFitProbe`): the bar fits in `barShareLimit` of the height.
     @State private var barFits = true
+    /// This appearance's `preparePaywall()` returned: its load, or its eligibility re-read. Until
+    /// then the paywall is loading, so neither a load error left by an earlier, cancelled load nor
+    /// an eligibility answer from an earlier appearance is ever drawn.
+    @State private var prepared = false
 
     #if DEBUG
     /// `-paywallFixture <state>` (D14), or PaywallRenderTests' fixture: the paywall drawn from
@@ -94,14 +98,36 @@ struct ProPaywallView: View {
 
     private var phase: PaywallPhase {
         #if DEBUG
-        if let fixture { return action ?? fixture.phase }
+        if let fixture {
+            if let action { return action }
+            // Drawn as a store build reaches it: a restore that finds a purchase unlocks Pro.
+            return fixture == .restored ? .unlocked : fixture.phase
+        }
         #endif
         if let action { return action }
+        // Loading until this appearance's load or eligibility re-read returns (`prepared`), and
+        // while entitlements that just changed have eligibility read again: no stale trial.
+        guard prepared, !store.isCheckingEligibility else { return .loading }
         if !model.plans.isEmpty { return .ready }
         // Between retries `loadError` holds the last attempt's failure while `isLoading` stays
         // true: still loading. Before the first load starts, neither is set: loading too.
         if !store.isLoading, let loadError = store.loadError { return .loadFailed(loadError) }
         return .loading
+    }
+
+    /// This paywall's purchase, or any purchase or restore the store is running: the CTA, Restore
+    /// and the close button wait, so two `product.purchase()` calls never overlap and the sheet
+    /// cannot close under a purchase.
+    private var isBusy: Bool { isPurchaseRunning || store.isRestoring }
+
+    private var isPurchaseRunning: Bool { phase == .purchasing || store.isPurchasing }
+
+    /// The unlocked state says "Purchases restored" when Restore unlocked it.
+    private var showsRestoredLine: Bool {
+        #if DEBUG
+        if fixture == .restored { return true }
+        #endif
+        return unlockedByRestore
     }
 
     /// The bar is the end of the scroll content: at accessibility sizes (D4), or where it would
@@ -140,14 +166,20 @@ struct ProPaywallView: View {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundStyle(.secondary)
                     }
+                    // Not while a purchase runs: the sheet would close under it (Esc on the Mac
+                    // presses this button, so it waits too).
+                    .disabled(isPurchaseRunning)
                 }
             }
+            // A swipe down waits for a purchase as well; unlocked, the sheet closes as any other.
+            .interactiveDismissDisabled(isPurchaseRunning)
             .task {
                 if isFixture {
                     showFixtureAlert()
                     return
                 }
-                await store.loadProducts()
+                await store.preparePaywall()
+                prepared = true
                 await store.refreshPurchasedProducts()
             }
             .onChange(of: store.isPro) { _, isPro in
@@ -186,7 +218,14 @@ struct ProPaywallView: View {
         // off the bottom edge. At 520 their bottom buttons end 60 pt inside that window, so the
         // pinned bar (CTA, terms, links: about 130 pt here) is on screen with the plan cards
         // scrolling above it; a larger window lets the sheet grow (min, not fixed).
-        .frame(minWidth: 460, idealWidth: 520, minHeight: 520)
+        //
+        // idealHeight 570, so the sheet opens with the cards in view: the header (~150 pt), the
+        // three features (~170 pt) and their spacing put Yearly's card at ~370 pt, and 570 less
+        // the ~130 pt bar shows it whole (~75 pt). Not more: History's 620 showed a Mac sheet is
+        // not clamped to its window, and 520 ended 60 pt inside a 700-pt one, so 580 would end on
+        // its edge; 570 keeps 10 pt. Gate 10 measures both: the bar inside a 700-pt window, and
+        // the cards on the first screen at the default window size.
+        .frame(minWidth: 460, idealWidth: 520, minHeight: 520, idealHeight: 570)
         #endif
     }
 
@@ -366,7 +405,7 @@ struct ProPaywallView: View {
             Button("Restore Purchases", action: restorePurchases)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-                .disabled(store.isRestoring || phase == .purchasing)
+                .disabled(isBusy)
             if case .restore(let outcome) = phase {
                 restoreAnswer(outcome)
                     .font(.footnote)
@@ -408,6 +447,8 @@ struct ProPaywallView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(.green)
+            // The state's one action, where `-paywallScrollTo cta` lands (AX5 sweeps).
+            .paywallAnchor("cta")
         }
         .padding(.horizontal, 24)
     }
@@ -421,7 +462,7 @@ struct ProPaywallView: View {
             Text("Stride Pro is unlocked")
                 .font(.title2.bold())
                 .multilineTextAlignment(.center)
-            if unlockedByRestore {
+            if showsRestoredLine {
                 Text("Purchases restored")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -471,6 +512,7 @@ struct ProPaywallView: View {
                 .tint(.green)
                 .controlSize(.large)
                 .accessibilityIdentifier("\(id).continue")
+                .paywallAnchor(placement == .inline ? "cta" : nil)
             } else {
                 if phase == .pending {
                     Text("Waiting for approval. Stride Pro unlocks when it's approved.")
@@ -488,7 +530,7 @@ struct ProPaywallView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(.green)
                     .controlSize(.large)
-                    .disabled(phase == .purchasing)
+                    .disabled(isBusy)
                     .accessibilityIdentifier("\(id).cta")
                     .paywallAnchor(placement == .inline ? "cta" : nil)
 
@@ -609,19 +651,30 @@ struct ProPaywallView: View {
         }
     }
 
+    /// Where this paywall's own purchase or restore leaves it. Its auto-dismiss was skipped while
+    /// it ran, so an entitlement that arrived meanwhile — from elsewhere, or the pending purchase
+    /// approved — is never re-checked by `onChange`: whatever the outcome, Pro now unlocks, and
+    /// Continue and `onUnlock` still run.
+    static func settled(_ next: PaywallPhase?, isPro: Bool) -> PaywallPhase? {
+        isPro ? .unlocked : next
+    }
+
     private func buySelectedPlan() {
-        guard !isFixture, let plan = model.selectedPlan,
+        // Never two purchases at once, nor a purchase beside a restore (the CTA is disabled too).
+        guard !isFixture, !isBusy, let plan = model.selectedPlan,
               let product = store.products.first(where: { $0.id == plan.id }) else { return }
         action = .purchasing
         Task {
             do {
                 switch try await store.purchase(product) {
                 case .purchased: action = .unlocked
-                case .pending: action = .pending
-                case .cancelled, .failedVerification: action = nil
+                case .pending: action = Self.settled(.pending, isPro: store.isPro)
+                case .cancelled, .failedVerification: action = Self.settled(nil, isPro: store.isPro)
                 }
             } catch {
-                action = nil
+                action = Self.settled(nil, isPro: store.isPro)
+                // A cancel StoreKit threw rather than returned goes back to the plans in silence.
+                guard action == nil, !StoreService.isCancel(error) else { return }
                 errorMessage = error.localizedDescription
                 showError = true
             }
@@ -629,17 +682,17 @@ struct ProPaywallView: View {
     }
 
     private func restorePurchases() {
-        guard !isFixture else { return }
+        guard !isFixture, !isBusy else { return }
         Task {
             let outcome = await store.restorePurchases()
-            switch outcome {
-            case .restored where store.isPro:
-                unlockedByRestore = true
+            // A purchase owns the screen: Restore's answer never overwrites it (its button and
+            // the CTA wait for each other, so this is a guard, not a path).
+            guard action != .purchasing, !store.isPurchasing else { return }
+            if store.isPro {
+                unlockedByRestore = outcome == .restored
                 action = .unlocked
-            case .cancelled:
-                action = nil
-            default:
-                action = .restore(outcome)
+            } else {
+                action = outcome == .cancelled ? nil : .restore(outcome)
             }
         }
     }
@@ -657,6 +710,8 @@ struct ProPaywallView: View {
     /// `-paywallScrollTo cta|terms|plans` (D14) scrolls once, on launch, so scripts/a11y_sweep.sh
     /// can capture what sits below the fold: `simctl` cannot scroll. `cta` and `terms` are in the
     /// scroll content only when the bar is (accessibility sizes); pinned, they need no scroll.
+    /// `cta` is each state's one action: the buy button, Continue once unlocked, Try Again after
+    /// a failed load.
     private func scrollToLaunchAnchor(_ proxy: ScrollViewProxy) async {
         guard let target = StrideDebugLaunchFlags.current.paywallScrollTo else { return }
         // After the first layout pass (and the sheet's presentation): a scrollTo issued before

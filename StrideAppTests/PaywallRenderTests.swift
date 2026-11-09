@@ -77,7 +77,8 @@ final class PaywallRenderTests: XCTestCase {
             (.yen, startTrial, trialTerms("¥3,000"), nil),
             (.purchasing, startTrial, trialTerms(yearlyPrice), nil),
             (.pending, startTrial, trialTerms(yearlyPrice), pending),
-            (.restored, startTrial, trialTerms(yearlyPrice), appLocalized("Purchases restored")),
+            // As a store build reaches it: a restore that finds a purchase unlocks Pro.
+            (.restored, nil, nil, appLocalized("Purchases restored")),
             (.nothingFound, startTrial, trialTerms(yearlyPrice), appLocalized("No purchases found for this Apple ID")),
             (.restoreFailed, startTrial, trialTerms(yearlyPrice), appLocalized("Couldn't reach the App Store")),
             (.loading, nil, nil, nil),
@@ -105,9 +106,12 @@ final class PaywallRenderTests: XCTestCase {
                 XCTAssertTrue(cta?.accessibilityTraits.contains(.notEnabled) ?? false, "purchasing: the CTA waits")
             case .loadFailed:
                 XCTAssertFalse(elements(in: window, labelled: appLocalized("Try Again")).isEmpty, "loadFailed: Try Again")
-            case .unlocked:
+            case .unlocked, .restored:
+                XCTAssertFalse(elements(in: window, labelled: appLocalized("Stride Pro is unlocked")).isEmpty, "\(what): unlocked")
                 XCTAssertEqual(element("paywall.bar.continue", in: window)?.accessibilityLabel, appLocalized("Continue"))
-                XCTAssertTrue(elements(in: window) { self.identifier(of: $0) == "paywall.plan" }.isEmpty, "unlocked sells nothing")
+                XCTAssertTrue(elements(in: window) { self.identifier(of: $0) == "paywall.plan" }.isEmpty, "\(what): sells nothing")
+                let restoredLine = elements(in: window, labelled: appLocalized("Purchases restored"))
+                XCTAssertEqual(restoredLine.isEmpty, test.0 == .unlocked, "\(what): \"Purchases restored\" only after a restore")
             default:
                 if test.cta != nil {
                     XCTAssertFalse(cta?.accessibilityTraits.contains(.notEnabled) ?? true, "\(what): the CTA is enabled")
@@ -188,14 +192,16 @@ final class PaywallRenderTests: XCTestCase {
     /// all read without one — everywhere but the legal line, whose clause ("If a free trial is
     /// offered…") is true with or without an offer (D16). The eligible fixture is the control.
     func testNoTrialWordWhenTheTrialIsNotStated() async throws {
+        // The trial's own strings in the host's language: the CTA, Yearly's badge and the terms.
+        let trialStrings = [startTrial, appLocalized("\(7)-day free trial"), trialTerms(yearlyPrice)]
         func trialWords(in window: UIWindow) -> [String] {
             elements(in: window) { self.identifier(of: $0) != "paywall.legal" }
                 .compactMap(\.accessibilityLabel)
-                .filter { $0.lowercased().contains("trial") }
+                .filter { label in trialStrings.contains { label.contains($0) } }
         }
         let control = try show(.trial)
         try await waitUntil("the trial's plans") { self.planCards(in: control).count == 3 }
-        XCTAssertFalse(trialWords(in: control).isEmpty, "the control states the trial (an English host)")
+        XCTAssertGreaterThanOrEqual(trialWords(in: control).count, 3, "the control states the trial: CTA, badge, terms")
 
         for fixture in [PaywallFixture.ineligible, .unknownEligibility, .pro, .noOffer] {
             let window = try show(fixture)
@@ -340,6 +346,15 @@ final class PaywallRenderTests: XCTestCase {
         }
         for phase in [PaywallPhase.purchasing, .pending, .unlocked] {
             XCTAssertFalse(ProPaywallView.autoDismisses(phase: phase, isPurchasing: false, isRestoring: false), "\(phase)")
+        }
+    }
+
+    /// After its own purchase or restore, an entitlement that arrived meanwhile (its auto-dismiss
+    /// was skipped) unlocks, whatever the outcome; without one, the outcome's own state.
+    func testAnEntitlementThatArrivedDuringAPurchaseUnlocks() {
+        for next in [nil, PaywallPhase.pending, .restore(.nothingFound)] {
+            XCTAssertEqual(ProPaywallView.settled(next, isPro: true), .unlocked, "\(String(describing: next))")
+            XCTAssertEqual(ProPaywallView.settled(next, isPro: false), next, "\(String(describing: next))")
         }
     }
 

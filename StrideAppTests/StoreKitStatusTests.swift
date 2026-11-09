@@ -432,6 +432,10 @@ final class StoreKitStatusTests: XCTestCase {
     /// Past the trial's week (an accelerated session clock), Yearly renews: an ordinary active
     /// row, no longer the trial, and Pro throughout.
     func testTheTrialRenewsOnceItsWeekIsOver() async throws {
+        // iOS 18.5 run: at one renewal every 10 s the trial may already have renewed by the time
+        // the purchase's own refresh reads the status, so the `.trial` check right after the
+        // buy can race and fail without a bug; if it does, read the session's transactions
+        // (an introductory one, then a renewal) before changing the rate or the check.
         session.timeRate = .oneRenewalEveryTenSeconds
         try await loadThePaywall()
         _ = try await buy(.yearlyPro)
@@ -466,15 +470,25 @@ final class StoreKitStatusTests: XCTestCase {
     }
 
     /// Eligibility is per subscription group: an Apple ID that had Monthly is ineligible for
-    /// Yearly's trial, and the paywall then states none ("Subscribe", the renewal terms).
+    /// Yearly's trial, and the paywall then states none ("Subscribe", the renewal terms). In ONE
+    /// process, as a Mac app left open lives it: the products load once while eligible, Monthly
+    /// is bought and lapses, and the paywall's next appearance (`preparePaywall`, which does not
+    /// reload the products) must not sell the trial from the first answer (Guideline 3.1.2).
     func testAnEarlierMonthlyMakesYearlysTrialIneligible() async throws {
+        try await loadThePaywall()
+        XCTAssertEqual(store.paywallModel.trialDays, 7, "a clean session is eligible")
+
         _ = try await buy(.monthlyPro)
+        XCTAssertFalse(store.isCheckingEligibility)
+        XCTAssertEqual(store.introOfferEligibility[yearlyID], false, "read again when the entitlements changed")
         try session.expireSubscription(productIdentifier: monthlyID)
         await refresh(until: {
             if case .lapsed = store.proStatus { return true } else { return false }
         }, isPro: false, "Monthly expired")
 
-        try await loadThePaywall()
+        let store = self.store!
+        try await completing("the paywall's next appearance") { await store.preparePaywall() }
+        XCTAssertFalse(store.isCheckingEligibility)
         XCTAssertEqual(store.introOfferEligibility[yearlyID], false)
         let model = store.paywallModel
         XCTAssertNil(model.trialDays)
@@ -511,6 +525,10 @@ final class StoreKitStatusTests: XCTestCase {
 
     /// Restore after Lifetime was bought outside this store (another device): restored, Pro.
     func testRestoreWithLifetimeRestoresIt() async throws {
+        // iOS 18.5 run: a session purchase is already in `currentEntitlements` before
+        // `AppStore.sync()`, so this passes whenever the sync itself succeeds — it cannot fail on
+        // the restore logic alone (`RestoreOutcome`'s mapping is PurchaseOutcomeTests'). Watch
+        // for `.failed` here: that is the sync, not the entitlement, under SKTestSession.
         let session = self.session!, lifetimeID = self.lifetimeID
         _ = try await completing("Lifetime bought elsewhere") {
             _ = try await session.buyProduct(identifier: lifetimeID)

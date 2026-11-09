@@ -106,8 +106,40 @@ final class StoreService {
     /// trial). A product that is not a subscription, or whose answer was never read, has no
     /// entry: unknown, which the paywall reads as not eligible (D4).
     private(set) var introOfferEligibility: [String: Bool] = [:]
+    /// True while `refreshIntroOfferEligibility()` re-reads it: the paywall states no trial and
+    /// draws its loading state meanwhile, so a stale "eligible" never shows and nothing swaps.
+    private(set) var isCheckingEligibility = false
+    /// Bumped by each eligibility read, so only the newest one writes its answer.
+    @ObservationIgnored
+    private var eligibilityGeneration = 0
 
     // MARK: - Load Products
+
+    /// What the paywall runs each time it appears: the products if none are loaded (which reads
+    /// eligibility with them), else eligibility again. Eligibility changes inside one process — a
+    /// trial or Monthly that lapsed, a refund — and a Mac app can stay open for weeks, so the
+    /// answer read at the first load must not sell a trial StoreKit would charge for at once
+    /// (Guideline 3.1.2).
+    func preparePaywall() async {
+        if products.isEmpty {
+            await loadProducts()
+        } else {
+            await refreshIntroOfferEligibility()
+        }
+    }
+
+    /// Asks the loaded subscriptions for `isEligibleForIntroOffer` again: on each paywall
+    /// appearance and whenever the entitlements change. No trial is stated until it returns.
+    func refreshIntroOfferEligibility() async {
+        guard !products.isEmpty else { return }
+        eligibilityGeneration &+= 1
+        let generation = eligibilityGeneration
+        isCheckingEligibility = true
+        let answers = await Self.introOfferEligibility(of: products)
+        guard generation == eligibilityGeneration else { return }   // a newer read writes
+        introOfferEligibility = answers
+        isCheckingEligibility = false
+    }
 
     func loadProducts() async {
         guard products.isEmpty else { return }
@@ -153,7 +185,9 @@ final class StoreService {
                     }
                 } else {
                     // Eligibility first, then the products: one publish, with the trial decided.
+                    eligibilityGeneration &+= 1
                     introOfferEligibility = await Self.introOfferEligibility(of: storeProducts)
+                    isCheckingEligibility = false
                     // The paywall orders by plan kind (PaywallModel), never by price; the price
                     // order stays for anything that lists `products` directly.
                     products = storeProducts.sorted { $0.price < $1.price }
@@ -191,7 +225,10 @@ final class StoreService {
     /// The loaded products as the pure paywall needs them. A product whose id is not one of
     /// `StrideProduct`'s is left out.
     var paywallMirrors: [PaywallProductMirror] {
-        products.compactMap { Self.paywallMirror($0, eligible: introOfferEligibility[$0.id]) }
+        // Unknown while a re-read runs: the last answer may be stale (`preparePaywall`).
+        products.compactMap {
+            Self.paywallMirror($0, eligible: isCheckingEligibility ? nil : introOfferEligibility[$0.id])
+        }
     }
 
     /// What the paywall draws: the plans by kind, the selection, the CTA and terms kinds, Yearly's
@@ -382,6 +419,10 @@ final class StoreService {
         let generation = statusReadGeneration
         if entitlementsChanged {
             setProStatus(resolveProStatus(statuses: lastStatuses, lifetimeRevokedOn: lastLifetimeRevokedOn))
+            // A subscription that started, lapsed or was refunded changes intro-offer
+            // eligibility (it is per subscription group): read it again, stating no trial
+            // until it returns (`isCheckingEligibility`).
+            await refreshIntroOfferEligibility()
         }
         let statuses = await readSubscriptionStatuses()
         var lifetimeRevokedOn: Date?
@@ -603,7 +644,9 @@ final class StoreService {
         reportFailure(domain: ns.domain, code: ns.code, step: "purchase \(productID)", tags: underlyingTags(of: error))
     }
 
-    private nonisolated static func isCancel(_ error: Error) -> Bool {
+    /// A cancel, however StoreKit delivered it: never reported, and the paywall returns to its
+    /// plans in silence instead of showing "Purchase Error".
+    nonisolated static func isCancel(_ error: Error) -> Bool {
         if let storeKit = error as? StoreKitError, case .userCancelled = storeKit { return true }
         return error is CancellationError
     }
