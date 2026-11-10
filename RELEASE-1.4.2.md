@@ -1509,3 +1509,12 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
     (new) compiled only; CI runs them. No new strings; "BEST VALUE", "Unlock the full experience"
     and the two old load-error strings are now unused (W12 prunes them). StrideTests 770 / 2 / 0
     in both zones. Mac variant captures not taken (window on another Space): W8.
+- 2026-11-10, **iOS 1.4.1 approved and released** (PENDING_DEVELOPER_RELEASE at the daily check;
+  `release.py release 1.4.1 --platform IOS` on the owner's go → READY_FOR_SALE; Mac live since
+  11-08). Part 1, each step on the owner's go: PR #10 marked ready and merged into main with a merge
+  commit (7ea3df5; its 10-26 red was LocalDataFlowTests' flaky export-cleanup check, green on m5);
+  annotated tag `v1.4.1` on c9c3d8e ("Code = 86a1e3e; later commits are docs and scripts"),
+  pushed. Decision C: the dry run then listed only the 3 IAP review notes (the 7 localization edits
+  went live with the approval); `iap_copy.py --yes` applied them, read back as set. Open: the
+  demo-token rotation (Phase 0 item 3, owner; steps given 11-10), and Sentry on 1.4.1 (23) once
+  iOS has a day of sessions.
