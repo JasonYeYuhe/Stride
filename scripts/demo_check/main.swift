@@ -4,6 +4,11 @@ import SwiftData
 // Runs the SHIPPING reconciler against the live App Review demo account and prints what a
 // reviewer's device would compute. Built and run by scripts/check_demo_account.sh — it needs
 // the network and real data, so it is deliberately not a test target.
+//
+// Per habit: records, streak, best, 30-day rate and created (unchanged since 1.3), then
+// strength 0–100, its Δ30 in points, the completed days of the last 30 and the top 3 runs.
+// Exit codes: 1 no token or sign-in, 2 a broken account, 3 stale (every streak 0), 4 a habit
+// done on at least 25 of the last 30 days scoring below 0.75 (RELEASE-1.4.1.md gate 2).
 @MainActor
 func run() async throws {
     guard let token = ProcessInfo.processInfo.environment["DEMO_TOKEN"] else {
@@ -43,6 +48,11 @@ func run() async throws {
     }
     var zeroStreak = 0, zeroRate = 0, noHistory = 0, createdToday = 0
     let today = HabitCalendar.dayKey(for: Date())
+    // Strength (RELEASE-1.4.1.md gate 2): one HabitStats per habit, from one fetch of live ids,
+    // in this machine's zone (the script runs in the default zone and under
+    // TZ=America/Los_Angeles).
+    let live = HabitStats.liveRecordIDs(of: habits, in: context)
+    var weak: [String] = []
     for habit in habits.sorted(by: { $0.name < $1.name }) {
         let streak = habit.currentStreak()
         let rate = Int(habit.completionRate() * 100)
@@ -54,6 +64,21 @@ func run() async throws {
         let created = ISO8601DateFormatter().string(from: habit.createdAt).prefix(10)
         print(String(format: "  %-20@ records=%3d streak=%2d best=%2d rate=%3d%% created=%@",
                      habit.name as NSString, habit.records.count, streak, best, rate, String(created)))
+
+        let stats = HabitStats(habit: habit, liveRecordIDs: live)
+        let monthAgo = HabitCalendar.utc.date(byAdding: .day, value: -29, to: stats.today) ?? stats.today
+        let doneIn30 = stats.completedDayCount(from: monthAgo, to: stats.today)
+        let unit = habit.schedule == .timesPerWeek ? "w" : "d"
+        let top3 = stats.bestStreakRanges.prefix(3).map { run in
+            let from = HabitCalendar.dayStringFormatter.string(from: run.start)
+            let to = HabitCalendar.dayStringFormatter.string(from: run.end)
+            return "\(from)..\(to) \(run.length)\(unit)\(run.isCurrent ? " (current)" : "")"
+        }
+        print(String(format: "  %-20@ strength=%3d (%.3f) Δ30=%+5.1f done30=%2d top3: %@",
+                     "" as NSString, HabitScore.displayValue(stats.strength), stats.strength,
+                     stats.strengthDelta30 * 100, doneIn30,
+                     (top3.isEmpty ? "none" : top3.joined(separator: ", ")) as NSString))
+        if doneIn30 >= 25 && stats.strength < 0.75 { weak.append(habit.name) }
     }
     print("no history: \(noHistory) | zero current streak: \(zeroStreak) | zero 30-day rate: \(zeroRate) | created today: \(createdToday) | rejected rows: \(rowIssues.count)")
 
@@ -75,6 +100,11 @@ func run() async throws {
         print("STALE: every streak is 0 and the newest check-in is \(age) days old — re-seed before submitting:")
         print("  ssh … 'sudo bash -c \"cd /root/stride-server && node seed-demo.js\"'")
         exit(3)
+    }
+    if !weak.isEmpty {
+        // Gate 2: a habit done on 25 or more of the last 30 days must read as strong.
+        print("FAIL: strength below 75 on a habit done on at least 25 of the last 30 days: \(weak.joined(separator: ", "))")
+        exit(4)
     }
 }
 

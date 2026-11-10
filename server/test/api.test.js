@@ -10490,13 +10490,47 @@ describe("M2 deletionsSince: listed in the snapshot's own read transaction (seco
 
 // ----------------------------------------------------------------
 
-describe("Test hooks: the swept-tombstone switch (rehearsal only, lib/testHooks.js)", () => {
+describe("Test hooks: the swept-tombstone and entry-date-guard switches (rehearsal only, lib/testHooks.js)", () => {
   const { mountTestHooks, testHooksEnabled } = require("../lib/testHooks");
   const PORT2 = 3098, BASE2 = `http://localhost:${PORT2}`;
   const DAY = 86400000;
   const sweep = (base, body, headers = {}) => fetch(`${base}/__test/sweep-tombstones`, {
     method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body),
   });
+  const dateGuard = (base, body, headers = {}) => fetch(`${base}/__test/entry-date-guard`, {
+    method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body),
+  });
+  /** One habit on its own account through `base`; then `oldKey(...)` pushes a check-in the way a
+   * pre-1.4.1 build on a non-Gregorian phone keyed it (routes/sync.js, above entryDateOk):
+   * `client` 1.3.1 by default, `null` for 1.2.3 (no header). */
+  const guardUsers = [];
+  async function guardAccount(base) {
+    const acct = m0.user();
+    guardUsers.push(acct.userId);
+    const h = m0.uuid();
+    assert.equal((await m0.push(acct.token, { habits: [m0.habit(h)] }, { base })).status, 200);
+    const oldKey = (date, { client = m0.V131 } = {}) => {
+      const id = m0.uuid();
+      return m0.push(acct.token, {
+        habits: [m0.habit(h)],
+        entries: [m0.entry(id, h, date, { createdAt: "2026-10-15T03:00:00.000Z", updatedAt: "2026-10-15T09:00:00.000Z" })],
+      }, { client, base }).then((r) => ({ ...r, id }));
+    };
+    return { ...acct, h, oldKey };
+  }
+  const storedDate = (id) => db.prepare("SELECT date FROM habit_entries WHERE id = ?").get(id)?.date;
+  /** The guard as it answers a 1.3.1 push (invalid_value, nothing stored) and a 1.2.3 one (426). */
+  async function assertGuardOn(base) {
+    const acct = await guardAccount(base);
+    const r131 = await acct.oldKey("0008-10-15");
+    assert.equal(r131.status, 200);
+    assert.deepEqual(r131.json.skippedReasons.entries, { [r131.id]: "invalid_value" });
+    assert.equal(storedDate(r131.id), undefined);
+    const r123 = await acct.oldKey("2569-10-15", { client: null });
+    assert.equal(r123.status, 426);
+    assert.equal(r123.json.code, "client_update_required");
+    assert.equal(storedDate(r123.id), undefined);
+  }
   const tomb = (userId, id, deletedAt) => db.prepare(
     "INSERT INTO deletion_tombstones (user_id, entity_type, entity_id, deleted_at) VALUES (?, 'habit', ?, ?)",
   ).run(userId, id, deletedAt);
@@ -10522,7 +10556,7 @@ describe("Test hooks: the swept-tombstone switch (rehearsal only, lib/testHooks.
     tomb(u.userId, OLD, new Date(Date.now() - 400 * DAY).toISOString());
     tomb(u.userId, FRESH, new Date().toISOString());
   });
-  after(() => m0.cleanup(u.userId));
+  after(() => { m0.cleanup(u.userId); guardUsers.forEach(m0.cleanup); });
 
   it("mounts only for NODE_ENV exactly 'test' AND STRIDE_TEST_HOOKS exactly '1'", () => {
     const cases = [
@@ -10559,6 +10593,12 @@ describe("Test hooks: the swept-tombstone switch (rehearsal only, lib/testHooks.
     assert.doesNotMatch(serverStderr, /\[test-hooks\]/);
   });
 
+  it("the suite's own server: entry-date-guard is an Express 404 and the guard stays on", async () => {
+    const r = await dateGuard(BASE, { enabled: false });
+    assert.equal(r.status, 404);
+    await assertGuardOn(BASE);
+  });
+
   describe("NODE_ENV=production with STRIDE_TEST_HOOKS=1 (second server)", () => {
     let server;
     before(async () => {
@@ -10578,6 +10618,16 @@ describe("Test hooks: the swept-tombstone switch (rehearsal only, lib/testHooks.
         await unknown.text().then((t) => t.replace("no-such-route", "X")), "indistinguishable from no route");
       assert.deepEqual(tombIds(u.userId), [OLD, FRESH].sort());
       assert.match(server.stderr, /\[config\] FRONTEND_ORIGIN/, "it really booted in production mode");
+      assert.doesNotMatch(server.stderr, /\[test-hooks\]/);
+    });
+
+    it("entry-date-guard answers the same 404, and the guard stays on", async () => {
+      const r = await dateGuard(BASE2, { enabled: false });
+      assert.equal(r.status, 404);
+      const unknown = await fetch(`${BASE2}/__test/no-such-route`, { method: "POST" });
+      assert.equal(await r.text().then((t) => t.replace("entry-date-guard", "X")),
+        await unknown.text().then((t) => t.replace("no-such-route", "X")), "indistinguishable from no route");
+      await assertGuardOn(BASE2);
       assert.doesNotMatch(server.stderr, /\[test-hooks\]/);
     });
   });
@@ -10626,6 +10676,55 @@ describe("Test hooks: the swept-tombstone switch (rehearsal only, lib/testHooks.
       const r = await sweep(BASE2, { olderThanDays: 0 });
       assert.equal(r.status, 200);
       assert.deepEqual(tombIds(u.userId), []);
+    });
+
+    it("the entry-date guard is on until the hook switches it off", async () => {
+      await assertGuardOn(BASE2);
+      assert.doesNotMatch(server.stderr, /entry-date guard/);
+    });
+
+    it("entry-date-guard rejects a missing or non-boolean enabled with 400, and through a proxy or as GET is a 404; the guard stays on", async () => {
+      for (const body of [{}, { enabled: "false" }, { enabled: 0 }, { enabled: null }, { enabled: [false] }]) {
+        const r = await dateGuard(BASE2, body);
+        assert.equal(r.status, 400, JSON.stringify(body));
+        assert.deepEqual(await r.json(), { error: "enabled must be a boolean" });
+      }
+      assert.equal((await dateGuard(BASE2, { enabled: false }, { "X-Forwarded-For": "203.0.113.7" })).status, 404);
+      assert.equal((await dateGuard(BASE2, { enabled: false }, { "X-Real-IP": "203.0.113.7" })).status, 404);
+      assert.equal((await dateGuard(BASE2, { enabled: false }, { Forwarded: "for=203.0.113.7" })).status, 404);
+      assert.equal((await fetch(`${BASE2}/__test/entry-date-guard`)).status, 404);
+      await assertGuardOn(BASE2);
+    });
+
+    it("off: an old build's non-Gregorian key is stored, from 1.3.1 and from 1.2.3, and comes back on pull — in this process only", async () => {
+      const r = await dateGuard(BASE2, { enabled: false });
+      assert.equal(r.status, 200);
+      assert.deepEqual(await r.json(), { ok: true, enabled: false });
+      assert.match(server.stderr, /\[test-hooks\] entry-date guard OFF/);
+
+      const acct = await guardAccount(BASE2);
+      const r131 = await acct.oldKey("0008-10-15");
+      assert.equal(r131.status, 200);
+      assert.deepEqual(r131.json.skipped.entries, []);
+      assert.equal(storedDate(r131.id), "0008-10-15");
+      const r123 = await acct.oldKey("2569-10-15", { client: null });
+      assert.equal(r123.status, 200);
+      assert.equal(storedDate(r123.id), "2569-10-15");
+      const pulled = await m0.req("GET", "/v1/sync/pull", { token: acct.token, client: m0.V131, base: BASE2 });
+      assert.equal(pulled.status, 200);
+      assert.deepEqual(pulled.json.entries.map((e) => [e.id, e.date]).sort(),
+        [[r131.id, "0008-10-15"], [r123.id, "2569-10-15"]].sort());
+
+      // The flag lives on this process's app: the suite's own server, on the same database, still refuses.
+      await assertGuardOn(BASE);
+    });
+
+    it("on again: refused as before — invalid_value from 1.3.1, 426 without a header", async () => {
+      const r = await dateGuard(BASE2, { enabled: true });
+      assert.equal(r.status, 200);
+      assert.deepEqual(await r.json(), { ok: true, enabled: true });
+      assert.match(server.stderr, /\[test-hooks\] entry-date guard ON/);
+      await assertGuardOn(BASE2);
     });
   });
 });

@@ -621,8 +621,13 @@ router.post("/push", (req, res) => {
   // Also before anything is written: an app before 1.3.1 that sends an entry dated outside the
   // window, or on no real day, is refused whole (the comment above entryDateOk). From 1.3.1 the
   // entry alone is skipped as invalid_value, in the loop below.
+  // Both paths are skipped only when `testEntryDateGuardOff` is exactly true, which only the
+  // test hook POST /__test/entry-date-guard sets (lib/testHooks.js: NODE_ENV=test with
+  // STRIDE_TEST_HOOKS=1, loopback only), so a rehearsal can seed rows stored before the guard.
+  // Production never mounts the hooks: there the flag is never set and the guard always runs.
+  const dateGuard = req.app.locals.testEntryDateGuardOff !== true;
   const dateCeiling = entryDateCeiling();
-  if (!clientAtLeast(req, "1.3.1")) {
+  if (dateGuard && !clientAtLeast(req, "1.3.1")) {
     const bad = badEntryDates(entries, dateCeiling);
     if (bad > 0) {
       metrics.count("entry_date_push_refused");
@@ -1017,7 +1022,7 @@ router.post("/push", (req, res) => {
       if (!num) { skip("entries", id, "invalid_value"); continue; }
       // A day outside the window, or no real day (entryDateOk). Only an app >= 1.3.1 gets here
       // with one — any other app's push was refused whole above — and it holds the row.
-      if (!entryDateOk(e.date, dateCeiling)) { badDates++; skip("entries", id, "invalid_value"); continue; }
+      if (dateGuard && !entryDateOk(e.date, dateCeiling)) { badDates++; skip("entries", id, "invalid_value"); continue; }
       const v = { note: e.note ?? null, value: num.value ?? 1 };
       // Clients before 1.2.3 send no entry updatedAt, and their pushes are refused (legacyShape).
       // What still falls back to `now` is a stamp a header-bearing app sent that does not parse

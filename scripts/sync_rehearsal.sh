@@ -18,8 +18,10 @@
 #     would otherwise bypass, so "no 429" means something;
 #   - the test hooks mounted (STRIDE_TEST_HOOKS=1 with NODE_ENV=test; server/lib/testHooks.js):
 #     `POST /__test/sweep-tombstones` runs the real sweep, so "a tombstone swept on the test
-#     server" is rehearsed with the code production will run once sweeping returns. They answer
-#     only loopback requests with no proxy headers, and never mount without NODE_ENV=test;
+#     server" is rehearsed with the code production will run once sweeping returns, and
+#     `POST /__test/entry-date-guard` switches the entry-date guard off only while K1–K3 seed the
+#     rows stored before it (on by default, and back on after). They answer only loopback
+#     requests with no proxy headers, and never mount without NODE_ENV=test;
 #   - the pause switch is a file in the temp dir the tool may create (S20) — never the real one;
 #   - accounts are inserted straight into the temp database (sync_rehearsal/accounts.js, the
 #     server suite's createTestUser / createTestSession), so no email is involved;

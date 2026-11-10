@@ -192,6 +192,81 @@ final class ExportTests: XCTestCase {
         XCTAssertEqual(exportDirectories(), [], "the directory the failed write made went with it")
     }
 
+    // MARK: - File names: the date and the time (1.4.1)
+
+    /// RELEASE-1.4.0.md "Follow-ups for 1.4.1": the name was the date alone, so a second export
+    /// on the same day suggested the first one's name. It is `yyyy-MM-dd-HHmmss` now: 24-hour,
+    /// in the zone given (the device's by default), Gregorian and ASCII.
+    func testAnExportNameCarriesTheDateAndTheTimeToTheSecond() throws {
+        let tokyo = try XCTUnwrap(TimeZone(identifier: "Asia/Tokyo"))
+        let losAngeles = try XCTUnwrap(TimeZone(identifier: "America/Los_Angeles"))
+        let utc = ISO8601DateFormatter()
+        // 21:07:09 in Tokyo (UTC+9): the afternoon is 21, never 09 PM.
+        let evening = try XCTUnwrap(utc.date(from: "2026-10-15T12:07:09Z"))
+        XCTAssertEqual(DataExportService.fileName("Stride-Backup", extension: "json", date: evening, timeZone: tokyo),
+                       "Stride-Backup-2026-10-15-210709.json")
+        // One second after midnight in Los Angeles (UTC−7 in October): the zone's own day.
+        let pastMidnight = try XCTUnwrap(utc.date(from: "2026-10-15T07:00:01Z"))
+        XCTAssertEqual(DataExportService.fileName("Stride-Export", extension: "csv", date: pastMidnight,
+                                                  timeZone: losAngeles),
+                       "Stride-Export-2026-10-15-000001.csv")
+        XCTAssertEqual(DataExportService.fileName("Stride-RecoveredEdits", extension: "json", date: pastMidnight,
+                                                  timeZone: tokyo),
+                       "Stride-RecoveredEdits-2026-10-15-160001.json")
+        XCTAssertEqual(DataExportService.fileDateFormat, "yyyy-MM-dd-HHmmss")
+    }
+
+    /// What a tap writes is named by the moment of its export, to the second, for all three
+    /// files (`DataExportService.write`, the one call every Export button makes).
+    func testTheWritersNameTheFileByTheMomentOfTheExport() async throws {
+        try seedStore()
+        try appendRecoveredEdit(for: nil)
+        let before = Date()
+        let backup = try await DataExportService.write(.ownerBackup, container: container, sync: sync, in: root)
+        let csv = try await DataExportService.write(.csv, container: container, sync: sync, in: root)
+        let edits = try await DataExportService.write(.recoveredEdits(accountID: nil), container: container,
+                                                      sync: sync, in: root)
+        let after = Date()
+
+        for (stem, ext, export) in [("Stride-Backup", "json", backup), ("Stride-Export", "csv", csv),
+                                    ("Stride-RecoveredEdits", "json", edits)] {
+            // Every second from the one `before` falls in to `after`: the name is one of these.
+            var names: Set<String> = []
+            var second = Date(timeIntervalSinceReferenceDate: before.timeIntervalSinceReferenceDate.rounded(.down))
+            while second <= after {
+                names.insert(DataExportService.fileName(stem, extension: ext, date: second))
+                second.addTimeInterval(1)
+            }
+            XCTAssertTrue(names.contains(export.url.lastPathComponent),
+                          "\(export.url.lastPathComponent) is not one of \(names.sorted())")
+        }
+    }
+
+    /// The Mac checklist's item 4 (RELEASE-1.4.0.md): a second same-day export saved into the
+    /// folder the first went to is a second file — not "Couldn't create the file", not the first
+    /// one replaced. A save panel moves the written file to the picked URL (`fileMover`); this
+    /// moves both the same way. The writes are a second apart because the name counts seconds.
+    func testTwoExportsOnOneDaySavedToOneFolderAreTwoFiles() async throws {
+        try seedStore()
+        let first = try await DataExportService.write(.ownerBackup, container: container, sync: sync, in: root)
+        try await Task.sleep(for: .milliseconds(1_100))
+        let second = try await DataExportService.write(.ownerBackup, container: container, sync: sync, in: root)
+        XCTAssertNotEqual(first.url.lastPathComponent, second.url.lastPathComponent)
+
+        let folder = root.appendingPathComponent("Picked folder", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for export in [first, second] {
+            try FileManager.default.moveItem(at: export.url, to: folder.appendingPathComponent(export.url.lastPathComponent))
+        }
+
+        let saved = try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted()
+        XCTAssertEqual(saved, [first.url.lastPathComponent, second.url.lastPathComponent].sorted())
+        for name in saved {
+            XCTAssertEqual(try DataBackup.decode(try Data(contentsOf: folder.appendingPathComponent(name)))
+                .habits.map(\.name), ["Read"], "\(name) is a whole backup")
+        }
+    }
+
     // MARK: - The share sheet (iOS)
 
     /// Every presentation is built by the one factory, and it anchors the popover to the button.

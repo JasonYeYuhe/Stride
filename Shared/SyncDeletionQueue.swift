@@ -84,6 +84,15 @@ struct SyncDeletionQueue {
     func trackHabit(_ id: String) { append(id, key: Self.habitsKey, in: local) }
     func trackEntry(_ id: String) { append(id, key: Self.entriesKey, in: local) }
     func trackGroup(_ id: String) { append(id, key: Self.groupsKey, in: local) }
+    /// `trackEntry` for many ids, in one write: each `trackEntry` reads and writes the whole list,
+    /// so a loop of them costs the square of its length (`DayKeyRepair` queues one per repaired
+    /// record: 0.3 s for 1,000).
+    func trackEntries(_ ids: [String]) {
+        guard !ids.isEmpty else { return }
+        var queued = local.stringArray(forKey: Self.entriesKey) ?? []
+        queued.append(contentsOf: ids)
+        local.set(queued, forKey: Self.entriesKey)
+    }
 
     /// For the widget and watch, which run in their own processes: queues into the app-group
     /// defaults, where the app's next sync reads it through `pending()`. (Their own

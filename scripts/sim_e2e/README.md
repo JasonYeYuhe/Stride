@@ -30,9 +30,10 @@ when called without arguments, and every script's header comment is its full ref
 - **Port 3002 is the kit's alone.** `start-server.sh` refuses when anything it did not start
   listens there, and never kills it. Stop and report instead. Only one kit server runs at a time.
   Always stop yours at the end (`stop-server.sh`).
-- **One root.** All state lives under `$STRIDE_E2E_ROOT` (default `${TMPDIR}stride-sim-e2e`,
-  resolved, e.g. `/private/var/folders/…/T/stride-sim-e2e`): server copies, databases, logs,
-  DerivedData and worktrees. The kit refuses a root under `~/Documents`, which is iCloud-synced,
+- **One root.** All state lives under `$STRIDE_E2E_ROOT` (default
+  `~/Library/Caches/Stride-build/sim-e2e`, persistent): server copies, databases, logs,
+  DerivedData and worktrees. Until 1.4.1 the default was `${TMPDIR}stride-sim-e2e`, which macOS
+  purges when the disk runs low (on 2026-10-11 that took the kit's builds; 2.7 GB were rebuilt). The kit refuses a root under `~/Documents`, which is iCloud-synced,
   and its only recursive delete refuses any path outside the root. Every DB script refuses a
   database that is not under `$ROOT/servers/`.
 - **Two simulators only:** iPhone 17 Pro `F5510EA3-65E5-45D2-8E64-C599625E0873` (alias `pro`) and
@@ -198,8 +199,12 @@ system's own store, not an app log line:
   data directory is simctl's `dataPath`. Scratch copies only, decoded by `notifications.py`
   (python3 plistlib; NSKeyedArchiver). `app.sh reminders <udid> [destdir]` prints the same
   listing for any run.
-- **Before the install** (part of the starting point): both habits' bare ids are pending. Anything
-  else exits 1.
+- **Before the install** (part of the starting point): what the old build schedules. The daily
+  habit has exactly its bare id. The Mon/Wed/Fri habit has its bare id from a 1.3.x build, or
+  exactly `.2`, `.4` and `.6` from 1.4.0 on, which already schedules weekday triggers. Anything
+  else exits 1. (Until 1.4.1 both bare ids were demanded from every build, which refused a correct
+  1.4.0 starting point.) `upgrade.sh check-reminders-before <listing | dir> <ids> <old version>`
+  runs this check alone.
 - **After the first launch**, re-read up to `STRIDE_E2E_REMINDER_TRIES` times (10), every
   `STRIDE_E2E_REMINDER_PAUSE` s (3), because the daemon writes the file after the app's removes
   and adds. PASS needs all of:
@@ -226,7 +231,8 @@ removes the notification permission with the app):
    Sign in and sync as usual (the gate's scenario).
 3. Read their ids: `sql.sh <server> "SELECT id, name FROM habits"` after the sync, or the two
    `stride.habit.reminder.<id>` lines of `app.sh reminders <dev>`.
-4. `app.sh reminders <dev>` shows both bare ids pending. Then run
+4. `app.sh reminders <dev>` shows the daily habit's bare id and, for the Mon/Wed/Fri habit, the
+   bare id from 1.3.x or `.2`, `.4` and `.6` from 1.4.0. Then run
    `upgrade.sh <dev> <old> <new> --server <name> --relaunch --reminders <daily id>,<M/W/F id>`.
 
 A run without `--reminders` reads no notification store, so devices without reminder habits (every
@@ -349,8 +355,14 @@ The build command is:
 ```
 xcodebuild build -project <src>/Stride.xcodeproj -scheme Stride -sdk iphonesimulator -configuration Debug \
   -derivedDataPath $ROOT/builds/<label>/dd -destination 'generic/platform=iOS Simulator' \
+  -clonedSourcePackagesDirPath <shared> -disableAutomaticPackageResolution \
   CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual PROVISIONING_PROFILE_SPECIFIER=
 ```
+
+`<shared>` is the Swift package checkout keyed by the built tree's own `Package.resolved`
+(`scripts/ci/build_cache.sh`, README "Building locally"); `-disableAutomaticPackageResolution` is
+left out, and packages resolve into the derived data as before, only when that resolve fails.
+Two builds of one label wait for each other.
 
 The build is then checked, and no path is printed unless both checks pass:
 
@@ -828,6 +840,7 @@ Then read `log.sh <name> since <mark>`.
 - `lock.sh release <device> <label>`.
 - `build.sh clean-worktrees` if a build failed half-way and left a worktree.
 
-The built apps under `$ROOT/builds` are reused by later runs. They are build output in TMPDIR,
-not repo files. `$ROOT/upgrades/<label>/` is the evidence of an `upgrade.sh` run. Copy what a doc
+The built apps under `$ROOT/builds` are reused by later runs: leave `builds/current` in place
+(it rebuilds incrementally). The per-tag builds of an upgrade gate (`builds/v1.3.0`, …) can be
+trashed when that release ships. `$ROOT/upgrades/<label>/` is the evidence of an `upgrade.sh` run. Copy what a doc
 cites into the repo before the root goes.

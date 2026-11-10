@@ -12,11 +12,11 @@ And not every habit is daily. Choose every day, a set number of times per week, 
 
 STREAKS THAT KEEP YOU GOING
 
-Stride counts every streak automatically, so you can watch your momentum build. On a day your habit isn’t scheduled, it’s a rest day — it never breaks your streak. Miss a day? No guilt — just pick back up. Your longest run is saved alongside your current streak, and any streak can be shared as an image.
+Stride counts every streak automatically, so you can watch your momentum build. On a day your habit isn’t scheduled, it’s a rest day — it never breaks your streak. Miss a day? No guilt — just pick back up. Any streak can be shared as an image.
 
 STATISTICS & HEATMAP
 
-The Activity Heatmap is a color-coded grid of your last 12 weeks. You also get your current and best streak, your 30-day completion rate, and how you do by weekday. For a habit scheduled on specific days, that rate counts only the days it was actually due.
+The Activity Heatmap is a color-coded grid of your last 12 weeks. You also get your current and best streak, a strength score that recovers from a missed day, your 30-day completion rate, and how you do by weekday. For a specific-days habit, that rate counts only the days it was due. Forgot to check in? Fix past days in your history.
 
 WIDGETS ON IPHONE AND IPAD
 
@@ -32,12 +32,12 @@ Check in on your iPhone, review your stats on your iPad, finish the day on your 
 
 STRIDE PRO
 
-Almost everything in Stride is free: unlimited habits, measurable habits, flexible schedules, widgets, per-habit reminders, the heatmap and statistics, habit templates, streak sharing, data export (CSV or JSON), and cross-device sync.
+Almost everything is free: unlimited and measurable habits, flexible schedules, widgets, reminders, the heatmap and statistics, templates, streak sharing, CSV or JSON export, and sync.
 
 Stride Pro adds three things:
 
 • Habit Groups — organize habits into collapsible groups
-• Advanced Analytics — the Insights card and the 8-week Trend chart
+• Advanced Analytics — Insights, the 8-week Trend chart, the Strength chart and your top 5 streaks
 • Weekly Review — a look back at how your week went
 
 YOUR PRIVACY MATTERS

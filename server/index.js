@@ -155,9 +155,10 @@ app.use("/v1/habits", metrics.countRequests("mount./v1/habits"), habitsRouter);
 app.use("/auth", metrics.countRequests("mount./auth"), authRouter);
 app.use("/habits", metrics.countRequests("mount./habits"), habitsRouter);
 
-// Test-only routes (the swept-tombstone switch for scripts/sync_rehearsal.sh). Mounted only
-// under NODE_ENV=test with STRIDE_TEST_HOOKS=1, and then only for loopback requests without
-// proxy headers — lib/testHooks.js lists why production can never reach it.
+// Test-only routes (the swept-tombstone and entry-date-guard switches for
+// scripts/sync_rehearsal.sh). Mounted only under NODE_ENV=test with STRIDE_TEST_HOOKS=1, and
+// then only for loopback requests without proxy headers — lib/testHooks.js lists why
+// production can never reach it.
 require("./lib/testHooks").mountTestHooks(app, /** @type {any} */ (db));
 
 // Magic link login page — handles email link taps from mobile

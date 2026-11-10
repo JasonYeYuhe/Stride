@@ -271,6 +271,47 @@ extension View {
     }
 }
 
+/// The window one main window's content is in, as the menu Export needs it once its file is
+/// written (`MenuCommandRules.exportPassEnd`): THIS window's sheet is what keeps the save panel
+/// from coming up on it — not the key window's, which can be Settings by then. Weak: the window
+/// owns the view. A reference, so the write's task reads the live answer.
+@MainActor
+final class ShellWindowProbe {
+    fileprivate weak var view: NSView?
+
+    var window: NSWindow? { view?.window }
+    /// A sheet — SwiftUI's, an alert, a save panel — is attached to this window.
+    var showsSheet: Bool { window?.attachedSheet != nil }
+    /// The window is there and visible: not closed, not minimized.
+    var isOnScreen: Bool { window?.isVisible == true }
+}
+
+extension View {
+    /// Hands this view's window to `probe` (ContentView, for the menu Export).
+    func readsShellWindow(into probe: ShellWindowProbe) -> some View {
+        background(ShellWindowProbeView(probe: probe))
+    }
+}
+
+/// An empty view in the window, behind the content: no clicks, no accessibility focus.
+private struct ShellWindowProbeView: NSViewRepresentable {
+    let probe: ShellWindowProbe
+
+    func makeNSView(context: Context) -> NSView {
+        let view = PassThroughView()
+        probe.view = view
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        probe.view = view
+    }
+
+    private final class PassThroughView: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+}
+
 /// An empty view that hands its window to `MainWindows`. It takes no clicks and no accessibility
 /// focus: it sits behind the whole window's content.
 private struct MainWindowReader: NSViewRepresentable {

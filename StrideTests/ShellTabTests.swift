@@ -131,4 +131,55 @@ final class ShellTabTests: XCTestCase {
         XCTAssertFalse(MenuCommandRules.isEnabled(.syncNow, in: state(window: false, syncing: true)))
         XCTAssertFalse(MenuCommandRules.isEnabled(.syncNow, in: state(window: false, account: false)))
     }
+
+    // MARK: - The menu Export, once its file is written (1.4.1)
+
+    private func exportEnd(wrote: Bool = true, cancelled: Bool = false, sheet: Bool = false,
+                           onScreen: Bool = true) -> MenuCommandRules.ExportPassEnd {
+        MenuCommandRules.exportPassEnd(wrote: wrote, cancelled: cancelled, ownWindowShowsSheet: sheet,
+                                       ownWindowIsOnScreen: onScreen)
+    }
+
+    /// The pass asks its OWN window (RELEASE-1.4.0.md's follow-up): a sheet up there — Add Habit,
+    /// History, an alert — or the window off screen drops the file with a beep; the key window
+    /// is not asked at all, so Settings brought forward during the write changes nothing. A
+    /// failed write is the alert; a cancelled pass (another request, the window closing) just
+    /// lets the file go.
+    func testTheMenuExportAsksItsOwnWindow() {
+        XCTAssertEqual(exportEnd(), .offerPanel)
+        XCTAssertEqual(exportEnd(sheet: true), .dropped, "a sheet on this window: no panel can come up")
+        XCTAssertEqual(exportEnd(onScreen: false), .dropped, "closed or minimized")
+        XCTAssertEqual(exportEnd(wrote: false), .failed)
+        XCTAssertEqual(exportEnd(wrote: false, sheet: true), .dropped, "nor can the failure alert")
+        for wrote in [true, false] {
+            for sheet in [true, false] {
+                for onScreen in [true, false] {
+                    XCTAssertEqual(exportEnd(wrote: wrote, cancelled: true, sheet: sheet, onScreen: onScreen), .cancelled)
+                }
+            }
+        }
+    }
+
+    /// No pass ends with a request no panel will answer: 1.4.0 left `.export` set when the panel
+    /// could not come up, and the next ⇧⌘E — an equal request — started nothing. Only a panel
+    /// (its close clears the request) and a cancelled pass (the request is no longer its own)
+    /// leave it.
+    func testEveryMenuExportPassThatOffersNoPanelClearsItsRequest() {
+        XCTAssertTrue(MenuCommandRules.clearsRequest(.dropped))
+        XCTAssertTrue(MenuCommandRules.clearsRequest(.failed))
+        XCTAssertFalse(MenuCommandRules.clearsRequest(.offerPanel))
+        XCTAssertFalse(MenuCommandRules.clearsRequest(.cancelled))
+        for wrote in [true, false] {
+            for cancelled in [true, false] {
+                for sheet in [true, false] {
+                    for onScreen in [true, false] {
+                        let end = exportEnd(wrote: wrote, cancelled: cancelled, sheet: sheet, onScreen: onScreen)
+                        let offersPanel = wrote && !cancelled && !sheet && onScreen
+                        XCTAssertEqual(end == .offerPanel, offersPanel, "\(end)")
+                        XCTAssertEqual(MenuCommandRules.clearsRequest(end), !offersPanel && !cancelled, "\(end)")
+                    }
+                }
+            }
+        }
+    }
 }

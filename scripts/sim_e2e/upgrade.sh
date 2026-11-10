@@ -12,6 +12,8 @@
 #                                       its stride_delivery_* entries
 # upgrade.sh check-reminders <app.sh reminders listing | dir of the plists> <daily id>,<M/W/F id>
 #                                       the after-upgrade reminder check alone (below)
+# upgrade.sh check-reminders-before <listing | dir> <daily id>,<M/W/F id> <old version>
+#                                       the starting-point reminder check alone (below)
 #
 # Why (E2E U123 and MIG, 2026-10-07): on the first 1.3.1 launch after an in-place upgrade from
 # 1.2.3 or 1.3.0, chronod launched StrideWidgetExtension with the app; StrideWidget.init()
@@ -67,8 +69,10 @@
 #   6. with --reminders <daily>,<mwf> (1.4.0, RELEASE-1.4.0.md D4/D7): the system's pending
 #      notification store, read from scratch copies of <device data>/Library/UserNotifications/
 #      <dir>/PendingNotifications.plist and Categories.plist (app.sh reminders, notifications.py).
-#        - before the install, as part of the starting point: both habits' bare 1.3.x ids,
-#          stride.habit.reminder.<id>, are pending (else exit 1: the recipe was not followed);
+#        - before the install, as part of the starting point, what the OLD build schedules: the
+#          daily habit's bare id, stride.habit.reminder.<id>, from any build; the Mon/Wed/Fri
+#          habit's bare id from a 1.3.x build, or exactly .2, .4 and .6 from 1.4.0 on, which
+#          already schedules weekday triggers (else exit 1: the recipe was not followed);
 #        - after the first launch, retried (the daemon writes the file after the app's adds and
 #          removes; STRIDE_E2E_REMINDER_TRIES × STRIDE_E2E_REMINDER_PAUSE s, default 10 × 3):
 #          the Mon/Wed/Fri habit has exactly .2, .4 and .6 and no bare id; the daily habit keeps
@@ -388,19 +392,35 @@ reminders_listing() {
   fi
 }
 
-# Before the install: the old build's state the run starts from. Both bare ids, nothing else for
-# the two habits (1.3.x knows no weekday id). Prints; returns 1 when the starting point is wrong.
+# Before the install: the old build's state the run starts from, given its version ("1.4.0").
+# The daily habit has exactly its bare id from every build. The Mon/Wed/Fri habit has its bare id
+# from 1.3.x, which knows no weekday id, and exactly .2 .4 .6 from 1.4.0 on (D4): until 1.4.1
+# this demanded the bare id from every build, so a correct 1.4.0 starting point was refused.
+# Prints; returns 1 when the starting point is wrong.
 check_reminders_before() {
-  local listing="$1" id got rc=0
-  for id in "$REM_DAILY" "$REM_MWF"; do
-    got="$(habit_requests "$listing" "$id")"
-    if [[ "$got" == "$REMINDER_PREFIX$id" ]]; then
-      echo "reminders before: $REMINDER_PREFIX$id pending (the old build's daily trigger)"
+  local listing="$1" old="$2" got want rc=0
+  got="$(habit_requests "$listing" "$REM_DAILY")"
+  if [[ "$got" == "$REMINDER_PREFIX$REM_DAILY" ]]; then
+    echo "reminders before: $REMINDER_PREFIX$REM_DAILY pending (the old build's daily trigger)"
+  else
+    echo "reminders before: daily habit $REM_DAILY has [${got:-nothing pending}], not exactly its bare id"
+    rc=1
+  fi
+  got="$(habit_requests "$listing" "$REM_MWF")"
+  if version_ge "$old" 1.4.0; then
+    want="$REMINDER_PREFIX$REM_MWF.2 $REMINDER_PREFIX$REM_MWF.4 $REMINDER_PREFIX$REM_MWF.6"
+    if [[ "$got" == "$want" ]]; then
+      echo "reminders before: the Mon/Wed/Fri habit has exactly .2 .4 .6 ($old's weekday triggers)"
     else
-      echo "reminders before: habit $id has [${got:-nothing pending}], not exactly its bare id"
+      echo "reminders before: Mon/Wed/Fri habit $REM_MWF has [${got:-nothing pending}], not exactly .2 .4 .6 ($old schedules weekday triggers)"
       rc=1
     fi
-  done
+  elif [[ "$got" == "$REMINDER_PREFIX$REM_MWF" ]]; then
+    echo "reminders before: $REMINDER_PREFIX$REM_MWF pending ($old's single daily trigger)"
+  else
+    echo "reminders before: Mon/Wed/Fri habit $REM_MWF has [${got:-nothing pending}], not exactly its bare id ($old knows no weekday id)"
+    rc=1
+  fi
   return $rc
 }
 
@@ -494,8 +514,17 @@ case "${1:-}" in
     check_reminders "$L" || RC=$?
     rm -f "$L"
     exit $RC ;;
+  check-reminders-before)
+    [[ -n "${2:-}" && -n "${3:-}" && -n "${4:-}" ]] || die "usage: upgrade.sh check-reminders-before <app.sh reminders listing | dir of the plists> <daily id>,<M/W/F id> <old version>"
+    parse_reminders_arg "$3"
+    mkdir -p "$ROOT/scratch"
+    L="$ROOT/scratch/reminders-listing.$$"
+    reminders_listing "$2" "$L"
+    check_reminders_before "$L" "$4" || RC=$?
+    rm -f "$L"
+    exit $RC ;;
   ""|-h|--help)
-    die "usage: upgrade.sh <udid> <old app> <new app> [--wait <s>] [--server <name>] [--label <name>] [--relaunch] [--reminders <daily id>,<M/W/F id>] | check-log <log> | check-gate <log> [<marker before>] | check-dir <dir> | counts <store> | prefs <plist> | check-reminders <listing|dir> <daily id>,<M/W/F id>" ;;
+    die "usage: upgrade.sh <udid> <old app> <new app> [--wait <s>] [--server <name>] [--label <name>] [--relaunch] [--reminders <daily id>,<M/W/F id>] | check-log <log> | check-gate <log> [<marker before>] | check-dir <dir> | counts <store> | prefs <plist> | check-reminders <listing|dir> <daily id>,<M/W/F id> | check-reminders-before <listing|dir> <daily id>,<M/W/F id> <old version>" ;;
 esac
 
 # ── The run ─────────────────────────────────────────────────────────────────────────────────
@@ -614,7 +643,7 @@ run() {
     # is what changes them (its reschedule and prune, D4).
     "$APP_SH" reminders "$UDID" "$OUT/reminders-before" >"$OUT/reminders-before.txt" \
       || die "--reminders: could not read the device's notification store before the upgrade (above). The starting point needs notifications allowed and both reminder habits on, on the OLD build: README, \"Reminder habits\""
-    check_reminders_before "$OUT/reminders-before.txt" \
+    check_reminders_before "$OUT/reminders-before.txt" "${OLD_V%% *}" \
       || die "--reminders: the starting point is not the old build's two reminders (reminders-before.txt): README, \"Reminder habits\""
   fi
 

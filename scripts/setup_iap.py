@@ -38,18 +38,21 @@ SUBSCRIPTIONS = [
         },
     },
     {
+        # No saving figure: prices are per storefront and the copy per language, so "save 44%"
+        # was true in USD and GBP only (2026-10-21). The paywall computes its own badge.
+        # scripts/iap_copy.py sets the same copy on a live app.
         "product_id": "yyh.stride.habittracker.pro.yearly",
         "reference_name": "Yearly Pro",
         "period": "ONE_YEAR",
         "group_level": 1,
         "price_usd": "19.99",
         "localizations": {
-            "en_US": {"name": "Stride Pro Yearly", "description": "Full access billed yearly - save 44%"},
-            "zh_Hans": {"name": "Stride Pro 年度", "description": "按年订阅，节省44%"},
-            "zh_Hant": {"name": "Stride Pro 年費", "description": "按年訂閱，節省44%"},
-            "ja": {"name": "Stride Pro 年額", "description": "年額プランで44%お得"},
-            "ko": {"name": "Stride Pro 연간", "description": "연간 구독으로 44% 할인"},
-            "es_ES": {"name": "Stride Pro Anual", "description": "Acceso completo anual - ahorra 44%"},
+            "en_US": {"name": "Stride Pro Yearly", "description": "Full access billed yearly"},
+            "zh_Hans": {"name": "Stride Pro 年度", "description": "按年订阅，解锁全部功能"},
+            "zh_Hant": {"name": "Stride Pro 年費", "description": "按年訂閱，解鎖全部功能"},
+            "ja": {"name": "Stride Pro 年額", "description": "年額プランで全機能をアンロック"},
+            "ko": {"name": "Stride Pro 연간", "description": "연간 구독으로 모든 기능 잠금 해제"},
+            "es_ES": {"name": "Stride Pro Anual", "description": "Acceso completo con facturación anual"},
         },
     },
 ]

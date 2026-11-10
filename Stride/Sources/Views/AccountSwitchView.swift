@@ -44,6 +44,9 @@ struct AccountSwitchView: View {
     private var auth = AuthService.shared
 
     @State private var holdings: SyncOwnerHoldings?
+    /// The holdings lines' icon column: wide enough for the widest of their symbols
+    /// (clock.arrow.circlepath) at .subheadline, and growing with it.
+    @ScaledMetric(relativeTo: .subheadline) private var summaryIconWidth: CGFloat = 22
     @State private var confirmingStart = false
     @State private var working: Choice?
     @State private var failure: String?
@@ -172,9 +175,14 @@ struct AccountSwitchView: View {
         .accessibilityElement(children: .combine)
     }
 
+    /// The symbols are of different widths, so each sits in a column of one width and every
+    /// line's text starts at the same x ("5 habits" started about 4 pt right of "1 deletion…",
+    /// gate 8).
     private func summaryLine(_ symbol: String, _ text: Text) -> some View {
         Label { text } icon: {
-            Image(systemName: symbol).foregroundStyle(.secondary)
+            Image(systemName: symbol)
+                .foregroundStyle(.secondary)
+                .frame(width: summaryIconWidth)
         }
         .font(.subheadline)
     }
@@ -418,6 +426,9 @@ struct AccountChoiceSheet: View {
         #if os(macOS)
         .frame(minWidth: 460, minHeight: 520)
         #endif
+        // On iPad the form sheet cut "Start from This Account's Data", the screen's decision, in
+        // half at the default size (gate 8).
+        .pageSizedSheet()
     }
 }
 

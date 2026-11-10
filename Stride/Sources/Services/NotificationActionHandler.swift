@@ -210,7 +210,7 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
         guard let result = HabitCheckIn.fromReminder(habit, on: day, in: context) else {
             return .alreadyDone(day: day)
         }
-        guard result.deletedRecordID == nil else {
+        guard result.deletedRecordIDs.isEmpty else {
             // `fromReminder` cannot delete (it asserts the same); were it ever to, the deletion is
             // not saved and no tombstone is queued — one tap must not un-check a day everywhere.
             assertionFailure("a reminder's check-in deleted a record")

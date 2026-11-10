@@ -10,30 +10,53 @@ struct ShareStreakView: View {
     /// over the whole card, at 2x.
     @State private var renderedImage: Image?
 
-    private var currentStreak: Int { habit.currentStreak() }
-    private var bestStreak: Int { habit.bestStreak() }
-    private var completionRate: Int { Int(habit.completionRate() * 100) }
-    private var last14Days: [Date] { Date.lastNDays(14) }
+    /// The numbers on the card, read once per render from StatsCache (RELEASE-1.4.1.md D3).
+    /// Each of these was a `Habit` wrapper call — a HabitStats built per call, three for the
+    /// card, again for the accessibility label, plus 28 per-day lookups for the dots.
+    @Environment(\.statsCache) private var cache
+
+    private struct Numbers {
+        let currentStreak: Int
+        let bestStreak: Int
+        let completionRate: Int
+        /// The last 14 days (local midnights), oldest first, and whether each is completed.
+        let days: [Dot]
+        var recent: Int { days.filter(\.completed).count }
+    }
+
+    private struct Dot {
+        let day: Date
+        let completed: Bool
+    }
+
+    private var numbers: Numbers {
+        let stats = cache.stats(for: habit)
+        return Numbers(currentStreak: stats.currentStreak(), bestStreak: stats.bestStreak,
+                       completionRate: Int(stats.completionRate(days: 30) * 100),
+                       days: Date.lastNDays(14).map { Dot(day: $0, completed: stats.isCompleted(on: $0)) })
+    }
 
     // SharePreview reads this aloud and the receiving app keeps it, so it has to be translated.
     // One key per unit, matching the Siri shortcut, rather than splicing in English streakUnit.
-    private var shareText: String {
-        habit.streakUnit == "week"
+    private func shareText(_ numbers: Numbers) -> String {
+        let currentStreak = numbers.currentStreak
+        return habit.streakUnit == "week"
             ? appLocalized("\(habit.emoji) \(habit.name): \(currentStreak) week streak")
             : appLocalized("\(habit.emoji) \(habit.name): \(currentStreak) day streak")
     }
 
     var body: some View {
+        let numbers = self.numbers
         NavigationStack {
             VStack(spacing: 24) {
-                streakCard
+                streakCard(numbers)
                     .padding(.horizontal)
 
                 Group {
                     if let renderedImage {
                         ShareLink(
                             item: renderedImage,
-                            preview: SharePreview(shareText, image: renderedImage)
+                            preview: SharePreview(shareText(numbers), image: renderedImage)
                         ) {
                             shareButtonLabel
                         }
@@ -61,7 +84,7 @@ struct ShareStreakView: View {
                 }
             }
             .task {
-                renderedImage = renderImage()
+                renderedImage = renderImage(numbers)
             }
         }
     }
@@ -78,8 +101,11 @@ struct ShareStreakView: View {
 
     // MARK: - Streak Card
 
-    private var streakCard: some View {
-        VStack(spacing: 20) {
+    private func streakCard(_ numbers: Numbers) -> some View {
+        let currentStreak = numbers.currentStreak
+        let bestStreak = numbers.bestStreak
+        let completionRate = numbers.completionRate
+        return VStack(spacing: 20) {
             // Emoji + name
             VStack(spacing: 6) {
                 Text(habit.emoji)
@@ -124,10 +150,9 @@ struct ShareStreakView: View {
             // Mini streak dots for last 14 days
             VStack(spacing: 6) {
                 HStack(spacing: 6) {
-                    ForEach(last14Days, id: \.self) { day in
-                        let completed = habit.isCompletedOn(day)
+                    ForEach(numbers.days, id: \.day) { item in
                         Circle()
-                            .fill(completed ? .white : .white.opacity(0.2))
+                            .fill(item.completed ? .white : .white.opacity(0.2))
                             .frame(width: 16, height: 16)
                     }
                 }
@@ -159,7 +184,7 @@ struct ShareStreakView: View {
                 )
         )
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(cardAccessibilityLabel)
+        .accessibilityLabel(cardAccessibilityLabel(numbers))
     }
 
     // The card is one graphic, but VoiceOver otherwise walks it as eight stops with each number
@@ -170,8 +195,11 @@ struct ShareStreakView: View {
     // String(localized:) fragments cannot be reordered by a translator, and String(localized:)
     // reads the SYSTEM language while everything drawn here follows the in-app language picker
     // (\.environment(\.locale)) — the card would speak one language and show another.
-    private var cardAccessibilityLabel: LocalizedStringKey {
-        let recent = last14Days.filter { habit.isCompletedOn($0) }.count
+    private func cardAccessibilityLabel(_ numbers: Numbers) -> LocalizedStringKey {
+        let currentStreak = numbers.currentStreak
+        let bestStreak = numbers.bestStreak
+        let completionRate = numbers.completionRate
+        let recent = numbers.recent
         return habit.streakUnit == "week"
             ? "\(habit.name), \(currentStreak) week streak, best streak \(bestStreak), 30-day rate \(completionRate) percent, \(recent) of the last 14 days completed"
             : "\(habit.name), \(currentStreak) day streak, best streak \(bestStreak), 30-day rate \(completionRate) percent, \(recent) of the last 14 days completed"
@@ -180,8 +208,8 @@ struct ShareStreakView: View {
     // MARK: - Image Rendering
 
     @MainActor
-    private func renderImage() -> Image {
-        let cardView = streakCard
+    private func renderImage(_ numbers: Numbers) -> Image {
+        let cardView = streakCard(numbers)
             .padding(20)
             .frame(width: 380)
             .background(Color.black)

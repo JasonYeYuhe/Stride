@@ -206,16 +206,15 @@ struct SyncSectionView: View {
         Button {
             if let conflict = sync.ownerConflict { onChooseAccount(conflict) }
         } label: {
-            Label {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Choose What Happens to This Device's Habits…")
-                        .foregroundStyle(Color.primary)
-                    // `Color`, not the hierarchical `.secondary`: inside a Button that resolves
-                    // against the tint and drew the subtitle pale green, below 4.5:1 on white.
-                    Text("Syncing starts once you choose.")
-                        .font(.caption)
-                        .foregroundStyle(Color.secondary)
-                }
+            SyncRowLabel {
+                Text("Choose What Happens to This Device's Habits…")
+                    .foregroundStyle(Color.primary)
+            } caption: {
+                // `Color`, not the hierarchical `.secondary`: inside a Button that resolves
+                // against the tint and drew the subtitle pale green, below 4.5:1 on white.
+                Text("Syncing starts once you choose.")
+                    .font(.caption)
+                    .foregroundStyle(Color.secondary)
             } icon: {
                 Image(systemName: "person.crop.circle.badge.questionmark")
                     .foregroundStyle(.orange)
@@ -224,13 +223,12 @@ struct SyncSectionView: View {
     }
 
     private var pausedRow: some View {
-        Label {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Sync paused")
-                Text("The server asked devices to wait. Stride will try again automatically.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+        SyncRowLabel {
+            Text("Sync paused")
+        } caption: {
+            Text("The server asked devices to wait. Stride will try again automatically.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         } icon: {
             Image(systemName: "pause.circle")
                 .foregroundStyle(.orange)
@@ -244,14 +242,13 @@ struct SyncSectionView: View {
     private func heldSummaryRow(_ content: SyncSectionContent) -> some View {
         let count = content.heldCount
         return VStack(alignment: .leading, spacing: 6) {
-            Label {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("\(count) changes can't sync")
-                    if !content.refused.isEmpty {
-                        Text("Editing a change sends it again.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+            SyncRowLabel {
+                Text("\(count) changes can't sync")
+            } caption: {
+                if !content.refused.isEmpty {
+                    Text("Editing a change sends it again.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             } icon: {
                 Image(systemName: "exclamationmark.triangle")
@@ -380,13 +377,12 @@ struct SyncSectionView: View {
 
     @ViewBuilder
     private func recoveredEditsRows(count: Int) -> some View {
-        Label {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Recovered Edits (\(count))")
-                Text("Changes made on this device to items that were deleted on another device. Export them to keep a copy.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+        SyncRowLabel {
+            Text("Recovered Edits (\(count))")
+        } caption: {
+            Text("Changes made on this device to items that were deleted on another device. Export them to keep a copy.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         } icon: {
             Image(systemName: "arrow.uturn.backward.circle")
         }
@@ -422,14 +418,13 @@ struct SyncSectionView: View {
             showingFullResyncConfirm = true
         } label: {
             HStack {
-                Label {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Full Resync…")
-                        // `Color.secondary`: see `ownerChoiceRow`.
-                        Text("Sends everything on this device to your account again.")
-                            .font(.caption)
-                            .foregroundStyle(Color.secondary)
-                    }
+                SyncRowLabel {
+                    Text("Full Resync…")
+                } caption: {
+                    // `Color.secondary`: see `ownerChoiceRow`.
+                    Text("Sends everything on this device to your account again.")
+                        .font(.caption)
+                        .foregroundStyle(Color.secondary)
                 } icon: {
                     Image(systemName: "arrow.clockwise.circle")
                 }
@@ -561,6 +556,40 @@ struct SettingsInlineError: View {
     }
 }
 
+/// A Sync row's title beside its icon, with the line that explains it under the title. At
+/// accessibility sizes the line goes under the whole Label instead: inside it, a List row gave
+/// each of the title's Texts the icon's indent on its first line only, so the explanation began
+/// a third of the way across and wrapped back to the edge ("         The server / asked
+/// devices to…", gate 8). The title itself wraps under the icon there, as every Label row does.
+private struct SyncRowLabel<Title: View, Caption: View, Icon: View>: View {
+    private let title: Title
+    private let caption: Caption
+    private let icon: Icon
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    init(@ViewBuilder title: () -> Title, @ViewBuilder caption: () -> Caption, @ViewBuilder icon: () -> Icon) {
+        self.title = title()
+        self.caption = caption()
+        self.icon = icon()
+    }
+
+    var body: some View {
+        if typeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 2) {
+                Label { title } icon: { icon }
+                caption
+            }
+        } else {
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    title
+                    caption
+                }
+            } icon: { icon }
+        }
+    }
+}
+
 // MARK: - Screenshots (DEBUG only)
 
 #if DEBUG
@@ -615,9 +644,11 @@ enum SyncSectionDemo: String {
         if habits.count > 1, let record = habits[1].records.max(by: { $0.date < $1.date }) {
             record.hold(.tooLarge)
         }
-        for name in ["Evening Walk", "Stretch"] {
+        // Each its own place: with one sortOrder for both, Settings' list (sorted by it alone)
+        // drew them in either order from one launch to the next (gate 8).
+        for (offset, name) in ["Evening Walk", "Stretch"].enumerated() {
             let habit = Habit(name: name, emoji: "\u{1F6B6}", colorHex: "#5AC8FA")
-            habit.sortOrder = 10_000
+            habit.sortOrder = 10_000 + Double(offset)
             context.insert(habit)
             habit.hold(.notOwned)
         }
@@ -687,6 +718,19 @@ extension View {
     func sweepAnchor(_ name: String) -> some View {
         #if DEBUG
         id(name)
+        #else
+        self
+        #endif
+    }
+    /// A ScrollView's content that `-scrollTo` scrolls (`SweepScroll`), on a screen with no
+    /// ScrollViewReader of its own: Today, whose rows sit under the tab bar at accessibility sizes.
+    /// The reader goes inside the ScrollView, and a release build returns the content untouched.
+    @ViewBuilder
+    func sweepScrollable() -> some View {
+        #if DEBUG
+        ScrollViewReader { proxy in
+            task { await SweepScroll.scroll(proxy) }
+        }
         #else
         self
         #endif

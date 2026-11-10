@@ -35,20 +35,47 @@
 #     GitHub image with Xcode 27, so this CI coverage lasts only as long as that image does;
 #   - scripts/ship.sh, before anything is archived — the gate that does not depend on it.
 #
+# Derived data and packages. Every device used to build into one Stride-hosted-tests, so hosted
+# runs on two devices at once, each holding only its own device lock, shared one build.db (found
+# 2026-10-14). The default is now one directory per device, and runs on one device are already
+# serialized by its lock. On top of that the build takes the derived data's own lock
+# (build_lock_path in scripts/ci/build_cache.sh), so even one STRIDE_HOSTED_DERIVED_DATA given to
+# runs on two devices builds one at a time. Swift packages come from the shared checkout
+# (spm_cache_args, same file), not from a copy inside each derived data.
+#
 # Environment:
-#   STRIDE_HOSTED_DERIVED_DATA   derived data to build into (default: a persistent one under
-#                                ~/Library/Developer/Xcode/DerivedData, so a rerun is incremental)
+#   STRIDE_HOSTED_DERIVED_DATA   derived data to build into (default: a persistent one per
+#                                device under ~/Library/Developer/Xcode/DerivedData, so a rerun is
+#                                incremental: Stride-hosted-tests for "iPhone 17", the name it
+#                                always had, and Stride-hosted-tests-<device slug> for any other)
+#   STRIDE_SPM_DIR               the shared Swift package checkout (scripts/ci/build_cache.sh)
 #   STRIDE_HOSTED_ALL=1          run the Stride scheme's whole test action (StrideTests too,
 #                                on iOS) instead of only StrideAppTests
+#   STRIDE_HOSTED_NO_SKIPS       test classes (comma- or space-separated) that must RUN: the run
+#                                fails if any of their tests skipped, or none of them ran
 #   STRIDE_SIM_LOCK_ROOT, STRIDE_SIM_LOCK_LABEL, STRIDE_SIM_LOCK_WAIT
 #                                the device lock, above (scripts/ci/sim_lock.sh)
+#
+# Skips. A skipped test is not a pass, so every run lists its skips by class, with the first
+# reason. StoreKitStatusTests (and StoreKitConfigurationLoadTests) skip wherever SKTestSession
+# does not take effect — the iOS 26.3+ simulator runtimes, "iPhone 17" here included
+# (FB22774836) — and every other test can still pass around them: a run with 11 silent skips
+# used to print the same "✓ passed" as a run of all of them. A run that a gate counts for a class
+# names it in STRIDE_HOSTED_NO_SKIPS. RELEASE-1.4.1.md gate 4 is this, on iOS 18.5, where all
+# of them run (2026-10-15):
+#   STRIDE_HOSTED_ALL=1 STRIDE_HOSTED_NO_SKIPS=StoreKitStatusTests,StoreKitConfigurationLoadTests \
+#     scripts/ci/run_hosted_tests.sh <an iOS 18.5 simulator> \
+#     -only-testing:StrideAppTests/StoreKitStatusTests -only-testing:StrideAppTests/StoreKitConfigurationLoadTests
+# (STRIDE_HOSTED_ALL=1 drops this script's own -only-testing:StrideAppTests, which would
+# otherwise widen the filter back to the whole bundle).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=sim_lock.sh
 source "$SCRIPT_DIR/sim_lock.sh"
-DERIVED="${STRIDE_HOSTED_DERIVED_DATA:-$HOME/Library/Developer/Xcode/DerivedData/Stride-hosted-tests}"
+# shellcheck source=build_cache.sh
+source "$SCRIPT_DIR/build_cache.sh"
 WANT="${1:-}"
 [[ $# -gt 0 ]] && shift
 
@@ -92,6 +119,16 @@ if [[ -z "$UDID" ]]; then
 fi
 NAME="$(xcrun simctl list devices available | grep -F "$UDID" | sed -E 's/^ *(.*) \([0-9A-F-]{36}\).*/\1/' | head -1)"
 
+# One derived data per device (header). "iPhone 17" keeps the original directory and its warm build.
+SLUG="$(sim_lock_slug "$NAME")"
+DERIVED_DEFAULT="$HOME/Library/Developer/Xcode/DerivedData/Stride-hosted-tests"
+[[ "$SLUG" == "iphone-17" ]] || DERIVED_DEFAULT="$DERIVED_DEFAULT-$SLUG"
+DERIVED="${STRIDE_HOSTED_DERIVED_DATA:-$DERIVED_DEFAULT}"
+
+# The shared package checkout, resolved here if it is not yet: before the device lock, since it
+# does not touch the simulator.
+spm_cache_args "$PROJECT_DIR" "$@" || exit 1
+
 # The device lock (header), before the build: `xcodebuild test` boots the device, installs and
 # launches the host the moment its build ends, so there is no later point to take it at.
 if [[ "${CI:-}" == "true" ]]; then
@@ -101,6 +138,13 @@ else
     sim_lock_take "${STRIDE_SIM_LOCK_ROOT:-/tmp}/lock-$(sim_lock_slug "$NAME")" run_hosted_tests || LOCK_RC=$?
     [[ $LOCK_RC -eq 0 ]] || exit "$LOCK_RC"
     trap sim_lock_release EXIT
+fi
+# The derived data's own lock (header), after the device lock and released with it on exit.
+DD_LOCK=""
+if [[ "${CI:-}" != "true" ]]; then
+    build_lock_take "$(build_lock_path "$DERIVED")" "run_hosted_tests $NAME" || exit 2
+    DD_LOCK="$(build_lock_path "$DERIVED")"
+    trap '[[ -n "$DD_LOCK" ]] && build_lock_release "$DD_LOCK"; sim_lock_release' EXIT
 fi
 
 ONLY=(-only-testing:StrideAppTests)
@@ -112,6 +156,7 @@ LOG="$RUN_DIR/xcodebuild.log"
 
 echo "==> Hosted tests on $NAME ($UDID)"
 echo "    derived data: $DERIVED"
+echo "    packages: ${SPM_ARGS[1]:-resolved into the derived data}"
 echo "    log: $LOG"
 
 # -collect-test-diagnostics never: on a failure xcodebuild otherwise gathers a sysdiagnose
@@ -129,6 +174,7 @@ xcodebuild test \
     -resultBundlePath "$RESULT" \
     -collect-test-diagnostics never \
     "${ONLY[@]+"${ONLY[@]}"}" \
+    "${SPM_ARGS[@]+"${SPM_ARGS[@]}"}" \
     CODE_SIGNING_ALLOWED=NO \
     "$@" \
     > "$LOG" 2>&1
@@ -154,10 +200,70 @@ read -r passed failed skipped result <<<"$counts"
 grep -E "error: -\[|' failed \(" "$LOG" | sed 's/^/    /' || true
 echo "    xcodebuild exit $status; passed $passed, failed $failed, skipped $skipped ($result)"
 
-if [[ $status -ne 0 || "$failed" != "0" || "$passed" -eq 0 ]]; then
+# Skips by class, and STRIDE_HOSTED_NO_SKIPS (header). Exit 3: a named class skipped or did not
+# run; 4: the per-test results could not be read while a class was named.
+NO_SKIPS_RC=0
+if [[ "${skipped:-0}" != "0" || -n "${STRIDE_HOSTED_NO_SKIPS:-}" ]]; then
+    { xcrun xcresulttool get test-results tests --path "$RESULT" 2>/dev/null || true; } \
+        | NO_SKIPS="${STRIDE_HOSTED_NO_SKIPS:-}" /usr/bin/python3 -c '
+import json, os, sys
+required = [c for c in os.environ.get("NO_SKIPS", "").replace(",", " ").split() if c]
+try:
+    tree = json.load(sys.stdin)
+except Exception:
+    print("    (the per-test results could not be read; skips are not listed)")
+    sys.exit(4 if required else 0)
+classes = {}
+def walk(node, suite):
+    kind = node.get("nodeType")
+    if kind == "Test Suite":
+        suite = node.get("name") or suite
+    if kind == "Test Case":
+        ident = node.get("nodeIdentifier") or ""
+        cls = ident.split("/")[0] if "/" in ident else (suite or "?")
+        c = classes.setdefault(cls, {"Passed": 0, "Failed": 0, "Skipped": 0, "other": 0, "reason": ""})
+        result = node.get("result", "")
+        c[result if result in ("Passed", "Failed", "Skipped") else "other"] += 1
+        if result == "Skipped" and not c["reason"]:
+            for child in node.get("children") or []:
+                if child.get("nodeType") == "Skip Message":
+                    c["reason"] = " ".join((child.get("name") or "").split())
+                    break
+        return
+    for child in node.get("children") or []:
+        walk(child, suite)
+for node in tree.get("testNodes", []):
+    walk(node, None)
+for cls in sorted(classes):
+    c = classes[cls]
+    if c["Skipped"]:
+        total = c["Passed"] + c["Failed"] + c["Skipped"] + c["other"]
+        reason = c["reason"] if len(c["reason"]) <= 200 else c["reason"][:197] + "..."
+        print("    skipped: %s %d of %d (%s)" % (cls, c["Skipped"], total, reason))
+bad = False
+for cls in required:
+    c = classes.get(cls)
+    if c is None:
+        print("    STRIDE_HOSTED_NO_SKIPS: %s ran no tests in this run" % cls)
+        bad = True
+    elif c["Skipped"]:
+        print("    STRIDE_HOSTED_NO_SKIPS: %s skipped %d of its tests; a skip is not a pass" % (cls, c["Skipped"]))
+        bad = True
+    else:
+        print("    STRIDE_HOSTED_NO_SKIPS: %s ran %d, none skipped" % (cls, c["Passed"] + c["Failed"]))
+sys.exit(3 if bad else 0)
+' || NO_SKIPS_RC=$?
+fi
+
+if [[ $status -ne 0 || "$failed" != "0" || "$passed" -eq 0 || $NO_SKIPS_RC -ne 0 ]]; then
     echo "✗ Hosted tests did not pass. Full log: $LOG"
+    [[ $NO_SKIPS_RC -ne 0 ]] && echo "  STRIDE_HOSTED_NO_SKIPS=${STRIDE_HOSTED_NO_SKIPS:-}: a named class did not run in full (above)."
     [[ $status -ne 0 && "$passed" -eq 0 && "$failed" == "0" ]] && tail -30 "$LOG" | sed 's/^/    /'
     exit 1
 fi
-echo "✓ Hosted tests passed ($passed tests)."
+if [[ "${skipped:-0}" != "0" ]]; then
+    echo "✓ Hosted tests passed ($passed tests; $skipped skipped, listed above: a skip is not a pass)."
+else
+    echo "✓ Hosted tests passed ($passed tests)."
+fi
 rm -rf "$RUN_DIR"

@@ -88,15 +88,25 @@ final class BackgroundSyncTests: XCTestCase {
                                    sessionStored: { sessionStored }, submitter: submitter)
     }
 
-    /// The submits a test's submitter received, from any thread, and how many have answered.
+    /// The submits a test's submitter received, from any thread, and how many have answered. A
+    /// submitter that should not answer yet waits in `held(upTo:)` until the test calls `release()`.
     private final class Submits: @unchecked Sendable {
         private let lock = NSLock()
         private var received: [BackgroundRefresh.Reason] = []
         private var answers = 0
+        private var released = false
         func receive(_ reason: BackgroundRefresh.Reason) { lock.withLock { received.append(reason) } }
         func answer() { lock.withLock { answers += 1 } }
         var reasons: [BackgroundRefresh.Reason] { lock.withLock { received } }
         var answered: Int { lock.withLock { answers } }
+        func release() { lock.withLock { released = true } }
+        /// Returns once `release()` has been called, or after `limit`.
+        func held(upTo limit: Duration) async {
+            let end = ContinuousClock.now + limit
+            while !lock.withLock({ released }), ContinuousClock.now < end {
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+        }
     }
 
     /// A gate a sync's `afterSyncRequest` hook waits at, holding the run mid-way without blocking
@@ -139,9 +149,9 @@ final class BackgroundSyncTests: XCTestCase {
         ((push?.json?["habits"] as? [[String: Any]]) ?? []).compactMap { $0["id"] as? String }
     }
 
-    /// Polls `condition` on the main actor for up to 5 s.
-    private func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(5)
+    /// Polls `condition` on the main actor for up to `limit`.
+    private func waitUntil(_ what: String, upTo limit: Duration = .seconds(5), _ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + limit
         while !condition() {
             guard ContinuousClock.now < deadline else { return XCTFail("timed out waiting for \(what)") }
             try await Task.sleep(for: .milliseconds(10))
@@ -349,40 +359,58 @@ final class BackgroundSyncTests: XCTestCase {
     /// still on its way. But only for so long: iOS 27's async submit may answer "after an arbitrary
     /// amount of delay" (BGTaskScheduler.h), and that must not hold a finished run open until
     /// expiry, which would report it as failed (W3 review).
+    ///
+    /// Neither half races the bound against the executor. The bound is wall-clock from the end of
+    /// the run, and the submit is a detached `.utility` task: when it gets a thread, and when the
+    /// submitter's continuation resumes, is the executor's business, not `handle`'s. Until 1.4.1
+    /// the first half's answer had 5 s, and on a loaded CI runner it was not in by then: `handle`
+    /// waited out the whole bound and returned with 0 answers (run 39013590196; the test took
+    /// 6.2 s). Starving utility-QoS work in this process reproduces that every time — return at
+    /// 5.0 s, the answer at 6.0 s — while `handle` keeps its contract. The second half's check that
+    /// the submit was made had already been moved off its 300 ms bound for the same reason (run
+    /// 38062629860). So the answer that is waited for gets a bound no run here comes near, and the
+    /// one that is not is held back until `handle` has returned.
     func testAFinishedRunWaitsForTheResubmitsAnswerUpToItsBound() async throws {
         seedOwnerAndCursor()
         backoffStore.recordFailure(.serverAsked(seconds: 600, paused: true), for: owner.id)
         let sync = makeSync()
 
+        // An answer inside the bound: 200 ms after the submitter is reached, so a run that did not
+        // wait for it would return first. The bound is a minute, and the run returning well inside
+        // it tells waiting on the answer from waiting out the bound.
         let prompt = Submits()
         let answersSoon = environment(sync, Recorder(), submitter: .init { reason in
             prompt.receive(reason)
             try await Task.sleep(for: .milliseconds(200))
             prompt.answer()
         })
-        let ran = await BackgroundSync.handle(container: container, environment: answersSoon, answerWait: .seconds(5))
+        let start = ContinuousClock.now
+        let ran = await BackgroundSync.handle(container: container, environment: answersSoon, answerWait: .seconds(60))
         XCTAssertFalse(ran, "precondition: inside the window the run itself ends at once")
         XCTAssertTrue(server.requests.isEmpty)
         XCTAssertEqual(prompt.answered, 1, "the answer was in before the work returned")
+        XCTAssertEqual(prompt.reasons, [.resubmit])
+        XCTAssertLessThan(ContinuousClock.now - start, .seconds(30), "it returned on the answer, not at the bound")
 
-        let slow = Submits()
+        // An answer outside the bound: given only once the test lets it, after `handle` has returned
+        // — or after 30 s, the late answer this half always had, so a `handle` that waited for it
+        // fails here rather than hanging.
+        let late = Submits()
         let answersLate = environment(sync, Recorder(), submitter: .init { reason in
-            slow.receive(reason)
-            try await Task.sleep(for: .seconds(30))
-            slow.answer()
+            late.receive(reason)
+            await late.held(upTo: .seconds(30))
+            late.answer()
         })
-        let start = ContinuousClock.now
+        let lateStart = ContinuousClock.now
         _ = await BackgroundSync.handle(container: container, environment: answersLate, answerWait: .milliseconds(300))
-        XCTAssertLessThan(ContinuousClock.now - start, .seconds(3), "not held open past the bound")
-        // The submit runs in a detached task that `handle` starts before its run, but nothing
-        // promises that task has reached the submitter within a 300 ms bound: on a loaded CI runner
-        // it had not (CI run 38062629860, `[]`). What this asserts is that the resubmit was made,
-        // not how fast the executor picked it up, so wait for it (the bound above is the timing claim).
-        for _ in 0..<100 where slow.reasons.isEmpty {
-            try await Task.sleep(for: .milliseconds(50))
-        }
-        XCTAssertEqual(slow.reasons, [.resubmit])
-        XCTAssertEqual(slow.answered, 0)
+        let waited = ContinuousClock.now - lateStart
+        XCTAssertEqual(late.answered, 0, "not held open past the bound: it returned with the answer still to come")
+        XCTAssertGreaterThanOrEqual(waited, .milliseconds(300), "the bound was waited out")
+        late.release()
+        // Made all the same, though maybe not yet reached: on a loaded runner the detached submit
+        // had not got to the submitter within the 300 ms (CI run 38062629860, `[]`).
+        try await waitUntil("the late submit to reach the submitter", upTo: .seconds(30)) { !late.reasons.isEmpty }
+        XCTAssertEqual(late.reasons, [.resubmit])
     }
 
     /// No session stored: no resubmit — a refresh would launch the app to sync nothing. No store

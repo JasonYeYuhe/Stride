@@ -180,7 +180,151 @@ final class LocalizationSourceScanTests: XCTestCase {
         XCTAssertEqual(Self.keys(in: #"Text(title, tableName: flag ? "A" : "B")"#), [])
     }
 
+    // MARK: - Pro claims (1.4.1 D11)
+
+    /// What Advanced Analytics holds, word for word, on the paywall and on Statistics' locked card.
+    private static let advancedAnalytics = "Insights, the 8-week trend, the strength chart and your top 5 streaks"
+
+    /// Every place the app says what Stride Pro is names the same set (RELEASE-1.4.1.md D11):
+    /// Habit Groups; Advanced Analytics (Insights, the 8-week trend, the strength chart and the top
+    /// 5 streaks); Weekly Review. Until 1.4.1 the paywall put Weekly Review inside Advanced
+    /// Analytics and the locked card named it too, though nothing behind that card is Weekly
+    /// Review. The free detail card keeps its Best Streak tile, so no key may sell "best streaks".
+    /// A grep, not a render: it pins the literals the three views pass, which is where the copy
+    /// drifted. The store's six STRIDE PRO blocks are `testStoreDescriptionsSellD11sProSet`; the
+    /// review notes are W9's to check by hand.
+    func testProClaimsNameExactlyD11sSet() throws {
+        // Every call in the app, so a second paywall row or locked card anywhere fails here too.
+        let app = try Self.swiftFiles(under: "Stride/Sources")
+        let paywall = try Self.captures(#"ProFeatureRow\(icon: "[^"]*", color: \.[A-Za-z]+, title: "([^"]*)", subtitle: "([^"]*)"\)"#, in: app)
+        XCTAssertEqual(paywall, [
+            ["Habit Groups", "Organize habits into collapsible groups"],
+            ["Advanced Analytics", Self.advancedAnalytics],
+            ["Weekly Review", "A look back at how your week went"],
+        ], "the paywall's feature rows (ProPaywallView)")
+
+        // Advanced Analytics only: Weekly Review is Pro, but Stats' toolbar button sells it.
+        let lockedCards = try Self.captures(#"ProLockedCard\(\s*title: "([^"]*)",\s*message: "([^"]*)""#, in: app)
+        XCTAssertEqual(lockedCards, [["Advanced Analytics", Self.advancedAnalytics]], "Statistics' ProLockedCard")
+
+        // The paywall's three rows in one line, under "Upgrade to Pro".
+        let upsell = try Self.captures(#"Text\("Upgrade to Pro"\)[\s\S]*?Text\("([^"]*)"\)"#, in: app)
+        XCTAssertEqual(upsell, [["Habit groups, advanced analytics & weekly review"]], "Settings' Pro upsell")
+
+        let keys = Set(try Self.scan().compactMap(\.key))
+        XCTAssertEqual(keys.filter { $0.lowercased().contains("best streaks") }.sorted(), [],
+                       "the free card keeps its Best Streak tile: Pro copy says \"your top 5 streaks\"")
+        // The 1.4.0 subtitle that put Weekly Review under Advanced Analytics: used nowhere, kept
+        // nowhere (the catalogs' parity test holds the other four to ja).
+        let retired = "8-week trends, insights & weekly review"
+        XCTAssertFalse(keys.contains(retired), "the source uses the retired Pro subtitle again")
+        XCTAssertFalse(try Self.japaneseKeys().contains(retired), "the retired Pro subtitle is back in the catalogs")
+    }
+
+    /// The App Store descriptions (metadata/<locale>/description.txt, which push_metadata.py sends
+    /// stripped): each fits App Store Connect's 4,000 characters, and each STRIDE PRO block lists
+    /// D11's three things under the paywall's own titles. Every bullet opens with the catalog's
+    /// "Habit Groups", "Advanced Analytics" or "Weekly Review", in that order, and the locale's
+    /// separator; Advanced Analytics names Insights and the strength chart with the catalog's words
+    /// and the top 5. The statistics paragraph names the free strength score and holds the sentence
+    /// that fixes past days in History (the plan says "fix past days in your history", never
+    /// "tap"). The English block is D11's draft copy.
+    func testStoreDescriptionsSellD11sProSet() throws {
+        // Locale, catalog, the separator between a bullet's title and its text, and the sentence
+        // that fixes past days. That sentence, not the History word: ko's 기록 is also in every
+        // 연속 기록 ("streak"), so the word alone passes with the sentence gone.
+        let locales: [(String, String, String, String)] = [
+            ("en-US", "en", " — ", "Fix past days in your history"),
+            ("es-ES", "es", ": ", "Corrige los días pasados en tu historial"),
+            ("ja", "ja", "：", "履歴から過去の日を修正"),
+            ("ko", "ko", " — ", "기록에서 지난 날을 고칠"),
+            ("zh-Hans", "zh-Hans", "：", "历史记录里修正"),
+            ("zh-Hant", "zh-Hant", "——", "歷史紀錄中修正"),
+        ]
+        let titles = ["Habit Groups", "Advanced Analytics", "Weekly Review"]
+        for (locale, language, separator, fixPastDays) in locales {
+            let url = Self.repositoryRoot.appendingPathComponent("metadata/\(locale)/description.txt")
+            let text = try String(contentsOf: url, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+            // UTF-16 units: never fewer than the characters App Store Connect counts.
+            XCTAssertLessThanOrEqual(text.utf16.count, 4000, "\(locale): App Store Connect refuses a description over 4,000 characters")
+            // The bullets without their marker.
+            let bullets = text.components(separatedBy: "\n").compactMap { line -> String? in
+                for marker in ["• ", "・", "- "] where line.hasPrefix(marker) { return String(line.dropFirst(marker.count)) }
+                return nil
+            }
+            XCTAssertEqual(bullets.count, 3, "\(locale): the STRIDE PRO block lists exactly Habit Groups, Advanced Analytics and Weekly Review")
+            guard bullets.count == 3 else { continue }
+            // The app's own words (English has no Localizable.strings: the key is the text).
+            let catalog: [String: String]
+            if language == "en" {
+                catalog = Dictionary(uniqueKeysWithValues: (titles + ["Insights", "Strength", "History"]).map { ($0, $0) })
+            } else {
+                catalog = try Self.catalog(language)
+            }
+            func word(_ key: String) throws -> String { try XCTUnwrap(catalog[key], "\(language) has no \"\(key)\"") }
+
+            // Each bullet opens with its paywall row's title; what follows the separator is its text.
+            var bodies: [String] = []
+            for (bullet, key) in zip(bullets, titles) {
+                let head = try word(key) + separator
+                XCTAssertTrue(bullet.hasPrefix(head), "\(locale): the \(key) bullet opens with the app's \"\(head)\": \(bullet)")
+                bodies.append(bullet.hasPrefix(head) ? String(bullet.dropFirst(head.count)) : bullet)
+            }
+            let analytics = bodies[1].lowercased()
+            let insights = try word("Insights").lowercased()
+            let strength = try word("Strength").lowercased()
+            let history = try word("History").lowercased()
+            XCTAssertTrue(analytics.contains(insights), "\(locale): Advanced Analytics names \(insights): \(bullets[1])")
+            XCTAssertTrue(analytics.contains(strength) && analytics.contains("5"),
+                          "\(locale): Advanced Analytics names the \(strength) chart and the top 5 streaks: \(bullets[1])")
+            XCTAssertGreaterThanOrEqual(text.lowercased().components(separatedBy: strength).count - 1, 2,
+                                        "\(locale): Strength is named twice, the free score in the statistics paragraph and the Pro chart")
+            XCTAssertTrue(fixPastDays.lowercased().contains(history), "\(locale): the fix-past-days sentence uses the app's \(history)")
+            XCTAssertTrue(text.contains(fixPastDays), "\(locale): the statistics paragraph lacks \"\(fixPastDays)\"")
+        }
+
+        let en = try String(contentsOf: Self.repositoryRoot.appendingPathComponent("metadata/en-US/description.txt"), encoding: .utf8)
+        let lines = en.components(separatedBy: "\n")
+        for line in ["Stride Pro adds three things:",
+                     "• Habit Groups — organize habits into collapsible groups",
+                     "• Advanced Analytics — Insights, the 8-week Trend chart, the Strength chart and your top 5 streaks",
+                     "• Weekly Review — a look back at how your week went"] {
+            XCTAssertTrue(lines.contains(line), "en-US lacks D11's line \"\(line)\"")
+        }
+        XCTAssertTrue(en.contains("a strength score that recovers from a missed day"), "en-US statistics paragraph")
+        XCTAssertTrue(en.contains("Fix past days in your history"), "en-US statistics paragraph")
+        XCTAssertFalse(en.lowercased().contains("best streaks"), "en-US sells \"best streaks\"; the Best Streak tile is free")
+    }
+
+    /// The Swift files under a directory of the repository, sorted by path.
+    private static func swiftFiles(under root: String) throws -> [URL] {
+        let dir = repositoryRoot.appendingPathComponent(root)
+        let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil), "\(root) is not readable")
+        return enumerator.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }.sorted { $0.path < $1.path }
+    }
+
+    /// The capture groups of every match of `pattern`, file by file, in order. Whole-line
+    /// comments are blanked first, as the scan does, so a doc comment quoting a call is no match.
+    private static func captures(_ pattern: String, in files: [URL]) throws -> [[String]] {
+        let regex = try NSRegularExpression(pattern: pattern)
+        return try files.flatMap { url -> [[String]] in
+            let text = try String(contentsOf: url, encoding: .utf8)
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .map { stripComment(String($0)) }
+                .joined(separator: "\n")
+            let ns = text as NSString
+            return regex.matches(in: text, range: NSRange(location: 0, length: ns.length)).map { match in
+                (1..<match.numberOfRanges).map { ns.substring(with: match.range(at: $0)) }
+            }
+        }
+    }
+
     // MARK: - Catalog
+
+    private static func catalog(_ language: String) throws -> [String: String] {
+        let url = repositoryRoot.appendingPathComponent("Shared/\(language).lproj/Localizable.strings")
+        return try XCTUnwrap(NSDictionary(contentsOf: url) as? [String: String], "\(language) Localizable.strings did not parse")
+    }
 
     private static func japaneseKeys() throws -> Set<String> {
         let lproj = repositoryRoot.appendingPathComponent("Shared/ja.lproj")

@@ -72,7 +72,7 @@ project is not exactly what `project.yml` generates.
 |---|---|---|
 | `StrideTests` (macOS) | `xcodebuild test -scheme StrideTests -destination platform=macOS CODE_SIGNING_ALLOWED=NO` | CI, locally |
 | `StrideTests` (iOS) | same with `-destination 'platform=iOS Simulator,name=iPhone 17 Pro'` | locally |
-| `StrideAppTests` (hosted) | `scripts/ci/run_hosted_tests.sh ["iPhone 17"]` | locally, `ship.sh` gate; CI on the preview runner |
+| `StrideAppTests` (hosted) | `scripts/ci/run_hosted_tests.sh ["iPhone 17"]` | locally, a release gate; CI on the preview runner |
 | iOS product check | `scripts/ci/build_ios_generic.sh <derived-data>` | CI, pre-push hook |
 | Server | `cd server && npm test && npm run typecheck` | CI, locally |
 | Archive / export | `scripts/verify_archive.sh` (two modes) | `build-appstore.sh`, before any upload |
@@ -80,7 +80,8 @@ project is not exactly what `project.yml` generates.
 - **`run_hosted_tests.sh`** uses an existing simulator ("iPhone 17", else the first
   iPhone) and never creates or erases one; it fails unless more than zero tests ran and none
   failed, counted from the xcresult (`xcodebuild` can exit 0 having run nothing).
-  `STRIDE_HOSTED_DERIVED_DATA` moves its derived data. Hosted tests launch the real app, so
+  Its derived data is one per simulator (README "Building locally");
+  `STRIDE_HOSTED_DERIVED_DATA` moves it. Hosted tests launch the real app, so
   anything the app does at launch happens in them too — which is why they stay off the E2E
   kit's iPhone 17 Pro (the launch removes that device's pending reminders). Outside CI it holds
   `/tmp/lock-iphone-17` for the run: someone else's lock is waited on for up to 40 min, then it
@@ -101,7 +102,51 @@ project is not exactly what `project.yml` generates.
 - **`verify_archive.sh <archive> <ios|macos>`** checks the archive's contents (appex and its
   manifest, the app's manifest, bundle id, versions, display name, Sentry);
   **`--exported <dir> <ios|macos>`** checks what is actually uploaded: signed by Apple
-  Distribution, no `get-task-allow`, associated domains matching the entitlements file.
+  Distribution, no `get-task-allow`, associated domains matching the entitlements file. Both
+  modes check the required-reason APIs each privacy manifest declares, exactly (the app's
+  UserDefaults CA92.1 and 1C8F.1, FileTimestamp C617.1 and SystemBootTime 35F9.1; the widget's
+  UserDefaults 1C8F.1 and SystemBootTime 35F9.1).
+
+## Building locally: where build output goes
+
+Trashing a build root frees nothing (the Trash is on the same volume) and makes the next build
+cold. So the scripts build into persistent roots and rebuild them incrementally, never under
+`~/Documents` (iCloud) and never under `$TMPDIR` (macOS purges it on low disk, which forced cold
+rebuilds on 2026-10-11 and 10-14).
+
+| Root | Written by | Notes |
+|---|---|---|
+| `~/Library/Caches/Stride-build/SourcePackages-<hash>` | every script below | Swift packages (sentry-cocoa, ~1.9 GB), shared; keyed by `Package.resolved` |
+| `~/Library/Developer/Xcode/DerivedData/Stride-hosted-tests`, `…-<device>` | `run_hosted_tests.sh` | one per simulator; the plain name is "iPhone 17" |
+| `~/Library/Developer/Xcode/DerivedData/Stride-prepush` | pre-push hook | `build_ios_generic.sh` |
+| `~/Library/Caches/Stride-build/sim-e2e` | `scripts/sim_e2e` (`$STRIDE_E2E_ROOT`) | `builds/current` stays; per-tag gate builds go when the release ships |
+| `~/Library/Caches/Stride-build/mac-variant` | `mac_variant/build.sh` | an upgrade gate's old version gets its own root |
+| `~/Library/Caches/Stride-build/mac-variant-release` | `mac_variant/build.sh --release` | the Release variant (gate 12) |
+| `~/Library/Caches/Stride-build/a11y-dd` | `a11y_sweep.sh` | shared by every checkout |
+
+These are not session leftovers: leave them at a session's wrap-up.
+
+- **Packages.** `scripts/ci/build_cache.sh` (`spm_cache_args`) resolves once per package set
+  (`Package.resolved` plus the project's package references) into the shared checkout, under a
+  lock, with `-onlyUsePackageVersionsFromResolvedFile` as CI does. Builds then pass
+  `-clonedSourcePackagesDirPath <it> -disableAutomaticPackageResolution`. They still rewrite its
+  `workspace-state.json`, under SwiftPM's own lock files in `$TMPDIR`, which is what lets several
+  build from it at once. CI passes its own flags; `STRIDE_SPM_DIR=off` turns it off. If the
+  resolve fails (no network, or a `Package.resolved` that no longer satisfies the project), the
+  build resolves into its own derived data as before.
+- **One derived data per checkout that builds at the same moment**, not one per agent, step or
+  round. Agents that run one after another reuse the same one. Only worktree-isolated agents that
+  build in parallel get their own, and they still take packages from the shared checkout.
+- **A workflow that calls `xcodebuild` itself** resolves once before fanning out (any script
+  above does it, or `bash -c 'source scripts/ci/build_cache.sh && spm_cache_args "$PWD"'`). Each
+  agent then runs `source scripts/ci/build_cache.sh && spm_cache_args "$PWD"` in the shell that
+  builds (warm, that is one sha256) and passes `"${SPM_ARGS[@]+"${SPM_ARGS[@]}"}"`: a bare
+  `"${SPM_ARGS[@]}"` of an empty array is an error under bash 3.2's `set -u`.
+- **Locks.** Each script above takes its derived data's lock (`build_lock_path`) around its
+  build, so two runs never share a `build.db` at once; on a signal it stops its own xcodebuild
+  before letting go. Hosted runs also hold the device's `/tmp/lock-<device>`. `a11y_sweep.sh`
+  copies the app out of its shared derived data before it lets go, and installs the copy.
+- Release archives (`build-appstore.sh`) stay cold by design and are not covered here.
 
 ## Server
 
@@ -120,15 +165,19 @@ cd server && npm ci && npm run dev      # http://localhost:3002 — debug app bu
 
 Release and App Store:
 
-- `ship.sh <version> <build>` — the whole release from one command (works over SSH with the
-  screen locked): signing probe and keychain unlock, hosted tests, `build-appstore.sh all
-  --upload`, `release.py finish`.
+- `ship.sh` — retired in 1.4.1: it refuses to run and prints the steps that replace it. It
+  defaulted to shipping 1.2.1 build 15 and submitted both platforms in one `release.py finish`,
+  while each platform now goes on its own go.
 - `build-appstore.sh [ios|macos|all] [--upload]` — archive, verify, upload dSYMs, export,
   verify the signed export; uploads only after every requested platform passed.
 - `verify_archive.sh` — the archive and export assertions above.
 - `upload_dsyms.sh <archive>…` — keep an archive's dSYMs and upload them to Sentry.
-- `release.py prepare|finish|show <version> [build]` — ASC version records, What's New in six
-  locales, attach the build, submit; idempotent per platform.
+- `release.py prepare|finish|release|cancel|show <version> [build] [--platform IOS|MAC_OS]` —
+  ASC version records, What's New in six locales, attach the build, submit, release, pull out of
+  review; idempotent per platform. `--platform` limits every command but `show` to one platform;
+  write it as two words. Any other argument (`--platform=MAC_OS`, a misspelt option, a bare
+  `MAC_OS`, one too many) is refused before any ASC call.
+  `python3 -I scripts/test_release.py` tests its parsing and the platform filter offline.
 - `push_metadata.py` — push `metadata/` to ASC; run it in the same submission as any
   description change.
 - `check_demo_account.sh` — the App Review demo account as a reviewer's device sees it
@@ -150,8 +199,9 @@ Release and App Store:
   explicit file list, and is a dry run without `--yes` (an owner-approved ASC write).
 - `screenshots.sh`, `generate_screenshots.swift` — the pre-1.4.0 App Store screenshots (AppKit
   mock images). From 1.4.0 they are captured from real builds (RELEASE-1.4.0.md D8).
-- `mac_variant/build.sh` — the macOS test variant, `yyh.stride.habittracker.mactest`: a StrideMac
-  Debug build that cannot reach the real store on this Mac. Build, preflight, launch rules:
+- `mac_variant/build.sh [--release]` — the macOS test variant, `yyh.stride.habittracker.mactest`:
+  a StrideMac Debug (or Release) build that cannot reach the real store on this Mac. The Release
+  variant talks to production. Build, preflight, launch rules:
   [scripts/mac_variant/README.md](scripts/mac_variant/README.md).
 - `a11y_sweep.sh [--size <content size>|default] [--app <Stride.app>]` — the Dynamic Type
   review artefact: every tab, Stats scrolled to each chart, and the paywall, as PNGs in
@@ -194,13 +244,15 @@ Server and ops: `rehearse_server.sh` (deploy rehearsal on a copy of production, 
    rehearsed on a copy of production before they deploy.
 2. Bump `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` in `project.yml` and regenerate;
    `scripts/release.py prepare <version>` creates the ASC version records and What's New.
-3. `scripts/ship.sh <version> <build>` — or its pieces, `build-appstore.sh all --upload` and
-   `release.py finish`.
+3. `scripts/build-appstore.sh all --upload`, then `release.py finish <version> <build>
+   --platform IOS` and, after the Mac gate, `--platform MAC_OS`, each on its own go (the
+   release's "Submission checklist").
 4. Write `RELEASE-<version>.md` in the style of [RELEASE-1.2.3.md](RELEASE-1.2.3.md): what
    shipped, why, what only rehearsal found, what was deliberately not done.
 
-Signing needs an unlocked login keychain; `ship.sh` probes it first and says so in a second
-rather than failing twenty minutes into an archive.
+Signing needs an unlocked login keychain: probe it first (`security show-keychain-info` plus a
+one-second `codesign` of a copy of `/bin/echo`; `ship.sh` prints both) rather than failing twenty
+minutes into an archive.
 
 **One-tap sign-in needs the release signing to carry associated domains.** From 1.3.0 both
 apps' entitlements claim `applinks:stride-api.colorarchive.me`, so the emailed login link opens

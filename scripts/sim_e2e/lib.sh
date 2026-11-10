@@ -2,8 +2,10 @@
 # Shared by every scripts/sim_e2e/*.sh: sourced, never run. Bash 3.2 (macOS /bin/bash).
 #
 # The kit's guarantees live here, so no script can forget one:
-#   - everything it writes lives under ONE root, $STRIDE_E2E_ROOT (default ${TMPDIR}stride-sim-e2e),
-#     never under ~/Documents (iCloud-synced), and nothing outside that root is ever removed;
+#   - everything it writes lives under ONE root, $STRIDE_E2E_ROOT (default
+#     ~/Library/Caches/Stride-build/sim-e2e), never under ~/Documents (iCloud-synced), and nothing
+#     outside that root is ever removed. Not $TMPDIR, the default until 1.4.1: macOS purges it when
+#     the disk runs low, which on 2026-10-11 took the kit's builds with it (2.7 GB rebuilt);
 #   - the only server it talks to is http://127.0.0.1:3002, a COPY of server/ it started itself;
 #   - the only simulators it touches are the two shared ones, by UDID.
 #
@@ -39,8 +41,7 @@ NODE="$(command -v node || true)"
 
 # ── The root ────────────────────────────────────────────────────────────────────────────────
 _default_root() {
-  local t="${TMPDIR:-/tmp/}"
-  echo "${t%/}/stride-sim-e2e"
+  echo "$HOME/Library/Caches/Stride-build/sim-e2e"
 }
 _ROOT_RAW="${STRIDE_E2E_ROOT:-$(_default_root)}"
 case "$_ROOT_RAW" in

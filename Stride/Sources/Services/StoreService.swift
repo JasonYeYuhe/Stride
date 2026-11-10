@@ -22,8 +22,9 @@ enum StrideProduct: String, CaseIterable {
 /// Errors the paywall shows to the user.
 enum StoreError: LocalizedError {
     /// The App Store returned the purchase, but its signed transaction failed verification on
-    /// this device (clock skew, a signature problem — or, rarely, tampering).
-    case failedVerification(underlying: Error)
+    /// this device (clock skew, a signature problem — or, rarely, tampering). `underlying` is
+    /// StoreKit's `VerificationError`.
+    case failedVerification(underlying: Error?)
 
     var errorDescription: String? {
         switch self {
@@ -49,11 +50,44 @@ final class StoreService {
         !purchasedProductIDs.isEmpty
     }
 
+    /// What Settings shows about Pro (RELEASE-1.4.1.md D12): the plan, its renewal date, a
+    /// payment problem, a subscription still renewing beside Lifetime, or when Pro ended.
+    /// **Display only**: `isPro` stays derived from `Transaction.currentEntitlements` alone, so
+    /// no status read — failed, slow or stale — can lock out an entitled user. Recomputed inside
+    /// `refreshPurchasedProducts()` (launch, foreground, Mac activation, Settings shown, the
+    /// paywall, a purchase) and so on every verified `Transaction.updates`.
+    private(set) var proStatus: ProStatus = .never
+
     @ObservationIgnored
     private var updateListenerTask: Task<Void, Error>?
+    /// The subscription group's App Store id, once read (`subscriptionGroupID()`).
+    @ObservationIgnored
+    private var subscriptionGroupID: String?
+    /// What the last status read returned: the provisional `proStatus` that follows a change of
+    /// entitlements is resolved against it until the next read comes back.
+    @ObservationIgnored
+    private var lastStatuses: [SubscriptionStatusMirror]?
+    @ObservationIgnored
+    private var lastLifetimeRevokedOn: Date?
+    /// Bumped by each refresh, so only the newest one writes the status it read: refreshes
+    /// interleave at their awaits (a foreground and a `Transaction.updates` at once).
+    @ObservationIgnored
+    private var statusReadGeneration = 0
 
-    private init() {
-        updateListenerTask = listenForTransactions()
+    private convenience init() {
+        self.init(listensForTransactions: true)
+    }
+
+    /// The app has one, `shared`. StrideAppTests make their own over an `SKTestSession`
+    /// (StoreKitStatusTests), so the host app's entitlements and status are never theirs.
+    init(listensForTransactions: Bool) {
+        if listensForTransactions { updateListenerTask = listenForTransactions() }
+    }
+
+    /// Ends the `Transaction.updates` listener (a hosted test's own instance, in tearDown).
+    func stopListeningForTransactions() {
+        updateListenerTask?.cancel()
+        updateListenerTask = nil
     }
 
     private(set) var loadError: String?
@@ -80,6 +114,15 @@ final class StoreService {
         defer { isLoading = false }
 
         let ids = Set(StrideProduct.allCases.map(\.rawValue))
+        // The latest attempt's failure. A load that ends without products reports it once
+        // (`reportProductLoad`): after the final attempt, and also when the paywall closes during
+        // the retries — they take 30 s behind a spinner, and a user who gives up first is the
+        // usual case, so "after the final attempt" alone would hear of few broken paywalls.
+        // Until 2026-10-22 none reached Sentry: a paywall that could not sell looked healthy.
+        var lastFailure: ProductLoadFailure?
+        defer {
+            if products.isEmpty, let lastFailure { Self.reportProductLoad(lastFailure, attempts: loadAttempts) }
+        }
 
         while loadAttempts < Self.maxRetries {
             guard !Task.isCancelled else { return }
@@ -87,6 +130,7 @@ final class StoreService {
             do {
                 let storeProducts = try await Product.products(for: ids)
                 if storeProducts.isEmpty {
+                    lastFailure = .noProducts
                     loadError = "No products returned by the App Store (attempt \(loadAttempts)/\(Self.maxRetries))"
                     if loadAttempts < Self.maxRetries {
                         let delay = pow(2.0, Double(loadAttempts)) // 2s, 4s, 8s, 16s
@@ -101,6 +145,7 @@ final class StoreService {
             } catch is CancellationError {
                 return
             } catch {
+                lastFailure = .error(error)
                 loadError = error.localizedDescription
                 if loadAttempts < Self.maxRetries {
                     let delay = pow(2.0, Double(loadAttempts))
@@ -140,32 +185,60 @@ final class StoreService {
 
     // MARK: - Purchase
 
+    /// True when the product was bought and granted; false for a cancel or a pending purchase
+    /// (Ask to Buy), which the paywall leaves open in silence. Throws for StoreKit's own errors and
+    /// for an unverified purchase (`StoreError.failedVerification`), which the paywall shows.
+    ///
+    /// The adapter of D12: StoreKit's result becomes a `PurchaseResultMirror`, and what it means
+    /// is `PurchaseOutcome`'s pure mapping (Shared/PurchaseOutcome.swift), pinned host-less by
+    /// PurchaseOutcomeTests and end to end by StoreKitStatusTests.
     func purchase(_ product: Product) async throws -> Bool {
-        let result = try await product.purchase()
+        let result: Product.PurchaseResult
+        do {
+            result = try await product.purchase()
+        } catch {
+            // StoreKit's own failure, which the paywall shows as "Purchase Error" and nothing
+            // recorded (2026-10-22). A cancel is not one, though it can arrive thrown as well as
+            // returned; Ask to Buy's pending never throws.
+            if !Self.isCancel(error) { Self.reportPurchaseFailure(error, productID: product.id) }
+            throw error
+        }
 
+        var verificationError: Error?
+        let mirror: PurchaseResultMirror
         switch result {
         case .success(.verified(let transaction)):
             await transaction.finish()
             await refreshPurchasedProducts()
-            return true
+            mirror = .verified(productID: transaction.productID)
 
-        case .success(.unverified(_, let verificationError)):
-            // Used to `return false` here, which the paywall treats as a quiet cancel: no alert,
+        case .success(.unverified(let transaction, let error)):
+            // This used to `return false`, which the paywall treats as a quiet cancel: no alert,
             // no dismissal, "Processing…" just vanished — for a purchase the App Store completed.
             // Apple's guidance is not to grant or finish an unverified transaction, and we
             // don't: left unfinished, StoreKit redelivers it, and it is granted if it verifies
             // then. But the user has to be told, and we have to find out.
-            Self.report(verificationError, where: "purchase")
-            throw StoreError.failedVerification(underlying: verificationError)
+            Self.report(error, where: "purchase")
+            verificationError = error
+            mirror = .unverified(productID: transaction.productID)
 
         case .userCancelled:
-            return false
+            mirror = .userCancelled
 
         case .pending:
-            return false
+            mirror = .pending
 
         @unknown default:
+            mirror = .unknown
+        }
+
+        switch PurchaseOutcome(mirror) {
+        case .purchased:
+            return true
+        case .cancelled, .pending:
             return false
+        case .failedVerification:
+            throw StoreError.failedVerification(underlying: verificationError)
         }
     }
 
@@ -189,9 +262,123 @@ final class StoreService {
 
         // This now also runs on every foreground / app activation, so don't invalidate every
         // view that reads isPro when nothing changed.
-        if purchased != purchasedProductIDs {
+        let entitlementsChanged = purchased != purchasedProductIDs
+        if entitlementsChanged {
             purchasedProductIDs = purchased
         }
+
+        // isPro is final here, before any status read: a slow or failing read never holds back
+        // a feature. When it changed, the status follows it at once, from what the last read
+        // returned; then from a fresh read. (Unchanged, the status already agrees with it, and
+        // re-resolving it from the old read would only make a row flicker.)
+        statusReadGeneration &+= 1
+        let generation = statusReadGeneration
+        if entitlementsChanged {
+            setProStatus(resolveProStatus(statuses: lastStatuses, lifetimeRevokedOn: lastLifetimeRevokedOn))
+        }
+        let statuses = await readSubscriptionStatuses()
+        var lifetimeRevokedOn: Date?
+        if purchasedProductIDs.isEmpty { lifetimeRevokedOn = await lifetimeRevocationDate() }
+        guard generation == statusReadGeneration else { return }   // a newer refresh writes
+        lastStatuses = statuses
+        lastLifetimeRevokedOn = lifetimeRevokedOn
+        setProStatus(resolveProStatus(statuses: statuses, lifetimeRevokedOn: lifetimeRevokedOn))
+    }
+
+    // MARK: - Subscription Status (D12)
+
+    /// Against the entitlements as they are NOW (`purchasedProductIDs`), never a copy taken before
+    /// an await: so `proStatus` never contradicts `isPro`.
+    private func resolveProStatus(statuses: [SubscriptionStatusMirror]?, lifetimeRevokedOn: Date?) -> ProStatus {
+        ProStatus.resolve(entitledProductIDs: purchasedProductIDs,
+                          lifetimeProductID: StrideProduct.lifetimePro.rawValue,
+                          statuses: statuses, lifetimeRevokedOn: lifetimeRevokedOn)
+    }
+
+    private func setProStatus(_ status: ProStatus) {
+        // Only on a change, as purchasedProductIDs: this runs on every foreground.
+        if status != proStatus { proStatus = status }
+    }
+
+    /// `Product.SubscriptionInfo.status(for:)` for the subscription group, mirrored; nil when
+    /// the group is unknown, the call throws, or it answers nothing verifiable. Each status whose
+    /// transaction fails verification is reported and left out, as an unverified entitlement is.
+    private func readSubscriptionStatuses() async -> [SubscriptionStatusMirror]? {
+        guard let groupID = await subscriptionGroupID() else { return nil }
+        let statuses: [Product.SubscriptionInfo.Status]
+        do {
+            statuses = try await Product.SubscriptionInfo.status(for: groupID)
+        } catch {
+            #if DEBUG
+            print("[StoreKit] subscription status unavailable: \(error)")
+            #endif
+            return nil
+        }
+        let mirrored = statuses.compactMap(Self.mirror)
+        return mirrored.isEmpty ? nil : mirrored
+    }
+
+    /// The subscription group's id as the App Store knows it, read from a product
+    /// (`product.subscription?.subscriptionGroupID`): the configuration's `stride_pro` is a local
+    /// name, not ASC's. From the products already loaded; before they are (the launch reads
+    /// entitlements first, and offline they may never load), from this Apple ID's own latest
+    /// subscription transaction, which carries the same id and is a local read — a refresh never
+    /// makes a products request. Nil for an Apple ID that never subscribed: then there is no
+    /// status to read.
+    private func subscriptionGroupID() async -> String? {
+        if let subscriptionGroupID { return subscriptionGroupID }
+        var found = products.lazy.compactMap { $0.subscription?.subscriptionGroupID }.first
+        if found == nil {
+            for product in [StrideProduct.monthlyPro, .yearlyPro] {
+                if case .verified(let transaction)? = await Transaction.latest(for: product.rawValue),
+                   let groupID = transaction.subscriptionGroupID {
+                    found = groupID
+                    break
+                }
+            }
+        }
+        subscriptionGroupID = found
+        return found
+    }
+
+    /// A Lifetime purchase refunded or revoked: its own date, for "Pro ended on" (D12). Asked only
+    /// when nothing is entitled.
+    private func lifetimeRevocationDate() async -> Date? {
+        guard case .verified(let transaction)? = await Transaction.latest(for: StrideProduct.lifetimePro.rawValue) else {
+            return nil
+        }
+        return transaction.revocationDate
+    }
+
+    /// StoreKit's status, as the pure mirror. Nil when its transaction fails verification.
+    private nonisolated static func mirror(_ status: Product.SubscriptionInfo.Status) -> SubscriptionStatusMirror? {
+        let transaction: StoreKit.Transaction
+        switch status.transaction {
+        case .verified(let verified):
+            transaction = verified
+        case .unverified(let unverified, let error):
+            report(error, where: "status \(unverified.productID)")
+            return nil
+        }
+        // Renewal info that fails verification claims nothing: no renewal date or "still renews".
+        var renewal: Product.SubscriptionInfo.RenewalInfo?
+        if case .verified(let info) = status.renewalInfo { renewal = info }
+
+        let state: SubscriptionStatusMirror.State
+        switch status.state {
+        case .subscribed: state = .subscribed
+        case .expired: state = .expired
+        case .inBillingRetryPeriod: state = .inBillingRetryPeriod
+        case .inGracePeriod: state = .inGracePeriod
+        case .revoked: state = .revoked
+        default: state = .unknown
+        }
+        return SubscriptionStatusMirror(
+            productID: transaction.productID, state: state,
+            expirationDate: transaction.expirationDate,
+            willAutoRenew: renewal?.willAutoRenew,
+            gracePeriodExpirationDate: renewal?.gracePeriodExpirationDate,
+            revocationDate: transaction.revocationDate)
     }
 
     // MARK: - Transaction Listener
@@ -230,6 +417,72 @@ final class StoreService {
         print("[StoreKit] unverified transaction (\(context)): \(error)")
         #endif
     }
+
+    // MARK: - Paywall failures (2026-10-22)
+
+    /// How a product load's latest attempt failed (`fetchProducts`).
+    private enum ProductLoadFailure {
+        /// The App Store answered with no products: none live in this storefront, or a product
+        /// set that is not configured. No StoreKit error says so.
+        case noProducts
+        case error(Error)
+    }
+
+    /// The domain `reportProductLoad` files an empty answer under, code 0.
+    private nonisolated static let noProductsDomain = "Stride.StoreProducts"
+
+    /// A product load that ended without products, once per load: the paywall said "Unable to load
+    /// subscription options" and nothing else heard of it.
+    private nonisolated static func reportProductLoad(_ failure: ProductLoadFailure, attempts: Int) {
+        var tags = ["storekit.attempts": String(attempts)]
+        switch failure {
+        case .noProducts:
+            tags["storekit.failure"] = "empty"
+            reportFailure(domain: noProductsDomain, code: 0, step: "products", tags: tags)
+        case .error(let error):
+            tags["storekit.failure"] = "error"
+            tags.merge(underlyingTags(of: error)) { $1 }
+            let ns = error as NSError
+            reportFailure(domain: ns.domain, code: ns.code, step: "products", tags: tags)
+        }
+    }
+
+    /// A purchase StoreKit failed (`purchase`): the product's id goes in the step, as `verify` and
+    /// `status` name theirs.
+    private nonisolated static func reportPurchaseFailure(_ error: Error, productID: String) {
+        let ns = error as NSError
+        reportFailure(domain: ns.domain, code: ns.code, step: "purchase \(productID)", tags: underlyingTags(of: error))
+    }
+
+    private nonisolated static func isCancel(_ error: Error) -> Bool {
+        if let storeKit = error as? StoreKitError, case .userCancelled = storeKit { return true }
+        return error is CancellationError
+    }
+
+    /// A network failure's URL error code: StoreKit's own code says only "network", and offline is
+    /// not the same problem as a timeout or a refused certificate.
+    private nonisolated static func underlyingTags(of error: Error) -> [String: String] {
+        guard let storeKit = error as? StoreKitError, case .networkError(let underlying) = storeKit else { return [:] }
+        return ["storekit.underlying_domain": NSURLErrorDomain,
+                "storekit.underlying_code": String(underlying.code.rawValue)]
+    }
+
+    /// To Sentry as AppStoreLaunch reports a store failure: a fresh NSError carrying only the domain
+    /// and code, the step and the rest as tags — nothing from the error's `userInfo`, no Apple ID,
+    /// no price. A no-op under XCTest (SentryBootstrap never starts there), in the Mac variant, and
+    /// wherever Sentry is not linked.
+    private nonisolated static func reportFailure(domain: String, code: Int, step: String,
+                                                  tags: [String: String]) {
+        #if canImport(Sentry)
+        _ = SentrySDK.capture(error: NSError(domain: domain, code: code)) { scope in
+            scope.setTag(value: step, key: "storekit.step")
+            for (key, value) in tags { scope.setTag(value: value, key: key) }
+        }
+        #endif
+        #if DEBUG
+        print("[StoreKit] \(step) failed: \(domain) \(code) \(tags)")
+        #endif
+    }
 }
 
 // MARK: - Pro Paywall View
@@ -265,11 +518,17 @@ struct ProPaywallView: View {
                     }
                     .padding(.top, 20)
 
-                    // Features (everything else — habits, reminders, widgets,
-                    // sync, quantitative & flexible habits — is free)
+                    // Features: exactly what Pro is (RELEASE-1.4.1.md D11), the same three things
+                    // as Settings' upsell and the store's STRIDE PRO block, and the same Advanced
+                    // Analytics sentence as Statistics' locked card. "Your top 5 streaks", never
+                    // "your best streaks": the free detail card keeps its Best Streak tile.
+                    // Everything else — habits, reminders, widgets, sync, measurable and flexible
+                    // habits, the Strength tile, History — is free.
+                    // LocalizationSourceScanTests.testProClaimsNameExactlyD11sSet pins the rows.
                     VStack(alignment: .leading, spacing: 16) {
                         ProFeatureRow(icon: "folder.fill", color: .blue, title: "Habit Groups", subtitle: "Organize habits into collapsible groups")
-                        ProFeatureRow(icon: "chart.line.uptrend.xyaxis", color: .green, title: "Advanced Analytics", subtitle: "8-week trends, insights & weekly review")
+                        ProFeatureRow(icon: "chart.line.uptrend.xyaxis", color: .green, title: "Advanced Analytics", subtitle: "Insights, the 8-week trend, the strength chart and your top 5 streaks")
+                        ProFeatureRow(icon: "calendar.badge.clock", color: .orange, title: "Weekly Review", subtitle: "A look back at how your week went")
                     }
                     .padding(.horizontal, 24)
 
@@ -388,6 +647,12 @@ struct ProPaywallView: View {
                 }
             }
         }
+        #if os(macOS)
+        // A ScrollView has no ideal height, and a Mac sheet sized to it is a sliver. Here, not at
+        // the call sites: Stats, Weekly Review's menu item, New Habit's groups and Settings all
+        // present it (sheet audit, 2026-10-22). History's size; the legal lines scroll.
+        .frame(minWidth: 460, idealWidth: 520, minHeight: 620)
+        #endif
     }
 
     /// "SAVE 44%": the interpolation is typed as a LocalizedStringKey here, outside the ternary

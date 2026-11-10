@@ -106,4 +106,49 @@ enum MenuCommandRules {
     static func weeklyReviewDestination(isPro: Bool) -> WeeklyReviewDestination {
         isPro ? .review : .paywall
     }
+
+    // MARK: - The menu Export, once its file is written (1.4.1)
+
+    /// How a File → Export Backup… / Export as CSV… pass ends once its file is written
+    /// (ContentView's `writeRequestedExport`, macOS; RELEASE-1.4.0.md "Follow-ups for 1.4.1").
+    enum ExportPassEnd: Equatable, Sendable {
+        /// The save panel comes up, as a sheet on the export's own window; its close clears the
+        /// request.
+        case offerPanel
+        /// Another request replaced this one, or the window closed: the file goes, and the
+        /// request — if there still is one — is not this pass's to clear.
+        case cancelled
+        /// No panel can come up on the export's own window: a sheet is up on it, or it is not on
+        /// screen. The file goes, the menu beeps, and the request is cleared.
+        case dropped
+        /// The write failed: the request is cleared, and the failure alert shows.
+        case failed
+    }
+
+    /// - Parameters:
+    ///   - wrote: the file was written.
+    ///   - cancelled: the pass was cancelled while it wrote.
+    ///   - ownWindowShowsSheet: a sheet is attached to the window whose shell asked — not to the
+    ///     key window. 1.4.0 asked the key window (`MenuCommandPress.keyWindowShowsSheet`): with
+    ///     Settings brought forward during the write, a sheet up on the main window went unseen,
+    ///     the panel never came up under it and the request stayed `.export`, so the next ⇧⌘E —
+    ///     an equal request — started nothing; and a sheet on Settings dropped a panel the main
+    ///     window had room for.
+    ///   - ownWindowIsOnScreen: that window is there and visible (not closed, not minimized).
+    static func exportPassEnd(wrote: Bool, cancelled: Bool, ownWindowShowsSheet: Bool,
+                              ownWindowIsOnScreen: Bool) -> ExportPassEnd {
+        if cancelled { return .cancelled }
+        if ownWindowShowsSheet || !ownWindowIsOnScreen { return .dropped }
+        return wrote ? .offerPanel : .failed
+    }
+
+    /// Whether the pass clears its window's request: a request no panel will ever answer must not
+    /// stay, or it swallows the next, equal one. A panel's close clears it itself; a cancelled
+    /// pass's request belongs to whatever replaced it.
+    static func clearsRequest(_ end: ExportPassEnd) -> Bool {
+        switch end {
+        case .dropped, .failed: return true
+        case .offerPanel, .cancelled: return false
+        }
+    }
 }

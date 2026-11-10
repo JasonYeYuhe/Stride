@@ -4,7 +4,13 @@
 # Sign-in is an email or nothing: if Gmail starts junking mail from stride.colorarchive.me,
 # nobody can log in and nothing on our side errors. Resend sends as
 # hello@stride.colorarchive.me (FROM_EMAIL), signs with DKIM selector `resend`, and uses
-# send.stride.colorarchive.me as the envelope sender (Amazon SES underneath). DMARC passes
+# send.stride.colorarchive.me as the envelope sender. Two return-path setups exist:
+#   - Resend's current one (Stride's own team since 2026-10-15): send.<domain> and
+#     rsend.<domain> are CNAMEs to send.forge.rmta.net / rsend.forge.rmta.net, which publish the
+#     SPF and the feedback MX themselves (so send.<domain> holds no MX or TXT of its own);
+#   - the older Amazon SES one: an MX to feedback-smtp.<region>.amazonses.com and a TXT
+#     "v=spf1 include:amazonses.com ~all" on send.<domain>.
+# Either passes; which one is in place is printed. DMARC passes
 # when SPF or DKIM passes *aligned* with the From domain; both are relaxed-aligned here
 # (same organisational domain, colorarchive.me).
 #
@@ -32,21 +38,37 @@ txt() { dig +short TXT "$1" @"$RESOLVER" | sed -e 's/" "//g' -e 's/^"//' -e 's/"
 
 command -v dig >/dev/null || { echo "dig not found"; exit 1; }
 
-# SPF — checked on the envelope sender (Return-Path), which is what receivers evaluate.
+# SPF and the feedback MX — checked on the envelope sender (Return-Path), which is what
+# receivers evaluate. dig follows a CNAME, so with Resend's current setup the TXT and MX below
+# are the CNAME target's.
+cname="$(dig +short CNAME "$BOUNCE_DOMAIN" @"$RESOLVER")"
+if [[ -n "$cname" ]]; then
+  if [[ "$cname" == *".rmta.net." ]]; then
+    pass "Return-path: $BOUNCE_DOMAIN is a CNAME to $cname (Resend-managed SPF and feedback MX)"
+    rcname="$(dig +short CNAME "r$BOUNCE_DOMAIN" @"$RESOLVER")"
+    if [[ "$rcname" == *".rmta.net." ]]; then
+      pass "Return-path: r$BOUNCE_DOMAIN is a CNAME to $rcname"
+    else
+      fail "Return-path: r$BOUNCE_DOMAIN should be a CNAME to rsend.forge.rmta.net (got: ${rcname:-none}) — Resend will not verify the domain"
+    fi
+  else
+    fail "Return-path: $BOUNCE_DOMAIN is a CNAME to $cname, which is not Resend's (*.rmta.net)"
+  fi
+fi
 spf="$(txt "$BOUNCE_DOMAIN" | grep -i '^v=spf1' || true)"
 if [[ -z "$spf" ]]; then
   fail "SPF: no v=spf1 record on $BOUNCE_DOMAIN (Resend's envelope domain)"
-elif [[ "$spf" == *"include:amazonses.com"* ]]; then
+elif [[ -n "$cname" || "$spf" == *"include:amazonses.com"* ]]; then
   pass "SPF: $BOUNCE_DOMAIN → $spf"
 else
   fail "SPF: $BOUNCE_DOMAIN does not include amazonses.com: $spf"
 fi
 
-mx="$(dig +short MX "$BOUNCE_DOMAIN" @"$RESOLVER")"
-if [[ "$mx" == *"amazonses.com"* ]]; then
+mx="$(dig +short MX "$BOUNCE_DOMAIN" @"$RESOLVER" | grep ' ' || true)"   # "<prio> <host>" lines only, not the CNAME line
+if [[ "$mx" == *"amazonses.com"* || ( -n "$cname" && "$mx" == *".rmta.net."* ) ]]; then
   pass "MX:  $BOUNCE_DOMAIN → $mx (bounce/complaint feedback reaches Resend)"
 else
-  fail "MX:  $BOUNCE_DOMAIN has no amazonses feedback MX (got: ${mx:-none}) — Resend will not verify the domain"
+  fail "MX:  $BOUNCE_DOMAIN has no Resend feedback MX (got: ${mx:-none}) — Resend will not verify the domain"
 fi
 
 # DKIM — the aligned signature that carries DMARC on its own.

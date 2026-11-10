@@ -38,6 +38,24 @@ func main() async -> Int32 {
         ("S21 account screen", scenarios.accountScreen),
         ("S22 owner unknown → Upload", scenarios.accountScreenUnknownOwnerUpload),
         ("S23 same day, two ids → uncheck", scenarios.sameDayOnTwoDevicesThenUncheck),
+        // M4 (1.4.1): History's past-day edits, RELEASE-1.4.1.md Data safety 2.
+        ("M1 past-day edit, pulled by B", scenarios.pastDayEditPulledByB),
+        ("M2 past-day untap + re-tap", scenarios.pastDayUntapAndReTap),
+        ("M3 last-writer-wins note", scenarios.lastWriterWinsNoteEdit),
+        ("M4 record before createdAt", scenarios.recordBeforeCreatedAt),
+        ("M5 stale cursor keeps the note", scenarios.staleCursorKeepsTheNote),
+        // W2 review: decision 7's day merge across devices.
+        ("M6 merge, server keeps other id", scenarios.mergeWhereTheServerKeepsTheOtherID),
+        ("M7 merge of a same-id pair", scenarios.mergeOfTwoRecordsWithOneID),
+        ("M8 merge while in flight", scenarios.mergeWhileTheDuplicateIsInFlight),
+        // X1: the day match never puts one id on two records.
+        ("M9 day match, id in use", scenarios.dayMatchNeverPutsOneIDOnTwoRecords),
+        ("M10 pull onto a same-id pair", scenarios.pullOntoASameIDPair),
+        // X2 (W10): keys a non-Gregorian device wrote before 1.4.1, repaired (DayKeyScenarios.swift).
+        ("K1 old-build keys repaired", scenarios.oldBuildKeysRepairedAndFollowedByB),
+        ("K2 both devices repair", scenarios.bothDevicesRepairTheSamePulledKeys),
+        ("K3 Islamic civil keys on Gregorian", scenarios.islamicCivilKeysRepairedOnAGregorianDevice),
+        ("K4 held keys, guard on", scenarios.heldOldBuildKeysRepairedUnderTheGuard),
         // Last: its sweep takes every tombstone in the throwaway database.
         ("S24 migrated marks, no list", scenarios.migratedMarksWithNoList),
     ]

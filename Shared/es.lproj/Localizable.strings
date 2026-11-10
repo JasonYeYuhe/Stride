@@ -249,7 +249,6 @@
 "Share streak" = "Compartir racha";
 "Share Streak" = "Compartir racha";
 "Advanced Analytics" = "Análisis avanzado";
-"8-week trends, insights & weekly review" = "Tendencias de 8 semanas, análisis y resumen semanal";
 "Unlock with Pro" = "Desbloquear con Pro";
 "8-Week Trend" = "Tendencia de 8 semanas";
 "Insights" = "Análisis";
@@ -502,3 +501,108 @@
 /* 1.4.0 (M3). Under an Export button when writing the export file failed (e.g. no disk space); on
    the Mac, also the title of an alert after File → Export Backup… / Export as CSV… failed. */
 "Couldn't create the file. Try again." = "No se pudo crear el archivo. Inténtalo de nuevo.";
+
+/* ============================================================
+   1.4.1 (M4)
+   ============================================================ */
+
+/* History (D5, D6): the sheet that shows a habit's past days in a month grid, where any day can
+   be checked, unchecked or annotated. "Edit history" is the button on a habit's Statistics card
+   and the heatmap's VoiceOver action; "Opens History" is a VoiceOver hint. In "%@, %@ of %@" the
+   arguments are the spoken date, the amount logged and the daily target. */
+"Edit history" = "Editar historial";
+"Opens History" = "Abre el historial";
+"History" = "Historial";
+"Previous Month" = "Mes anterior";
+"Next Month" = "Mes siguiente";
+"Completed" = "Completado";
+"Amount" = "Cantidad";
+"%@, %@ of %@" = "%@, %@ de %@";
+"%@, rest day" = "%@, día de descanso";
+"Has a note" = "Tiene una nota";
+
+/* Notes (D7): a note can be added only to a day that has a check-in, and new input stops at 500
+   characters. "Description" is the habit's own optional text in the habit editor. A check-in with
+   a note is never removed without asking; "Combine" merges two different notes left on one day
+   by two devices. */
+"Check in to add a note." = "Registra este día para añadir una nota.";
+"Notes can be up to 500 characters." = "Las notas pueden tener hasta 500 caracteres.";
+"Description" = "Descripción";
+"e.g., Right after breakfast" = "ej., Justo después del desayuno";
+"Remove the check-in and its note?" = "¿Quitar el registro y su nota?";
+"Remove" = "Quitar";
+"This day has more than one note. Combine them into one?" = "Este día tiene más de una nota. ¿Combinarlas en una sola?";
+"Combine" = "Combinar";
+
+/* Strength (D9, D10): a 0-100 score of how established a habit is. It rises with every check-in
+   and recovers after a miss. "Strength" is also a narrow tile label on the free Statistics card.
+   The Pro cards show its change over 30 and 90 days and the habit's five longest streaks, the one
+   still going marked "Current". */
+"Strength" = "Fuerza";
+"Strength grows with every check-in and recovers after a miss; it counts a rolling 7 days, the streak counts calendar weeks." = "La fuerza crece con cada registro y se recupera tras un fallo; cuenta los últimos 7 días, mientras que la racha cuenta semanas naturales.";
+"Strength grows with every check-in and recovers after a miss." = "La fuerza crece con cada registro y se recupera tras un fallo.";
+"30-Day Change" = "Cambio 30 días";
+"90-Day Change" = "Cambio 90 días";
+"Your Top 5 Streaks" = "Tus 5 rachas más largas";
+"Current" = "Actual";
+"No streaks yet" = "Aún no hay rachas";
+
+/* Pro claims (D11): what Advanced Analytics contains, in the locked card on Statistics and on the
+   paywall (it replaced "8-week trends, insights & weekly review", removed in 1.4.1), and the
+   paywall's subtitle for Weekly Review. "Your top 5 streaks", never "your best streaks": the free
+   card keeps its Best Streak tile. */
+"Insights, the 8-week trend, the strength chart and your top 5 streaks" = "Análisis, la tendencia de 8 semanas, el gráfico de fuerza y tus 5 rachas más largas";
+"A look back at how your week went" = "Un repaso de cómo te fue la semana";
+
+/* Subscription status in Settings (D12), on iOS and in the Mac Settings window. "Plan" is the row
+   whose value is Monthly, Yearly or Lifetime; each %@ is a date. "Manage Subscription" opens
+   Apple's subscription settings. "A subscription still renews" warns a Lifetime owner who is
+   still paying for a subscription. */
+"Plan" = "Plan";
+"Renews on %@" = "Se renueva el %@";
+"Expires on %@" = "Caduca el %@";
+"Manage Subscription" = "Gestionar suscripción";
+"Payment problem — update your payment method" = "Problema con el pago — actualiza tu método de pago";
+"A subscription still renews" = "Una suscripción sigue renovándose";
+"Pro ended on %@" = "Pro terminó el %@";
+"Resubscribe" = "Volver a suscribirse";
+
+/* Template units (D15): stored as a new habit's unit when it is added from a template, then shown
+   after any number ("3/8 glasses"), so one form that reads after 1 and after 8. They match the
+   unit hint "Unit (e.g. glasses, min, km)". */
+"glasses" = "vasos";
+"min" = "min";
+"steps" = "pasos";
+"words" = "palabras";
+"hours" = "horas";
+"km" = "km";
+
+/* Editing a habit (2026-10-15 decision 8): under the Goal and Frequency settings in edit mode only.
+   A new target or schedule re-scores every past day. */
+"Changes apply to your whole history, including streaks and strength." = "Los cambios se aplican a todo tu historial, incluidas las rachas y la fuerza.";
+
+/* 1.4.1 W4 */
+
+/* Today on a past day (D8): every habit was created after the day picked in the week strip, so
+   none is listed for it. A habit created later can still be filled in for that day from History. */
+"No habits had started by this day." = "Ningún hábito había empezado todavía este día.";
+
+/* History's note (W4 review): a button in the question that comes up when a changed note cannot be
+   saved as it is — over the 500-character cap, or on a day that holds a second, different note the
+   user does not want combined. It puts the saved note back, unchanged, and then closes History,
+   picks the other day, or makes the change that was asked for. */
+"Discard Changes" = "Descartar cambios";
+
+/* 1.4.1 W6 */
+
+/* Habit Templates (D15): the caption under a count template's name, and what VoiceOver reads as
+   the row's value — its daily goal: the number, then one of the "Template units (D15)" entries
+   ("8 glasses a day", "5 km a day", "8 hours a day"). Write the number and unit as this language's
+   template names write them ("Sleep 8hrs", "Read 30min"). */
+"%lld %@ a day" = "%lld %@ al día";
+
+/* 1.4.1, 2026-10-22 */
+
+/* Statistics' 8-week Trend: what VoiceOver reads, after the week, for a week that ended before the
+   habit existed. Nothing is drawn for it, and it must not sound like 0% or a missed week. */
+"Not started" = "Sin empezar";

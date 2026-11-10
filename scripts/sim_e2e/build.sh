@@ -14,9 +14,13 @@
 #     Stride.app-Simulated.xcent holds application-identifier (and the app group).
 #
 # Output dirs: $ROOT/builds/<label>/dd (DerivedData; label = current or the ref, / → _), log at
-# $ROOT/builds/<label>/build.log. A rebuild of the same label is incremental.
+# $ROOT/builds/<label>/build.log. A rebuild of the same label is incremental. Two builds of one
+# label wait for each other (the derived data's lock, scripts/ci/build_cache.sh). Swift packages
+# come from the shared checkout keyed by the built tree's own Package.resolved (spm_cache_args).
 # stdout: the .app path (last line). stderr: version, build, bundle id, app group, checks.
 source "$(dirname "$0")/lib.sh"
+# shellcheck source=../ci/build_cache.sh
+source "$PROJECT_DIR/scripts/ci/build_cache.sh"
 
 ARG="${1:-}"
 KEEP_WT=0
@@ -61,6 +65,16 @@ else
   LABEL="$(echo "$ARG" | tr '/' '_' | tr -cd 'A-Za-z0-9._-')"
   [[ -n "$LABEL" && "$LABEL" != "current" && "$LABEL" != "clean-worktrees" ]] || die "bad ref label '$LABEL'"
   SRC="$WT_ROOT/$LABEL"
+fi
+OUT="$ROOT/builds/$LABEL"
+DD="$OUT/dd"
+
+# One build per label at a time, from the worktree to the last check (header).
+DD_LOCK="$(build_lock_path "$DD")"
+build_lock_take "$DD_LOCK" "sim_e2e/build.sh $ARG" || die "another build of $LABEL is still running"
+trap 'build_lock_release "$DD_LOCK"' EXIT
+
+if [[ "$ARG" != "current" ]]; then
   if [[ -d "$SRC" ]]; then
     [[ "$(git -C "$SRC" rev-parse HEAD)" == "$(git -C "$PROJECT_DIR" rev-parse "$ARG^{commit}")" ]] \
       || { remove_worktree "$SRC"; }
@@ -72,9 +86,8 @@ else
 fi
 [[ -f "$SRC/Stride.xcodeproj/project.pbxproj" ]] || die "no Stride.xcodeproj in $SRC"
 
-OUT="$ROOT/builds/$LABEL"
-DD="$OUT/dd"
 mkdir -p "$OUT"
+spm_cache_args "$SRC" || die "the shared Swift package checkout stayed locked; see above"
 note "building $ARG ($SRC) → $DD (log: $OUT/build.log)"
 set +e
 xcodebuild build \
@@ -82,6 +95,7 @@ xcodebuild build \
   -sdk iphonesimulator -configuration Debug \
   -derivedDataPath "$DD" \
   -destination 'generic/platform=iOS Simulator' \
+  "${SPM_ARGS[@]+"${SPM_ARGS[@]}"}" \
   CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual PROVISIONING_PROFILE_SPECIFIER= \
   >"$OUT/build.log" 2>&1
 STATUS=$?

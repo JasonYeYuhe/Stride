@@ -18,13 +18,7 @@ final class StoreServiceTests: XCTestCase {
     /// The paywall also labels products by substring (`contains("lifetime")`,
     /// `contains("yearly")`), so each marker must match exactly one id.
     func testProductIdsMatchTheStoreKitConfigurationAndThePaywallLabels() throws {
-        // The hosted test runs in the simulator, which reads the Mac's filesystem, so the
-        // configuration is read from the repo rather than copied into a bundle.
-        let url = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Stride/Configuration.storekit")
-        let config = try XCTUnwrap(
-            JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        let config = try storeKitConfiguration()
 
         var configured = Set<String>()
         for product in config["products"] as? [[String: Any]] ?? [] {
@@ -40,5 +34,28 @@ final class StoreServiceTests: XCTestCase {
         XCTAssertEqual(Set(ids), configured)
         XCTAssertEqual(ids.filter { $0.contains("lifetime") }, [StrideProduct.lifetimePro.rawValue])
         XCTAssertEqual(ids.filter { $0.contains("yearly") }, [StrideProduct.yearlyPro.rawValue])
+    }
+
+    /// SKTestSession reads the configuration's `version` as the `{major, minor}` object Xcode
+    /// writes. With the hand-written `"version" : 2` the file had until 1.4.1, a session on
+    /// iOS 18.5 loaded nothing — no error, no products — so every StoreKitStatusTests case skipped
+    /// on every runtime and none had ever run (W5-SK-1; a `{major 2}` or `{major 4}` object loads).
+    /// This needs no StoreKit, so it holds on the iOS 26.3+ runtimes where SKTestSession cannot
+    /// load any file at all.
+    func testTheStoreKitConfigurationHasTheVersionObjectSKTestSessionReads() throws {
+        let config = try storeKitConfiguration()
+        let version = try XCTUnwrap(config["version"] as? [String: Any],
+                                    "\"version\" must be {\"major\", \"minor\"}, not \(config["version"] ?? "missing")")
+        XCTAssertNotNil(version["major"] as? Int, "version.major")
+        XCTAssertNotNil(version["minor"] as? Int, "version.minor")
+    }
+
+    /// The hosted test runs in the simulator, which reads the Mac's filesystem, so the
+    /// configuration is read from the repo rather than copied into a bundle.
+    private func storeKitConfiguration() throws -> [String: Any] {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Stride/Configuration.storekit")
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
     }
 }

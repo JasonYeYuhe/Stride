@@ -342,3 +342,178 @@ final class LocalDataFlowTests: XCTestCase {
         return try DataBackup.snapshot(of: source.mainContext)
     }
 }
+
+/// Settings' Delete Habit (`SettingsHabitDeletion`, RELEASE-1.4.1.md D4; W5): anything else
+/// pending is saved first, then the delete is saved, rolled back on a failure, and tombstoned only
+/// after success. Hosted, through its injected environment: an in-memory store's mainContext (as
+/// Settings' own), a save that can be made to fail, a deletion queue on scratch defaults — nothing
+/// reaches the host app's queue or reminders.
+@MainActor
+final class SettingsHabitDeletionTests: XCTestCase {
+
+    private final class Recorder {
+        var events: [String] = []
+        /// How many of the next saves throw before reaching the context.
+        var failingSaves = 0
+    }
+
+    private struct InjectedSaveFailure: Error {}
+
+    private var container: ModelContainer!
+    private var context: ModelContext!
+    private var recorder: Recorder!
+    private var scratch: ScratchDefaults!
+    private var queue: SyncDeletionQueue!
+
+    override func setUp() {
+        super.setUp()
+        let schema = Schema([Habit.self, HabitRecord.self, HabitGroup.self])
+        container = try! ModelContainer(for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        context = container.mainContext
+        recorder = Recorder()
+        scratch = ScratchDefaults("habitdelete.local")
+        queue = SyncDeletionQueue(local: scratch.defaults, shared: nil)
+    }
+
+    override func tearDown() {
+        scratch.remove()
+        queue = nil
+        scratch = nil
+        recorder = nil
+        context = nil
+        container = nil
+        super.tearDown()
+    }
+
+    private func environment() -> SettingsHabitDeletion.Environment {
+        let recorder = self.recorder!, queue = self.queue!
+        return SettingsHabitDeletion.Environment(
+            save: { context in
+                recorder.events.append("save")
+                if recorder.failingSaves > 0 {
+                    recorder.failingSaves -= 1
+                    throw InjectedSaveFailure()
+                }
+                try context.save()
+            },
+            trackDeletedHabit: { id in
+                recorder.events.append("habit \(id)")
+                queue.trackHabit(id)
+            },
+            trackDeletedEntry: { id in
+                recorder.events.append("entry \(id)")
+                queue.trackEntry(id)
+            },
+            removeReminder: { id in recorder.events.append("reminder \(id.uuidString)") })
+    }
+
+    /// A habit with two days of check-ins, saved.
+    private func habit(_ name: String = "Meditate") throws -> Habit {
+        let habit = Habit(name: name)
+        context.insert(habit)
+        for daysAgo in [1, 2] {
+            habit.records.append(HabitRecord(date: Date().addingTimeInterval(Double(-daysAgo) * 86_400)))
+        }
+        try context.save()
+        return habit
+    }
+
+    /// What the store holds, through a context of its own: habits by name, and the record count.
+    private func stored() throws -> (habits: [String], records: Int) {
+        let fresh = ModelContext(container)
+        let habits = try fresh.fetch(FetchDescriptor<Habit>()).map(\.name).sorted()
+        return (habits, try fresh.fetchCount(FetchDescriptor<HabitRecord>()))
+    }
+
+    private func delete(_ habit: Habit) -> SettingsHabitDeletion.Outcome {
+        SettingsHabitDeletion.delete(habit, in: context, environment: environment())
+    }
+
+    func testADeleteIsSavedThenTombstonedThenItsReminderGoes() throws {
+        let meditate = try habit()
+        let habitID = meditate.id.uuidString
+        let entryIDs = meditate.records.map(\.id.uuidString).sorted()
+
+        XCTAssertEqual(delete(meditate), .deleted)
+
+        XCTAssertEqual(recorder.events, ["save", "habit \(habitID)"] + entryIDs.map { "entry \($0)" }
+                       + ["reminder \(habitID)"])
+        XCTAssertEqual(try stored().habits, [])
+        XCTAssertEqual(try stored().records, 0)
+        XCTAssertEqual(queue.pending(), SyncDeletionQueue.Batch(habits: [habitID], entries: entryIDs))
+        XCTAssertFalse(context.hasChanges)
+    }
+
+    /// Data safety 1's case for this path: inject a save failure, then perform an unrelated
+    /// successful save. The habit and its records are still in the store, nothing is pending, and
+    /// the deletion queue is empty — the delete did not land later with no tombstone, and no
+    /// tombstone went out for a habit that is still here.
+    func testAFailedSaveRollsBackAndQueuesNothing() throws {
+        let meditate = try habit()
+        recorder.failingSaves = 1
+
+        XCTAssertEqual(delete(meditate), .saveFailed)
+
+        XCTAssertEqual(recorder.events, ["save"], "no tombstone, no reminder removed")
+        XCTAssertFalse(context.hasChanges, "nothing pending")
+        XCTAssertFalse(meditate.isDeleted)
+        XCTAssertEqual(meditate.records.count, 2)
+        XCTAssertEqual(queue.pending(), SyncDeletionQueue.Batch())
+
+        context.insert(Habit(name: "Read"))
+        try context.save()
+
+        XCTAssertEqual(try stored().habits, ["Meditate", "Read"])
+        XCTAssertEqual(try stored().records, 2, "the habit's records survived the next save")
+        XCTAssertEqual(queue.pending(), SyncDeletionQueue.Batch())
+    }
+
+    /// Something else unsaved in mainContext is saved first, so the rollback could only ever take
+    /// back the deletion.
+    func testPendingChangesAreSavedBeforeTheDelete() throws {
+        let meditate = try habit()
+        let read = try habit("Read")
+        read.name = "Read 30 Minutes"
+        XCTAssertTrue(context.hasChanges)
+
+        XCTAssertEqual(delete(meditate), .deleted)
+
+        XCTAssertEqual(Array(recorder.events.prefix(3)), ["save", "save", "habit \(meditate.id.uuidString)"])
+        XCTAssertEqual(try stored().habits, ["Read 30 Minutes"])
+    }
+
+    /// The first save fails: nothing is deleted, nothing queued, and the other change is neither
+    /// lost nor rolled back — it stays pending, as it was.
+    func testAFailedSaveOfTheOtherChangesDeletesNothing() throws {
+        let meditate = try habit()
+        let read = try habit("Read")
+        read.name = "Read 30 Minutes"
+        recorder.failingSaves = 1
+
+        XCTAssertEqual(delete(meditate), .saveFailed)
+
+        XCTAssertEqual(recorder.events, ["save"])
+        XCTAssertFalse(meditate.isDeleted)
+        XCTAssertEqual(read.name, "Read 30 Minutes", "the other change is kept")
+        XCTAssertTrue(context.hasChanges, "and still pending")
+        XCTAssertEqual(queue.pending(), SyncDeletionQueue.Batch())
+        XCTAssertEqual(try stored().habits, ["Meditate", "Read"])
+    }
+
+    /// A check-in another context deleted and saved still looks live in `habit.records`: its id is
+    /// not read (that faults, W1 "Crash safety") and not tombstoned again; the live one is.
+    func testARecordAnotherContextDeletedIsNotReadOrTombstoned() throws {
+        let meditate = try habit()
+        let ids = meditate.records.map(\.id)
+        let other = ModelContext(container)
+        let goneID = ids[0]
+        try other.delete(model: HabitRecord.self, where: #Predicate { $0.id == goneID })
+        try other.save()
+
+        XCTAssertEqual(delete(meditate), .deleted)
+
+        XCTAssertEqual(queue.pending().entries, [ids[1].uuidString])
+        XCTAssertEqual(queue.pending().habits, [meditate.id.uuidString])
+        XCTAssertEqual(try stored().records, 0)
+    }
+}

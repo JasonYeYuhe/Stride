@@ -480,7 +480,7 @@ final class SyncEngineTests: XCTestCase {
 
         let untap = HabitCheckIn.tap(walk, on: day(0), in: phone.context)
         try phone.save()
-        let untapped = try XCTUnwrap(untap.deletedRecordID)
+        let untapped = try XCTUnwrap(untap.deletedRecordIDs.first)
         phone.queue.trackEntry(untapped)
         XCTAssertEqual(untapped, y.uuidString)
         expectSynced(await phone.sync())
@@ -506,7 +506,7 @@ final class SyncEngineTests: XCTestCase {
             guard request.endpoint == .push else { return }
             let untap = HabitCheckIn.tap(walk, on: checkedDay, in: phone.context)
             try? phone.save()
-            if let id = untap.deletedRecordID { phone.queue.trackEntry(id) }
+            untap.deletedRecordIDs.forEach(phone.queue.trackEntry)
         }
         expectSynced(await phone.sync())
         server.onRequest = nil

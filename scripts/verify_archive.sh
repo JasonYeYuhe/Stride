@@ -36,6 +36,9 @@
 #     (1.4.0): the App Sandbox, the app group, and on the Mac files.user-selected.read-write,
 #     whose absence through 1.3.1 left Restore's open panel dead (check_all_entitlements). On
 #     macOS the file must still declare the sandbox and that key.
+# Both modes: the required-reason APIs each shipped privacy manifest declares, exactly
+# (check_required_reasons, 1.4.1): the app's, and on iOS the widget's. The archive is checked
+# because it is what was built; the export because it is what is uploaded.
 set -uo pipefail   # no -e: report every failed check, then exit on the count
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -58,6 +61,93 @@ if [[ "$PLATFORM" == "ios" ]]; then
 else
     ENTITLEMENTS="$PROJECT_DIR/StrideMac/StrideMac.entitlements"
 fi
+
+# The required-reason API declarations each manifest must hold, as "<category> <reason>" with the
+# category's NSPrivacyAccessedAPICategory prefix dropped. Exactly these: a reason missing is an
+# API the binary uses without saying why (App Store Connect's ITMS-91053 mail, then a
+# rejection), and one more than these is a reason nobody here checked the code for. A change to
+# either manifest changes this list in the same commit, after grepping what the target compiles.
+#
+# The app (Stride and StrideMac ship the same Stride/PrivacyInfo.xcprivacy):
+#   UserDefaults CA92.1    UserDefaults.standard: settings, the sync cursor, the local queue;
+#   UserDefaults 1C8F.1    the App Group suite shared with the widget;
+#   FileTimestamp C617.1   DataExportService.removeExportFiles reads .creationDateKey and
+#                          .contentModificationDateKey of its own export directories in tmp
+#                          (since 1.4.0, declared since 1.4.1);
+#   SystemBootTime 35F9.1  StoreOpenRetry (Shared/SharedModelContainer.swift) times its retries
+#                          with ProcessInfo.systemUptime (since 1.3.1, declared since 1.4.1).
+# The widget (StrideWidget/PrivacyInfo.xcprivacy; it compiles Shared/ but SentryBootstrap.swift,
+# and none of Stride/Sources):
+#   UserDefaults 1C8F.1    it queues a deleted entry id in the App Group suite;
+#   SystemBootTime 35F9.1  Shared/SharedModelContainer.swift is compiled in.
+APP_REQUIRED_REASONS="UserDefaults CA92.1
+UserDefaults 1C8F.1
+FileTimestamp C617.1
+SystemBootTime 35F9.1"
+WIDGET_REQUIRED_REASONS="UserDefaults 1C8F.1
+SystemBootTime 35F9.1"
+
+# declared_reasons <PrivacyInfo.xcprivacy>  — "<category> <reason>" per declared reason, one per
+# line, sorted, the category's NSPrivacyAccessedAPICategory prefix dropped. Fails on a file that
+# is not a plist or whose NSPrivacyAccessedAPITypes is not the documented array of dictionaries.
+declared_reasons() {
+    plutil -convert json -o - "$1" 2>/dev/null | /usr/bin/python3 -I -c '
+import json, sys
+prefix = "NSPrivacyAccessedAPICategory"
+lines = []
+for entry in json.load(sys.stdin).get("NSPrivacyAccessedAPITypes", []):
+    category = entry["NSPrivacyAccessedAPIType"]
+    if category.startswith(prefix):
+        category = category[len(prefix):]
+    reasons = entry["NSPrivacyAccessedAPITypeReasons"]
+    if not reasons:
+        lines.append(category + " <no reason>")
+    lines.extend(category + " " + reason for reason in reasons)
+print("\n".join(sorted(lines)))
+' 2>/dev/null
+}
+
+# check_required_reasons <label> <PrivacyInfo.xcprivacy> <expected lines>
+# Every expected "<category> <reason>" declared, and nothing else. Prints one ✓/✗ line per
+# expected reason and one ✗ per unexpected one.
+check_required_reasons() {
+    local label="$1" manifest="$2" expected="$3" declared line
+    if [[ ! -f "$manifest" ]]; then
+        fail "$label: no PrivacyInfo.xcprivacy at $manifest, so no required-reason API is declared"
+        return
+    fi
+    if ! declared="$(declared_reasons "$manifest")"; then
+        fail "$label: could not read NSPrivacyAccessedAPITypes from $manifest"
+        return
+    fi
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        if grep -qxF "$line" <<<"$declared"; then
+            pass "$label: privacy manifest declares $line"
+        else
+            fail "$label: privacy manifest does not declare $line (NSPrivacyAccessedAPICategory${line% *} with reason ${line#* })"
+        fi
+    done <<<"$expected"
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        if ! grep -qxF "$line" <<<"$expected"; then
+            fail "$label: privacy manifest declares $line, which verify_archive.sh does not expect — check the code, then update *_REQUIRED_REASONS"
+        fi
+    done <<<"$declared"
+}
+
+# check_manifest_reasons <app> — both modes: the app's manifest, and on iOS the widget's.
+check_manifest_reasons() {
+    local app="${1%/}"
+    if [[ "$PLATFORM" == "ios" ]]; then
+        check_required_reasons "Stride.app" "$app/PrivacyInfo.xcprivacy" "$APP_REQUIRED_REASONS"
+        check_required_reasons "appex" "$app/PlugIns/StrideWidgetExtension.appex/PrivacyInfo.xcprivacy" \
+            "$WIDGET_REQUIRED_REASONS"
+    else
+        check_required_reasons "Stride.app (macOS)" "$app/Contents/Resources/PrivacyInfo.xcprivacy" \
+            "$APP_REQUIRED_REASONS"
+    fi
+}
 
 # check_signature <signed .app>  — mode (2); see the header.
 check_signature() {
@@ -183,6 +273,7 @@ if [[ "$MODE" == "exported" ]]; then
         exit 1
     fi
     check_signature "$APP"
+    check_manifest_reasons "$APP"
     if (( CHECK_FAILED > 0 )); then
         echo "  ✗ $CHECK_FAILED check(s) failed — this export must not be uploaded."
         exit 1
@@ -222,6 +313,7 @@ case "$PLATFORM" in
         check_macos_app "$APP"
         ;;
 esac
+check_manifest_reasons "$APP"
 
 if (( CHECK_FAILED > 0 )); then
     echo "  ✗ $CHECK_FAILED check(s) failed — this archive must not be uploaded."

@@ -5,6 +5,11 @@
     scripts/push_metadata.py 1.3.0 --app-info       # ...and the app name / subtitle
     scripts/push_metadata.py 1.3.0 --cancel-review  # pull a version out of review first
 
+Files per locale: description.txt, keywords.txt, promotional_text.txt (both platforms), and
+optionally promotional_text.macos.txt, which the MAC_OS record gets instead. The shared text
+advertises widgets, and the Mac app has none (the widget extension is iOS-only), so since 1.4.1
+every locale has a Mac one (RELEASE-1.4.1.md, owner decision of 2026-10-21).
+
 It never submits. Submitting is scripts/release.py finish <version> <build>, which checks
 that the submission actually holds the version (release.py header). This script used to
 cancel any submission waiting for review and then submit every editable version itself —
@@ -129,8 +134,8 @@ def cancel_submission(version_id):
         return False
 
 
-def push_metadata(version_id):
-    """Push all localized metadata for a version."""
+def push_metadata(version_id, platform):
+    """Push all localized metadata for a version of `platform` (IOS or MAC_OS)."""
     locs = get(f"/appStoreVersions/{version_id}/appStoreVersionLocalizations")
     existing = {l["attributes"]["locale"]: l["id"] for l in locs.get("data", [])}
     print(f"  Existing localizations: {list(existing.keys())}")
@@ -144,10 +149,16 @@ def push_metadata(version_id):
         desc_file = os.path.join(locale_dir, "description.txt")
         kw_file = os.path.join(locale_dir, "keywords.txt")
         promo_file = os.path.join(locale_dir, "promotional_text.txt")
+        mac_promo_file = os.path.join(locale_dir, "promotional_text.macos.txt")
+        if platform == "MAC_OS" and os.path.exists(mac_promo_file):
+            promo_file = mac_promo_file
 
         desc = open(desc_file).read().strip() if os.path.exists(desc_file) else ""
         kw = open(kw_file).read().strip() if os.path.exists(kw_file) else ""
         promo = open(promo_file).read().strip() if os.path.exists(promo_file) else ""
+        if len(promo) > 170:
+            sys.exit(f"  ✗ {asc_locale} {os.path.basename(promo_file)} is {len(promo)} characters "
+                     f"(ASC allows 170); nothing more was pushed")
         if len(kw) > 100:
             print(f"  WARNING: {asc_locale} keywords are {len(kw)} chars (max 100), truncating")
             kw = kw[:100]
@@ -193,11 +204,17 @@ def push_metadata(version_id):
 def push_app_info(app_id):
     """Push localized app name and subtitle via appInfoLocalizations."""
     infos = get(f"/apps/{app_id}/appInfos")
-    info_list = infos.get("data", [])
-    if not info_list:
-        print("  No appInfo found, skipping name/subtitle push.")
+    # Not info_list[0]: while a version is being prepared the app has two appInfos, the live one
+    # (READY_FOR_DISTRIBUTION, whose name ASC refuses to change: 409 "The field 'name' can not
+    # be modified in the current state", 2026-10-22) and the editable one the new version made.
+    editable = [i for i in infos.get("data", [])
+                if i["attributes"].get("state", i["attributes"].get("appStoreState"))
+                in ("PREPARE_FOR_SUBMISSION", "DEVELOPER_REJECTED", "REJECTED")]
+    if len(editable) != 1:
+        print(f"  {len(editable)} editable appInfos (want 1), skipping name/subtitle push. "
+              "Run release.py prepare <version> first.")
         return
-    info_id = info_list[0]["id"]
+    info_id = editable[0]["id"]
     locs = get(f"/appInfos/{info_id}/appInfoLocalizations")
     existing = {l["attributes"]["locale"]: l["id"] for l in locs.get("data", [])}
     print(f"  Existing appInfo localizations: {list(existing.keys())}")
@@ -286,11 +303,13 @@ def main():
             print(f"  Not editable ({new_state}), skipping.")
             continue
         print("  Pushing version metadata...")
-        push_metadata(vid)
-        if "--app-info" in flags:
-            print("  Pushing app name & subtitle...")
-            push_app_info(app_id)
+        push_metadata(vid, platform)
         pushed += 1
+
+    # Once, not per version record: the name and subtitle belong to the app, not to a platform.
+    if "--app-info" in flags and pushed:
+        print("\nPushing app name & subtitle...")
+        push_app_info(app_id)
 
     print(f"\nPushed metadata to {pushed} version record(s) of {target}. Nothing was submitted; "
           f"submit with: scripts/release.py finish {target} <build>")

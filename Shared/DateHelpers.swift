@@ -29,11 +29,61 @@ enum HabitCalendar {
     /// returned 0 for every "Specific days" habit. UTC and positive offsets
     /// (Asia/Tokyo, Europe/*) are unaffected, which is why the whole suite
     /// stayed green — the bug was invisible from the machine it was written on.
+    ///
+    /// The Y/M/D are always Gregorian (`dayCalendar`), whatever calendar the device uses.
     static func dayKey(for date: Date = Date(), localCalendar: Calendar = .current) -> Date {
         if isDayKey(date) { return date }
-        let c = localCalendar.dateComponents([.year, .month, .day], from: date)
+        let c = dayCalendar(localCalendar).dateComponents([.year, .month, .day], from: date)
         return utc.date(from: DateComponents(year: c.year, month: c.month, day: c.day))
             ?? utc.startOfDay(for: date)
+    }
+
+    /// The calendar a day-key takes its year, month and day from: `calendar` itself when it is
+    /// Gregorian, otherwise a Gregorian calendar in `calendar`'s time zone (X2,
+    /// docs/X2-non-gregorian-day-keys.md).
+    ///
+    /// Builds 1.2.0–1.4.0 read the Y/M/D in the DEVICE's calendar and wrote them as a Gregorian
+    /// date: on a phone set to the Japanese calendar 2026-10-15 was stored, synced and backed up as
+    /// 0008-10-15 (Reiwa 8), on a Buddhist one (Thailand's region default) as 2569-10-15, on a
+    /// Hebrew one as 5787-02-04. Every key's weekday was wrong, so "specific days" and Monday weeks
+    /// broke, and calendars whose months differ from Gregorian ones merged some days and skipped
+    /// others. The device's calendar is for display only — symbols, day numbers, titles — and for
+    /// its time zone, which decides where a day starts. Weekday NUMBERING (1 = Sunday) is the same
+    /// in every calendar, so nothing else is copied. `DayKeyRepair` puts the keys those builds
+    /// wrote back on their real days. Measured 0.47 µs a call against 0.62 µs before, so no cache.
+    static func dayCalendar(_ calendar: Calendar) -> Calendar {
+        if calendar.identifier == .gregorian { return calendar }
+        var gregorian = Calendar(identifier: .gregorian)
+        gregorian.timeZone = calendar.timeZone
+        return gregorian
+    }
+
+    /// Whether builds before 1.4.1 already wrote correct keys under `calendar`: Gregorian, or ISO
+    /// 8601, whose year, month and day are Gregorian's. Any other calendar wrote keys that
+    /// `DayKeyRepair` has to put back (and the widget waits for it, `ExtensionStoreOpen`).
+    static func wroteGregorianKeys(_ calendar: Calendar) -> Bool {
+        calendar.identifier == .gregorian || calendar.identifier == .iso8601
+    }
+
+    /// The first real day a stored key can name: 2025-01-01, before Stride existed (its first
+    /// commit is 2026-03-27) and the floor of History's backfill (D8). A key before it — or more
+    /// than two days after today — is one a non-Gregorian device wrote (`DayKeyRepair`), never a
+    /// real check-in; the strength walk and History never reach past it.
+    static let firstRealDayKey: Date = utc.date(from: DateComponents(year: 2025, month: 1, day: 1))!
+
+    /// `firstRealDayKey` as a day number (whole days since 1970-01-01): 20089.
+    static let firstRealDayNumber = Int(firstRealDayKey.timeIntervalSince1970 / 86_400)
+
+    /// How far after today a key can still be a real day: a device in a zone already on tomorrow,
+    /// or a check-in a top-up dated by UTC (D13), is one day ahead; one more for margin.
+    static let realDaysAfterToday = 2
+
+    /// The day numbers a stored key can name on the day `todayNumber`:
+    /// [`firstRealDayNumber`, today + `realDaysAfterToday`]. Empty when the clock says today is
+    /// before the floor (a clock that is badly wrong): then nothing is taken for a stray key.
+    static func realDayNumbers(todayNumber: Int) -> ClosedRange<Int>? {
+        let last = todayNumber + realDaysAfterToday
+        return firstRealDayNumber <= last ? firstRealDayNumber...last : nil
     }
 
     /// Day-key for an instant the SYSTEM supplied — a notification's delivery date, a response's
@@ -47,8 +97,10 @@ enum HabitCalendar {
     /// design review's one blocker; invisible from UTC+9). Use this for instants and `dayKey(for:)`
     /// for values that may already be keys — never the other way round: re-reading a stored key
     /// here would move it back a day in the Americas, the bug `dayKey(for:)` documents.
+    ///
+    /// Gregorian Y/M/D in `calendar`'s time zone (`dayCalendar`).
     static func dayKey(forInstant instant: Date, calendar: Calendar = .current) -> Date {
-        let c = calendar.dateComponents([.year, .month, .day], from: instant)
+        let c = dayCalendar(calendar).dateComponents([.year, .month, .day], from: instant)
         return utc.date(from: DateComponents(year: c.year, month: c.month, day: c.day))
             ?? utc.startOfDay(for: instant)
     }
@@ -89,23 +141,11 @@ extension Date {
         Calendar.current.isDateInToday(self)
     }
 
-    var shortWeekday: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "EEE"
-        return formatter.string(from: self)
-    }
-
-    var dayNumber: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "d"
-        return formatter.string(from: self)
-    }
-
-    var monthYear: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MMMM yyyy"
-        return formatter.string(from: self)
-    }
+    // 1.4.1 (D10) deleted `shortWeekday`, `dayNumber` and `monthYear`: nothing called them, and
+    // each built a DateFormatter per call with a fixed pattern and no locale, so any new caller
+    // would have drawn English in every language ("MMMM yyyy" read "September 2026" on a
+    // Japanese-picked app). Names come from `appCalendar`; dates from a FormatStyle with
+    // `appLocale`.
 
     static func daysInRange(from startDate: Date, to endDate: Date) -> [Date] {
         let calendar = Calendar.current

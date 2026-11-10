@@ -1,5 +1,6 @@
 {
   "identifier" : "yyh.stride.habittracker.storekit",
+  "nonRenewingSubscriptions" : [],
   "products" : [
     {
       "displayPrice" : "19.99",
@@ -17,6 +18,7 @@
       "type" : "NonConsumable"
     }
   ],
+  "settings" : {},
   "subscriptionGroups" : [
     {
       "id" : "stride_pro",
@@ -75,5 +77,8 @@
     }
   ],
   "type" : "Default",
-  "version" : 2
+  "version" : {
+    "major" : 4,
+    "minor" : 0
+  }
 }

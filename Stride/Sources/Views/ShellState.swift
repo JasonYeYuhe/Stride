@@ -137,6 +137,12 @@ enum ShellRequest: Hashable, Identifiable {
     case weeklyReview
     /// File → Export Backup… / Export as CSV…: written first, then a save panel (D3, D6).
     case export(Export)
+    /// A habit's History, opened on `day` (RELEASE-1.4.1.md D6): the detail card's Edit history
+    /// button, a heatmap cell (D5), the grid's VoiceOver action, and a noted widget row (D7). A
+    /// shell sheet, so it survives a size-class crossing and never pushes into the shared
+    /// stack. The habit's id, never the model object (as `statsHabitID`): HabitHistoryView
+    /// re-resolves it at commit and dismisses when the habit is gone.
+    case history(habitID: UUID, day: Date)
 
     enum Export: Hashable {
         case json
@@ -158,7 +164,7 @@ enum ShellRequest: Hashable, Identifiable {
     /// menu Export brings with it (W6).
     var isSheet: Bool {
         switch self {
-        case .newHabit, .weeklyReview: return true
+        case .newHabit, .weeklyReview, .history: return true
         case .export: return false
         }
     }
@@ -206,6 +212,23 @@ extension View {
     func shellReadableWidth(_ regular: Bool) -> some View {
         frame(maxWidth: regular ? ShellLayout.readableWidth : nil)
             .frame(maxWidth: regular ? .infinity : nil)
+    }
+
+    /// A sheet's root on iPad (iOS 18 and later): the page size, nearly the screen's height,
+    /// instead of the form sheet's, about 580 × 650 pt even on a 13-inch iPad — which cut History's
+    /// day editor and the account screen's last button in half at the default size (gate 8). An
+    /// iPhone's sheet is the page size already; iOS 17 and the Mac keep their sheets as they were.
+    @ViewBuilder
+    func pageSizedSheet() -> some View {
+        #if os(iOS)
+        if #available(iOS 18.0, *) {
+            presentationSizing(.page)
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
     }
 }
 

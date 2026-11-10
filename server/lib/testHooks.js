@@ -4,15 +4,23 @@ const express = require("express");
 /**
  * Test-only routes, for `scripts/sync_rehearsal.sh` — never for production.
  *
- * The one hook today is `POST /__test/sweep-tombstones {olderThanDays}`, which runs the real
- * `sweepStaleData({tombstoneRetentionDays})` from db.js. M2's acceptance needs "a tombstone
- * swept on the test server" (DEV-PLAN-1.3.md, M2 → sync_rehearsal.sh, *(review 2)*): Full
- * resync and `snapshot_required` on a device still holding a row another device deleted must
- * leave it deleted even after the tombstone that answers `tombstoned` is gone — the day
- * sweeping returns behind a ≥ 1.3.1 426 floor. Production never sweeps tombstones today
- * (index.js calls sweepStaleData() with no retention), so without this switch that scenario
- * could only be rehearsed by editing SQLite behind the server's back, which would not run the
- * sweep code production will run.
+ * Two hooks:
+ * - `POST /__test/sweep-tombstones {olderThanDays}` runs the real
+ *   `sweepStaleData({tombstoneRetentionDays})` from db.js. M2's acceptance needs "a tombstone
+ *   swept on the test server" (DEV-PLAN-1.3.md, M2 → sync_rehearsal.sh, *(review 2)*): Full
+ *   resync and `snapshot_required` on a device still holding a row another device deleted must
+ *   leave it deleted even after the tombstone that answers `tombstoned` is gone — the day
+ *   sweeping returns behind a ≥ 1.3.1 426 floor. Production never sweeps tombstones today
+ *   (index.js calls sweepStaleData() with no retention), so without this switch that scenario
+ *   could only be rehearsed by editing SQLite behind the server's back, which would not run the
+ *   sweep code production will run.
+ * - `POST /__test/entry-date-guard {enabled}` switches routes/sync.js's entry-date guard
+ *   (entryDateOk, X2) off or back on for this process. Off, a push stores entries on any date,
+ *   as the server did before the guard was deployed on 2026-10-20: the rehearsal's K1–K3 seed
+ *   the non-Gregorian keys a pre-1.4.1 build pushed back then, so the 1.4.1 repair is rehearsed
+ *   on rows the server really holds, through the real push. The state is one flag,
+ *   `app.locals.testEntryDateGuardOff`; sync.js skips the guard only when it is exactly `true`,
+ *   and only this hook sets it, so a process without the hooks mounted always runs the guard.
  *
  * Unreachable in production — three gates, and any one of them is enough:
  * 1. `NODE_ENV` must be exactly `"test"`. Production is started with `NODE_ENV=production`
@@ -71,6 +79,18 @@ function mountTestHooks(app, db, env = process.env) {
     // Any age: the rehearsal sweeps tombstones minutes old (db.js MIN_TOMBSTONE_RETENTION_DAYS).
     const swept = db.sweepStaleData({ tombstoneRetentionDays: days, belowCursorHorizon: true });
     res.json({ ok: true, swept });
+  });
+  router.post("/entry-date-guard", (req, res) => {
+    const enabled = req.body && req.body.enabled;
+    if (typeof enabled !== "boolean") {
+      return res.status(400).json({ error: "enabled must be a boolean" });
+    }
+    app.locals.testEntryDateGuardOff = !enabled;
+    // Loud for the same reason as the mount line: entries on any date are stored while it is off.
+    console.warn(enabled
+      ? "[test-hooks] entry-date guard ON"
+      : "[test-hooks] entry-date guard OFF — pushes store entries on any date, as before 2026-10-20");
+    res.json({ ok: true, enabled });
   });
   app.use("/__test", router);
   // Loud on purpose: a server log that shows this line anywhere but a test run is a bug.
