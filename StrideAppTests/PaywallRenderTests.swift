@@ -213,9 +213,9 @@ final class PaywallRenderTests: XCTestCase {
 
     // MARK: - The bar
 
-    /// The window `show` draws in, in screen coordinates, where `accessibilityFrame` is. A window
-    /// wider than the simulator's screen (the iPad sheet on an iPhone) is centred on it, so its
-    /// origin is not zero: PR #12's CI drew the 704-pt sheet from x = -151 on a 402-pt screen.
+    /// The window `show` draws in, in screen coordinates, where `accessibilityFrame` is. `show`
+    /// sizes the window to the frame under test, so the 704 × 1000 iPad sheet is the whole window
+    /// even on an iPhone runner (in the scene-sized window PR #12's CI drew it centred and cut off).
     private func container(of window: UIWindow) -> CGRect {
         UIAccessibility.convertToScreenCoordinates(window.bounds, in: window)
     }
@@ -226,6 +226,7 @@ final class PaywallRenderTests: XCTestCase {
         for size in [Self.phone, Self.padSheet] {
             let window = try show(.trial, size: size)
             let what = "\(Int(size.width)) × \(Int(size.height)) pt"
+            XCTAssertEqual(window.bounds.size, size, "precondition: \(what) is the whole window")
             try await waitUntil("\(what): the bar") {
                 ["cta", "terms", "termsOfUse", "privacyPolicy"].allSatisfy {
                     !(self.element("paywall.bar.\($0)", in: window)?.accessibilityFrame.isEmpty ?? true)
@@ -364,8 +365,9 @@ final class PaywallRenderTests: XCTestCase {
 
     // MARK: - Hosting
 
-    /// The paywall of `fixture` in a `size` frame at the window's top left, in a window of its own
-    /// (reused across calls in one test).
+    /// The paywall of `fixture` in a `size` frame, in a window of its own of that size (reused
+    /// across calls in one test). The window is not the scene's: a 704-pt sheet in a 402-pt iPhone
+    /// window overflows it on every side, and nothing past the window's edge is "on screen".
     private func show(_ fixture: PaywallFixture, trigger: PaywallTrigger = .settings, size: CGSize = phone,
                       dynamicType: DynamicTypeSize = .large, onUnlock: @escaping () -> Void = {}) throws -> UIWindow {
         let view = ProPaywallView(trigger: trigger, fixture: fixture, onUnlock: onUnlock)
@@ -378,11 +380,13 @@ final class PaywallRenderTests: XCTestCase {
         let controller = UIHostingController(rootView: AnyView(view))
         if let window {
             window.rootViewController?.dismiss(animated: false)
+            window.frame = CGRect(origin: .zero, size: size)
             window.rootViewController = controller
             return window
         }
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(origin: .zero, size: size)
         window.rootViewController = controller
         window.makeKeyAndVisible()
         self.window = window
