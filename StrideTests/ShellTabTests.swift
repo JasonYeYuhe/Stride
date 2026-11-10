@@ -133,11 +133,16 @@ final class ShellTabTests: XCTestCase {
         }
     }
 
-    /// A request issued while one of the shell's sheets is up (or asked for) is dropped; with
-    /// none up it is taken.
-    func testAnIssuedRequestIsDroppedUnderAShellSheet() {
-        XCTAssertTrue(MenuCommandRules.takesIssuedRequest(whileShowingShellSheet: false))
-        XCTAssertFalse(MenuCommandRules.takesIssuedRequest(whileShowingShellSheet: true))
+    /// The issue rule's three cases: one of the shell's sheets on screen → dropped; the window
+    /// presenting anything else (a view's sheet, the account screen, an alert) → refused; nothing
+    /// presented → taken, which replaces a request still set but never shown — the input that
+    /// used to block every issuer ("asked for" counted as "up"), and is no input at all now.
+    func testAnIssuedRequestIsTakenOnlyWithNothingPresented() {
+        let take = MenuCommandRules.takesIssuedRequest
+        XCTAssertFalse(take(true, true), "a shell sheet on screen (the window presents it): dropped")
+        XCTAssertFalse(take(true, false), "a shell sheet on screen, whatever the window reports: dropped")
+        XCTAssertFalse(take(false, true), "another presentation (Share, the account screen, an alert): refused")
+        XCTAssertTrue(take(false, false), "nothing on screen: taken, a pending request replaced")
     }
 
     /// With no main window focused (Settings in front, or no window), only Window → Stride — the

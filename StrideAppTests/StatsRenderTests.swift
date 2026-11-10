@@ -676,13 +676,18 @@ extension StatsRenderTests {
 
     /// "Stride Pro has N insights about this habit" counts exactly the lines InsightsCard draws
     /// for the same stats — through InsightsCard's own `lines(for:)`, so the two cannot drift —
-    /// and is not shown when it would say 0. The blurred strength preview is out of VoiceOver's
-    /// reach: the card speaks its title, message, the count line and its button, and no number
-    /// but the message's own and the count — none of the 8 weekly scores it draws.
+    /// and is not shown when it would say 0.
+    ///
+    /// Also a guard on what the card speaks (one element: the Button merges its children): no
+    /// number but the message's own and the count. Today the preview draws only shapes, which are
+    /// no element and add nothing to the label, so this cannot catch a hidden preview being made
+    /// visible; it fails when any spoken number — a score or a date added to the preview or
+    /// anywhere in the card without hiding it — reaches the label. The preview's own claim (no
+    /// readable value) is `testThePreviewDrawsLevelsNotScores`.
     ///
     /// The users of `testInsightsSayNothingToAUserWhoNeverMisses`: one who never misses (no
     /// line), and one who missed a Tuesday (Toughest on Tuesday, Down vs last week: 2 lines).
-    func testTheLockedCardCountsInsightsCardsLinesAndItsPreviewSaysNoNumber() async throws {
+    func testTheLockedCardCountsInsightsCardsLines() async throws {
         let created = Self.key(5, 1)
         let may = Self.keys(from: created, count: 31)
         let neverHabit = try habit("Read", created: created, checkedIn: may)
@@ -728,9 +733,28 @@ extension StatsRenderTests {
             XCTAssertEqual(label.contains(countLine), expected >= 1,
                            "\(name): the count line only with 1 or more: \(label)")
             XCTAssertEqual(numbers(in: label), numbers(in: message) + (expected >= 1 ? [expected] : []),
-                           "\(name): no number from the preview, only the message's and the count: \(label)")
-            XCTAssertTrue(elements(in: window) { self.identifier(of: $0) == "stats.lockedPreview" }.isEmpty,
-                          "\(name): the preview is hidden from VoiceOver")
+                           "\(name): the card speaks only the message's numbers and the count: \(label)")
         }
+    }
+
+    /// The preview draws levels, not scores (D12): each week against the series' own highest, in
+    /// three steps, so the tallest bar is always full height whatever the score, and weeks a few
+    /// points apart look the same. Two habits whose scores differ by a factor draw identical
+    /// previews; nothing absolute (the free Strength tile's number) calibrates them.
+    func testThePreviewDrawsLevelsNotScores() {
+        XCTAssertEqual(StrengthShapePreview.levels([0, 0, 0]), [0, 0, 0], "nothing yet: all flat")
+        XCTAssertEqual(StrengthShapePreview.levels([0, 0.1, 0.2, 0.3]), [0, 1, 2, 3])
+        XCTAssertEqual(StrengthShapePreview.levels([0, 0.25, 0.5, 0.75]), [0, 1, 2, 3],
+                       "scaled to the series' own highest: the same shape as the line above")
+        XCTAssertEqual(StrengthShapePreview.levels([0.70, 0.72, 0.74, 0.76]), [3, 3, 3, 3],
+                       "weeks a few points apart cannot be told apart")
+        XCTAssertEqual(StrengthShapePreview.levels([0.9, 0.3]), StrengthShapePreview.levels([0.6, 0.2]),
+                       "no absolute value survives")
+        let real = [0.12, 0.3, 0.41, 0.55, 0.62, 0.7, 0.73, 0.8]
+        let drawn = StrengthShapePreview.levels(real)
+        XCTAssertEqual(drawn.count, real.count)
+        XCTAssertTrue(drawn.allSatisfy { (0...StrengthShapePreview.levelCount).contains($0) })
+        XCTAssertLessThanOrEqual(Set(drawn).count, StrengthShapePreview.levelCount + 1, "at most 4 heights for 8 weeks")
+        XCTAssertEqual(drawn.last, StrengthShapePreview.levelCount, "the highest week is always full height")
     }
 }

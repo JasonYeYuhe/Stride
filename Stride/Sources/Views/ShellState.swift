@@ -62,29 +62,68 @@ final class ShellState {
     /// sheet turning into the review under it.
     ///
     /// - Returns: whether a request was set: not for Pro on the locked card (nothing to sell), nor
-    ///   while one of the shell's sheets is up (`issue(_:)`).
+    ///   while the window presents something (`issue(_:)`).
     @discardableResult
     func issue(_ issuer: MenuCommandRules.ProIssuer, isPro: Bool) -> Bool {
         guard let destination = MenuCommandRules.destination(for: issuer, isPro: isPro) else { return false }
         return issue(ShellRequest(destination))
     }
 
-    /// Sets `new` as the window's request, unless one of the shell's sheets is up or asked for:
-    /// then the press is dropped and nothing is left behind (`MenuCommandRules.takesIssuedRequest`
-    /// says why it is neither queued nor put in place of what is up).
+    /// Sets `new` as the window's request — replacing one still set but not on screen — unless
+    /// one of the shell's sheets is on screen or the window presents anything else (a view's own
+    /// sheet, the account screen, an alert): then the press is refused and nothing is left behind
+    /// to pop up later (`MenuCommandRules.takesIssuedRequest`).
     @discardableResult
     func issue(_ new: ShellRequest) -> Bool {
-        guard MenuCommandRules.takesIssuedRequest(whileShowingShellSheet: request?.isSheet == true) else { return false }
+        guard MenuCommandRules.takesIssuedRequest(shellSheetOnScreen: sheetOnScreen != nil,
+                                                  windowPresenting: presentation.isPresenting)
+        else { return false }
         request = new
         return true
     }
 
-    /// The shell's paywall's Continue, once Pro is unlocked (D8): the request it carries replaces
-    /// it — the review that was asked for — or, with none, the paywall just closes. The paywall
-    /// dismisses itself first, and that dismissal clears the request (ContentView's
-    /// `sheetRequest`), so this sets the resume after it, never under it.
+    /// The shell's paywall's Continue, once Pro is unlocked (D8), and its close when the user
+    /// turns out to be entitled already (a cold start's late entitlement): the request it carries
+    /// replaces it — the review that was asked for — or, with none, the paywall just closes. The
+    /// paywall dismisses itself first, and that dismissal clears the request (`sheetDismissed`),
+    /// so this sets the resume after it, never under it.
     func continueAfterUnlock(resume: ShellRequest?) {
         request = resume
+    }
+
+    // MARK: - What is on screen (ContentView reports it)
+
+    /// The window this shell is in, for `issue`: whether it presents anything at all.
+    /// ContentView hands it the window (`WindowPresentation.Reader`).
+    let presentation = WindowPresentation()
+
+    /// The shell request whose sheet is on screen now: set when its content appears, cleared when
+    /// it goes. Never a request merely set — one SwiftUI could not present must not block the
+    /// next press.
+    @ObservationIgnored private(set) var sheetOnScreen: ShellRequest?
+    /// The last shell request whose sheet appeared, kept after it goes, for `sheetDismissed`.
+    @ObservationIgnored private var lastShownSheet: ShellRequest?
+
+    /// ContentView: `request`'s sheet appeared.
+    func sheetAppeared(_ shown: ShellRequest) {
+        sheetOnScreen = shown
+        lastShownSheet = shown
+    }
+
+    /// ContentView: `request`'s sheet went (dismissed or replaced). Only its own: a replacement's
+    /// sheet can appear before the old one's disappearance is reported.
+    func sheetDisappeared(_ gone: ShellRequest) {
+        if sheetOnScreen == gone { sheetOnScreen = nil }
+    }
+
+    /// ContentView's sheet binding was set to nil: a shell sheet was dismissed. It clears the
+    /// request that sheet showed, never one already set in its place: Continue dismisses the
+    /// paywall and then sets the review it resumes, and should the dismissal's nil ever arrive
+    /// after that it would clear the review before it showed. A request whose sheet never
+    /// appeared yet is the dismissed one (nothing else was shown).
+    func sheetDismissed() {
+        guard let current = request, current.isSheet else { return }
+        if lastShownSheet == nil || lastShownSheet == current { request = nil }
     }
 
     #if DEBUG

@@ -210,8 +210,8 @@ struct StatsView: View {
         .help("Weekly Review")
         #if os(iOS)
         // An iPad keyboard's ⇧⌘R (D12). Not on the Mac, whose menu owns it (a second binding
-        // would be a duplicate), nor on an iPhone. The shell drops a press that arrives under
-        // one of its sheets (`ShellState.issue`).
+        // would be a duplicate), nor on an iPhone. The shell refuses a press that arrives while the
+        // window presents anything — Share below, a shell sheet, an alert (`ShellState.issue`).
         .keyboardShortcut(UIDevice.current.userInterfaceIdiom == .pad
                           ? KeyboardShortcut("r", modifiers: [.command, .shift]) : nil)
         #endif
@@ -775,28 +775,51 @@ struct ProLockedCard: View {
 }
 
 /// D12's locked-card preview: the shape of the user's own 8-week strength (StrengthCard's bars,
-/// `HabitStats.weeklyStrength`), blurred so that no value can be read off it, with no numbers,
-/// no dates and no axis. VoiceOver skips it: it is a picture of what Pro shows, and what it
-/// would say is the numbers it hides.
+/// `HabitStats.weeklyStrength`), with no numbers, no dates and no axis, drawn so that no week's
+/// value can be read off it:
+/// - **relative, not absolute:** each week against the series' own highest, so the tallest bar
+///   is always full height and the free Strength tile cannot calibrate the scale;
+/// - **three levels** (`levels`), never the score itself: a week reads as low, middle or high;
+/// - **one colour**, the same opacity for every bar (opacity would encode the score again);
+/// - **heavily blurred**, wider than a bar, so no edge can be measured.
+/// VoiceOver skips it: it is a picture of what Pro shows, and what it would say is the numbers
+/// it hides.
 struct StrengthShapePreview: View {
     /// Each week's score, 0…1, oldest first.
     let weeks: [Double]
 
+    /// The number of heights a bar can take above 0.
+    static let levelCount = 3
+
+    /// Each week as a level: 0 for a week with no strength (before the habit, or nothing yet),
+    /// else 1…`levelCount` by its share of the series' highest week, rounded up. Every week 0
+    /// draws every bar at level 0.
+    static func levels(_ weeks: [Double]) -> [Int] {
+        guard let top = weeks.max(), top > 0 else { return weeks.map { _ in 0 } }
+        return weeks.map { score in
+            guard score > 0 else { return 0 }
+            // Less a hair, so a share that is exactly a step (a third, two thirds) does not round up
+            // to the next one through floating-point noise (0.1 / 0.3 × 3 is 1.0000000000000002).
+            let steps = score / top * Double(levelCount) - 1e-9
+            return min(levelCount, max(1, Int(steps.rounded(.up))))
+        }
+    }
+
     var body: some View {
+        let height = ProLockedCard.previewHeight
         HStack(alignment: .bottom, spacing: 6) {
-            ForEach(weeks.indices, id: \.self) { i in
+            ForEach(Array(Self.levels(weeks).enumerated()), id: \.offset) { _, level in
                 RoundedRectangle(cornerRadius: 3)
-                    .fill(Color.green.opacity(0.35 + 0.5 * weeks[i]))
-                    .frame(width: 14, height: max(4, CGFloat(weeks[i]) * ProLockedCard.previewHeight))
+                    .fill(Color.green.opacity(0.45))
+                    .frame(width: 14, height: level == 0 ? 6 : height * CGFloat(level) / CGFloat(Self.levelCount))
             }
         }
-        .frame(height: ProLockedCard.previewHeight, alignment: .bottom)
-        // Wide enough to blend neighbouring bars and soften every top edge: the rise and fall
-        // stay, a bar's height cannot be measured.
-        .blur(radius: 5, opaque: false)
-        .padding(4)
+        .frame(height: height, alignment: .bottom)
+        .padding(8)
+        // Wider than a bar and its gap: neighbouring bars run together and every top edge is a
+        // gradient; only the rise and fall stay.
+        .blur(radius: 10, opaque: false)
         .accessibilityHidden(true)
-        .accessibilityIdentifier("stats.lockedPreview")
     }
 }
 

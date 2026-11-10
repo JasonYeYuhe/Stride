@@ -303,8 +303,11 @@ final class ShellTests: XCTestCase {
         try await waitUntil("the dismissal clears the request") { shell.request == nil }
     }
 
-    /// Today's card's request, for a free user, opens the paywall with `.today` (its subtitle),
-    /// and for Pro the review — each issued with the entitlement of its own press.
+    /// Today's card's request, for a free user, latches the paywall with `.today` — that request
+    /// is the assertion that tells it from the Weekly Review button's: `.today` and
+    /// `.weeklyReview` share their subtitle and feature order (PaywallRenderTests), so the screen
+    /// only shows that a paywall is up. For Pro, the review — each issued with the entitlement of
+    /// its own press.
     func testTodaysRequestOpensTheTodayPaywall() async throws {
         let shell = ShellState(launchArguments: [])
         shell.paywallFixture = .trial
@@ -312,16 +315,17 @@ final class ShellTests: XCTestCase {
         try await waitUntil("Today is created") { shell.tabCreations[.today] == 1 }
         let lastMonday = try lastWeeksMonday()
 
-        shell.issue(.todayWeekCard(lastWeek: lastMonday), isPro: false)
+        XCTAssertTrue(shell.issue(.todayWeekCard(lastWeek: lastMonday), isPro: false))
+        XCTAssertEqual(shell.request, .paywall(trigger: .today, resume: .weeklyReview(week: lastMonday)),
+                       "the trigger is `.today`, not the button's `.weeklyReview`")
         try await waitUntil("the paywall is presented") { self.host?.presentedViewController != nil }
         let paywall = try XCTUnwrap(host?.presentedViewController)
-        try await waitUntil("Today's subtitle") {
-            self.elements(in: paywall.view) { self.identifier(of: $0) == "paywall.subtitle" }.first?.accessibilityLabel
-                == appLocalized("See how your week went")
+        try await waitUntil("a paywall, not the review") {
+            self.elements(in: paywall.view) { self.identifier(of: $0) == "paywall.subtitle" }.first != nil
         }
-        XCTAssertEqual(shell.request, .paywall(trigger: .today, resume: .weeklyReview(week: lastMonday)))
+        XCTAssertEqual(shell.sheetOnScreen, shell.request, "the latched paywall is what is on screen")
         try await dismissSheet()
-        try await waitUntil("cleared") { shell.request == nil }
+        try await waitUntil("cleared") { shell.request == nil && shell.sheetOnScreen == nil }
 
         shell.issue(.todayWeekCard(lastWeek: lastMonday), isPro: true)
         XCTAssertEqual(shell.request, .weeklyReview(week: lastMonday))
@@ -342,7 +346,9 @@ final class ShellTests: XCTestCase {
 
         let history = ShellRequest.history(habitID: secondID, day: Date())
         shell.request = history
-        try await waitUntil("History is presented") { self.host?.presentedViewController != nil }
+        try await waitUntil("History is on screen") {
+            self.host?.presentedViewController != nil && shell.sheetOnScreen == history
+        }
         let sheet = try XCTUnwrap(host?.presentedViewController)
 
         XCTAssertFalse(shell.issue(.weeklyReviewButton, isPro: true), "dropped under History")
@@ -352,7 +358,9 @@ final class ShellTests: XCTestCase {
         XCTAssertTrue(host?.presentedViewController === sheet, "and still the sheet on screen")
 
         try await dismissSheet()
-        try await waitUntil("History's dismissal clears the request") { shell.request == nil }
+        try await waitUntil("History's dismissal clears the request and what is on screen") {
+            shell.request == nil && shell.sheetOnScreen == nil
+        }
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertNil(host?.presentedViewController, "nothing queued behind it")
 
@@ -360,6 +368,118 @@ final class ShellTests: XCTestCase {
         try await waitUntil("the review is presented") { self.host?.presentedViewController != nil }
         try await dismissSheet()
         try await waitUntil("cleared") { shell.request == nil }
+    }
+
+    /// The window presenting something that is not the shell's — Statistics' Share sheet, the
+    /// account screen, an alert; here a plain modal — refuses a press: SwiftUI cannot present the
+    /// shell's sheet over it, and a request left set popped up by itself when the other one
+    /// closed. Nothing is set, nothing pops up afterwards, and once it is gone the press is taken.
+    func testARequestIssuedWhileTheWindowPresentsSomethingElseIsRefused() async throws {
+        let shell = ShellState(launchArguments: [])
+        _ = try await hostShell(shell)
+        try await waitUntil("Today is created") { shell.tabCreations[.today] == 1 }
+        let host = try XCTUnwrap(self.host)
+
+        let other = UIViewController()
+        host.present(other, animated: false)
+        try await waitUntil("the other modal is up") { host.presentedViewController === other }
+        XCTAssertNil(shell.sheetOnScreen, "not a shell sheet")
+        XCTAssertTrue(shell.presentation.isPresenting, "the shell sees its window presenting")
+
+        XCTAssertFalse(shell.issue(.weeklyReviewButton, isPro: false), "refused under another presentation")
+        XCTAssertNil(shell.request, "nothing set, so nothing to pop up later")
+
+        other.dismiss(animated: false)
+        try await waitUntil("the other modal is gone") { host.presentedViewController == nil }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(host.presentedViewController, "nothing popped up when it closed")
+
+        XCTAssertTrue(shell.issue(.weeklyReviewButton, isPro: true), "taken once nothing is up")
+        try await waitUntil("the review is presented") { host.presentedViewController != nil }
+        try await dismissSheet()
+        try await waitUntil("cleared") { shell.request == nil }
+    }
+
+    /// A request still set but never on screen (SwiftUI could not present it, or no window ever
+    /// showed it) does not block the next press: it is replaced. Before, any set sheet request
+    /// counted as "up" and every issuer was dropped silently from then on.
+    func testAPendingRequestThatIsNotOnScreenIsReplaced() {
+        let shell = ShellState(launchArguments: [])   // no window: nothing can be on screen
+        shell.request = .history(habitID: secondID, day: Date())
+        XCTAssertNil(shell.sheetOnScreen)
+
+        XCTAssertTrue(shell.issue(.weeklyReviewButton, isPro: true))
+        XCTAssertEqual(shell.request, .weeklyReview(week: nil), "replaced, not swallowed")
+    }
+
+    /// What is on screen follows each sheet's appearance and disappearance, the replaced one's
+    /// late disappearance included; and a dismissal clears only the request that was shown, so
+    /// the review Continue set in the paywall's place survives the paywall's dismissal.
+    func testWhatIsOnScreenAndWhatADismissalClears() {
+        let shell = ShellState(launchArguments: [])
+        let paywall = ShellRequest.paywall(trigger: .weeklyReview, resume: .weeklyReview(week: nil))
+        let review = ShellRequest.weeklyReview(week: nil)
+
+        shell.request = paywall
+        shell.sheetAppeared(paywall)
+        XCTAssertEqual(shell.sheetOnScreen, paywall)
+
+        // Continue: the resume is set first, the paywall's dismissal arrives after it.
+        shell.continueAfterUnlock(resume: review)
+        shell.sheetDismissed()
+        XCTAssertEqual(shell.request, review, "a late dismissal of the paywall does not clear the review")
+
+        // The review appears before the paywall's disappearance is reported.
+        shell.sheetAppeared(review)
+        shell.sheetDisappeared(paywall)
+        XCTAssertEqual(shell.sheetOnScreen, review, "the paywall's late disappearance leaves the review")
+
+        // The review closed: dismissed, then gone.
+        shell.sheetDismissed()
+        XCTAssertNil(shell.request)
+        shell.sheetDisappeared(review)
+        XCTAssertNil(shell.sheetOnScreen, "nothing on screen blocks the next press")
+
+        // The usual order for Continue: the dismissal first, then the resume.
+        shell.request = paywall
+        shell.sheetAppeared(paywall)
+        shell.sheetDismissed()
+        XCTAssertNil(shell.request)
+        shell.continueAfterUnlock(resume: review)
+        XCTAssertEqual(shell.request, review)
+    }
+
+    /// Finding 2 (Pro at a cold start): `isPro` reads false until the entitlements load, so ⇧⌘R
+    /// then latches the paywall with the review to resume. When the entitlement arrives from
+    /// elsewhere the paywall closes itself — and must still resume (`onEntitled`, which the shell
+    /// wires to the same `continueAfterUnlock` as Continue). Unit-level: no DEBUG `isPro` seam
+    /// exists in StoreService (W2's file), so the arrival's rule is pinned here and the resume it
+    /// drives is the shell call above; the hosted wiring is ContentView's `shellPaywall`.
+    func testAnEntitlementFromElsewhereClosesThePaywallAndResumes() {
+        typealias R = ProPaywallView.EntitlementResponse
+        for phase in [PaywallPhase.loading, .loadFailed(.noProducts), .ready, .restore(.nothingFound), .purchaseFailed] {
+            XCTAssertEqual(ProPaywallView.entitlementArrived(phase: phase, isPurchasing: false, isRestoring: false),
+                           R.closeAndResume, "\(phase): from elsewhere, close and resume")
+            XCTAssertEqual(ProPaywallView.entitlementArrived(phase: phase, isPurchasing: true, isRestoring: false),
+                           R.stay, "\(phase): its own purchase answers it (unlocked + Continue)")
+            XCTAssertEqual(ProPaywallView.entitlementArrived(phase: phase, isPurchasing: false, isRestoring: true),
+                           R.stay, "\(phase): its own restore answers it")
+        }
+        XCTAssertEqual(ProPaywallView.entitlementArrived(phase: .pending, isPurchasing: false, isRestoring: false),
+                       R.unlockInPlace, "Ask to Buy approved: unlocked in place, Continue resumes")
+        for phase in [PaywallPhase.purchasing, .unlocked] {
+            XCTAssertEqual(ProPaywallView.entitlementArrived(phase: phase, isPurchasing: false, isRestoring: false),
+                           R.stay, "\(phase)")
+        }
+
+        // The resume it runs: the shell's paywall, latched before the entitlements loaded.
+        let shell = ShellState(launchArguments: [])
+        XCTAssertTrue(shell.issue(.weeklyReviewButton, isPro: false), "Pro, but not loaded yet")
+        guard case .paywall(_, let resume)? = shell.request else { return XCTFail("the paywall was latched") }
+        shell.sheetAppeared(shell.request!)
+        shell.sheetDismissed()                       // the paywall closes itself
+        shell.continueAfterUnlock(resume: resume)    // onEntitled
+        XCTAssertEqual(shell.request, .weeklyReview(week: nil), "ends on the review, as 1.4.1 did")
     }
 
     /// The Monday that starts last week, local time: what Today's card passes.

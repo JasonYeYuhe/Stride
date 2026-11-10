@@ -161,17 +161,24 @@ enum MenuCommandRules {
         }
     }
 
-    /// Whether a request a control in the window issues is taken while one of the shell's own
-    /// sheets is up (or asked for and not yet on screen): no. It is dropped, never queued and
-    /// never put in place of what is up — the same rule a history link and the Mac's menu follow
-    /// under a sheet (StrideApp.present, `actsUnderSheet`). Replacing would throw away what the
-    /// sheet holds (History's edit, a purchase under way); queueing would pop the sheet up long
-    /// after the press, when the other one closes. The case that reaches it: ⇧⌘R on an iPad
-    /// keyboard, which reaches Statistics' toolbar button under a sheet through the responder
-    /// chain. Continue on the shell's paywall is not issued: it replaces its own sheet with the
-    /// request it carries (`ShellState.continueAfterUnlock`).
-    static func takesIssuedRequest(whileShowingShellSheet showing: Bool) -> Bool {
-        !showing
+    /// Whether a request a control in the window issues is taken (D8):
+    /// - **one of the shell's sheets is on screen:** dropped, never queued and never put in its
+    ///   place. Replacing would throw away what the sheet holds (History's edit, a purchase under
+    ///   way); queueing would pop the sheet up long after the press, when the other one closes;
+    /// - **the window presents anything else** — a view's own sheet (Statistics' Share), the
+    ///   account-choice sheet, an alert: refused, for the same reason. SwiftUI cannot present
+    ///   the shell's sheet over it, and a request it could not present stayed set and popped up
+    ///   by itself once the other one closed (measured for history links, StrideApp.present);
+    /// - **otherwise taken**, replacing any request still set but not on screen (one SwiftUI
+    ///   never presented): a request that is not showing must never swallow the next press.
+    ///
+    /// The same rule as a history link and the Mac's menu under a sheet (StrideApp.present,
+    /// `actsUnderSheet`). The case that reaches it from a control: ⇧⌘R on an iPad keyboard, which
+    /// reaches Statistics' toolbar button under a sheet through the responder chain. Continue on
+    /// the shell's paywall is not issued: it replaces its own sheet with the request it carries
+    /// (`ShellState.continueAfterUnlock`).
+    static func takesIssuedRequest(shellSheetOnScreen: Bool, windowPresenting: Bool) -> Bool {
+        !shellSheetOnScreen && !windowPresenting
     }
 
     // MARK: - The menu Export, once its file is written (1.4.1)

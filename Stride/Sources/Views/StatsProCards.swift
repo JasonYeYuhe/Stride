@@ -383,6 +383,8 @@ struct InsightsCard: View {
     /// The card's lines for `stats`, in order; none: the card draws nothing. Static so that
     /// Statistics' locked card counts the very lines this card would draw ("Stride Pro has N
     /// insights about this habit", RELEASE-1.4.2.md D12; extracted by W4, unchanged).
+    /// Real insights only: an empty-state or placeholder line (D7's "Not enough recent check-ins
+    /// to compare") belongs in the card's body, not here, or the locked card would sell it.
     static func lines(for stats: HabitStats) -> [(icon: String, text: LocalizedStringKey)] {
         var out: [(String, LocalizedStringKey)] = []
         let symbols = appCalendar.weekdaySymbols // index 0 = Sunday

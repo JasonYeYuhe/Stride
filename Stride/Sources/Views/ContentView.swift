@@ -10,8 +10,6 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     // No StoreService here: what a request presents was decided when it was issued (D8), so the
     // shell never reads `isPro`, and a purchase redraws nothing of it.
-    /// The shell request whose sheet is on screen, set as its content appears (`sheetRequest`).
-    @State private var presentedSheet: ShellRequest?
     // `-paywall` opens the Pro paywall on launch so scripts/a11y_sweep.sh can capture it at every
     // text size without tapping through a Pro-locked card. DEBUG-only on purpose: launch arguments
     // cannot reach a store build anyway (only Xcode, simctl and XCUITest pass them), but compiling
@@ -74,8 +72,13 @@ struct ContentView: View {
             // paywall a free user buys in is not torn down when the card under it turns Pro.
             .sheet(item: sheetRequest) { request in
                 requestedSheet(request)
-                    .onAppear { presentedSheet = request }
+                    // What is on screen, for the shell's issue rule and its dismissal
+                    // (`ShellState.sheetOnScreen`): set while shown, never merely requested.
+                    .onAppear { shell.sheetAppeared(request) }
+                    .onDisappear { shell.sheetDisappeared(request) }
             }
+            // The window, for `ShellState.issue`: a press is refused while it presents anything.
+            .background(WindowPresentation.Reader(presentation: shell.presentation))
             // Re-anchoring Today (`ShellState.reanchor`) — here, never inside a tab and never only
             // while Today shows. Coming back to the app the next morning,
             .onChange(of: scenePhase) { _, phase in
@@ -241,17 +244,12 @@ struct ContentView: View {
     }
 
     /// `shell.request` when it is a sheet; dismissing it clears the request — the request that
-    /// sheet presented, never one already set in its place. The paywall's Continue dismisses the
-    /// paywall and then sets the review it resumes (`ShellState.continueAfterUnlock`, D8); should
-    /// the dismissal's nil ever reach this binding after that, it would clear the review before it
-    /// showed. So the nil clears only while the request is still the one on screen
-    /// (`presentedSheet`), or before any sheet has appeared.
+    /// sheet showed, never one already set in its place (`ShellState.sheetDismissed`).
     private var sheetRequest: Binding<ShellRequest?> {
         Binding(
             get: { shell.request.flatMap { $0.isSheet ? $0 : nil } },
             set: { newValue in
-                guard newValue == nil, let current = shell.request, current.isSheet else { return }
-                if presentedSheet == nil || presentedSheet == current { shell.request = nil }
+                if newValue == nil { shell.sheetDismissed() }
             })
     }
 
@@ -269,7 +267,9 @@ struct ContentView: View {
             WeeklyReviewView()
         case .paywall(let trigger, let resume):
             // Continue dismisses the paywall, then the review it was opened for takes its place;
-            // with nothing to resume it just closes.
+            // with nothing to resume it just closes. The same when the paywall closes because the
+            // user was entitled all along: Pro at a cold start reads false until entitlements
+            // load, so ⇧⌘R pressed then latched the paywall, and its close lost the review.
             shellPaywall(trigger: trigger) { shell.continueAfterUnlock(resume: resume) }
         case .history(let habitID, let day):
             HabitHistoryView(habitID: habitID, day: day)
@@ -279,16 +279,18 @@ struct ContentView: View {
     }
 
     /// The shell's paywall: the store's, or in DEBUG the fixture a hosted test set on the shell.
+    /// `resume` runs on Continue and on the paywall's own close for an entitlement that arrived
+    /// from elsewhere (`onEntitled`).
     @ViewBuilder
-    private func shellPaywall(trigger: PaywallTrigger, onUnlock: @escaping () -> Void) -> some View {
+    private func shellPaywall(trigger: PaywallTrigger, resume: @escaping () -> Void) -> some View {
         #if DEBUG
         if let fixture = shell.paywallFixture {
-            ProPaywallView(trigger: trigger, fixture: fixture, onUnlock: onUnlock)
+            ProPaywallView(trigger: trigger, fixture: fixture, onUnlock: resume, onEntitled: resume)
         } else {
-            ProPaywallView(trigger: trigger, onUnlock: onUnlock)
+            ProPaywallView(trigger: trigger, onUnlock: resume, onEntitled: resume)
         }
         #else
-        ProPaywallView(trigger: trigger, onUnlock: onUnlock)
+        ProPaywallView(trigger: trigger, onUnlock: resume, onEntitled: resume)
         #endif
     }
 
