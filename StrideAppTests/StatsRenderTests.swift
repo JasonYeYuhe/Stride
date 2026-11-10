@@ -310,9 +310,11 @@ final class StatsRenderTests: XCTestCase {
     /// toughest day, no momentum, and the run is the record, so the card has no line. a146384 said
     /// "Toughest on Sunday", a Strongest day from a Dictionary's order and "Down vs last week
     /// (100% → 0%)" here. Since D7 (RELEASE-1.4.2.md) the card no longer hides: under its header it
-    /// says "Not enough recent check-ins to compare", the habit being past its first full week.
-    /// The same user on Wednesday 06-03 with Tuesday missed is told so: Down, 100% → 50%, and
-    /// Toughest on Tuesday (4 of 5 Tuesdays in the window against 100% everywhere else).
+    /// says "Nothing to compare yet this week" — this week has nothing counted before the
+    /// check-in. W5's first cut said "Not enough recent check-ins to compare" to this perfect user
+    /// (W5 review). The same user on Wednesday 06-03 with Tuesday missed is told so: Down,
+    /// 100% → 50%, and Toughest on Tuesday (4 of 5 Tuesdays in the window against 100% everywhere
+    /// else, and Tuesday's all-time count tied for the lowest By Weekday bar).
     ///
     /// Weekly Review is not hosted here: it reads `Date()` through `StatsCache.shared`, so no test
     /// can pin it to a Monday. Its numbers are `StatsInsights.weeklyReview` over
@@ -330,12 +332,13 @@ final class StatsRenderTests: XCTestCase {
         }
         let window = try host(card(never, today: Self.key(6, 1)))
         var labels: [String] = []
-        let notEnough = appLocalized("Not enough recent check-ins to compare")
+        let nothingYet = appLocalized("Nothing to compare yet this week")
         try await waitUntil("the card's render") {
             labels = self.elements(in: window) { _ in true }.compactMap(\.accessibilityLabel)
-            return labels.contains(marker) && labels.contains(notEnough)
+            return labels.contains(marker) && labels.contains(nothingYet)
         }
-        XCTAssertEqual(labels, [marker, appLocalized("Insights"), notEnough], "no line: the card says why")
+        XCTAssertEqual(labels, [marker, appLocalized("Insights"), nothingYet], "no line: the card says why")
+        XCTAssertFalse(labels.contains(appLocalized("Not enough recent check-ins to compare")))
 
         let missed = try habit("Run", created: created, checkedIn: may + [Self.key(6, 1)])
         window.rootViewController = hostingController(card(missed, today: Self.key(6, 3)))
@@ -375,20 +378,24 @@ final class StatsRenderTests: XCTestCase {
     }
 
     /// The change tiles by the habit's age on Monday 07-20 (D7): 18 days old, one "Since start";
-    /// 80 days, "30-Day Change" and "Since start"; 196 days, the 30- and 90-day changes. Since
-    /// start is the score itself (the walk starts from 0), signed.
+    /// 80 days and done every day, "30-Day Change" and "Since start", two different numbers; 80
+    /// days but used only since 07-06, one "Since start" — its 30-day window starts where the
+    /// score was still 0, so the two would be the same number (W5 review); 196 days, the 30- and
+    /// 90-day changes. Since start is the score itself (the walk starts from 0), signed.
     func testAYoungHabitShowsSinceStartTiles() async throws {
         let thirty = appLocalized("30-Day Change"), ninety = appLocalized("90-Day Change")
         let since = appLocalized("Since start")
         let today = Self.key(7, 20)
-        let cases: [(name: String, created: Date, expected: [String])] = [
-            ("18 days", Self.key(7, 2), [since]),
-            ("80 days", Self.key(5, 1), [thirty, since]),
-            ("196 days", Self.key(1, 5), [thirty, ninety]),
+        let lately = Self.keys(from: Self.key(7, 6), count: 14)
+        let cases: [(name: String, created: Date, checkedIn: [Date], expected: [String])] = [
+            ("18 days", Self.key(7, 2), lately, [since]),
+            ("80 days, every day", Self.key(5, 1), Self.keys(from: Self.key(5, 1), count: 80), [thirty, since]),
+            ("80 days, used lately", Self.key(5, 1), lately, [since]),
+            ("196 days", Self.key(1, 5), lately, [thirty, ninety]),
         ]
         let window = try host(Text(verbatim: "test.tiles.marker"))
         for item in cases {
-            let h = try habit(item.name, created: item.created, checkedIn: Self.keys(from: Self.key(7, 6), count: 14))
+            let h = try habit(item.name, created: item.created, checkedIn: item.checkedIn)
             let s = stats(h, today: today)
             window.rootViewController = hostingController(StrengthCard(habit: h, stats: s))
             var shown: [String] = []
@@ -405,18 +412,30 @@ final class StatsRenderTests: XCTestCase {
                 XCTAssertEqual(numbers(in: spoken), [StatsInsights.displayedChangeSinceStart(of: s)], "\(item.name): \(spoken)")
                 XCTAssertEqual(StatsInsights.displayedChangeSinceStart(of: s), HabitScore.displayValue(s.strength))
             }
+            // With Since start: one tile, or two different values. (Past 90 days the 30- and 90-day
+            // changes can still be equal for a habit unused until lately; not W5's rule.)
+            guard shown.contains(since) else { continue }
+            let values = shown.map { title -> [Int] in
+                let tile = elements(in: window) { ($0.accessibilityLabel ?? "").hasPrefix(title) }.first
+                let spoken = [tile?.accessibilityLabel, tile?.accessibilityValue].compactMap { $0 }.joined(separator: " ")
+                // "30-Day Change, +5": the number after the title's own digits.
+                return Array(numbers(in: spoken).dropFirst(numbers(in: title).count))
+            }
+            XCTAssertTrue(values.count == 1 || Set(values).count == values.count, "\(item.name): \(shown) \(values)")
         }
     }
 
     /// Insights with nothing to say draws its header and why (D7): a habit created Wednesday
-    /// 07-15 with no check-in waits for its first full week (07-20 to 07-26), then has "Not
-    /// enough recent check-ins to compare".
+    /// 07-15 with no check-in waits for its first full week (07-20 to 07-26); on Monday 07-27,
+    /// with nothing of the week counted, has "Nothing to compare yet this week"; from Tuesday
+    /// 07-28 (this week 0%, last week 0%), "Not enough recent check-ins to compare".
     func testInsightsEmptyStatesRender() async throws {
         let fresh = try habit("Stretch", created: Self.key(7, 15), checkedIn: [])
         let header = appLocalized("Insights")
         let cases: [(today: Date, text: String)] = [
             (Self.key(7, 20), appLocalized("Insights appear after your first full week")),
-            (Self.key(7, 27), appLocalized("Not enough recent check-ins to compare")),
+            (Self.key(7, 27), appLocalized("Nothing to compare yet this week")),
+            (Self.key(7, 28), appLocalized("Not enough recent check-ins to compare")),
         ]
         let window = try host(Text(verbatim: "test.empty.marker"))
         for item in cases {
@@ -853,6 +872,7 @@ extension StatsRenderTests {
         let insightsHeader = appLocalized("Insights")
         // D7's empty states are drawn by the card, never counted as lines (W5).
         let emptyStates = [appLocalized("Insights appear after your first full week"),
+                           appLocalized("Nothing to compare yet this week"),
                            appLocalized("Not enough recent check-ins to compare")]
         let marker = "test.lockedCard.marker"
         let window = try host(Text(verbatim: marker))

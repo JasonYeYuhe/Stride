@@ -39,9 +39,10 @@ enum StatsInsights {
     /// 12-week window (`HabitStats.recentWeekdayTallies`), or no weekday line at all.
     static let weekdayMinimumDue = 4
     /// Insights' weekday line (D7): the named day is at least this many percentage points from
-    /// every other scheduled weekday — the strongest at least 15 above the runner-up, the
-    /// toughest at least 15 below the next-lowest — so the free By Weekday bars can never show
-    /// it in a near-tie.
+    /// every other scheduled weekday in the 12-week window — the strongest at least 15 above the
+    /// runner-up, the toughest at least 15 below the next-lowest — so the line never names a day
+    /// that is only marginally ahead. It is a gap in recent rates; agreeing with the free By
+    /// Weekday bars, which draw all-time counts, is a separate rule (`agreeingWithAllTimeCounts`).
     static let weekdayMinimumGap = 15
 
     /// The weekday that stands out above every other scheduled weekday, and the one below every
@@ -61,12 +62,7 @@ enum StatsInsights {
     static func weekdayExtremes(_ tallies: [Int: WeekdayTally], schedule: HabitSchedule,
                                 activeDaysMask: Int, minimumDue: Int = 1,
                                 minimumGap: Int = 0) -> WeekdayExtremes {
-        let weekdays: [Int]
-        switch schedule {
-        case .timesPerWeek: return WeekdayExtremes()
-        case .daily: weekdays = Array(1...7)
-        case .specificDays: weekdays = (1...7).filter { activeDaysMask & (1 << ($0 - 1)) != 0 }
-        }
+        let weekdays = scheduledWeekdays(schedule: schedule, activeDaysMask: activeDaysMask)
         guard weekdays.count >= 2 else { return WeekdayExtremes() }
         var rated: [WeekdayTally] = []
         for weekday in weekdays {
@@ -84,16 +80,45 @@ enum StatsInsights {
         let toughest = rated.indices.first { bottom in
             rated.indices.allSatisfy { $0 == bottom || clears(rated[$0], rated[bottom]) }
         }.map { weekdays[$0] }
-        return WeekdayExtremes(strongest: strongest, toughest: toughest == strongest ? nil : toughest)
+        // Never the same day: with two or more weekdays, each would have to clear the other.
+        return WeekdayExtremes(strongest: strongest, toughest: toughest)
     }
 
-    /// Insights' weekday line (D7): `weekdayExtremes` over the last 12 weeks only
-    /// (`HabitStats.recentWeekdayTallies`), with D7's minimums. The all-time tally
-    /// (`HabitStats.weekdayTallies`) is not read: a pattern the user has since changed is not
-    /// theirs any more.
+    /// The weekdays a schedule has (1 = Sunday … 7 = Saturday); none for times-per-week, which
+    /// has no weekday schedule.
+    static func scheduledWeekdays(schedule: HabitSchedule, activeDaysMask: Int) -> [Int] {
+        switch schedule {
+        case .timesPerWeek: return []
+        case .daily: return Array(1...7)
+        case .specificDays: return (1...7).filter { activeDaysMask & (1 << ($0 - 1)) != 0 }
+        }
+    }
+
+    /// `extremes` kept only where the free By Weekday bars agree (W5 review): the strongest day
+    /// only if its all-time completion count (`HabitStats.completionsPerWeekday`, what By Weekday
+    /// draws) is at least tied for the highest among the scheduled weekdays, the toughest only if
+    /// it is at least tied for the lowest. Otherwise a habit whose Monday was weak before the
+    /// 12-week window and perfect inside it read "Strongest on Monday" over Monday's lowest bar.
+    static func agreeingWithAllTimeCounts(_ extremes: WeekdayExtremes, counts: [Int: Int],
+                                          weekdays: [Int]) -> WeekdayExtremes {
+        let scheduled = weekdays.map { counts[$0] ?? 0 }
+        guard let highest = scheduled.max(), let lowest = scheduled.min() else { return WeekdayExtremes() }
+        return WeekdayExtremes(
+            strongest: extremes.strongest.flatMap { (counts[$0] ?? 0) >= highest ? $0 : nil },
+            toughest: extremes.toughest.flatMap { (counts[$0] ?? 0) <= lowest ? $0 : nil })
+    }
+
+    /// Insights' weekday line (D7): `weekdayExtremes` over the last 12 weeks
+    /// (`HabitStats.recentWeekdayTallies`), with D7's minimums, so a pattern the user has since
+    /// changed is not named; and only where By Weekday's all-time bars do not contradict it
+    /// (`agreeingWithAllTimeCounts`).
     static func recentWeekdayExtremes(of stats: HabitStats) -> WeekdayExtremes {
-        weekdayExtremes(stats.recentWeekdayTallies, schedule: stats.schedule, activeDaysMask: stats.activeDaysMask,
-                        minimumDue: weekdayMinimumDue, minimumGap: weekdayMinimumGap)
+        let recent = weekdayExtremes(stats.recentWeekdayTallies, schedule: stats.schedule,
+                                     activeDaysMask: stats.activeDaysMask,
+                                     minimumDue: weekdayMinimumDue, minimumGap: weekdayMinimumGap)
+        return agreeingWithAllTimeCounts(recent, counts: stats.completionsPerWeekday,
+                                         weekdays: scheduledWeekdays(schedule: stats.schedule,
+                                                                     activeDaysMask: stats.activeDaysMask))
     }
 
     // MARK: Momentum
@@ -188,6 +213,12 @@ enum StatsInsights {
     enum EmptyState: Equatable {
         /// "Insights appear after your first full week".
         case beforeFirstFullWeek
+        /// "Nothing to compare yet this week": past the first full week, but this week has nothing
+        /// counted yet (`HabitStats.thisWeekRate` nil), so there is no momentum — a daily habit on
+        /// Monday before the check-in, a weekend habit Monday to Saturday, 3 a week early in the
+        /// week. A user who never misses has no other line (no record to chase, no weak day), and
+        /// was told "Not enough recent check-ins" there (W5 review).
+        case nothingToCompareYetThisWeek
         /// "Not enough recent check-ins to compare".
         case notEnoughRecentCheckIns
     }
@@ -204,19 +235,28 @@ enum StatsInsights {
     }
 
     /// The empty state for a habit with no line: before its first full week, "after your first
-    /// full week"; after it, "not enough recent check-ins" (momentum is nil when both weeks are
-    /// 0%, and the weekday minimums can leave nothing else). `startDay` is a day-key; `today` any
-    /// instant, keyed in `calendar` as HabitStats keys it.
-    static func emptyState(startDay: Date, today: Date, calendar: Calendar) -> EmptyState {
-        hasHadFullWeek(startDay: HabitStats.dayNumber(ofKey: startDay),
-                       today: HabitStats.dayNumber(of: today, in: calendar))
-            ? .notEnoughRecentCheckIns : .beforeFirstFullWeek
+    /// full week"; after it, "nothing to compare yet this week" while this week has nothing
+    /// counted (`thisWeekRate` nil), else "not enough recent check-ins" (momentum is nil when both
+    /// weeks are 0%, and the weekday minimums can leave nothing else). `startDay` is a day-key;
+    /// `today` any instant, keyed in `calendar` as HabitStats keys it.
+    static func emptyState(startDay: Date, today: Date, calendar: Calendar, thisWeekRate: Double?) -> EmptyState {
+        guard hasHadFullWeek(startDay: HabitStats.dayNumber(ofKey: startDay),
+                             today: HabitStats.dayNumber(of: today, in: calendar))
+        else { return .beforeFirstFullWeek }
+        return thisWeekRate == nil ? .nothingToCompareYetThisWeek : .notEnoughRecentCheckIns
+    }
+
+    /// The empty state for `stats`, whether or not it has lines: InsightsCard draws it only when
+    /// `insightLines(for:)` is empty.
+    static func emptyStateIgnoringLines(for stats: HabitStats) -> EmptyState {
+        emptyState(startDay: stats.startDay, today: stats.today, calendar: stats.calendar,
+                   thisWeekRate: stats.thisWeekRate)
     }
 
     /// What InsightsCard draws instead of lines: nil when it has lines (`insightLines(for:)`).
     static func emptyState(for stats: HabitStats) -> EmptyState? {
         guard insightLines(for: stats).isEmpty else { return nil }
-        return emptyState(startDay: stats.startDay, today: stats.today, calendar: stats.calendar)
+        return emptyStateIgnoringLines(for: stats)
     }
 
     // MARK: Strength's changes for a young habit (D7)
@@ -237,22 +277,28 @@ enum StatsInsights {
         HabitStats.dayNumber(of: today, in: calendar) - HabitStats.dayNumber(ofKey: startDay)
     }
 
-    /// The tiles for a habit `ageInDays` old (D7): one "Since start" while it is younger than 30
-    /// days, "30-Day Change" and "Since start" until 90, then the 30- and 90-day changes.
+    /// The tiles for a habit `ageInDays` old (D7): one "Since start" while it is 30 days old or
+    /// younger, "30-Day Change" and "Since start" from 31 to 90, then the 30- and 90-day changes.
+    /// `thirtyDayChange` and `sinceStartChange` are the two numbers as drawn.
     ///
-    /// An N-day change shows only once `ageInDays` > N. Its window (N days back from the walk's
-    /// last day, which is yesterday until today is complete) then starts on or after the start
-    /// day, so it never silently equals "Since start". At exactly N days old with today not yet
-    /// done, the window would reach the day before the start (strength 0) and the two tiles
-    /// would be the same number — the 1.4.1 complaint this replaces.
-    static func strengthChanges(ageInDays: Int) -> [StrengthChange] {
+    /// The 30-day change is only considered once `ageInDays` > 30: younger, its window (30 days
+    /// back from the walk's last day, which is yesterday until today is complete) can reach the
+    /// day before the start, where the score is 0, and it would be Since start under another name.
+    /// Older, the two can still be the same number: whenever the score was still 0 (as drawn) on
+    /// the window's first day — no check-in on the start day, a start on a rest day, a habit left
+    /// unused at first. Then the 30-day change is everything gained since the start, and only
+    /// "Since start" is shown (W5 review), so the card never shows two equal tiles.
+    static func strengthChanges(ageInDays: Int, thirtyDayChange: Int, sinceStartChange: Int) -> [StrengthChange] {
         if ageInDays > 90 { return [.thirtyDays, .ninetyDays] }
-        if ageInDays > 30 { return [.thirtyDays, .sinceStart] }
+        if ageInDays > 30, thirtyDayChange != sinceStartChange { return [.thirtyDays, .sinceStart] }
         return [.sinceStart]
     }
 
     static func strengthChanges(for stats: HabitStats) -> [StrengthChange] {
-        strengthChanges(ageInDays: ageInDays(startDay: stats.startDay, today: stats.today, calendar: stats.calendar))
+        strengthChanges(ageInDays: ageInDays(startDay: stats.startDay, today: stats.today, calendar: stats.calendar),
+                        thirtyDayChange: displayedChange(current: stats.strength,
+                                                         baseline: stats.strength - stats.strengthDelta30),
+                        sinceStartChange: displayedChangeSinceStart(of: stats))
     }
 
     /// The strength at the start: at the end of the day before `startDay`, where the strength
@@ -275,11 +321,14 @@ enum StatsInsights {
 
     // MARK: The Pro chip (D7)
 
-    /// The "PRO" chip on the Pro cards' headers: white text on the palette's Green darkened just
-    /// enough (`ColorContrast.readable`) for white text on it to reach 4.5:1. The same two colours
-    /// in light and dark, so the text's contrast is the same in both.
+    /// The "PRO" chip on the Pro cards' headers: white text on #23863C, the palette's Green
+    /// darkened (`ColorContrast.readable`) until white on it reaches 4.6:1, then rounded to 8 bits
+    /// per channel as it is drawn: 4.62:1, and still 4.56:1 a step lighter in every channel. The
+    /// first fill (readable at exactly 4.5) sat at 4.5000006:1, and one 8-bit step lighter was
+    /// 4.44 (W5 review). The same two colours in light and dark, so the contrast is the same in
+    /// both.
     static let proChipText = ColorContrast.RGB.white
-    static let proChipFill = ColorContrast.readable(.fallback, on: .white, minimum: ColorContrast.textMinimum)
+    static let proChipFill = ColorContrast.RGB(0x23863C)
 
     // MARK: Weekly Review
 

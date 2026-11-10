@@ -18,7 +18,8 @@ import SwiftUI
 /// Right in a habit's first weeks (RELEASE-1.4.2.md D7): the weeks that ended before the habit
 /// started draw no bar and are "Not started" to VoiceOver, as in TrendCard; a habit younger than
 /// 30 days shows one "Since start" change, and one younger than 90 shows "30-Day Change" and
-/// "Since start" (`StatsInsights.strengthChanges`), where 1.4.1 showed two equal tiles.
+/// "Since start" unless the two are the same number (`StatsInsights.strengthChanges`), where
+/// 1.4.1 showed two equal tiles.
 struct StrengthCard: View {
     let habit: Habit
     /// This render's stats (StatsView).
@@ -454,8 +455,9 @@ struct InsightsCard: View {
             ProCardHeader(title: "Insights")
             if items.isEmpty {
                 Group {
-                    switch StatsInsights.emptyState(startDay: stats.startDay, today: stats.today, calendar: stats.calendar) {
+                    switch StatsInsights.emptyStateIgnoringLines(for: stats) {
                     case .beforeFirstFullWeek: Text("Insights appear after your first full week")
+                    case .nothingToCompareYetThisWeek: Text("Nothing to compare yet this week")
                     case .notEnoughRecentCheckIns: Text("Not enough recent check-ins to compare")
                     }
                 }

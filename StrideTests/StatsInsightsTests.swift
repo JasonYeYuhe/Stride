@@ -655,14 +655,17 @@ final class StatsInsightsTests: XCTestCase {
     }
 
     /// A habit started Wednesday 06-03 with nothing to say reads "after your first full week"
-    /// until its first full week (06-08 to 06-14) ends, then "not enough recent check-ins". A
-    /// Monday start and a backdated start count from their start day. The empty state never
-    /// replaces a real line: the same start with every day done has momentum.
+    /// until its first full week (06-08 to 06-14) ends. Then, on Monday 06-15 with nothing of the
+    /// week counted yet, "nothing to compare yet this week"; from Tuesday, with this week counted
+    /// (0%), "not enough recent check-ins". A Monday start and a backdated start count from their
+    /// start day. The empty state never replaces a real line: the same start with every day done
+    /// has momentum.
     func testInsightsWaitForTheFirstFullWeek() {
         let h = habit(created: day(6, 3))
         let cases: [(Date, StatsInsights.EmptyState)] = [
             (day(6, 3), .beforeFirstFullWeek), (day(6, 7), .beforeFirstFullWeek), (day(6, 8), .beforeFirstFullWeek),
-            (day(6, 14), .beforeFirstFullWeek), (day(6, 15), .notEnoughRecentCheckIns), (day(6, 30), .notEnoughRecentCheckIns),
+            (day(6, 14), .beforeFirstFullWeek), (day(6, 15), .nothingToCompareYetThisWeek),
+            (day(6, 16), .notEnoughRecentCheckIns), (day(6, 30), .notEnoughRecentCheckIns),
         ]
         for (today, expected) in cases {
             let s = stats(h, today: today)
@@ -672,14 +675,15 @@ final class StatsInsightsTests: XCTestCase {
 
         let monday = habit(created: day(6, 1))
         XCTAssertEqual(StatsInsights.emptyState(for: stats(monday, today: day(6, 7))), .beforeFirstFullWeek)
-        XCTAssertEqual(StatsInsights.emptyState(for: stats(monday, today: day(6, 8))), .notEnoughRecentCheckIns)
+        XCTAssertEqual(StatsInsights.emptyState(for: stats(monday, today: day(6, 8))), .nothingToCompareYetThisWeek)
+        XCTAssertEqual(StatsInsights.emptyState(for: stats(monday, today: day(6, 9))), .notEnoughRecentCheckIns)
 
         // Created 06-10 with a check-in on Monday 06-01: it started on 06-01.
         let backdated = habit(created: day(6, 10))
         checkIn(backdated, on: [day(6, 1)])
         let early = stats(backdated, today: day(6, 8))
         XCTAssertEqual(early.startDay, day(6, 1))
-        XCTAssertEqual(StatsInsights.emptyState(for: early), .notEnoughRecentCheckIns)
+        XCTAssertEqual(StatsInsights.emptyState(for: early), .nothingToCompareYetThisWeek, "past its first full week")
 
         let active = habit(created: day(6, 3))
         checkIn(active, on: days(day(6, 3), through: day(6, 9)))
@@ -695,9 +699,68 @@ final class StatsInsightsTests: XCTestCase {
         local.timeZone = .current
         let sundayNight = local.date(from: DateComponents(year: 2026, month: 6, day: 7, hour: 23, minute: 59))!
         let mondayMorning = local.date(from: DateComponents(year: 2026, month: 6, day: 8, hour: 0, minute: 1))!
-        XCTAssertEqual(StatsInsights.emptyState(startDay: day(6, 1), today: sundayNight, calendar: local), .beforeFirstFullWeek)
-        XCTAssertEqual(StatsInsights.emptyState(startDay: day(6, 1), today: mondayMorning, calendar: local),
-                       .notEnoughRecentCheckIns)
+        for rate in [nil, 0, 0.5] as [Double?] {
+            XCTAssertEqual(StatsInsights.emptyState(startDay: day(6, 1), today: sundayNight, calendar: local,
+                                                    thisWeekRate: rate), .beforeFirstFullWeek)
+        }
+        XCTAssertEqual(StatsInsights.emptyState(startDay: day(6, 1), today: mondayMorning, calendar: local,
+                                                thisWeekRate: nil), .nothingToCompareYetThisWeek)
+        XCTAssertEqual(StatsInsights.emptyState(startDay: day(6, 1), today: mondayMorning, calendar: local,
+                                                thisWeekRate: 0), .notEnoughRecentCheckIns)
+    }
+
+    /// The three empty states, pure: before the first full week whatever this week holds; after
+    /// it, "nothing to compare yet this week" while this week has nothing counted, and "not
+    /// enough recent check-ins" once it has (0% or more).
+    func testTheThreeEmptyStates() {
+        let start = day(6, 3)   // a Wednesday: the first full week is 06-08 to 06-14
+        func state(_ today: Date, _ rate: Double?) -> StatsInsights.EmptyState {
+            StatsInsights.emptyState(startDay: start, today: today, calendar: utc, thisWeekRate: rate)
+        }
+        for rate in [nil, 0, 1] as [Double?] {
+            XCTAssertEqual(state(day(6, 14), rate), .beforeFirstFullWeek, "\(String(describing: rate))")
+        }
+        XCTAssertEqual(state(day(6, 15), nil), .nothingToCompareYetThisWeek)
+        XCTAssertEqual(state(day(6, 20), nil), .nothingToCompareYetThisWeek, "a weekend habit on Saturday")
+        XCTAssertEqual(state(day(6, 15), 0), .notEnoughRecentCheckIns)
+        XCTAssertEqual(state(day(6, 17), 1), .notEnoughRecentCheckIns)
+    }
+
+    /// A user who never misses is never told they don't check in enough (W5 review). With no
+    /// record to chase and no weak day, momentum is their only line, and it is nil whenever this
+    /// week has nothing counted yet:
+    /// - daily, on Monday 06-15 before the check-in;
+    /// - Saturday–Sunday only, Monday to Friday (and Saturday before the check-in);
+    /// - 3 times a week (Mon/Wed/Fri), on Monday before the check-in.
+    /// Each reads "Nothing to compare yet this week"; once the week has a check-in, the level week.
+    func testAUserWhoNeverMissesHasNothingToCompareYetThisWeek() {
+        let daily = habit(created: day(5, 4))
+        checkIn(daily, on: days(day(5, 4), through: day(6, 14)))
+        let monday = stats(daily, today: day(6, 15))
+        XCTAssertNil(monday.thisWeekRate)
+        XCTAssertEqual(StatsInsights.insightLines(for: monday), [])
+        XCTAssertEqual(StatsInsights.emptyState(for: monday), .nothingToCompareYetThisWeek)
+        checkIn(daily, on: [day(6, 15)])
+        XCTAssertEqual(StatsInsights.insightLines(for: stats(daily, today: day(6, 15))),
+                       [.momentum(StatsInsights.Momentum(was: 100, now: 100))])
+
+        let weekend = habit(.specificDays, activeDays: (1 << 0) | (1 << 6), created: day(5, 4))
+        checkIn(weekend, on: days(day(5, 4), through: day(6, 14)).filter {
+            [1, 7].contains(HabitStats.weekday(ofDay: HabitStats.dayNumber(ofKey: $0)))
+        })
+        for today in days(day(6, 15), through: day(6, 20)) {
+            let s = stats(weekend, today: today)
+            XCTAssertEqual(StatsInsights.insightLines(for: s), [], "\(today)")
+            XCTAssertEqual(StatsInsights.emptyState(for: s), .nothingToCompareYetThisWeek, "\(today)")
+        }
+
+        let thrice = habit(.timesPerWeek, timesPerWeek: 3, created: day(5, 4))
+        checkIn(thrice, on: days(day(5, 4), through: day(6, 14)).filter {
+            [2, 4, 6].contains(HabitStats.weekday(ofDay: HabitStats.dayNumber(ofKey: $0)))
+        })
+        let early = stats(thrice, today: day(6, 15))
+        XCTAssertEqual(StatsInsights.insightLines(for: early), [])
+        XCTAssertEqual(StatsInsights.emptyState(for: early), .nothingToCompareYetThisWeek)
     }
 
     /// An old habit gone quiet: daily from Monday 03-02, done every day through Sunday 05-17,
@@ -716,13 +779,19 @@ final class StatsInsightsTests: XCTestCase {
         XCTAssertEqual(StatsInsights.emptyState(for: s), .notEnoughRecentCheckIns)
     }
 
-    /// One "Since start" under 30 days; 30-Day Change and Since start to 90; then 30 and 90.
+    /// One "Since start" up to 30 days; 30-Day Change and Since start to 90, unless they are the
+    /// same number; then 30 and 90.
     func testAYoungHabitsStrengthTiles() {
-        XCTAssertEqual(StatsInsights.strengthChanges(ageInDays: 0), [.sinceStart])
-        XCTAssertEqual(StatsInsights.strengthChanges(ageInDays: 30), [.sinceStart])
-        XCTAssertEqual(StatsInsights.strengthChanges(ageInDays: 31), [.thirtyDays, .sinceStart])
-        XCTAssertEqual(StatsInsights.strengthChanges(ageInDays: 90), [.thirtyDays, .sinceStart])
-        XCTAssertEqual(StatsInsights.strengthChanges(ageInDays: 91), [.thirtyDays, .ninetyDays])
+        func tiles(_ age: Int, _ thirty: Int = 5, _ since: Int = 40) -> [StatsInsights.StrengthChange] {
+            StatsInsights.strengthChanges(ageInDays: age, thirtyDayChange: thirty, sinceStartChange: since)
+        }
+        XCTAssertEqual(tiles(0), [.sinceStart])
+        XCTAssertEqual(tiles(30), [.sinceStart])
+        XCTAssertEqual(tiles(31), [.thirtyDays, .sinceStart])
+        XCTAssertEqual(tiles(90), [.thirtyDays, .sinceStart])
+        XCTAssertEqual(tiles(91), [.thirtyDays, .ninetyDays])
+        XCTAssertEqual(tiles(45, 40, 40), [.sinceStart], "two equal tiles are one")
+        XCTAssertEqual(tiles(91, 40, 40), [.thirtyDays, .ninetyDays], "past 90 the 90-day change replaces Since start")
 
         // Daily from 05-01, every day done through 05-30. On 05-31 (30 days old) before the
         // check-in, a 30-day change would reach the day before the start and equal Since start:
@@ -743,20 +812,100 @@ final class StatsInsightsTests: XCTestCase {
         XCTAssertLessThan(StatsInsights.displayedChange(current: older.strength, baseline: older.strength - older.strengthDelta30),
                           sinceStart, "the 30-day window starts after the first day's gain")
 
-        // The start is the start day, not the creation day: created 06-10, backdated to 05-01.
+        // The start is the start day, not the creation day: created 06-10, backdated to 05-01
+        // and done every day since.
         let backdated = habit(created: day(6, 10))
-        checkIn(backdated, on: [day(5, 1)])
+        checkIn(backdated, on: days(day(5, 1), through: day(6, 14)))
         XCTAssertEqual(StatsInsights.strengthChanges(for: stats(backdated, today: day(6, 15))), [.thirtyDays, .sinceStart])
         XCTAssertEqual(StatsInsights.strengthChanges(for: stats(habit(created: day(1, 5)), today: day(6, 15))),
                        [.thirtyDays, .ninetyDays])
     }
 
-    /// White on the chip's fill reaches 4.5:1 (WCAG AA body text), with the same colours in light
-    /// and dark. The palette's Green itself would not: about 2.2:1 under white.
-    func testTheProChipReadsAtFourAndAHalfToOne() {
+    /// A dormant start (W5 review): daily from 05-01, nothing until 05-20, every day since; on
+    /// 06-15, 45 days old. The 30-day window starts 05-15, when the score was still 0, so the
+    /// 30-day change is everything since the start: the same number as Since start, and only
+    /// Since start is shown. The same for a specific-days habit created on a rest day whose first
+    /// weeks went unused.
+    func testADormantStartShowsOneStrengthTile() {
+        let h = habit(created: day(5, 1))
+        checkIn(h, on: days(day(5, 20), through: day(6, 14)))
+        let s = stats(h, today: day(6, 15))
+        XCTAssertEqual(StatsInsights.ageInDays(startDay: s.startDay, today: s.today, calendar: utc), 45)
+        let thirty = StatsInsights.displayedChange(current: s.strength, baseline: s.strength - s.strengthDelta30)
+        XCTAssertEqual(thirty, StatsInsights.displayedChangeSinceStart(of: s))
+        XCTAssertGreaterThan(thirty, 0)
+        XCTAssertEqual(StatsInsights.strengthChanges(for: s), [.sinceStart])
+
+        // Mon/Wed/Fri, created Saturday 05-02 (a rest day), first done Monday 05-18.
+        let restDay = habit(.specificDays, activeDays: monWedFriMask, created: day(5, 2))
+        checkIn(restDay, on: days(day(5, 18), through: day(6, 14)).filter {
+            [2, 4, 6].contains(HabitStats.weekday(ofDay: HabitStats.dayNumber(ofKey: $0)))
+        })
+        XCTAssertEqual(StatsInsights.strengthChanges(for: stats(restDay, today: day(6, 15))), [.sinceStart])
+    }
+
+    /// White on the chip's fill clears 4.5:1 (WCAG AA body text) with a margin, as drawn: in
+    /// 8-bit channels, and still a step lighter in every channel. The same colours in light and
+    /// dark. The palette's Green itself would not: about 2.2:1 under white. The first fill sat at
+    /// 4.5000006:1 and one 8-bit step lighter read 4.44 (W5 review).
+    func testTheProChipReadsAtFourAndAHalfToOneWithAMargin() {
+        func eightBit(_ c: ColorContrast.RGB) -> ColorContrast.RGB {
+            ColorContrast.RGB(red: (c.red * 255).rounded() / 255, green: (c.green * 255).rounded() / 255,
+                              blue: (c.blue * 255).rounded() / 255)
+        }
+        func lighter(_ c: ColorContrast.RGB) -> ColorContrast.RGB {
+            ColorContrast.RGB(red: min(255, c.red * 255 + 1) / 255, green: min(255, c.green * 255 + 1) / 255,
+                              blue: min(255, c.blue * 255 + 1) / 255)
+        }
+        let fill = eightBit(StatsInsights.proChipFill)
         XCTAssertEqual(StatsInsights.proChipText, .white)
-        XCTAssertGreaterThanOrEqual(ColorContrast.ratio(StatsInsights.proChipText, StatsInsights.proChipFill),
-                                    ColorContrast.textMinimum)
+        XCTAssertEqual(eightBit(StatsInsights.proChipText), .white)
+        XCTAssertGreaterThanOrEqual(ColorContrast.ratio(.white, fill), 4.6)
+        XCTAssertGreaterThanOrEqual(ColorContrast.ratio(.white, eightBit(lighter(fill))), ColorContrast.textMinimum)
+        // Where it comes from: the palette's Green darkened to 4.6:1, rounded to 8 bits.
+        XCTAssertEqual(eightBit(ColorContrast.readable(.fallback, on: .white, minimum: 4.6)), fill)
         XCTAssertLessThan(ColorContrast.ratio(.white, .fallback), ColorContrast.textMinimum)
+    }
+
+    /// By Weekday (free) draws all-time completion counts; the weekday line must not contradict
+    /// it (W5 review). Daily from Monday 01-05, on Monday 06-15 (window 03-23 to 06-14): every
+    /// Monday missed before the window and none inside it; every other weekday missed twice in
+    /// the window's first two weeks and never before. In the window Monday is 100% against 83%,
+    /// clear of the gap, but its all-time count is the lowest bar: no "Strongest on Monday".
+    func testTheWeekdayLineNeverContradictsTheByWeekdayBars() {
+        let h = habit(created: day(1, 5))
+        let weekday = { (d: Date) in HabitStats.weekday(ofDay: HabitStats.dayNumber(ofKey: d)) }
+        checkIn(h, on: days(day(1, 5), through: day(6, 14)).filter { d in
+            if weekday(d) == 2 { return d >= day(3, 23) }
+            return !(d >= day(3, 24) && d <= day(4, 5))
+        })
+        let s = stats(h, today: day(6, 15))
+        XCTAssertEqual(s.recentWeekdayTallies[2], tally(12, of: 12))
+        XCTAssertEqual(s.recentWeekdayTallies[3], tally(10, of: 12))
+        XCTAssertEqual(line(s.recentWeekdayTallies), Extremes(strongest: 2, toughest: nil), "the window alone names Monday")
+        let counts = s.completionsPerWeekday
+        XCTAssertEqual(counts[2], 12)
+        XCTAssertTrue((1...7).filter { $0 != 2 }.allSatisfy { (counts[$0] ?? 0) > 12 }, "Monday's bar is the lowest: \(counts)")
+        XCTAssertEqual(StatsInsights.recentWeekdayExtremes(of: s), none)
+        XCTAssertFalse(StatsInsights.insightLines(for: s).contains(.strongest(2)))
+    }
+
+    /// The agreement rule, pure: the strongest at least tied for the highest count among the
+    /// scheduled weekdays, the toughest at least tied for the lowest; unscheduled days' counts
+    /// (rest-day check-ins) are not compared.
+    func testTheWeekdayLineAgreesWithTheAllTimeCounts() {
+        let named = Extremes(strongest: 2, toughest: 6)
+        let mwf = [2, 4, 6]
+        func agree(_ counts: [Int: Int]) -> Extremes {
+            StatsInsights.agreeingWithAllTimeCounts(named, counts: counts, weekdays: mwf)
+        }
+        XCTAssertEqual(agree([2: 20, 4: 15, 6: 10]), named)
+        XCTAssertEqual(agree([2: 20, 4: 20, 6: 10]), named, "tied for the highest is enough")
+        XCTAssertEqual(agree([2: 20, 4: 15, 6: 15]), named, "tied for the lowest is enough")
+        XCTAssertEqual(agree([2: 19, 4: 20, 6: 10]), Extremes(strongest: nil, toughest: 6))
+        XCTAssertEqual(agree([2: 20, 4: 9, 6: 10]), Extremes(strongest: 2, toughest: nil))
+        XCTAssertEqual(agree([2: 20, 4: 15, 6: 10, 1: 50, 7: 0]), named, "rest days are not compared")
+        XCTAssertEqual(StatsInsights.scheduledWeekdays(schedule: .specificDays, activeDaysMask: monWedFriMask), mwf)
+        XCTAssertEqual(StatsInsights.scheduledWeekdays(schedule: .timesPerWeek, activeDaysMask: 127), [])
     }
 }
