@@ -32,6 +32,12 @@ struct ProPaywallView: View {
     /// then calls it, in that order, so a presenter that swaps the sheet for the request it
     /// resumes (the shell, D8) ends on that request, and one that passes nothing just closes.
     let onUnlock: () -> Void
+    /// What the presenter resumes when the paywall closes itself because the user is entitled
+    /// already — an entitlement from elsewhere, or a cold start's late read (`autoDismisses`) —
+    /// called after the dismissal, as `onUnlock` is. Nil: it just closes, as before 1.4.2's W4.
+    /// The shell passes its resume (D8): Pro pressed ⇧⌘R before the entitlements loaded, the
+    /// paywall was latched, and the review it carried was lost when the paywall closed.
+    let onEntitled: (() -> Void)?
 
     /// This paywall's own step, when it has one: a purchase, Ask to Buy, Restore's answer, a
     /// failed purchase, unlocked. Nil follows the store: loading, load failed or ready.
@@ -57,9 +63,11 @@ struct ProPaywallView: View {
 
     /// Every presenter passes its trigger (W0); `.settings` is the default only so that a new
     /// presenter compiles before it picks one.
-    init(trigger: PaywallTrigger = .settings, onUnlock: @escaping () -> Void = {}) {
+    init(trigger: PaywallTrigger = .settings, onUnlock: @escaping () -> Void = {},
+         onEntitled: (() -> Void)? = nil) {
         self.trigger = trigger
         self.onUnlock = onUnlock
+        self.onEntitled = onEntitled
         #if DEBUG
         fixture = PaywallFixture(launchValue: StrideDebugLaunchFlags.current.paywallFixture)
         #endif
@@ -67,9 +75,11 @@ struct ProPaywallView: View {
 
     #if DEBUG
     /// A fixture's paywall (PaywallRenderTests); nil draws the store, as in the app.
-    init(trigger: PaywallTrigger = .settings, fixture: PaywallFixture?, onUnlock: @escaping () -> Void = {}) {
+    init(trigger: PaywallTrigger = .settings, fixture: PaywallFixture?, onUnlock: @escaping () -> Void = {},
+         onEntitled: (() -> Void)? = nil) {
         self.trigger = trigger
         self.onUnlock = onUnlock
+        self.onEntitled = onEntitled
         self.fixture = fixture
     }
     #endif
@@ -178,20 +188,34 @@ struct ProPaywallView: View {
                     showFixtureAlert()
                     return
                 }
+                // Entitled already when it appears, with a presenter that resumes something (the
+                // shell, D8): the entitlement landed between the press and the sheet, which no
+                // `onChange` below will ever see. Close and resume, as an entitlement from
+                // elsewhere does. Without `onEntitled`, unchanged.
+                if let onEntitled, store.isPro {
+                    dismiss()
+                    onEntitled()
+                    return
+                }
                 await store.preparePaywall()
                 prepared = true
                 await store.refreshPurchasedProducts()
             }
             .onChange(of: store.isPro) { _, isPro in
                 guard isPro, !isFixture else { return }
-                if phase == .pending {
+                switch Self.entitlementArrived(phase: phase, isPurchasing: store.isPurchasing,
+                                               isRestoring: store.isRestoring) {
+                case .unlockInPlace:
                     // The Ask to Buy this paywall started was approved while it stayed open.
                     action = .unlocked
-                } else if Self.autoDismisses(phase: phase, isPurchasing: store.isPurchasing,
-                                             isRestoring: store.isRestoring) {
+                case .closeAndResume:
                     // A Lifetime owner can land here from a feature that was still locked on a
-                    // cold start, or Pro arrives from another device: stop selling what they own.
+                    // cold start, or Pro arrives from another device: stop selling what they own,
+                    // and resume what the presenter opened this for (`onEntitled`, nil: just close).
                     dismiss()
+                    onEntitled?()
+                case .stay:
+                    break
                 }
             }
             .alert("Purchase Error", isPresented: $showError) {
@@ -649,6 +673,22 @@ struct ProPaywallView: View {
         case .loading, .loadFailed, .ready, .restore, .purchaseFailed: return true
         case .purchasing, .pending, .unlocked: return false
         }
+    }
+
+    /// What an entitlement that arrives while the paywall is open does.
+    enum EntitlementResponse: Equatable {
+        /// Ask to Buy approved while pending: "Stride Pro is unlocked", with Continue.
+        case unlockInPlace
+        /// From elsewhere (`autoDismisses`): the paywall closes, then `onEntitled` runs.
+        case closeAndResume
+        /// This paywall's own purchase or restore answers it (`settled`), or it is unlocked.
+        case stay
+    }
+
+    /// The `onChange(of: isPro)` rule: pending unlocks in place; otherwise D4's dismissal rule.
+    static func entitlementArrived(phase: PaywallPhase, isPurchasing: Bool, isRestoring: Bool) -> EntitlementResponse {
+        if phase == .pending { return .unlockInPlace }
+        return autoDismisses(phase: phase, isPurchasing: isPurchasing, isRestoring: isRestoring) ? .closeAndResume : .stay
     }
 
     /// Where this paywall's own purchase or restore leaves it. Its auto-dismiss was skipped while

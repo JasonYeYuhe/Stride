@@ -1,6 +1,7 @@
 import Foundation
 
-/// When the Mac's menu commands are enabled, and what Weekly Review opens (RELEASE-1.4.0.md D3).
+/// When the Mac's menu commands are enabled, and what Weekly Review opens (RELEASE-1.4.0.md D3;
+/// RELEASE-1.4.2.md D8 for every issuer of the review and the paywall).
 /// Pure, so the rules are pinned host-less; the `Commands` in Stride/Sources only read them.
 ///
 /// Each rule is the one the same action already follows on screen, so a menu item can never offer
@@ -105,6 +106,79 @@ enum MenuCommandRules {
     /// Pro opens the review; anyone else gets the paywall, as Stats' button does.
     static func weeklyReviewDestination(isPro: Bool) -> WeeklyReviewDestination {
         isPro ? .review : .paywall
+    }
+
+    // MARK: - D8: one presenter, decided when the request is issued (1.4.2)
+
+    /// Who asks the shell for the review or the paywall (RELEASE-1.4.2.md D8, "Issuers").
+    enum ProIssuer: Equatable, Sendable {
+        /// Statistics' locked Advanced Analytics card.
+        case lockedAnalyticsCard
+        /// The Weekly Review button: Statistics' toolbar (⇧⌘R on iPad) and the Mac's View →
+        /// Weekly Review ⇧⌘R. The review opens on its own choice of week.
+        case weeklyReviewButton
+        /// Today's "Your week" card (D12): last week's review, `lastWeek` its Monday.
+        case todayWeekCard(lastWeek: Date)
+    }
+
+    /// What an issuer asks the shell to present: a pure mirror of the shell's request
+    /// (`ShellRequest.weeklyReview` and `.paywall`, which live with the app's views), so the rule
+    /// is pinned host-less.
+    indirect enum ProDestination: Equatable, Sendable {
+        /// The review, on the week starting `week` (a Monday), or on the review's own choice.
+        case review(week: Date?)
+        /// The paywall, opened for `trigger`; `resume` is what its Continue opens once Pro is
+        /// unlocked, or nil for Continue to just close it.
+        case paywall(trigger: PaywallTrigger, resume: ProDestination?)
+    }
+
+    /// What `issuer` asks for, decided from `isPro` at the moment it issues — never again later.
+    /// A destination read when the sheet was built (1.4.1: ContentView read the live `isPro`)
+    /// swapped the paywall for the review the moment a purchase in it went through, before its
+    /// "Stride Pro is unlocked" showed, and Continue and the resume it carries never ran (D8).
+    ///
+    /// - The locked card sells Advanced Analytics and resumes nothing: the cards it hides are on
+    ///   Statistics, under the sheet. For Pro it asks for nothing: the card is gone at the next
+    ///   render, the cards it stood for in its place.
+    /// - The Weekly Review button: the review for Pro; otherwise the paywall, resuming the review.
+    /// - Today's card: last week's review for Pro; otherwise the paywall, resuming last week's.
+    static func destination(for issuer: ProIssuer, isPro: Bool) -> ProDestination? {
+        switch issuer {
+        case .lockedAnalyticsCard:
+            return isPro ? nil : .paywall(trigger: .analytics, resume: nil)
+        case .weeklyReviewButton:
+            return reviewOrPaywall(.review(week: nil), trigger: .weeklyReview, isPro: isPro)
+        case .todayWeekCard(let lastWeek):
+            return reviewOrPaywall(.review(week: lastWeek), trigger: .today, isPro: isPro)
+        }
+    }
+
+    private static func reviewOrPaywall(_ review: ProDestination, trigger: PaywallTrigger,
+                                        isPro: Bool) -> ProDestination {
+        switch weeklyReviewDestination(isPro: isPro) {
+        case .review: return review
+        case .paywall: return .paywall(trigger: trigger, resume: review)
+        }
+    }
+
+    /// Whether a request a control in the window issues is taken (D8):
+    /// - **one of the shell's sheets is on screen:** dropped, never queued and never put in its
+    ///   place. Replacing would throw away what the sheet holds (History's edit, a purchase under
+    ///   way); queueing would pop the sheet up long after the press, when the other one closes;
+    /// - **the window presents anything else** — a view's own sheet (Statistics' Share), the
+    ///   account-choice sheet, an alert: refused, for the same reason. SwiftUI cannot present
+    ///   the shell's sheet over it, and a request it could not present stayed set and popped up
+    ///   by itself once the other one closed (measured for history links, StrideApp.present);
+    /// - **otherwise taken**, replacing any request still set but not on screen (one SwiftUI
+    ///   never presented): a request that is not showing must never swallow the next press.
+    ///
+    /// The same rule as a history link and the Mac's menu under a sheet (StrideApp.present,
+    /// `actsUnderSheet`). The case that reaches it from a control: ⇧⌘R on an iPad keyboard, which
+    /// reaches Statistics' toolbar button under a sheet through the responder chain. Continue on
+    /// the shell's paywall is not issued: it replaces its own sheet with the request it carries
+    /// (`ShellState.continueAfterUnlock`).
+    static func takesIssuedRequest(shellSheetOnScreen: Bool, windowPresenting: Bool) -> Bool {
+        !shellSheetOnScreen && !windowPresenting
     }
 
     // MARK: - The menu Export, once its file is written (1.4.1)

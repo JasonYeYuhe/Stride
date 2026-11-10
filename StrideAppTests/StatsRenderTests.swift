@@ -655,3 +655,106 @@ final class StatsRenderTests: XCTestCase {
         }
     }
 }
+
+// MARK: - D12: the locked card's preview (RELEASE-1.4.2.md, W4)
+
+extension StatsRenderTests {
+
+    /// The locked Advanced Analytics card, as Statistics draws it for a free user over `stats`.
+    private func lockedCard(_ stats: HabitStats) -> some View {
+        ProLockedCard(
+            title: "Advanced Analytics",
+            message: "Insights, the 8-week trend, the strength chart and your top 5 streaks",
+            preview: stats
+        ) {}
+    }
+
+    /// The whole numbers in `text`, in order.
+    private func numbers(in text: String) -> [Int] {
+        text.split { !$0.isNumber }.compactMap { Int($0) }
+    }
+
+    /// "Stride Pro has N insights about this habit" counts exactly the lines InsightsCard draws
+    /// for the same stats — through InsightsCard's own `lines(for:)`, so the two cannot drift —
+    /// and is not shown when it would say 0.
+    ///
+    /// Also a guard on what the card speaks (one element: the Button merges its children): no
+    /// number but the message's own and the count. Today the preview draws only shapes, which are
+    /// no element and add nothing to the label, so this cannot catch a hidden preview being made
+    /// visible; it fails when any spoken number — a score or a date added to the preview or
+    /// anywhere in the card without hiding it — reaches the label. The preview's own claim (no
+    /// readable value) is `testThePreviewDrawsLevelsNotScores`.
+    ///
+    /// The users of `testInsightsSayNothingToAUserWhoNeverMisses`: one who never misses (no
+    /// line), and one who missed a Tuesday (Toughest on Tuesday, Down vs last week: 2 lines).
+    func testTheLockedCardCountsInsightsCardsLines() async throws {
+        let created = Self.key(5, 1)
+        let may = Self.keys(from: created, count: 31)
+        let neverHabit = try habit("Read", created: created, checkedIn: may)
+        let missedHabit = try habit("Run", created: created, checkedIn: may + [Self.key(6, 1)])
+        let cases: [(name: String, habit: Habit, stats: HabitStats, lines: Int)] = [
+            ("never misses", neverHabit, stats(neverHabit, today: Self.key(6, 1)), 0),
+            ("missed a Tuesday", missedHabit, stats(missedHabit, today: Self.key(6, 3)), 2),
+        ]
+        let title = appLocalized("Advanced Analytics")
+        let message = appLocalized("Insights, the 8-week trend, the strength chart and your top 5 streaks")
+        let insightsHeader = appLocalized("Insights")
+        let marker = "test.lockedCard.marker"
+        let window = try host(Text(verbatim: marker))
+
+        for item in cases {
+            let name = item.name, expected = item.lines
+            XCTAssertEqual(InsightsCard.lines(for: item.stats).count, expected, "\(name): InsightsCard's lines")
+            XCTAssertEqual(ProLockedCard.insightCount(item.stats), expected, "\(name): the locked card's count")
+            XCTAssertTrue(item.stats.weeklyStrength.contains { $0 > 0 }, "\(name): a preview with a shape to hide")
+
+            // What InsightsCard draws: its rows under the header.
+            window.rootViewController = hostingController(VStack {
+                Text(verbatim: marker)
+                InsightsCard(habit: item.habit, stats: item.stats)
+            })
+            var rows: [String] = []
+            try await waitUntil("\(name): InsightsCard's render") {
+                let labels = self.elements(in: window) { _ in true }.compactMap(\.accessibilityLabel)
+                rows = labels.filter { $0 != marker && $0 != insightsHeader }
+                return labels.contains(marker)
+            }
+            XCTAssertEqual(rows.count, expected, "\(name): the rows InsightsCard drew: \(rows)")
+
+            // What the locked card says over the same stats.
+            window.rootViewController = hostingController(lockedCard(item.stats))
+            var label = ""
+            try await waitUntil("\(name): the locked card") {
+                label = self.elements(in: window) { ($0.accessibilityLabel ?? "").hasPrefix(title) }
+                    .first?.accessibilityLabel ?? ""
+                return !label.isEmpty
+            }
+            let countLine = appLocalized("Stride Pro has \(expected) insights about this habit")
+            XCTAssertEqual(label.contains(countLine), expected >= 1,
+                           "\(name): the count line only with 1 or more: \(label)")
+            XCTAssertEqual(numbers(in: label), numbers(in: message) + (expected >= 1 ? [expected] : []),
+                           "\(name): the card speaks only the message's numbers and the count: \(label)")
+        }
+    }
+
+    /// The preview draws levels, not scores (D12): each week against the series' own highest, in
+    /// three steps, so the tallest bar is always full height whatever the score, and weeks a few
+    /// points apart look the same. Two habits whose scores differ by a factor draw identical
+    /// previews; nothing absolute (the free Strength tile's number) calibrates them.
+    func testThePreviewDrawsLevelsNotScores() {
+        XCTAssertEqual(StrengthShapePreview.levels([0, 0, 0]), [0, 0, 0], "nothing yet: all flat")
+        XCTAssertEqual(StrengthShapePreview.levels([0, 0.1, 0.2, 0.3]), [0, 1, 2, 3])
+        XCTAssertEqual(StrengthShapePreview.levels([0, 0.25, 0.5, 0.75]), [0, 1, 2, 3],
+                       "scaled to the series' own highest: the same shape as the line above")
+        XCTAssertEqual(StrengthShapePreview.levels([0.70, 0.72, 0.74, 0.76]), [3, 3, 3, 3],
+                       "weeks a few points apart cannot be told apart")
+        XCTAssertEqual(StrengthShapePreview.levels([0.9, 0.3]), StrengthShapePreview.levels([0.6, 0.2]),
+                       "no absolute value survives")
+        let real = [0.12, 0.3, 0.41, 0.55, 0.62, 0.7, 0.73, 0.8]
+        let drawn = StrengthShapePreview.levels(real)
+        XCTAssertEqual(drawn.count, real.count)
+        XCTAssertTrue(drawn.allSatisfy { (0...StrengthShapePreview.levelCount).contains($0) })
+        XCTAssertLessThanOrEqual(Set(drawn).count, StrengthShapePreview.levelCount + 1, "at most 4 heights for 8 weeks")
+        XCTAssertEqual(drawn.last, StrengthShapePreview.levelCount, "the highest week is always full height")
+    }
+}
