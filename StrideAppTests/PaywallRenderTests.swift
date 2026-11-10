@@ -213,8 +213,12 @@ final class PaywallRenderTests: XCTestCase {
 
     // MARK: - The bar
 
-    /// The frame `show` draws in, in screen coordinates.
-    private func container(_ size: CGSize) -> CGRect { CGRect(origin: .zero, size: size) }
+    /// The window `show` draws in, in screen coordinates, where `accessibilityFrame` is. A window
+    /// wider than the simulator's screen (the iPad sheet on an iPhone) is centred on it, so its
+    /// origin is not zero: PR #12's CI drew the 704-pt sheet from x = -151 on a 402-pt screen.
+    private func container(of window: UIWindow) -> CGRect {
+        UIAccessibility.convertToScreenCoordinates(window.bounds, in: window)
+    }
 
     /// At the default size the CTA, the terms and both links are pinned in the bar, on the first
     /// screen, CTA first, terms right under it, links last — on an iPhone and in an iPad's sheet.
@@ -232,7 +236,7 @@ final class PaywallRenderTests: XCTestCase {
                 try XCTUnwrap(element("paywall.bar.\($0)", in: window)?.accessibilityFrame, "\(what): \($0)")
             }
             for (name, frame) in zip(["CTA", "terms", "Terms of Use", "Privacy Policy"], frames) {
-                XCTAssertTrue(container(size).insetBy(dx: -0.5, dy: -0.5).contains(frame), "\(what): \(name) on the first screen (\(frame))")
+                XCTAssertTrue(container(of: window).insetBy(dx: -0.5, dy: -0.5).contains(frame), "\(what): \(name) on the first screen (\(frame))")
             }
             XCTAssertGreaterThanOrEqual(frames[1].minY, frames[0].maxY - 0.5, "\(what): the terms right under the CTA")
             XCTAssertGreaterThanOrEqual(frames[2].minY, frames[1].maxY - 0.5, "\(what): the links under the terms")
