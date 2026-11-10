@@ -1555,3 +1555,41 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
   521 entries, 0 rejected rows, 0 with no history, 0 created today; one zero current streak
   (Practice Guitar, by its pattern); the weekly review opens on 2026-11-02. Left for the owner:
   delete the `.env.bak-*` backup, and paste the token into ASC at the 1.4.2 submission.
+- 2026-11-11, **W5 merged** (44b1b3f; worktree agent 5095ed1, review fixes 3b41e89).
+  - D7 as specified, in StatsInsights (pure) and StatsProCards:
+    - Strength draws no bar before the start ("Not started").
+    - Its tiles depend on the habit's age (today − startDay): ≤ 30 days "Since start" alone;
+      31–90 days "30-Day Change" and "Since start", or "Since start" alone when the two numbers
+      are equal; > 90 days unchanged. The ≤ 30 is one day wider than "younger than 30": at day 30
+      the 30-day window reaches the day before the start.
+    - Change colours use `readableText`.
+    - Insights always draws.
+    - A level week reads "Level with last week".
+    - The weekday line reads the 12-week tally and needs:
+      - 4 due occurrences of every scheduled weekday;
+      - the named day ≥ 15 points from every other scheduled weekday (exact integers);
+      - agreement with By Weekday's all-time counts (the named day at least tied for top or
+        bottom).
+    - The record line. At most 3 lines: record, momentum, weekday.
+    - A PRO chip (#23863C, white at 4.62:1, hidden from VoiceOver).
+    - `lines(for:)` stays real insights only.
+  - **One new key, all 5 translated locales:** "Nothing to compare yet this week". It is a third
+    empty state, shown past the first full week while this week has nothing counted. Without it,
+    a user who never misses read "Not enough recent check-ins to compare" every Monday before the
+    check-in (review finding).
+  - **Review** (independent, read-only). Fixed in 3b41e89:
+    - that empty state;
+    - equal Strength tiles at 31–90 days;
+    - the weekday line contradicting By Weekday;
+    - the chip's 4.5000:1 with no margin.
+
+    Left open, for the "disprove" lens before the freeze:
+    - Momentum compares this week so far with a whole last week (pre-existing). On a Sunday
+      morning the same pattern reads "Down (85% → 83%)".
+    - Past 90 days, a habit used only lately can show equal 30- and 90-Day Change (both true).
+  - `StatsInsights.weeklyReview` stays until W6 merges.
+  - **Tests:**
+    - StrideTests 794 run / 2 skipped / 0 failed in Tokyo and Los Angeles (`TEST_RUNNER_TZ`; a bare
+      `TZ=` does not reach the test process).
+    - Hosted StatsRenderTests compiled only (disk 21 GB); CI runs them.
+    - StrideMac builds.
