@@ -14,11 +14,17 @@ import SwiftUI
 /// each of the last 8 Monday-anchored weeks as bars in TrendCard's hand-rolled style (no Swift
 /// Charts), under D9's one-sentence explanation. From `HabitStats.strength`,
 /// `strengthDelta30`/`strengthDelta90` and `weeklyStrength`.
+///
+/// Right in a habit's first weeks (RELEASE-1.4.2.md D7): the weeks that ended before the habit
+/// started draw no bar and are "Not started" to VoiceOver, as in TrendCard; a habit younger than
+/// 30 days shows one "Since start" change, and one younger than 90 shows "30-Day Change" and
+/// "Since start" (`StatsInsights.strengthChanges`), where 1.4.1 showed two equal tiles.
 struct StrengthCard: View {
     let habit: Habit
     /// This render's stats (StatsView).
     let stats: HabitStats
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.colorScheme) private var colorScheme
     /// Room for the value and date labels around the bars, as TrendCard: 30 at the default size.
     @ScaledMetric(relativeTo: .caption2) private var labelRoom: CGFloat = 30
 
@@ -32,6 +38,9 @@ struct StrengthCard: View {
         let score: Double
         /// As drawn: 0–100.
         let value: Int
+        /// The week ended before the habit's start (`HabitStats.endsBeforeStart`): no bar, no
+        /// number, and "Not started" to VoiceOver, where 1.4.1 drew a grey bar marked 0.
+        let beforeStart: Bool
     }
 
     /// The weeks TrendCard draws, oldest first; `weeklyStrength` buckets the same Mondays.
@@ -40,7 +49,8 @@ struct StrengthCard: View {
         let mondays = StatsWeeks.mondays(endingWithWeekOf: stats.today)
         return zip(mondays, stats.weeklyStrength).map { start, score in
             WeekPoint(id: start, label: StatsWeeks.label.string(from: start), spokenDate: start.formatted(spoken),
-                      score: score, value: HabitScore.displayValue(score))
+                      score: score, value: HabitScore.displayValue(score),
+                      beforeStart: stats.endsBeforeStart(weekStarting: start))
         }
     }
 
@@ -49,20 +59,27 @@ struct StrengthCard: View {
     /// where rounding the difference itself could say +4 or +6. `delta` is
     /// `strengthDelta30`/`strengthDelta90`, in score units.
     nonisolated static func displayedChange(current: Double, delta: Double) -> Int {
-        HabitScore.displayValue(current) - HabitScore.displayValue(current - delta)
+        StatsInsights.displayedChange(current: current, baseline: current - delta)
     }
+
+    /// A rise in the palette's Green, a drop in its Orange, each as text on this card
+    /// (`Color.readableText`: darkened on the light card until it reads at 4.5:1). 1.4.1 drew the
+    /// system green and orange, about 2:1 on the light card (RELEASE-1.4.2.md C13).
+    nonisolated static let riseHex = "#34C759"
+    nonisolated static let dropHex = "#FF9500"
 
     var body: some View {
         let score = HabitScore.displayValue(stats.strength)
-        let change30 = Self.displayedChange(current: stats.strength, delta: stats.strengthDelta30)
-        let change90 = Self.displayedChange(current: stats.strength, delta: stats.strengthDelta90)
+        let changes = StatsInsights.strengthChanges(for: stats)
         // D9's sentence. The rolling-week clause matters only where the streak counts weeks.
         let explanation: LocalizedStringKey = habit.schedule == .timesPerWeek ? "Strength grows with every check-in and recovers after a miss; it counts a rolling 7 days, the streak counts calendar weeks." : "Strength grows with every check-in and recovers after a miss."
         VStack(alignment: .leading, spacing: 12) {
-            // The title and the score are one heading: "Strength, 74".
+            // The title and the score are one heading: "Strength, 74". The chip is hidden, so
+            // it adds nothing to it.
             HStack(alignment: .firstTextBaseline) {
                 Text("Strength")
                     .font(.headline)
+                ProChip()
                 Spacer()
                 Text(score, format: .number)
                     .font(.title.bold())
@@ -75,8 +92,18 @@ struct StrengthCard: View {
                 ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
                 : AnyLayout(HStackLayout(spacing: 20))
             tiles {
-                changeTile(title: "30-Day Change", change: change30)
-                changeTile(title: "90-Day Change", change: change90)
+                ForEach(changes, id: \.self) { change in
+                    switch change {
+                    case .thirtyDays:
+                        changeTile(title: "30-Day Change",
+                                   change: Self.displayedChange(current: stats.strength, delta: stats.strengthDelta30))
+                    case .ninetyDays:
+                        changeTile(title: "90-Day Change",
+                                   change: Self.displayedChange(current: stats.strength, delta: stats.strengthDelta90))
+                    case .sinceStart:
+                        changeTile(title: "Since start", change: StatsInsights.displayedChangeSinceStart(of: stats))
+                    }
+                }
                 if !typeSize.isAccessibilitySize {
                     Spacer()
                 }
@@ -102,7 +129,9 @@ struct StrengthCard: View {
                 .foregroundStyle(.secondary)
             Text(change, format: .number.sign(strategy: .always(includingZero: false)))
                 .font(.title3.bold())
-                .foregroundStyle(change > 0 ? Color.green : change < 0 ? Color.orange : Color.secondary)
+                .foregroundStyle(change > 0 ? Color.readableText(hex: Self.riseHex, in: colorScheme)
+                                 : change < 0 ? Color.readableText(hex: Self.dropHex, in: colorScheme)
+                                 : Color.secondary)
         }
         .accessibilityElement(children: .combine)
     }
@@ -124,20 +153,28 @@ struct StrengthCard: View {
                                 Text(point.label)
                                     .scaledSystemFont(size: 8)
                                 Spacer()
-                                Text(point.value, format: .number)
-                                    .scaledSystemFont(size: 9)
+                                if !point.beforeStart {
+                                    Text(point.value, format: .number)
+                                        .scaledSystemFont(size: 9)
+                                }
                             }
                             .foregroundStyle(.secondary)
-                            HorizontalBar(fraction: point.score, fill: fill)
+                            if !point.beforeStart {
+                                HorizontalBar(fraction: point.score, fill: fill)
+                            }
                         }
                     } else {
                         VStack(spacing: 4) {
-                            Text(point.value, format: .number)
-                                .scaledSystemFont(size: 9)
-                                .foregroundStyle(.secondary)
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(fill)
-                                .frame(height: max(4, CGFloat(point.score) * 80))
+                            // Bottom-aligned, as TrendCard: a week before the start keeps only
+                            // its date, under an empty slot.
+                            if !point.beforeStart {
+                                Text(point.value, format: .number)
+                                    .scaledSystemFont(size: 9)
+                                    .foregroundStyle(.secondary)
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(fill)
+                                    .frame(height: max(4, CGFloat(point.score) * 80))
+                            }
                             Text(point.label)
                                 .scaledSystemFont(size: 8)
                                 .foregroundStyle(.secondary)
@@ -149,7 +186,7 @@ struct StrengthCard: View {
                 .frame(maxWidth: .infinity)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Week of \(point.spokenDate)")
-                .accessibilityValue(Text(point.value, format: .number))
+                .accessibilityValue(point.beforeStart ? Text("Not started") : Text(point.value, format: .number))
             }
         }
         // The tallest bar is 80 pt; the rest is the two labels, so only that part scales.
@@ -170,9 +207,7 @@ struct BestStreaksCard: View {
         let ranges = stats.bestStreakRanges
         let longest = max(1, ranges.first?.length ?? 1)
         VStack(alignment: .leading, spacing: 12) {
-            Text("Your Top 5 Streaks")
-                .font(.headline)
-                .accessibilityAddTraits(.isHeader)
+            ProCardHeader(title: "Your Top 5 Streaks")
             if ranges.isEmpty {
                 Text("No streaks yet")
                     .font(.subheadline)
@@ -296,9 +331,7 @@ struct TrendCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("8-Week Trend")
-                .font(.headline)
-                .accessibilityAddTraits(.isHeader)
+            ProCardHeader(title: "8-Week Trend")
 
             // Eight columns get about 37 pt each: past the largest non-accessibility size "12/28"
             // no longer fits one, so accessibility sizes draw one row per week instead.
@@ -369,7 +402,7 @@ struct TrendCard: View {
     }
 }
 
-// MARK: - Insights (best/worst day, momentum)
+// MARK: - Insights (record, momentum, strongest/toughest day; D7)
 struct InsightsCard: View {
     let habit: Habit
     /// This render's stats (StatsView): the weekday tallies and both weeks read one HabitStats
@@ -380,63 +413,108 @@ struct InsightsCard: View {
     // rendered in English in every language. Each phrase is built whole so it is one key.
     private var insights: [(icon: String, text: LocalizedStringKey)] { Self.lines(for: stats) }
 
-    /// The card's lines for `stats`, in order; none: the card draws nothing. Static so that
-    /// Statistics' locked card counts the very lines this card would draw ("Stride Pro has N
-    /// insights about this habit", RELEASE-1.4.2.md D12; extracted by W4, unchanged).
-    /// Real insights only: an empty-state or placeholder line (D7's "Not enough recent check-ins
-    /// to compare") belongs in the card's body, not here, or the locked card would sell it.
+    /// The card's lines for `stats`, in order (`StatsInsights.insightLines(for:)`: the record
+    /// line, momentum, the weekday line; at most 3). Static so that Statistics' locked card counts
+    /// the very lines this card would draw ("Stride Pro has N insights about this habit",
+    /// RELEASE-1.4.2.md D12; extracted by W4). Real insights only: the empty state (D7's
+    /// "Insights appear after your first full week" / "Not enough recent check-ins to compare")
+    /// is drawn by the card's body, never returned here, or the locked card would sell it.
     static func lines(for stats: HabitStats) -> [(icon: String, text: LocalizedStringKey)] {
-        var out: [(String, LocalizedStringKey)] = []
         let symbols = appCalendar.weekdaySymbols // index 0 = Sunday
-
-        // A day only when its rate stands alone, and never for times-per-week
-        // (StatsInsights.weekdayExtremes): the first of equal counts was "Toughest on Sunday" for a
-        // user who never misses, and the strongest day changed between launches (2026-10-22).
-        let days = StatsInsights.weekdayExtremes(stats.weekdayTallies, schedule: stats.schedule,
-                                                 activeDaysMask: stats.activeDaysMask)
-        if let best = days.strongest {
-            out.append(("star.fill", "Strongest on \(symbols[best - 1])"))
-        }
-        if let worst = days.toughest {
-            out.append(("exclamationmark.triangle", "Toughest on \(symbols[worst - 1])"))
-        }
-
-        // Momentum: this week so far (an unfinished today is not a miss yet) vs last week.
-        if let momentum = StatsInsights.momentum(thisWeek: stats.thisWeekRate, lastWeek: stats.lastWeekRate) {
-            // Formatted outside the key so the key carries no literal "%" to escape.
-            let was = "\(momentum.was)%"
-            let now = "\(momentum.now)%"
-            if momentum.isUp {
-                out.append(("arrow.up.right", "Up vs last week (\(was) → \(now))"))
-            } else {
-                out.append(("arrow.down.right", "Down vs last week (\(was) → \(now))"))
+        return StatsInsights.insightLines(for: stats).map { line -> (icon: String, text: LocalizedStringKey) in
+            switch line {
+            case .record(let gap, let inWeeks):
+                // Two Ints, so the keys are "%lld days from your record of %lld" and its weeks
+                // twin, each a stringsdict plural on the first number. One key per unit.
+                let count = gap.away, best = gap.record
+                return inWeeks
+                    ? ("trophy", "\(count) weeks from your record of \(best)")
+                    : ("trophy", "\(count) days from your record of \(best)")
+            case .momentum(let momentum):
+                // Formatted outside the key so the key carries no literal "%" to escape.
+                let was = "\(momentum.was)%"
+                let now = "\(momentum.now)%"
+                switch momentum.direction {
+                case .up: return ("arrow.up.right", "Up vs last week (\(was) → \(now))")
+                case .down: return ("arrow.down.right", "Down vs last week (\(was) → \(now))")
+                case .level: return ("equal", "Level with last week")
+                }
+            case .strongest(let weekday):
+                return ("star.fill", "Strongest on \(symbols[weekday - 1])")
+            case .toughest(let weekday):
+                return ("exclamationmark.triangle", "Toughest on \(symbols[weekday - 1])")
             }
         }
-        return out
     }
 
     var body: some View {
         let items = insights
-        if !items.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Insights")
-                    .font(.headline)
-                    .accessibilityAddTraits(.isHeader)
-                ForEach(items.indices, id: \.self) { i in
-                    HStack(spacing: 8) {
-                        Image(systemName: items[i].icon)
-                            .font(.caption)
-                            .foregroundStyle(habit.color)
-                            .frame(width: 18)
-                            .accessibilityHidden(true)
-                        Text(items[i].text)
-                            .font(.subheadline)
+        // Never hidden (D7): with nothing to say, the card says why.
+        VStack(alignment: .leading, spacing: 10) {
+            ProCardHeader(title: "Insights")
+            if items.isEmpty {
+                Group {
+                    switch StatsInsights.emptyState(startDay: stats.startDay, today: stats.today, calendar: stats.calendar) {
+                    case .beforeFirstFullWeek: Text("Insights appear after your first full week")
+                    case .notEnoughRecentCheckIns: Text("Not enough recent check-ins to compare")
                     }
                 }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding()
-            .background(RoundedRectangle(cornerRadius: 16).fill(Color.appSecondaryBackground))
+            ForEach(items.indices, id: \.self) { i in
+                HStack(spacing: 8) {
+                    Image(systemName: items[i].icon)
+                        .font(.caption)
+                        .foregroundStyle(habit.color)
+                        .frame(width: 18)
+                        .accessibilityHidden(true)
+                    Text(items[i].text)
+                        .font(.subheadline)
+                }
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(RoundedRectangle(cornerRadius: 16).fill(Color.appSecondaryBackground))
+    }
+}
+
+// MARK: - The Pro chip (RELEASE-1.4.2.md D7)
+
+/// A Pro card's title with the PRO chip beside it: the title is the header VoiceOver reads; the
+/// chip is decoration and hidden from it.
+struct ProCardHeader: View {
+    let title: LocalizedStringKey
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(title)
+                .font(.headline)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityAddTraits(.isHeader)
+            ProChip()
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+/// "PRO" on a Pro card's header (D7). Decorative: VoiceOver skips it, so a header combined with
+/// a value stays "Strength, 74". White on `StatsInsights.proChipFill`, the palette's Green
+/// darkened until white text on it reaches 4.5:1 (StatsInsightsTests check the ratio); the same
+/// in light and dark. It never truncates or wraps; at accessibility sizes the title beside it
+/// wraps instead.
+struct ProChip: View {
+    var body: some View {
+        Text("PRO")
+            .font(.caption2.weight(.bold))
+            .foregroundStyle(StatsInsights.proChipText.color)
+            .lineLimit(1)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(StatsInsights.proChipFill.color))
+            .fixedSize()
+            .accessibilityHidden(true)
     }
 }
