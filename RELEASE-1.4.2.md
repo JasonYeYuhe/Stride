@@ -1064,7 +1064,8 @@ Placement rules are 1.4.1's. `Shared/` holds pure values only:
 ## Submission checklist (1.4.2)
 
 - [ ] 1.4.1 is released, and m5 has merged m4's tip and `main`.
-- [ ] **[owner]** The demo token is rotated, and the review notes' password matches.
+- [x] **[owner]** The demo token is rotated (2026-11-11).
+- [ ] **[owner]** At submission, the new token is pasted into ASC's Sign-In Password for iOS and Mac.
 - [ ] Gates 1–13 are green on the final tree, gate 10 included. Signing preflight:
       `security show-keychain-info`, plus a 1-second codesign probe.
 - [ ] **[owner]** docs/terms.html (with Lifetime and the trial sentence) is published to stride-site
@@ -1548,3 +1549,9 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
       are fixed in a2a2788; the cold-start resume is tested at unit level only (no DEBUG `isPro`
       override in StoreService). StrideTests 774 / 2 / 0 in both zones; hosted tests compiled,
       CI runs them; StrideMac builds.
+- 2026-11-11, **demo token rotated** (owner, Phase 0 item 3). New token generated into 1Password,
+  `DEMO_TOKEN` replaced in /root/stride-server/.env, `node seed-demo.js` rerun. CI on c6c7f73
+  (run 42816606840) green. `scripts/check_demo_account.sh` passed with the new token: 8 habits,
+  521 entries, 0 rejected rows, 0 with no history, 0 created today; one zero current streak
+  (Practice Guitar, by its pattern); the weekly review opens on 2026-11-02. Left for the owner:
+  delete the `.env.bak-*` backup, and paste the token into ASC at the 1.4.2 submission.
