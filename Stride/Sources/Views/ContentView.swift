@@ -8,7 +8,10 @@ struct ContentView: View {
     /// rebuilds the layout, not the date, the anchor, the Stats habit or the selection.
     @State private var shell: ShellState
     @Environment(\.scenePhase) private var scenePhase
-    private var store = StoreService.shared
+    // No StoreService here: what a request presents was decided when it was issued (D8), so the
+    // shell never reads `isPro`, and a purchase redraws nothing of it.
+    /// The shell request whose sheet is on screen, set as its content appears (`sheetRequest`).
+    @State private var presentedSheet: ShellRequest?
     // `-paywall` opens the Pro paywall on launch so scripts/a11y_sweep.sh can capture it at every
     // text size without tapping through a Pro-locked card. DEBUG-only on purpose: launch arguments
     // cannot reach a store build anyway (only Xcode, simctl and XCUITest pass them), but compiling
@@ -66,9 +69,12 @@ struct ContentView: View {
             // What the window was asked to present (W6's menu commands), here so it does not
             // depend on the tab that would otherwise show it: ⇧⌘R before Stats was ever opened
             // has no StatsView to present from. Cleared when dismissed. An export request is not
-            // a sheet; it never shows here.
+            // a sheet; it never shows here. Since 1.4.2 it is also Statistics' only presenter
+            // (D8): the Weekly Review button and the locked card issue their request here, so the
+            // paywall a free user buys in is not torn down when the card under it turns Pro.
             .sheet(item: sheetRequest) { request in
                 requestedSheet(request)
+                    .onAppear { presentedSheet = request }
             }
             // Re-anchoring Today (`ShellState.reanchor`) — here, never inside a tab and never only
             // while Today shows. Coming back to the app the next morning,
@@ -234,36 +240,56 @@ struct ContentView: View {
         }
     }
 
-    /// `shell.request` when it is a sheet; dismissing it clears the request.
+    /// `shell.request` when it is a sheet; dismissing it clears the request — the request that
+    /// sheet presented, never one already set in its place. The paywall's Continue dismisses the
+    /// paywall and then sets the review it resumes (`ShellState.continueAfterUnlock`, D8); should
+    /// the dismissal's nil ever reach this binding after that, it would clear the review before it
+    /// showed. So the nil clears only while the request is still the one on screen
+    /// (`presentedSheet`), or before any sheet has appeared.
     private var sheetRequest: Binding<ShellRequest?> {
         Binding(
             get: { shell.request.flatMap { $0.isSheet ? $0 : nil } },
             set: { newValue in
-                if newValue == nil, shell.request?.isSheet == true { shell.request = nil }
+                guard newValue == nil, let current = shell.request, current.isSheet else { return }
+                if presentedSheet == nil || presentedSheet == current { shell.request = nil }
             })
     }
 
+    /// What was latched when the request was issued (RELEASE-1.4.2.md D8), and nothing decided
+    /// here: no read of `isPro`. 1.4.1 picked the review or the paywall in this switch, from the
+    /// live entitlement, so a purchase made in the paywall rebuilt the sheet as the review before
+    /// "Stride Pro is unlocked" showed, and Continue — with what it resumes — never ran.
     @ViewBuilder
     private func requestedSheet(_ request: ShellRequest) -> some View {
         switch request {
         case .newHabit:
             AddHabitView()
         case .weeklyReview:
-            // As Stats' button: the review for Pro, the paywall for anyone else. Read when the
-            // sheet is built, so a purchase made since the request was issued counts. W4 moves
-            // this choice to the issuer (RELEASE-1.4.2.md D8), and W6 opens the requested week.
-            switch MenuCommandRules.weeklyReviewDestination(isPro: store.isPro) {
-            case .review: WeeklyReviewView()
-            case .paywall: ProPaywallView(trigger: .weeklyReview)
-            }
-        case .paywall(let trigger, _):
-            // The resume request is Continue's (W3, W4); nothing issues this case before W4.
-            ProPaywallView(trigger: trigger)
+            // Issued only for Pro (`ShellState.issue`). W6 opens it on the requested week.
+            WeeklyReviewView()
+        case .paywall(let trigger, let resume):
+            // Continue dismisses the paywall, then the review it was opened for takes its place;
+            // with nothing to resume it just closes.
+            shellPaywall(trigger: trigger) { shell.continueAfterUnlock(resume: resume) }
         case .history(let habitID, let day):
             HabitHistoryView(habitID: habitID, day: day)
         case .export:
             EmptyView()
         }
+    }
+
+    /// The shell's paywall: the store's, or in DEBUG the fixture a hosted test set on the shell.
+    @ViewBuilder
+    private func shellPaywall(trigger: PaywallTrigger, onUnlock: @escaping () -> Void) -> some View {
+        #if DEBUG
+        if let fixture = shell.paywallFixture {
+            ProPaywallView(trigger: trigger, fixture: fixture, onUnlock: onUnlock)
+        } else {
+            ProPaywallView(trigger: trigger, onUnlock: onUnlock)
+        }
+        #else
+        ProPaywallView(trigger: trigger, onUnlock: onUnlock)
+        #endif
     }
 
     // MARK: - Mac launch
@@ -439,6 +465,14 @@ struct SidebarView: View {
 /// the title and the title gets the row's whole width. Beside the icon, AX5 left the 13-inch
 /// iPad's sidebar too little for one word, and "Sta- / tistics" and "Set- / tings" broke inside
 /// it, the second line under the icon (gate 8).
+///
+/// Every sidebar title is one word in all six languages (Today, Statistics, Settings; Hoy,
+/// Estadísticas, Ajustes; …), so stacked, the title stays on one line and shrinks to fit rather
+/// than breaking inside its word. Spanish's "Estadísticas" is the longest: at AX5 it is about as
+/// wide as the 13-inch iPad's sidebar row even with the whole width, and wrapped it would break
+/// inside the word, as "Sta- / tistics" did beside the icon (1.4.1's unchecked AX5 follow-up;
+/// gate 8's iPad PNG is the check). Half the size is the floor; the shorter titles keep their
+/// full size.
 private struct SidebarRowLabelStyle: LabelStyle {
     let stacked: Bool
 
@@ -448,7 +482,11 @@ private struct SidebarRowLabelStyle: LabelStyle {
             VStack(alignment: .leading, spacing: 4) {
                 configuration.icon
                 configuration.title
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
+                    .allowsTightening(true)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         } else {
             Label(configuration)
         }

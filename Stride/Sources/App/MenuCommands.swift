@@ -52,7 +52,8 @@ struct ShellCommandsPublisher: ViewModifier {
 /// - **File:** New Habit ⌘N in place of New Window — one main window, so the tab bar's + is gone
 ///   too (`NSWindow.allowsAutomaticWindowTabbing`, StrideApp.init) — then Sync Now ⌘R, Export
 ///   Backup… ⇧⌘E and Export as CSV….
-/// - **View:** Today ⌘1, Statistics ⌘2, Weekly Review ⇧⌘R.
+/// - **View:** Today ⌘1, Statistics ⌘2, Weekly Review ⇧⌘R (the Mac's only ⇧⌘R: Statistics'
+///   toolbar button carries it on iPad alone).
 /// - **Window:** Stride ⌘0, always enabled: the way back to a closed main window. With Settings
 ///   open and the main window closed, a Dock click opens nothing — AppKit reopens only when no
 ///   window is visible — and File → New Window went with ⌘N (design review,
@@ -87,11 +88,12 @@ struct StrideCommands: Commands {
             WindowCommandButton(.statistics, title: appLocalized("Statistics"), window: window,
                                 shortcut: KeyboardShortcut("2")) { $0.shell.selection = .stats }
             Divider()
-            // ContentView presents the review for Pro and the paywall for anyone else, decided when
-            // the sheet is built — whether or not Stats was ever opened in this window.
+            // The review for Pro, the paywall resuming it for anyone else: decided here, at the
+            // press, and latched in the request (RELEASE-1.4.2.md D8) — whether or not Stats was
+            // ever opened in this window. ContentView presents what was latched.
             WindowCommandButton(.weeklyReview, title: appLocalized("Weekly Review"), window: window,
                                 shortcut: KeyboardShortcut("r", modifiers: [.command, .shift])) {
-                $0.shell.request = .weeklyReview(week: nil)
+                _ = $0.shell.issue(.weeklyReviewButton, isPro: StoreService.shared.isPro)
             }
             Divider()
         }

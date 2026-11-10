@@ -18,10 +18,10 @@ struct StatsView: View {
     private var selectedHabit: Habit? {
         habits.first { $0.id == shell.statsHabitID } ?? habits.first
     }
-    @State private var showingWeeklyReview = false
-    /// The paywall, and why it is open (RELEASE-1.4.2.md D4): the locked card `.analytics`, the
-    /// Weekly Review button `.weeklyReview`. W4 replaces this sheet with the shell's request (D8).
-    @State private var paywallTrigger: PaywallTrigger?
+    // No sheets of its own (RELEASE-1.4.2.md D8): the Weekly Review button and the locked card
+    // issue the shell's request (`ShellState.issue`), decided from `isPro` at the tap, and the
+    // shell presents it. A paywall presented from here was torn down with the locked card the
+    // moment a purchase in it turned Statistics Pro.
     private var store = StoreService.shared
     /// Every number on this screen comes from here (RELEASE-1.4.1.md D3), read once per render
     /// and handed down — never kept across renders.
@@ -152,10 +152,13 @@ struct StatsView: View {
                                     // is Pro too, but it is not behind this card: its toolbar
                                     // button sells it. The paywall's row says the same
                                     // (LocalizationSourceScanTests.testProClaimsNameExactlyD11sSet).
+                                    // D12: a blurred preview of this habit's own strength, and
+                                    // how many insights Pro has about it.
                                     ProLockedCard(
                                         title: "Advanced Analytics",
-                                        message: "Insights, the 8-week trend, the strength chart and your top 5 streaks"
-                                    ) { paywallTrigger = .analytics }
+                                        message: "Insights, the 8-week trend, the strength chart and your top 5 streaks",
+                                        preview: stats
+                                    ) { shell.issue(.lockedAnalyticsCard, isPro: store.isPro) }
                                     .statsLaunchAnchor("analytics")
                                 }
                                 WeeklyBarChart(habit: habit, stats: stats)
@@ -179,21 +182,39 @@ struct StatsView: View {
             // tab shows: every kept tab's toolbar lands in the shell's one navigation bar (D2).
             if isActive && !habits.isEmpty {
                 ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        if store.isPro { showingWeeklyReview = true } else { paywallTrigger = .weeklyReview }
-                    } label: {
-                        Image(systemName: "calendar.badge.clock")
-                    }
-                    .accessibilityLabel("Weekly Review")
+                    weeklyReviewButton
                 }
             }
         }
-        .sheet(isPresented: $showingWeeklyReview) {
-            WeeklyReviewView()
+    }
+
+    /// D12's Weekly Review button: the review for Pro, the paywall resuming it for anyone else,
+    /// decided at the tap and latched in the shell's request (D8). A crown beside the icon for a
+    /// free user, as the locked card and Today's card mark what Pro opens. Its name is the same
+    /// for both: the crown is decoration, and the paywall says what it sells.
+    private var weeklyReviewButton: some View {
+        Button {
+            shell.issue(.weeklyReviewButton, isPro: store.isPro)
+        } label: {
+            HStack(spacing: 2) {
+                Image(systemName: "calendar.badge.clock")
+                if !store.isPro {
+                    Image(systemName: "crown.fill")
+                        .imageScale(.small)
+                        .foregroundStyle(.yellow)
+                }
+            }
         }
-        .sheet(item: $paywallTrigger) { trigger in
-            ProPaywallView(trigger: trigger)
-        }
+        .accessibilityLabel("Weekly Review")
+        // The Mac's pointer tooltip; the menu's View → Weekly Review ⇧⌘R is its shortcut there.
+        .help("Weekly Review")
+        #if os(iOS)
+        // An iPad keyboard's ⇧⌘R (D12). Not on the Mac, whose menu owns it (a second binding
+        // would be a duplicate), nor on an iPhone. The shell drops a press that arrives under
+        // one of its sheets (`ShellState.issue`).
+        .keyboardShortcut(UIDevice.current.userInterfaceIdiom == .pad
+                          ? KeyboardShortcut("r", modifiers: [.command, .shift]) : nil)
+        #endif
     }
 }
 
@@ -680,8 +701,28 @@ struct DetailCardHeaderLayout: Layout {
 struct ProLockedCard: View {
     let title: LocalizedStringKey
     let message: LocalizedStringKey
+    /// D12's preview: this habit's stats, for the blurred shape of its own 8-week strength and
+    /// the count of insights Pro has about it. Nil draws the card without them.
+    var preview: HabitStats?
     let action: () -> Void
     @Environment(\.dynamicTypeSize) private var typeSize
+
+    init(title: LocalizedStringKey, message: LocalizedStringKey, preview: HabitStats? = nil,
+         action: @escaping () -> Void) {
+        self.title = title
+        self.message = message
+        self.preview = preview
+        self.action = action
+    }
+
+    /// How many lines InsightsCard draws for these stats — its own function, so the number
+    /// cannot drift from the card it stands for (D12).
+    static func insightCount(_ stats: HabitStats) -> Int {
+        InsightsCard.lines(for: stats).count
+    }
+
+    /// The preview's height, at every text size: decoration, so it never grows with the type.
+    static let previewHeight: CGFloat = 44
 
     /// A capsule while the label is one line. At accessibility sizes it wraps ("Unlock / with Pro"
     /// at AX5), and a capsule's half-height ends ran into both lines (gate 8).
@@ -692,8 +733,13 @@ struct ProLockedCard: View {
     }
 
     var body: some View {
+        // `count`: a name LocalizationSourceScanTests types as an integer (`%lld`).
+        let count = preview.map(Self.insightCount) ?? 0
         Button(action: action) {
             VStack(spacing: 10) {
+                if let preview {
+                    StrengthShapePreview(weeks: preview.weeklyStrength)
+                }
                 Image(systemName: "crown.fill")
                     .font(.title2)
                     .foregroundStyle(.yellow)
@@ -704,6 +750,12 @@ struct ProLockedCard: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                // Only with something to say: "0 insights" would sell nothing.
+                if count >= 1 {
+                    Text("Stride Pro has \(count) insights about this habit")
+                        .font(.footnote.weight(.medium))
+                        .multilineTextAlignment(.center)
+                }
                 Text("Unlock with Pro")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.white)
@@ -719,6 +771,32 @@ struct ProLockedCard: View {
             .background(RoundedRectangle(cornerRadius: 16).fill(Color.appSecondaryBackground))
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// D12's locked-card preview: the shape of the user's own 8-week strength (StrengthCard's bars,
+/// `HabitStats.weeklyStrength`), blurred so that no value can be read off it, with no numbers,
+/// no dates and no axis. VoiceOver skips it: it is a picture of what Pro shows, and what it
+/// would say is the numbers it hides.
+struct StrengthShapePreview: View {
+    /// Each week's score, 0…1, oldest first.
+    let weeks: [Double]
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 6) {
+            ForEach(weeks.indices, id: \.self) { i in
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(Color.green.opacity(0.35 + 0.5 * weeks[i]))
+                    .frame(width: 14, height: max(4, CGFloat(weeks[i]) * ProLockedCard.previewHeight))
+            }
+        }
+        .frame(height: ProLockedCard.previewHeight, alignment: .bottom)
+        // Wide enough to blend neighbouring bars and soften every top edge: the rise and fall
+        // stay, a bar's height cannot be measured.
+        .blur(radius: 5, opaque: false)
+        .padding(4)
+        .accessibilityHidden(true)
+        .accessibilityIdentifier("stats.lockedPreview")
     }
 }
 

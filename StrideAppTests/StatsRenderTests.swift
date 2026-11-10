@@ -655,3 +655,82 @@ final class StatsRenderTests: XCTestCase {
         }
     }
 }
+
+// MARK: - D12: the locked card's preview (RELEASE-1.4.2.md, W4)
+
+extension StatsRenderTests {
+
+    /// The locked Advanced Analytics card, as Statistics draws it for a free user over `stats`.
+    private func lockedCard(_ stats: HabitStats) -> some View {
+        ProLockedCard(
+            title: "Advanced Analytics",
+            message: "Insights, the 8-week trend, the strength chart and your top 5 streaks",
+            preview: stats
+        ) {}
+    }
+
+    /// The whole numbers in `text`, in order.
+    private func numbers(in text: String) -> [Int] {
+        text.split { !$0.isNumber }.compactMap { Int($0) }
+    }
+
+    /// "Stride Pro has N insights about this habit" counts exactly the lines InsightsCard draws
+    /// for the same stats — through InsightsCard's own `lines(for:)`, so the two cannot drift —
+    /// and is not shown when it would say 0. The blurred strength preview is out of VoiceOver's
+    /// reach: the card speaks its title, message, the count line and its button, and no number
+    /// but the message's own and the count — none of the 8 weekly scores it draws.
+    ///
+    /// The users of `testInsightsSayNothingToAUserWhoNeverMisses`: one who never misses (no
+    /// line), and one who missed a Tuesday (Toughest on Tuesday, Down vs last week: 2 lines).
+    func testTheLockedCardCountsInsightsCardsLinesAndItsPreviewSaysNoNumber() async throws {
+        let created = Self.key(5, 1)
+        let may = Self.keys(from: created, count: 31)
+        let neverHabit = try habit("Read", created: created, checkedIn: may)
+        let missedHabit = try habit("Run", created: created, checkedIn: may + [Self.key(6, 1)])
+        let cases: [(name: String, habit: Habit, stats: HabitStats, lines: Int)] = [
+            ("never misses", neverHabit, stats(neverHabit, today: Self.key(6, 1)), 0),
+            ("missed a Tuesday", missedHabit, stats(missedHabit, today: Self.key(6, 3)), 2),
+        ]
+        let title = appLocalized("Advanced Analytics")
+        let message = appLocalized("Insights, the 8-week trend, the strength chart and your top 5 streaks")
+        let insightsHeader = appLocalized("Insights")
+        let marker = "test.lockedCard.marker"
+        let window = try host(Text(verbatim: marker))
+
+        for item in cases {
+            let name = item.name, expected = item.lines
+            XCTAssertEqual(InsightsCard.lines(for: item.stats).count, expected, "\(name): InsightsCard's lines")
+            XCTAssertEqual(ProLockedCard.insightCount(item.stats), expected, "\(name): the locked card's count")
+            XCTAssertTrue(item.stats.weeklyStrength.contains { $0 > 0 }, "\(name): a preview with a shape to hide")
+
+            // What InsightsCard draws: its rows under the header.
+            window.rootViewController = hostingController(VStack {
+                Text(verbatim: marker)
+                InsightsCard(habit: item.habit, stats: item.stats)
+            })
+            var rows: [String] = []
+            try await waitUntil("\(name): InsightsCard's render") {
+                let labels = self.elements(in: window) { _ in true }.compactMap(\.accessibilityLabel)
+                rows = labels.filter { $0 != marker && $0 != insightsHeader }
+                return labels.contains(marker)
+            }
+            XCTAssertEqual(rows.count, expected, "\(name): the rows InsightsCard drew: \(rows)")
+
+            // What the locked card says over the same stats.
+            window.rootViewController = hostingController(lockedCard(item.stats))
+            var label = ""
+            try await waitUntil("\(name): the locked card") {
+                label = self.elements(in: window) { ($0.accessibilityLabel ?? "").hasPrefix(title) }
+                    .first?.accessibilityLabel ?? ""
+                return !label.isEmpty
+            }
+            let countLine = appLocalized("Stride Pro has \(expected) insights about this habit")
+            XCTAssertEqual(label.contains(countLine), expected >= 1,
+                           "\(name): the count line only with 1 or more: \(label)")
+            XCTAssertEqual(numbers(in: label), numbers(in: message) + (expected >= 1 ? [expected] : []),
+                           "\(name): no number from the preview, only the message's and the count: \(label)")
+            XCTAssertTrue(elements(in: window) { self.identifier(of: $0) == "stats.lockedPreview" }.isEmpty,
+                          "\(name): the preview is hidden from VoiceOver")
+        }
+    }
+}

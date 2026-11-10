@@ -55,6 +55,45 @@ final class ShellState {
     /// ask (D2). ContentView presents it above the size-class branch.
     var request: ShellRequest?
 
+    /// Asks for the review or the paywall on behalf of `issuer` (RELEASE-1.4.2.md D8): which one
+    /// is decided here, from `isPro` as it is at the press, and latched in the request
+    /// (`MenuCommandRules.destination`). ContentView presents what was latched and never decides
+    /// again, so a purchase in the paywall ends on its own "Stride Pro is unlocked" rather than the
+    /// sheet turning into the review under it.
+    ///
+    /// - Returns: whether a request was set: not for Pro on the locked card (nothing to sell), nor
+    ///   while one of the shell's sheets is up (`issue(_:)`).
+    @discardableResult
+    func issue(_ issuer: MenuCommandRules.ProIssuer, isPro: Bool) -> Bool {
+        guard let destination = MenuCommandRules.destination(for: issuer, isPro: isPro) else { return false }
+        return issue(ShellRequest(destination))
+    }
+
+    /// Sets `new` as the window's request, unless one of the shell's sheets is up or asked for:
+    /// then the press is dropped and nothing is left behind (`MenuCommandRules.takesIssuedRequest`
+    /// says why it is neither queued nor put in place of what is up).
+    @discardableResult
+    func issue(_ new: ShellRequest) -> Bool {
+        guard MenuCommandRules.takesIssuedRequest(whileShowingShellSheet: request?.isSheet == true) else { return false }
+        request = new
+        return true
+    }
+
+    /// The shell's paywall's Continue, once Pro is unlocked (D8): the request it carries replaces
+    /// it — the review that was asked for — or, with none, the paywall just closes. The paywall
+    /// dismisses itself first, and that dismissal clears the request (ContentView's
+    /// `sheetRequest`), so this sets the resume after it, never under it.
+    func continueAfterUnlock(resume: ShellRequest?) {
+        request = resume
+    }
+
+    #if DEBUG
+    /// The shell paywall drawn from this fixture rather than the store (ShellTests): its
+    /// "Stride Pro is unlocked" and Continue with no StoreKit purchase. Nil draws the store, or
+    /// `-paywallFixture`, as everywhere else.
+    @ObservationIgnored var paywallFixture: PaywallFixture?
+    #endif
+
     /// `-tab 2` on the Mac: Settings is a window there, not a place in this one, so the launch
     /// selects Today and ContentView opens the Settings window (`ShellTab.launchSelection`).
     let opensSettingsAtLaunch: Bool
@@ -132,15 +171,14 @@ final class ShellState {
 enum ShellRequest: Hashable, Identifiable {
     /// File → New Habit ⌘N.
     case newHabit
-    /// View → Weekly Review ⇧⌘R: the review for Pro, the paywall otherwise
-    /// (`MenuCommandRules.weeklyReviewDestination`), whether or not Stats was ever opened.
-    /// `week`: the Monday of the week to open on, or nil for the review's own choice
-    /// (RELEASE-1.4.2.md D8). W6 opens on it; until then the review ignores it.
+    /// The Weekly Review, always: issued only for Pro (RELEASE-1.4.2.md D8), by Statistics'
+    /// toolbar button, View → Weekly Review ⇧⌘R, Today's card, or the paywall's Continue — whether
+    /// or not Stats was ever opened. `week`: the Monday of the week to open on, or nil for the
+    /// review's own choice. W6 opens on it; until then the review ignores it.
     case weeklyReview(week: Date?)
-    /// The paywall, latched when the request is issued (RELEASE-1.4.2.md D8): `trigger` says why
-    /// it opened (D4), and `resume` is the request its Continue issues once Pro is unlocked (the
-    /// review that was asked for), or nil. W4 makes the issuers pick it from `isPro`; in W0 the
-    /// shell presents it, and nothing issues it yet.
+    /// The paywall, latched when the request is issued (D8, `ShellState.issue`): `trigger` says
+    /// why it opened (D4), and `resume` is the request its Continue sets once Pro is unlocked
+    /// (the review that was asked for), or nil to just close.
     indirect case paywall(trigger: PaywallTrigger, resume: ShellRequest?)
     /// File → Export Backup… / Export as CSV…: written first, then a save panel (D3, D6).
     case export(Export)
@@ -165,6 +203,16 @@ enum ShellRequest: Hashable, Identifiable {
     }
 
     var id: Self { self }
+
+    /// The request for what an issuer decided (`MenuCommandRules.destination`, D8).
+    init(_ destination: MenuCommandRules.ProDestination) {
+        switch destination {
+        case .review(let week):
+            self = .weeklyReview(week: week)
+        case .paywall(let trigger, let resume):
+            self = .paywall(trigger: trigger, resume: resume.map(ShellRequest.init))
+        }
+    }
 
     /// Whether the shell presents it as a sheet. An export is not one: its file is written
     /// before anything is presented, and then it is a save panel (`fileMover`), which the Mac's
