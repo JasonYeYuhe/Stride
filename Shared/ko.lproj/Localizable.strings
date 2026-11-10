@@ -664,12 +664,15 @@
 "Rate Stride" = "Stride 평가하기";
 
 /* Statistics' Pro cards in a habit's first weeks (D7). Insights explains itself instead of
-   hiding: before the habit's first full Monday-to-Sunday week, and when recent weeks hold too few
-   check-ins to compare. "Level with last week": momentum with no change. "Since start" is
+   hiding: before the habit's first full Monday-to-Sunday week; when this week has nothing counted
+   yet to compare with last week ("Nothing to compare yet this week": before today's check-in on a
+   Monday, or before a weekly or specific-days habit's first due day of the week); and when recent
+   weeks hold too few check-ins to compare. "Level with last week": momentum with no change. "Since start" is
    the Strength card's change since the habit began, for a habit younger than 30 days. "PRO" is
    the small chip on each Pro card's header; VoiceOver does not read it. */
 "Insights appear after your first full week" = "인사이트는 첫 한 주가 끝나면 표시됩니다";
 "Not enough recent check-ins to compare" = "비교할 만큼 최근 체크인이 충분하지 않습니다";
+"Nothing to compare yet this week" = "이번 주는 아직 비교할 기록이 없습니다";
 "Level with last week" = "지난주와 같음";
 "Since start" = "시작 이후";
 "PRO" = "PRO";
