@@ -1518,3 +1518,33 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
   went live with the approval); `iap_copy.py --yes` applied them, read back as set. Open: the
   demo-token rotation (Phase 0 item 3, owner; steps given 11-10), and Sentry on 1.4.1 (23) once
   iOS has a day of sessions.
+- 2026-11-10, **CI fixes and W4 merged** (79d70a6).
+  - **CI on 3b90a03 was red** (two hosted tests); fixed in f064c68. PaywallRenderTests drew the
+    704 × 1000 iPad sheet in the scene's 402 × 874 iPhone window, so the bar could never be "on the
+    first screen" (3b90a03's screen-frame change was the wrong fix); `show` now sizes its window to
+    the frame under test. BackgroundSyncTests' resubmit test hit handle()'s 2 s answer wait on a
+    loaded runner; it now passes a 60 s bound (its submitter answers at once).
+  - **W4** (a86876b, review fixes a2a2788):
+    - D8: `MenuCommandRules.destination(for:isPro:)` latches review or paywall at the press, for
+      the locked card (`.analytics`, no resume), the Stats toolbar button and Mac ⇧⌘R
+      (`.weeklyReview`, resume the review) and Today's card (`.today`, resume last week; W7 wires
+      the card). ContentView presents what was latched; Stats' two sheets are gone. Continue sets
+      the resume (`ShellState.continueAfterUnlock`).
+    - Issue rule (`takesIssuedRequest`): dropped while a shell sheet is on screen, refused while
+      the window presents anything else (Stats' Share, account choice, an alert), otherwise taken,
+      replacing a request SwiftUI never showed. On-screen state comes from the sheet's
+      appear/disappear, so a request that never showed cannot block later presses.
+    - Cold start: ProPaywallView gains `onEntitled`; the shell's paywall that closes because the
+      user is already entitled still opens the review it carried (1.4.1 behaviour kept).
+    - D12: crown on the toolbar button for free users, `.help`, ⇧⌘R on iPad only. Locked-card
+      preview: 8-week strength shape, scaled to its own max and cut to 3 levels, one opacity,
+      blur 10, hidden from VoiceOver; "Stride Pro has N insights" from the extracted
+      `InsightsCard.lines(for:)`, shown when N ≥ 1. **W5: `lines(for:)` returns real insights
+      only; D7's empty-state lines must not go there**, or the locked card counts them.
+    - AX5 iPad sidebar (carried from 1.4.1): stacked titles stay on one line and scale to 0.5;
+      needs gate 8's Spanish PNG.
+    - Not done (N1): `shell.todayFocusHabitID`.
+    - An independent adversarial review found no blocker. Its 2 medium, 2 low and test findings
+      are fixed in a2a2788; the cold-start resume is tested at unit level only (no DEBUG `isPro`
+      override in StoreService). StrideTests 774 / 2 / 0 in both zones; hosted tests compiled,
+      CI runs them; StrideMac builds.
