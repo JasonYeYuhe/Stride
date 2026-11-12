@@ -87,6 +87,7 @@ final class LocalizationSourceScanTests: XCTestCase {
             "currentPage + 1", "targetValue", "todayCount",
             "failure.code",   // StoreOpenFailure.code: the store error screen's number
             "days",           // the paywall's trial length (PaywallModel.trialDays), 1.4.2 D4
+            "points",         // Weekly Review's change against the previous week, 1.4.2 D8
         ]
         let strings = [
             "error", "newError", "email", "habitName", "habit.emoji", "habit.name", "unit",

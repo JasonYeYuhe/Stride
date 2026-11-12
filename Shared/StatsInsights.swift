@@ -330,60 +330,8 @@ enum StatsInsights {
     static let proChipText = ColorContrast.RGB.white
     static let proChipFill = ColorContrast.RGB(0x23863C)
 
-    // MARK: Weekly Review
-
-    struct WeeklyReview: Equatable {
-        /// Each habit's week so far, in the caller's order; nil: nothing to count yet.
-        let rates: [Double?]
-        /// The mean over the habits with something to count this week; nil when none has.
-        let overall: Double?
-        /// This week against last, each habit against itself: the mean change over the habits
-        /// with something to count in both weeks, when it is more than a point. Two means over
-        /// different habits moved with no habit changing: a weekend-only habit, not due yet this
-        /// week and missed last weekend, made a level daily habit "Up 50% vs last week" every
-        /// weekday (review of bab8acf, 2026-10-22).
-        let change: Double?
-        /// The habit alone at the top of this week's percents, and the one alone at the bottom,
-        /// among at least two with something to count. The first of equal rates used to be
-        /// "Best": on a Monday before any check-in, a habit at 0%.
-        let best: Int?
-        let needsWork: Int?
-    }
-
-    static func weeklyReview(thisWeek: [Double?], lastWeek: [Double?]) -> WeeklyReview {
-        let overall = mean(thisWeek)
-        // Nil for a habit with nothing to count in one of the weeks, which `mean` leaves out.
-        let changes: [Double?] = zip(thisWeek, lastWeek).map { now, was in
-            guard let now, let was else { return nil }
-            return now - was
-        }
-        var change: Double?
-        if let moved = mean(changes), abs(moved) > 0.01 { change = moved }
-        let rated = thisWeek.indices.compactMap { i in thisWeek[i].map { (index: i, percent: percent($0)) } }
-        var best: Int?, worst: Int?
-        if rated.count >= 2 {
-            best = uniqueTop(rated) { $0.percent < $1.percent }.map { rated[$0].index }
-            worst = uniqueTop(rated) { $0.percent > $1.percent }.map { rated[$0].index }
-        }
-        return WeeklyReview(rates: thisWeek, overall: overall, change: change, best: best,
-                            needsWork: worst == best ? nil : worst)
-    }
-
     // MARK: Helpers
 
     /// A rate as the cards print it: whole percent, truncated (`Int(rate * 100)`).
     static func percent(_ rate: Double) -> Int { Int(rate * 100) }
-
-    private static func mean(_ rates: [Double?]) -> Double? {
-        let known = rates.compactMap { $0 }
-        return known.isEmpty ? nil : known.reduce(0, +) / Double(known.count)
-    }
-
-    /// The index of the one item every other is `below`; nil when the top is shared (or there are
-    /// no items). With the arguments swapped, the one alone at the bottom.
-    private static func uniqueTop<T>(_ items: [T], _ below: (T, T) -> Bool) -> Int? {
-        guard var top = items.indices.first else { return nil }
-        for i in items.indices.dropFirst() where below(items[top], items[i]) { top = i }
-        return items.indices.allSatisfy { $0 == top || below(items[$0], items[top]) } ? top : nil
-    }
 }

@@ -86,6 +86,7 @@
 		4167B935406A63F3551A82B9 /* SyncEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B78AB120C03498E3327E1E9 /* SyncEngineTests.swift */; };
 		42AAB27F5AF7434537046F53 /* HabitScore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5D84E11762AB647CF9AAC3D /* HabitScore.swift */; };
 		42AF3D673F2F91A7736FD416 /* TodayCards.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51DF3FC71FA0EC619C93E194 /* TodayCards.swift */; };
+		43011DF7F5B389C108712531 /* WeeklyReviewRenderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF51CF573ECC85FB124C6A01 /* WeeklyReviewRenderTests.swift */; };
 		43261D62315EADBA7F40E91E /* WeeklyReviewMath.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41BA70C78E17135CF2DE8355 /* WeeklyReviewMath.swift */; };
 		4358BCA0F99C69F7EA15F530 /* SyncReconciler.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB59FC2420F0C656244B3006 /* SyncReconciler.swift */; };
 		437278B67A80851089BBB731 /* ReminderPlan.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F157FDCAEB26F8B19CFC923 /* ReminderPlan.swift */; };
@@ -518,6 +519,7 @@
 		FB4B77B1D295440D05D9D8E5 /* SyncCopiesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncCopiesTests.swift; sourceTree = "<group>"; };
 		FBB318F23E209FBA8B22FD24 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.stringsdict; name = en; path = en.lproj/Localizable.stringsdict; sourceTree = "<group>"; };
 		FD175EBF79A77247D0495339 /* SyncRecoveryLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncRecoveryLog.swift; sourceTree = "<group>"; };
+		FF51CF573ECC85FB124C6A01 /* WeeklyReviewRenderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeeklyReviewRenderTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -804,6 +806,7 @@
 				284513073C6CA5C299A3D144 /* SyncSectionTests.swift */,
 				427FCAD80BF804BF1BCC5B3D /* SyncServiceTests.swift */,
 				1EC1C4E13A0434CBDF2D3099 /* TodaySyncStatusTests.swift */,
+				FF51CF573ECC85FB124C6A01 /* WeeklyReviewRenderTests.swift */,
 				E278EF11D674B08B606BA96F /* Support */,
 			);
 			path = StrideAppTests;
@@ -1349,6 +1352,7 @@
 				0D9C4736613CA40ECD51900B /* SyncServiceTests.swift in Sources */,
 				4D79CE874EC7381C52D0E28C /* SyncTestSupport.swift in Sources */,
 				D837C2828E9D63D89ABC765C /* TodaySyncStatusTests.swift in Sources */,
+				43011DF7F5B389C108712531 /* WeeklyReviewRenderTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
