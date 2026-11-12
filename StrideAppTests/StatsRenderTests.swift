@@ -316,9 +316,8 @@ final class StatsRenderTests: XCTestCase {
     /// 100% → 50%, and Toughest on Tuesday (4 of 5 Tuesdays in the window against 100% everywhere
     /// else, and Tuesday's all-time count tied for the lowest By Weekday bar).
     ///
-    /// Weekly Review is not hosted here: it reads `Date()` through `StatsCache.shared`, so no test
-    /// can pin it to a Monday. Its numbers are `StatsInsights.weeklyReview` over
-    /// `HabitStats.thisWeekRate` and `lastWeekRate`, which StatsInsightsTests pin host-less.
+    /// Weekly Review is hosted in WeeklyReviewRenderTests, on a fixed clock over its own cache; its
+    /// numbers are `WeeklyReviewMath.review`, which WeeklyReviewMathTests pin host-less.
     func testInsightsSayNothingToAUserWhoNeverMisses() async throws {
         let created = Self.key(5, 1)
         let may = Self.keys(from: created, count: 31)

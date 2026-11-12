@@ -3,43 +3,77 @@ import SwiftData
 
 struct WeeklyReviewView: View {
     @Environment(\.dismiss) private var dismiss
+    /// Every number here comes from the cache Statistics reads (RELEASE-1.4.2.md D8): the app's
+    /// one, or the one a hosted test put in the environment over a store of its own. 1.4.1 read
+    /// `StatsCache.shared`, so no test could hold it.
+    @Environment(\.statsCache) private var cache
+    @Environment(\.colorScheme) private var colorScheme
     @Query(filter: #Predicate<Habit> { !$0.isArchived },
            sort: \Habit.sortOrder)
     private var habits: [Habit]
 
-    /// Every rate the review shows, from ONE `HabitStats` per habit (StatsCache) for the whole
-    /// render. The rates are the model's rule (`countedRate(ofWeekStarting:)`). The local version
-    /// divided a raw count of records by elapsed calendar days, ignoring the schedule and count
-    /// targets, so on a Sunday "Gym — Mon/Wed/Fri" done on all three days scored 43% and was
-    /// tagged "Needs work", while "Water — 8 glasses" with one glass a day scored 100% and was
-    /// crowned "Best".
+    /// Any day of the week asked for (`ShellRequest.weeklyReview(week:)`: Today's card asks for
+    /// last week), or nil for the review's own choice (`WeeklyReviewMath.openingWeek`).
+    private let requestedWeek: Date?
+    #if DEBUG
+    /// The hosted tests' clock (WeeklyReviewRenderTests): a fixed instant, so a test can stand on
+    /// a Monday or a Thursday. Nil: the real clock.
+    private let fixedNow: Date?
+    #endif
+
+    init(week: Date? = nil) {
+        requestedWeek = week
+        #if DEBUG
+        fixedNow = nil
+        #endif
+    }
+
+    #if DEBUG
+    /// The review as it reads at `now` (hosted tests only).
+    init(week: Date? = nil, now: Date) {
+        requestedWeek = week
+        fixedNow = now
+    }
+    #endif
+
+    private var now: Date {
+        #if DEBUG
+        fixedNow ?? Date()
+        #else
+        Date()
+        #endif
+    }
+
+    /// The review of the opening week (D8), from ONE `HabitStats` per habit (StatsCache) for the
+    /// whole render, never kept: every rate is the model's rule (`countedRate(ofWeekStarting:)`),
+    /// and what may be said about them — the change and the highlights, each only from a finished
+    /// week or from a habit's fourth counted day — is `WeeklyReviewMath.review`.
     ///
-    /// This week ends yesterday until today is done (`HabitStats.thisWeekRate`), as Insights'
-    /// momentum: counted as a miss, today made every Monday before the check-in 0% and "Down 100%
-    /// vs last week". What the numbers may say — a rate only with something to count, a Best and
-    /// Needs work only when alone — is `StatsInsights.weeklyReview` (2026-10-22).
-    ///
-    /// Built once per render and never kept (W1's carried "per-call wrapper cost"): through the
-    /// `Habit` wrappers the body asked about 11 rates per habit, each building its own
-    /// `HabitStats` with a store query — ~270 ms for 10 habits × 730 records.
+    /// 1.4.1 showed this week only: every Monday before the check-in each habit with months of
+    /// history was a dash, and so was the ring; Best and Needs work were picked by raw percentage,
+    /// and a change in points was labelled "%". Monday to Wednesday it now opens on last week,
+    /// unless nothing existed then (a brand-new user): this week, "so far".
     private struct Summary {
-        /// This week's rate of each habit, in `habits`' order; nil: nothing to count yet.
-        let rates: [Double?]
-        let overall: Double?
-        let change: Double?
-        let best: Habit?
-        let needsWork: Habit?
+        let opening: WeeklyReviewMath.OpeningWeek
+        let review: WeeklyReviewMath.Review
+        /// Today's day-key: whether the dates need their year.
+        let today: Date
     }
 
     private func summary() -> Summary {
-        let stats = StatsCache.shared.stats(for: habits)
-        let review = StatsInsights.weeklyReview(thisWeek: stats.map(\.thisWeekRate),
-                                                lastWeek: stats.map(\.lastWeekRate))
-        return Summary(rates: review.rates,
-                       overall: review.overall,
-                       change: review.change,
-                       best: review.best.map { habits[$0] },
-                       needsWork: review.needsWork.map { habits[$0] })
+        let now = self.now
+        let calendar = Calendar.current
+        // The stats are built for the day the opening week is judged from: `now` itself would be
+        // keyed by `HabitStats.dayNumber(of:)`, which reads an exact UTC midnight (Sunday
+        // 16:00:00 PST) as Monday's day-key while the header said Sunday's "so far".
+        let today = WeeklyReviewMath.today(now: now, calendar: calendar)
+        let stats = cache.stats(for: habits, today: today, calendar: calendar)
+        let opening = WeeklyReviewMath.openingWeek(now: now, calendar: calendar, requested: requestedWeek,
+                                                   earliestStart: stats.map { $0.startDay }.min())
+        let inputs = zip(habits, stats).map { WeeklyReviewMath.HabitInput(habit: $0, stats: $1) }
+        return Summary(opening: opening,
+                       review: WeeklyReviewMath.review(of: inputs, week: opening.week),
+                       today: today)
     }
 
     var body: some View {
@@ -64,8 +98,9 @@ struct WeeklyReviewView: View {
         }
         #if os(macOS)
         // A ScrollView has no ideal height, and a Mac sheet sized to it is a sliver: Stats' toolbar
-        // button and View → Weekly Review both open it (sheet audit, 2026-10-22).
-        .frame(minWidth: 420, idealWidth: 480, minHeight: 520)
+        // button and View → Weekly Review both open it (sheet audit, 2026-10-22). D8: ideally
+        // 560 × 680, never below 420 × 520.
+        .frame(minWidth: 420, idealWidth: 560, minHeight: 520, idealHeight: 680)
         #endif
     }
 
@@ -93,31 +128,106 @@ struct WeeklyReviewView: View {
         .frame(maxWidth: .infinity)
     }
 
-    private func review(_ summary: Summary) -> some View {
-        VStack(spacing: 20) {
-            // Overall progress
-            VStack(spacing: 12) {
-                WeeklyRateRing(rate: summary.overall)
-                    // Past .accessibility2 the ring only pushes the per-habit rows — the part
-                    // with the detail — further down; its number is already about 1.5x body there.
-                    .dynamicTypeSize(...DynamicTypeSize.accessibility2)
-                    .accessibilityElement(children: .ignore)
-                    // Nothing to count yet: the caption alone, as the dash shows nothing more.
-                    .accessibilityLabel(summary.overall.map { Text("This week, \(Int($0 * 100)) percent complete") } ?? Text("This Week"))
+    // MARK: - The week
 
-                if let diff = summary.change {
+    /// The week's dates in the picked language: "Nov 3 – 9" ("11月3日～9日"), with the year only
+    /// when the week is not all inside today's year. Formatted in UTC, because a day-key is its
+    /// day's UTC midnight: west of UTC a local formatter would draw every date a day early (as
+    /// `BestStreaksCard.dates`).
+    static func dates(of week: WeeklyReviewMath.WeekRange, today: Date, locale: Locale) -> String {
+        let utc = HabitCalendar.utc
+        let year = utc.component(.year, from: today)
+        var style = Date.IntervalFormatStyle(locale: locale, calendar: utc, timeZone: utc.timeZone).month(.abbreviated).day()
+        if utc.component(.year, from: week.monday) != year || utc.component(.year, from: week.sunday) != year {
+            style = style.year()
+        }
+        return (week.monday..<week.sunday).formatted(style)
+    }
+
+    /// "This week so far" from its fourth day, or "Last week", each over its dates; an earlier
+    /// week asked for is titled by its dates (the copy deck has no other name for it).
+    private func header(_ summary: Summary) -> some View {
+        let dates = Self.dates(of: summary.opening.week, today: summary.today, locale: appLocale)
+        return VStack(spacing: 4) {
+            Group {
+                switch summary.opening.relation {
+                case .thisWeek: Text("This week so far")
+                case .lastWeek: Text("Last week")
+                case .earlier: Text(verbatim: dates)
+                }
+            }
+            .font(.title3.bold())
+            .multilineTextAlignment(.center)
+            .accessibilityAddTraits(.isHeader)
+            if summary.opening.relation != .earlier {
+                Text(verbatim: dates)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal)
+    }
+
+    /// The ring's words to VoiceOver, by the week it shows.
+    private func ringLabel(_ rate: Double, relation: WeeklyReviewMath.Relation) -> Text {
+        let percent = StatsInsights.percent(rate)
+        switch relation {
+        case .thisWeek: return Text("This week, \(percent) percent complete")
+        case .lastWeek: return Text("Last week: \(percent)%")
+        case .earlier: return Text("\(percent)%")
+        }
+    }
+
+    /// A rise in the palette's Green, a drop in its Orange, as readable text (D8, as StrengthCard's
+    /// changes): the system green and orange were about 2:1 on the light background.
+    private func changeColor(_ points: Int) -> Color {
+        points > 0 ? Color.readableText(hex: StrengthCard.riseHex, in: colorScheme)
+            : points < 0 ? Color.readableText(hex: StrengthCard.dropHex, in: colorScheme)
+            : Color.secondary
+    }
+
+    /// "+12 points vs previous week" or "−5 points vs previous week" (the stringsdict plurals; a
+    /// drop is passed as a positive number after "−"), or "Level with the previous week".
+    private func changeText(_ points: Int) -> Text {
+        if points > 0 { return Text("+\(points) points vs previous week") }
+        if points < 0 {
+            let points = -points
+            return Text("−\(points) points vs previous week")
+        }
+        return Text("Level with the previous week")
+    }
+
+    private func review(_ summary: Summary) -> some View {
+        let review = summary.review
+        return VStack(spacing: 20) {
+            VStack(spacing: 12) {
+                header(summary)
+
+                // Nothing to count in the whole week (every habit began after it): no ring, rather
+                // than a dash that reads as a missed week.
+                if let overall = review.overall {
+                    WeeklyRateRing(rate: overall)
+                        // Past .accessibility2 the ring only pushes the per-habit rows — the part
+                        // with the detail — further down; its number is already about 1.5x body there.
+                        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(ringLabel(overall, relation: summary.opening.relation))
+                }
+
+                // Points, never "%" (D8): each habit against itself, and in a week not over only
+                // from a habit's fourth counted day (`WeeklyReviewMath.review`).
+                if let points = review.changePoints {
                     HStack(spacing: 4) {
-                        Image(systemName: diff > 0 ? "arrow.up.right" : "arrow.down.right")
-                            .font(.caption.bold())
-                        Text("\(Int(abs(diff) * 100))% vs last week")
+                        if points != 0 {
+                            Image(systemName: points > 0 ? "arrow.up.right" : "arrow.down.right")
+                                .font(.caption.bold())
+                                .accessibilityHidden(true)
+                        }
+                        changeText(points)
                             .font(.caption)
                     }
-                    .foregroundStyle(diff > 0 ? .green : .orange)
-                    .accessibilityElement(children: .ignore)
-                    // Direction lives in the arrow glyph and the tint; neither reaches VoiceOver.
-                    .accessibilityLabel(diff > 0
-                        ? "Up \(Int(abs(diff) * 100)) percent vs last week"
-                        : "Down \(Int(abs(diff) * 100)) percent vs last week")
+                    .foregroundStyle(changeColor(points))
+                    .accessibilityElement(children: .combine)
                 }
             }
             .padding(.top)
@@ -129,103 +239,133 @@ struct WeeklyReviewView: View {
                     .padding(.horizontal)
                     .accessibilityAddTraits(.isHeader)
 
-                ForEach(Array(habits.enumerated()), id: \.element.id) { index, habit in
-                    let rate = summary.rates[index]
-                    HStack(spacing: 12) {
-                        Text(habit.emoji)
-                            .font(.title3)
-
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(habit.name)
-                                .font(.subheadline.weight(.medium))
-
-                            // Nothing to count yet (Monday before the check-in, or nothing due so
-                            // far): no bar and a dash, never an empty bar that reads as 0%.
-                            GeometryReader { geo in
-                                if let rate {
-                                    ZStack(alignment: .leading) {
-                                        RoundedRectangle(cornerRadius: 4)
-                                            .fill(Color.green.opacity(0.15))
-                                            .frame(height: 8)
-                                        RoundedRectangle(cornerRadius: 4)
-                                            .fill(habit.color)
-                                            .frame(width: geo.size.width * rate, height: 8)
-                                    }
-                                }
-                            }
-                            .frame(height: 8)
-                        }
-
-                        Group {
-                            if let rate {
-                                Text("\(Int(rate * 100))%")
-                            } else {
-                                Text(verbatim: "–")
-                            }
-                        }
-                        .font(.subheadline.bold())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 40, alignment: .trailing)
-                    }
-                    .padding(.horizontal)
-                    .accessibilityElement(children: .ignore)
-                    // Without a rate, the name alone, as the dash: "Not started" was spoken here too,
-                    // for a habit with months of history on any Monday before its check-in (review
-                    // of bab8acf, 2026-10-22). This week never lies before a habit's start.
-                    .accessibilityLabel(rate.map { Text("\(habit.emoji) \(habit.name), \(Int($0 * 100)) percent") }
-                                        ?? Text(verbatim: "\(habit.emoji) \(habit.name)"))
+                ForEach(review.rows, id: \.index) { row in
+                    breakdownRow(habits[row.index], row: row)
                 }
             }
 
-            // Highlights: only a habit alone at the top or the bottom (StatsInsights.weeklyReview).
-            if summary.best != nil || summary.needsWork != nil {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Highlights")
-                        .font(.headline)
-                        .padding(.horizontal)
-                        .accessibilityAddTraits(.isHeader)
-
-                    if let best = summary.best {
-                        HStack(spacing: 10) {
-                            Image(systemName: "star.fill")
-                                .foregroundStyle(.yellow)
-                                .accessibilityHidden(true)
-                            Text("Best: \(best.emoji) \(best.name)")
-                                .font(.subheadline)
-                        }
-                        .padding(.horizontal)
-                    }
-
-                    if let worst = summary.needsWork, worst.id != summary.best?.id {
-                        HStack(spacing: 10) {
-                            Image(systemName: "arrow.up.heart.fill")
-                                .foregroundStyle(.orange)
-                                .accessibilityHidden(true)
-                            Text("Needs work: \(worst.emoji) \(worst.name)")
-                                .font(.subheadline)
-                        }
-                        .padding(.horizontal)
-                    }
-                }
-            }
+            highlights(review)
 
             Spacer(minLength: 40)
         }
+    }
+
+    private func breakdownRow(_ habit: Habit, row: WeeklyReviewMath.Row) -> some View {
+        let rate = row.rate
+        return HStack(spacing: 12) {
+            Text(habit.emoji)
+                .font(.title3)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(habit.name)
+                    .font(.subheadline.weight(.medium))
+
+                // Nothing to count (a habit begun after this week, or nothing due yet this week):
+                // no bar, never an empty bar that reads as 0%.
+                GeometryReader { geo in
+                    if let rate {
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color.green.opacity(0.15))
+                                .frame(height: 8)
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(habit.color)
+                                .frame(width: geo.size.width * rate, height: 8)
+                        }
+                    }
+                }
+                .frame(height: 8)
+            }
+
+            Group {
+                if let percent = rate.map(StatsInsights.percent) {
+                    Text("\(percent)%")
+                } else if row.endsBeforeStart {
+                    Text("Not started")
+                } else {
+                    Text(verbatim: "–")
+                }
+            }
+            .font(.subheadline.bold())
+            .foregroundStyle(.secondary)
+            .fixedSize()
+            .frame(minWidth: 40, alignment: .trailing)
+        }
+        .padding(.horizontal)
+        .accessibilityElement(children: .ignore)
+        // Without a rate, the name alone, as the dash, unless the week ended before the habit
+        // began: "Not started" only then (a habit with months of history heard it every Monday
+        // before its check-in, review of bab8acf, 2026-10-22).
+        .accessibilityLabel(rate.map(StatsInsights.percent).map { percent in Text("\(habit.emoji) \(habit.name), \(percent) percent") }
+                            ?? Text(verbatim: "\(habit.emoji) \(habit.name)"))
+        .accessibilityValue(rate == nil && row.endsBeforeStart ? Text("Not started") : Text(verbatim: ""))
+    }
+
+    /// "Most improved" and "Slipped" (D8), from each habit's change against itself: at least 10
+    /// points, never "Slipped" at 80 % or more this week, and only from a finished week or a
+    /// habit's fourth counted day (`WeeklyReviewMath.review`); "Highlights so far" while the week
+    /// is not over. No row when nothing qualifies, and no heading when neither does. They replace
+    /// Best and Needs work, which a 90 % habit could be.
+    @ViewBuilder
+    private func highlights(_ review: WeeklyReviewMath.Review) -> some View {
+        let improved = review.mostImproved.flatMap { index in review.rows.first { $0.index == index } }
+        let slipped = review.slipped.flatMap { index in review.rows.first { $0.index == index } }
+        if improved != nil || slipped != nil {
+            VStack(alignment: .leading, spacing: 12) {
+                Group {
+                    if review.isFinished { Text("Highlights") } else { Text("Highlights so far") }
+                }
+                .font(.headline)
+                .padding(.horizontal)
+                .accessibilityAddTraits(.isHeader)
+
+                if let improved, let points = improved.changePoints {
+                    highlightRow(Text("Most improved"), habit: habits[improved.index], points: points)
+                }
+                if let slipped, let points = slipped.changePoints {
+                    highlightRow(Text("Slipped"), habit: habits[slipped.index], points: points)
+                }
+            }
+        }
+    }
+
+    private func highlightRow(_ title: Text, habit: Habit, points: Int) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: points > 0 ? "arrow.up.right" : "arrow.down.right")
+                .font(.subheadline.bold())
+                .foregroundStyle(changeColor(points))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                title
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(verbatim: "\(habit.emoji) \(habit.name)")
+                    .font(.subheadline)
+                changeText(points)
+                    .font(.caption)
+                    .foregroundStyle(changeColor(points))
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal)
+        .accessibilityElement(children: .combine)
     }
 }
 
 /// The week's overall rate: a number inside a ring.
 ///
-/// The number was a fixed 36 pt and the ring a fixed 120 pt, so at the accessibility sizes the
-/// caption under the number grew into a ring that did not. Both now scale with `.largeTitle`
-/// (the number is the screen's headline figure) through `@ScaledMetric`, which returns the base
-/// value exactly at the default size — so the default layout, and the store screenshots, do not
-/// move. A separate view because the caller's `.dynamicTypeSize(...)` cap has to be in the
-/// environment the scaled metrics read; on `WeeklyReviewView` itself they would read the
-/// uncapped size.
+/// The number was a fixed 36 pt and the ring a fixed 120 pt, so at the accessibility sizes it
+/// outgrew a ring that did not. Both now scale with `.largeTitle` (the number is the screen's
+/// headline figure) through `@ScaledMetric`, which returns the base value exactly at the default
+/// size — so the default layout, and the store screenshots, do not move. A separate view because
+/// the caller's `.dynamicTypeSize(...)` cap has to be in the environment the scaled metrics read;
+/// on `WeeklyReviewView` itself they would read the uncapped size.
+///
+/// No caption since 1.4.2: the header above it names the week ("This week so far", "Last week"),
+/// and a ring that said "This Week" over last week would contradict it. Drawn only with a rate:
+/// a week with nothing to count has no ring (D8: no dash ring).
 private struct WeeklyRateRing: View {
-    /// Nil: nothing to count yet this week — an empty ring and a dash, not 0%.
-    let rate: Double?
+    let rate: Double
     @ScaledMetric(relativeTo: .largeTitle) private var diameter: CGFloat = 120
     @ScaledMetric(relativeTo: .largeTitle) private var numberSize: CGFloat = 36
 
@@ -234,30 +374,17 @@ private struct WeeklyRateRing: View {
             Circle()
                 .stroke(Color.green.opacity(0.2), lineWidth: 12)
             Circle()
-                .trim(from: 0, to: rate ?? 0)
+                .trim(from: 0, to: rate)
                 .stroke(Color.green, style: StrokeStyle(lineWidth: 12, lineCap: .round))
                 .rotationEffect(.degrees(-90))
                 .animation(.easeInOut(duration: 0.6), value: rate)
 
-            VStack(spacing: 2) {
-                Group {
-                    if let rate {
-                        Text("\(Int(rate * 100))%")
-                    } else {
-                        Text(verbatim: "–")
-                    }
-                }
+            let percent = StatsInsights.percent(rate)
+            Text("\(percent)%")
                 .font(.system(size: numberSize, weight: .bold, design: .rounded))
-                Text("This Week")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    // .caption grows faster than .largeTitle, so at the larger sizes the words
-                    // reached the stroke ("Esta semana" did from xxxLarge). Kept inside the
-                    // ring's inner chord; at the default size every caption fits unshrunk.
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.5)
-                    .padding(.horizontal, 18)
-            }
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
+                .padding(.horizontal, 18)
         }
         .frame(width: diameter, height: diameter)
     }

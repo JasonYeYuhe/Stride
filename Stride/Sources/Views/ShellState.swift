@@ -213,7 +213,7 @@ enum ShellRequest: Hashable, Identifiable {
     /// The Weekly Review, always: issued only for Pro (RELEASE-1.4.2.md D8), by Statistics'
     /// toolbar button, View → Weekly Review ⇧⌘R, Today's card, or the paywall's Continue — whether
     /// or not Stats was ever opened. `week`: the Monday of the week to open on, or nil for the
-    /// review's own choice. W6 opens on it; until then the review ignores it.
+    /// review's own choice (`WeeklyReviewMath.openingWeek`); ContentView passes it to the review.
     case weeklyReview(week: Date?)
     /// The paywall, latched when the request is issued (D8, `ShellState.issue`): `trigger` says
     /// why it opened (D4), and `resume` is the request its Continue sets once Pro is unlocked

@@ -262,9 +262,9 @@ struct ContentView: View {
         switch request {
         case .newHabit:
             AddHabitView()
-        case .weeklyReview:
-            // Issued only for Pro (`ShellState.issue`). W6 opens it on the requested week.
-            WeeklyReviewView()
+        case .weeklyReview(let week):
+            // Issued only for Pro (`ShellState.issue`), opened on the requested week (D8).
+            WeeklyReviewView(week: week)
         case .paywall(let trigger, let resume):
             // Continue dismisses the paywall, then the review it was opened for takes its place;
             // with nothing to resume it just closes. The same when the paywall closes because the

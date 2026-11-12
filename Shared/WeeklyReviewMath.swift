@@ -81,20 +81,38 @@ enum WeeklyReviewMath {
     ///
     /// `now` is an instant, keyed by its local date in `calendar`
     /// (`HabitCalendar.dayKey(forInstant:calendar:)`): Thursday 00:00 in Los Angeles is
-    /// 07:00 or 08:00 UTC, and Sunday 16:00 PST is exactly UTC midnight of Monday.
-    static func openingWeek(now: Date, calendar: Calendar, requested: Date? = nil) -> OpeningWeek {
-        let todayNumber = HabitStats.dayNumber(ofKey: HabitCalendar.dayKey(forInstant: now, calendar: calendar))
+    /// 07:00 or 08:00 UTC, and Sunday 16:00 PST is exactly UTC midnight of Monday. Build the
+    /// habits' `HabitStats` for `today(now:calendar:)`, so both read the same day.
+    ///
+    /// `earliestStart`: the earliest `startDay` of the habits the review shows (nil: none, or
+    /// unknown). When no week was asked for and it falls after last week — nothing existed last
+    /// week, a brand-new user's first Monday to Wednesday — this week opens instead, "so far":
+    /// last week would be every row "Not started" and no ring. The change and the highlights still
+    /// wait for 4 counted days (`review`).
+    static func openingWeek(now: Date, calendar: Calendar, requested: Date? = nil,
+                            earliestStart: Date? = nil) -> OpeningWeek {
+        let todayNumber = HabitStats.dayNumber(ofKey: today(now: now, calendar: calendar))
         let thisWeek = WeekRange(containingDay: todayNumber)
         let week: WeekRange
         if let requested {
             week = min(weekRange(containing: requested, in: calendar), thisWeek)
         } else if todayNumber - thisWeek.mondayNumber + 1 >= daysBeforeThisWeekOpens {
             week = thisWeek
+        } else if let earliestStart, HabitStats.dayNumber(ofKey: earliestStart) > thisWeek.previous.sundayNumber {
+            week = thisWeek
         } else {
             week = thisWeek.previous
         }
         let relation: Relation = week == thisWeek ? .thisWeek : week == thisWeek.previous ? .lastWeek : .earlier
         return OpeningWeek(week: week, relation: relation)
+    }
+
+    /// `now`'s local date as a day-key: the `today` the review's `HabitStats` are built for, the
+    /// day `openingWeek` reads. An instant passed as `today` is keyed by `HabitStats.dayNumber(of:)`,
+    /// which takes an exact UTC midnight for an already-stored day-key: at Sunday 16:00:00 PST the
+    /// header said "so far" while the stats counted Monday.
+    static func today(now: Date, calendar: Calendar) -> Date {
+        HabitCalendar.dayKey(forInstant: now, calendar: calendar)
     }
 
     // MARK: The review of one week (D8, D9's numbers)
@@ -129,8 +147,13 @@ enum WeeklyReviewMath {
         let previousRate: Double?
         /// The week ended before the habit's start: "Not started", never a missed week.
         let endsBeforeStart: Bool
-        /// Whether the week may be compared yet (D8): it is over, or at least
-        /// `countedDaysForChange` of its days are counted (`HabitStats.countedDayCount`).
+        /// Whether the habit's week may be compared (D8):
+        /// - the previous week has at least `countedDaysForChange` counted days (a habit created
+        ///   on a Sunday and missed that day read "+85 points, Most improved" the next Monday);
+        /// - and the week is over, or — for a daily or specific-days habit — at least
+        ///   `countedDaysForChange` of its days are counted (`HabitStats.countedDayCount`). A
+        ///   times-per-week habit waits for its week to end: what it owes so far can be nothing,
+        ///   so one check-in on a Thursday read 100 %.
         let countsChange: Bool
         /// The change against the previous week in whole points, as the two rates print
         /// (`StatsInsights.percent`): only when the week `countsChange` and both rates are known.
@@ -182,7 +205,9 @@ enum WeeklyReviewMath {
     ///   once `countedDaysForChange` of its days are counted, as the Pro cards count them (from
     ///   `startDay`, through the last counted day: today once it is done, else yesterday), per
     ///   habit: until then a Tuesday with 1 of 1 done (100 %) would read "+40" against last
-    ///   week's 60 %.
+    ///   week's 60 %. The previous week needs as many counted days, and a times-per-week habit's
+    ///   week must be over (`Row.countsChange`); a habit that fails either has no change, and is
+    ///   left out of the mean change and of the highlights.
     /// - A tie for the largest rise or drop goes to the habit first in the caller's order.
     /// - `groupOrder`: the user's groups in their order; empty when the user has none (then one
     ///   section, `groupID` nil, holds every row).
@@ -197,7 +222,10 @@ enum WeeklyReviewMath {
             finished = (finished ?? true) && over
             let rate = stats.countedRate(ofWeekStarting: week.monday)
             let previous = stats.countedRate(ofWeekStarting: week.previous.monday)
-            let counts = over || stats.countedDayCount(ofWeekStarting: week.monday) >= countedDaysForChange
+            let shownCounts = over || (stats.schedule != .timesPerWeek
+                && stats.countedDayCount(ofWeekStarting: week.monday) >= countedDaysForChange)
+            let counts = shownCounts
+                && stats.countedDayCount(ofWeekStarting: week.previous.monday) >= countedDaysForChange
             var change: Int?
             if counts, let rate, let previous {
                 change = StatsInsights.percent(rate) - StatsInsights.percent(previous)

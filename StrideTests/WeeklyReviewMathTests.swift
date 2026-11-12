@@ -356,6 +356,127 @@ final class WeeklyReviewMathTests: XCTestCase {
                                      dailyReminder: nil))
     }
 
+    /// W6 review, finding 1: the previous week needs 4 counted days too. A habit created on Sunday
+    /// 7 June and missed that day (0 % over 1 day), then done all week, read "+100 points, Most
+    /// improved". Left out of the mean change as well: beside a level habit the line is level.
+    func testAOneDayPreviousWeekGivesNoChangeAndNoHighlight() {
+        let sunday = habit(created: key(6, 7))
+        checkIn(sunday, on: keys(key(6, 8), through: key(6, 14)))
+        let level = habit(created: key(5, 1))
+        checkIn(level, on: keys(key(6, 1), through: key(6, 5)) + keys(key(6, 8), through: key(6, 12)))
+        let thisWeek = week(of: key(6, 8))
+
+        let alone = review([sunday], today: key(6, 15), week: thisWeek)
+        XCTAssertEqual(alone.rows[0].rate, 1)
+        XCTAssertEqual(alone.rows[0].previousRate, 0, "Sunday alone, missed")
+        XCTAssertFalse(alone.rows[0].countsChange)
+        XCTAssertNil(alone.rows[0].changePoints)
+        XCTAssertNil(alone.changePoints, "no change line")
+        XCTAssertNil(alone.mostImproved)
+
+        let both = review([sunday, level], today: key(6, 15), week: thisWeek)
+        XCTAssertEqual(both.rows.map(\.changePoints), [nil, 0])
+        XCTAssertEqual(both.changePoints, 0, "the 1-day week is not in the mean")
+        XCTAssertNil(both.mostImproved)
+
+        // The edge: a first week of Thursday to Sunday (4 counted days) is compared; Friday to
+        // Sunday (3) is not.
+        let thursday = habit(created: key(6, 4))
+        checkIn(thursday, on: [key(6, 4)] + keys(key(6, 8), through: key(6, 14)))
+        let friday = habit(created: key(6, 5))
+        checkIn(friday, on: [key(6, 5)] + keys(key(6, 8), through: key(6, 14)))
+        let edge = review([thursday, friday], today: key(6, 15), week: thisWeek)
+        XCTAssertEqual(edge.rows.map(\.changePoints), [75, nil], "1 of 4 (25 %) → 100 %; 1 of 3 is not compared")
+        XCTAssertEqual(edge.mostImproved, 0)
+    }
+
+    /// W6 review, finding 2: a times-per-week habit is compared only once its week is over. On
+    /// Thursday one check-in reads 100 % (nothing is owed yet of 3 a week), so 2 of 3 last week
+    /// would have made it "Most improved". Its row still shows; a daily habit beside it is compared.
+    func testATimesPerWeekHabitWaitsForItsWeekToEnd() {
+        let tpw = habit(.timesPerWeek, timesPerWeek: 3, created: key(5, 1))
+        checkIn(tpw, on: [key(6, 2), key(6, 4), key(6, 11)])
+        let daily = habit(created: key(5, 1))
+        checkIn(daily, on: keys(key(6, 1), through: key(6, 4)) + keys(key(6, 8), through: key(6, 11)))
+        let thisWeek = week(of: key(6, 8))
+
+        let thursday = review([tpw, daily], today: key(6, 11), week: thisWeek)
+        XCTAssertEqual(thursday.rows.count, 2, "its row still shows")
+        XCTAssertEqual(thursday.rows[0].rate, 1, "1 check-in, nothing owed yet")
+        XCTAssertEqual(thursday.rows[0].previousRate.map(StatsInsights.percent), 66)
+        XCTAssertFalse(thursday.rows[0].countsChange)
+        XCTAssertNil(thursday.rows[0].changePoints)
+        XCTAssertEqual(thursday.rows[1].changePoints, 43, "4 of 4 against 4 of 7")
+        XCTAssertEqual(thursday.changePoints, 43, "the times-per-week habit is not in the mean")
+        XCTAssertEqual(thursday.mostImproved, 1, "never the times-per-week habit")
+
+        // Alone, on Thursday: nothing to say.
+        let alone = review([tpw], today: key(6, 11), week: thisWeek)
+        XCTAssertNil(alone.changePoints)
+        XCTAssertNil(alone.mostImproved)
+
+        // Once the week is over: 1 of 3 (33 %) against 2 of 3 (66 %).
+        let after = review([tpw], today: key(6, 15), week: thisWeek)
+        XCTAssertTrue(after.rows[0].countsChange)
+        XCTAssertEqual(after.rows[0].changePoints, -33)
+        XCTAssertEqual(after.slipped, 0)
+    }
+
+    /// W6 review, finding 4: when nothing existed last week (every habit started after it), a
+    /// review asked for with no week opens on this week "so far", Monday to Wednesday too. One
+    /// habit from last week keeps last week; a requested week is always kept.
+    func testABrandNewUserOpensOnThisWeek() {
+        for calendar in zones {
+            let zone = calendar.timeZone.identifier
+            let thisWeek = Math.weekRange(containing: key(6, 8), in: utc)
+            let tuesday = at(6, 9, 10, 0, in: calendar)
+            XCTAssertEqual(Math.openingWeek(now: tuesday, calendar: calendar, earliestStart: key(6, 8)),
+                           Math.OpeningWeek(week: thisWeek, relation: .thisWeek), "\(zone): all new this Monday")
+            XCTAssertEqual(Math.openingWeek(now: at(6, 8, 0, 0, in: calendar), calendar: calendar,
+                                            earliestStart: key(6, 8)).relation, .thisWeek, zone)
+            XCTAssertEqual(Math.openingWeek(now: tuesday, calendar: calendar, earliestStart: key(6, 7)).relation,
+                           .lastWeek, "\(zone): a habit started last Sunday")
+            XCTAssertEqual(Math.openingWeek(now: tuesday, calendar: calendar, earliestStart: nil).relation,
+                           .lastWeek, "\(zone): no habit, or unknown")
+            XCTAssertEqual(Math.openingWeek(now: tuesday, calendar: calendar, requested: key(6, 1),
+                                            earliestStart: key(6, 8)).relation,
+                           .lastWeek, "\(zone): a requested week is kept")
+            XCTAssertEqual(Math.openingWeek(now: at(6, 11, 9, 0, in: calendar), calendar: calendar,
+                                            earliestStart: key(5, 1)).relation, .thisWeek, zone)
+        }
+        // The rows of that week: Monday done, Tuesday not yet: 1 counted day, no change.
+        let new = habit(created: key(6, 8))
+        checkIn(new, on: [key(6, 8)])
+        let r = review([new], today: key(6, 9), week: week(of: key(6, 8)))
+        XCTAssertEqual(r.rows[0].rate, 1)
+        XCTAssertFalse(r.rows[0].endsBeforeStart)
+        XCTAssertNil(r.changePoints)
+        XCTAssertNil(r.mostImproved)
+    }
+
+    /// W6 review, finding 5: the review's `today` is `now`'s local date, as `openingWeek` reads it.
+    /// Sunday 7 June 17:00 PDT is exactly 2026-06-08 00:00 UTC, which `HabitStats.dayNumber(of:)`
+    /// takes for Monday's stored day-key.
+    func testTodayIsTheLocalDateEvenAtAnExactUTCMidnight() {
+        let edge = key(6, 8)   // the instant 2026-06-08T00:00:00Z
+        XCTAssertEqual(Math.today(now: edge, calendar: la), key(6, 7), "Sunday in Los Angeles")
+        XCTAssertEqual(Math.today(now: edge, calendar: tokyo), key(6, 8), "Monday 09:00 in Tokyo")
+        XCTAssertEqual(HabitStats.dayNumber(of: edge, in: la), HabitStats.dayNumber(ofKey: key(6, 8)),
+                       "the instant itself reads as Monday's day-key: why the review keys it first")
+
+        let opening = Math.openingWeek(now: edge, calendar: la)
+        XCTAssertEqual(opening.relation, .thisWeek)
+        XCTAssertEqual(opening.week, week(of: key(6, 1)))
+        let h = habit(created: key(5, 1))
+        checkIn(h, on: keys(key(6, 1), through: key(6, 6)))
+        let s = HabitStats(habit: h, liveRecordIDs: HabitStats.liveRecordIDs(of: [h], in: context),
+                           calendar: la, today: Math.today(now: edge, calendar: la))
+        XCTAssertEqual(s.today, key(6, 7))
+        let r = Math.review(of: [Math.HabitInput(habit: h, stats: s)], week: opening.week)
+        XCTAssertFalse(r.isFinished, "Sunday: so far, as the header says")
+        XCTAssertEqual(r.rows[0].rate, 1, "Sunday not done yet is not a miss")
+    }
+
     func testAnEmptyReview() {
         let r = Math.review(of: [], week: week(of: key(6, 8)))
         XCTAssertEqual(r.rows, [])
