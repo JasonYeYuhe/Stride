@@ -51,7 +51,8 @@ struct WeeklyReviewView: View {
     ///
     /// 1.4.1 showed this week only: every Monday before the check-in each habit with months of
     /// history was a dash, and so was the ring; Best and Needs work were picked by raw percentage,
-    /// and a change in points was labelled "%". Monday to Wednesday it now opens on last week.
+    /// and a change in points was labelled "%". Monday to Wednesday it now opens on last week,
+    /// unless nothing existed then (a brand-new user): this week, "so far".
     private struct Summary {
         let opening: WeeklyReviewMath.OpeningWeek
         let review: WeeklyReviewMath.Review
@@ -62,12 +63,17 @@ struct WeeklyReviewView: View {
     private func summary() -> Summary {
         let now = self.now
         let calendar = Calendar.current
-        let opening = WeeklyReviewMath.openingWeek(now: now, calendar: calendar, requested: requestedWeek)
-        let stats = cache.stats(for: habits, today: now, calendar: calendar)
+        // The stats are built for the day the opening week is judged from: `now` itself would be
+        // keyed by `HabitStats.dayNumber(of:)`, which reads an exact UTC midnight (Sunday
+        // 16:00:00 PST) as Monday's day-key while the header said Sunday's "so far".
+        let today = WeeklyReviewMath.today(now: now, calendar: calendar)
+        let stats = cache.stats(for: habits, today: today, calendar: calendar)
+        let opening = WeeklyReviewMath.openingWeek(now: now, calendar: calendar, requested: requestedWeek,
+                                                   earliestStart: stats.map { $0.startDay }.min())
         let inputs = zip(habits, stats).map { WeeklyReviewMath.HabitInput(habit: $0, stats: $1) }
         return Summary(opening: opening,
                        review: WeeklyReviewMath.review(of: inputs, week: opening.week),
-                       today: HabitCalendar.dayKey(forInstant: now, calendar: calendar))
+                       today: today)
     }
 
     var body: some View {

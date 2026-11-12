@@ -226,29 +226,85 @@ final class WeeklyReviewRenderTests: XCTestCase {
         XCTAssertEqual(highlight("Most improved", in: window).map { $0.contains("Run") }, true)
     }
 
-    /// A habit begun this week, on a Monday: last week is before its start, so its row reads "Not
-    /// started" (no bar, no dash); with nothing else to count, no ring.
-    func testAHabitBegunThisWeekIsNotStartedInLastWeek() async throws {
-        try habit("New", created: (6, 1), checkedIn: [])
+    /// A brand-new user (W6 review, finding 4): a habit created this Monday, viewed on Tuesday,
+    /// opens on this week, "so far", with its row (Monday done, 100 %), and no change or highlight
+    /// from 1 counted day. Last week would have been one "Not started" row and no ring. Asked for
+    /// last week (Today's card), it is that week: the row reads "Not started" — a single element,
+    /// so its label and value, never a dash — and there is no ring.
+    func testABrandNewUserOpensOnThisWeekAndLastWeekReadsNotStarted() async throws {
+        try habit("New", created: (6, 1), checkedIn: [Self.key(6, 1)])
 
-        let window = try show(now: Self.local(6, 1, 9))
-        try await waitUntil("the review") { self.has(appLocalized("Last week"), in: window) }
-        let new = try XCTUnwrap(elements(in: window) { $0.accessibilityLabel == "⭐ New" }.first, "\(labels(in: window))")
+        var window = try show(now: Self.local(6, 2, 9))
+        try await waitUntil("this week so far") { self.has(appLocalized("This week so far"), in: window) }
+        XCTAssertFalse(has(appLocalized("Last week"), in: window))
+        XCTAssertTrue(has(dates(of: Self.key(6, 1)), in: window), "\(labels(in: window))")
+        XCTAssertTrue(has(row("New", 100), in: window), "\(labels(in: window))")
+        XCTAssertFalse(hasChangeLine(in: window))
+        XCTAssertFalse(hasHighlights(in: window))
+
+        window = try show(week: Self.local(5, 25, 0), now: Self.local(6, 2, 9))
+        try await waitUntil("last week, asked for") { self.has(appLocalized("Last week"), in: window) }
+        let new = try XCTUnwrap(elements(in: window) { ($0.accessibilityLabel ?? "").hasPrefix("⭐ New") }.first,
+                                "\(labels(in: window))")
+        XCTAssertEqual(new.accessibilityLabel, "⭐ New", "no rate in the label")
         XCTAssertEqual(new.accessibilityValue, appLocalized("Not started"))
         XCTAssertFalse(labels(in: window).contains { $0.hasPrefix(appLocalized("Last week: \(0)%")) }, "no ring")
-        XCTAssertFalse(labels(in: window).contains("–"))
+    }
+
+    /// The clock on an exact UTC midnight (W6 review, finding 5): 2026-06-08 00:00:00 UTC is Sunday
+    /// 17:00 in Los Angeles and Monday 09:00 in Tokyo. Run done Monday to Saturday, 3 of 7 the week
+    /// before. West of UTC it is Sunday: this week so far, Sunday not yet a miss (100 %), +58
+    /// points, "Highlights so far". The stats once keyed the instant itself as Monday's day-key, so
+    /// that header sat over 85 % and a finished week's "Highlights". East of UTC it is Monday: last
+    /// week, finished, Sunday missed (85 %), +43.
+    func testTheClockOnAnExactUTCMidnight() async throws {
+        try habit("Run", checkedIn: Self.keys((5, 25), (5, 27)) + Self.keys((6, 1), (6, 6)))
+        let edge = Self.key(6, 8)
+
+        let window = try show(now: edge)
+        if TimeZone.current.secondsFromGMT(for: edge) < 0 {
+            try await waitUntil("Sunday's review") { self.has(appLocalized("This week so far"), in: window) }
+            XCTAssertTrue(has(dates(of: Self.key(6, 1)), in: window), "\(labels(in: window))")
+            XCTAssertTrue(has(row("Run", 100), in: window), "Sunday not done is no miss: \(labels(in: window))")
+            XCTAssertTrue(has(appLocalized("+\(58) points vs previous week"), in: window), "\(labels(in: window))")
+            XCTAssertTrue(has(appLocalized("Highlights so far"), in: window), "\(labels(in: window))")
+            XCTAssertFalse(has(appLocalized("Highlights"), in: window))
+        } else {
+            try await expectLastWeek(in: window, week: Self.key(6, 1), rows: ["Run": 85])
+            XCTAssertTrue(has(appLocalized("+\(43) points vs previous week"), in: window), "\(labels(in: window))")
+            XCTAssertTrue(has(appLocalized("Highlights"), in: window), "\(labels(in: window))")
+        }
+        XCTAssertEqual(highlight("Most improved", in: window).map { $0.contains("Run") }, true)
+    }
+
+    /// The dates as written, not as the view's own helper writes them (W6 review, finding 7): a
+    /// formatter one day early west of UTC ("May 24 – 30") fails here, in either zone.
+    func testTheDatesAreTheWeeksOwnDays() async throws {
+        try habit("Run", checkedIn: Self.keys((5, 1), (5, 31)))
+        let window = try show(now: Self.local(6, 1, 9))
+        try await expectLastWeek(in: window, rows: ["Run": 100])
+        let written = dates(of: Self.key(5, 25))
+        let numbers = written.split { !$0.isNumber }.compactMap { Int($0) }
+        XCTAssertTrue(numbers.contains(25) && numbers.contains(31), written)
+        XCTAssertFalse(numbers.contains(24) || numbers.contains(30), "a day early: \(written)")
+        if appLocale.language.languageCode == .english {
+            let spaced = written.unicodeScalars
+                .map { [0x2009, 0x202F, 0x00A0].contains($0.value) ? " " : String($0) }.joined()
+            XCTAssertEqual(spaced, "May 25 – 31")
+        }
     }
 
     // MARK: - Expectations
 
-    /// "Last week" over the dates of 05-25 … 05-31, never "This week so far", and each habit's row
-    /// with its rate: no dash row.
-    private func expectLastWeek(in window: UIWindow, rows: [String: Int],
+    /// "Last week" over the dates of the week of `week` (05-25 … 05-31 unless given), never "This
+    /// week so far", and each habit's row with its rate: no dash row.
+    private func expectLastWeek(in window: UIWindow, week: Date? = nil, rows: [String: Int],
                                 file: StaticString = #filePath, line: UInt = #line) async throws {
+        let week = week ?? Self.key(5, 25)
         try await waitUntil("last week's review") { self.has(appLocalized("Last week"), in: window) }
         XCTAssertFalse(has(appLocalized("This week so far"), in: window), file: file, line: line)
-        XCTAssertTrue(has(dates(of: Self.key(5, 25)), in: window),
-                      "last week's dates \(dates(of: Self.key(5, 25))): \(labels(in: window))", file: file, line: line)
+        XCTAssertTrue(has(dates(of: week), in: window),
+                      "last week's dates \(dates(of: week)): \(labels(in: window))", file: file, line: line)
         for (name, percent) in rows {
             XCTAssertTrue(has(row(name, percent), in: window), "\(name) at \(percent): \(labels(in: window))",
                           file: file, line: line)
