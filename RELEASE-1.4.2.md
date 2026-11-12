@@ -1593,3 +1593,46 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
       `TZ=` does not reach the test process).
     - Hosted StatsRenderTests compiled only (disk 21 GB); CI runs them.
     - StrideMac builds.
+- 2026-11-13, **W6 merged** (018bbd3; worktree agent 68058d8, review fixes 7ca067e). CI on 8cef628
+  green after one rerun (AuthServiceTests and HabitHistoryTests timed out at about 22 s on the
+  runner; both pass locally).
+  - **D8 Wave A in WeeklyReviewView.**
+    - The opening week: the requested week, else this week from Thursday ("This week so far"),
+      else last week ("Last week", with dates in UTC).
+    - The change in points through the stringsdict, or "Level with the previous week".
+    - "Most improved" and "Slipped" from WeeklyReviewMath, under "Highlights so far" while the week
+      is open; no heading when nothing qualifies.
+    - `readableText` colours; the environment StatsCache.
+    - Mac sheet 560×680 ideal, 420×520 minimum.
+    - `StatsInsights.weeklyReview` removed.
+  - ContentView now passes the requested week. Before, the review ignored it.
+  - **Deviations:**
+    - The ring has no caption ("This Week" would contradict a header saying "Last week").
+    - No ring when the week has nothing to count.
+    - An earlier requested week is titled by its dates.
+  - **Unused now, for W12 to prune:** "This Week", "%lld%% vs last week", "Best: %@ %@",
+    "Needs work: %@ %@", and the "Up/Down %lld percent vs last week" labels.
+  - **Review** (independent, read-only), fixed in 7ca067e, with WeeklyReviewMath unit tests:
+    - a habit's change and highlight also need 4 counted days in its previous week. A habit
+      created and missed on a Sunday read "+85 points, Most improved" the next Monday;
+    - times-per-week habits are compared only once their week is over. One check-in on Thursday
+      read as 100 %;
+    - with no requested week and nothing that existed last week, the review opens on this week,
+      instead of a brand-new user's empty "Last week";
+    - one clock: the stats are built for `WeeklyReviewMath.today(now:calendar:)`, the same day
+      the header uses. At exactly 00:00 UTC in Los Angeles they had disagreed;
+    - two tests that could not fail are replaced, including a literal "May 25 – 31";
+    - stale comments in ShellState and StatsRenderTests are corrected.
+  - **Left open:**
+    - The ring is the mean over every row, but the change is the mean over habits with both weeks,
+      so a new habit at 0 % can lower the ring under a "+5 points" line (W1's design; the "disprove"
+      lens decides before the freeze).
+    - The readable colours are not yet measured on the Mac's window background (gate 8; StrengthCard
+      too).
+  - **Tests:**
+    - StrideTests 794 run / 2 skipped / 0 failed in Tokyo and Los Angeles.
+    - Hosted, run locally on iPhone 17 (disk 67 GB): the whole StrideAppTests suite 391 run / 20
+      skipped / 0 failed in Tokyo at 68058d8. After the fixes, WeeklyReviewRenderTests (12),
+      StatsRenderTests (18) and ShellTests (20) passed in both zones. In Los Angeles one ShellTests
+      case stalled 15 minutes inside a 5 s wait while the screen was locked, then passed on rerun.
+    - StrideMac builds.
