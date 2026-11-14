@@ -4,7 +4,10 @@
 #
 #   scripts/a11y_sweep.sh [--size <content size>|default] [--out <dir>] [--device <name|UDID>]
 #                         [--app <path to Stride.app>] [--lang <code>]
-#                         [--set core|history|sync|all] [extra xcodebuild args...]
+#                         [--set core|history|sync|all|pro|store] [--pro] [extra xcodebuild args...]
+#
+#   --pro     the Pro sweep (RELEASE-1.4.2.md W8, gate 8): the same as `--set pro`, below. The free
+#             sets and what they capture are unchanged by it; its PNGs go to their own folder.
 #
 #   --size    a `simctl ui content_size` value (default: accessibility-extra-extra-extra-large,
 #             the largest one). `default` means `large`, the size a fresh device ships with; that
@@ -28,8 +31,39 @@
 #             Without --lang the launches carry no language arguments at all, as before.
 #   --set     which captures: `core` (the tabs, the paywall and History — the 1.3.0 set plus
 #             1.4.1's), `history` (History alone, for RELEASE-1.4.1.md gate 8), `sync` (the M2 sync
-#             UI, below) or `all` (default).
+#             UI, below) or `all` (default) — the FREE sets; `pro` (the Pro sweep, below; its own
+#             default folder, build/a11y/pro-<size>[-<lang>]); `store` (the App Store frames
+#             scripts/screenshots.sh takes through this script, below; build/a11y/store-…).
 #   Anything else is passed to xcodebuild (the package-cache flags, typically).
+#
+# The Pro sweep (`--pro`, RELEASE-1.4.2.md W8 and gate 8; D14's DEBUG switches). `-demoPro` makes
+# the app Pro and, with `-demo`, seeds DemoData.Scenario.pro (two groups, a habit with Insights'
+# three lines, one started 10 days ago, last week with both highlights; DemoData.swift). Where a
+# FREE user is drawn over the same data it passes `-demoScenario pro` without `-demoPro`. Wave A
+# only (RELEASE-1.4.2.md N1): no Wave B navigation.
+#   20_pro_today            Today, Pro, with the two groups (no card: `-inlineCard none`).
+#   21_today_card_pro       Today with the "Your week" card, Pro (`-inlineCard week`: "Last week:
+#   21_today_card_free      N%"), and free over the same data (no number).
+#   22_stats_pro[_<anchor>] Statistics, Pro: the top, then each Pro card (insights, trend, strength,
+#                           beststreaks); at accessibility sizes also the detail card.
+#   23_stats_young_<anchor> the habit started 10 days ago (`-statsHabit "Drink Water"`): Insights'
+#                           first-week or true line, Strength "Not started" and one tile (D7).
+#   24_stats_locked_preview free over the Pro data: the locked card's preview ("Stride Pro has N
+#                           insights", D12).
+#   25_review_this, _last   the Weekly Review on this week and on last week (DEBUG `-openReview`).
+#   26_review_free_paywall  free, the same request: the paywall with the `.weeklyReview` trigger.
+#   30_paywall_<fixture>    every PaywallFixture (`-paywall -paywallFixture <name>`); at
+#                           accessibility sizes also `_at_cta` and `_at_terms`
+#                           (`-paywallScrollTo`), where the bar is in the scroll (gate 2).
+#   Top-only still: the review's lower rows (no anchor in it) and Today's lower rows.
+# The store set (`--set store`, O9): 01_today, 02_stats, 03_history and 04_settings (free, the
+# standard set, as 1.4.1's), then 05_weekly_review (last week) and 06_advanced_analytics (Insights
+# with the PRO chip), both `-demoPro`. scripts/screenshots.sh sizes and files them.
+#
+# Every PNG this run writes goes through a blank-frame check (scripts/frame_check.swift): one that
+# comes back blank (a window with nothing drawn, as three 1.4.1 store frames did under load) is
+# retaken once after a longer wait; one still blank is reported with ✗ and the sweep exits 1 after
+# putting the simulator back.
 #
 # What it does: builds Stride (Debug, its own derived data) unless --app is given; boots the
 # simulator if it is not booted; sets the content size, light appearance and a fixed 9:41
@@ -179,6 +213,7 @@ while [[ $# -gt 0 ]]; do
         --app)    APP="${2:?--app needs a value}"; shift 2 ;;
         --lang)   LANG_CODE="${2:?--lang needs a value}"; shift 2 ;;
         --set)    SET="${2:?--set needs a value}"; shift 2 ;;
+        --pro)    SET="pro"; shift ;;
         -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
         *)        XCB_ARGS+=("$1"); shift ;;
     esac
@@ -192,7 +227,11 @@ case "$SIZE" in
     accessibility-extra-extra-large|accessibility-extra-extra-extra-large) ;;
     *) echo "✗ Unknown content size '$SIZE' (see: xcrun simctl help ui)"; exit 2 ;;
 esac
-case "$SET" in core|history|sync|all) ;; *) echo "✗ Unknown --set '$SET' (core, history, sync or all)"; exit 2 ;; esac
+case "$SET" in
+    core|history|sync|all) ;;
+    pro|store) LABEL="$SET-$LABEL" ;;
+    *) echo "✗ Unknown --set '$SET' (core, history, sync, all, pro or store)"; exit 2 ;;
+esac
 # The language for every launch, in the argument domain (nothing is written to the device).
 LANG_ARGS=()
 if [[ -n "$LANG_CODE" ]]; then
@@ -266,15 +305,27 @@ fi
 [[ -d "$APP" ]] || { echo "✗ No app at $APP"; exit 1; }
 BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
 
+# ---- the blank-frame check (header), compiled before the simulator is touched --------------
+FRAME_DIR="$(mktemp -d "${TMPDIR:-/tmp}/stride-a11y-frame.XXXXXX")"
+trap 'rm -rf "$FRAME_DIR"; [[ -n "${APP_COPY_DIR:-}" ]] && rm -rf "$APP_COPY_DIR"' EXIT
+FRAME_CHECK="$FRAME_DIR/frame_check"
+if ! xcrun swiftc -O -o "$FRAME_CHECK" "$SCRIPT_DIR/frame_check.swift" >"$FRAME_DIR/build.log" 2>&1; then
+    sed 's/^/    /' "$FRAME_DIR/build.log" | head -20
+    echo "✗ Could not compile scripts/frame_check.swift (the blank-frame check)"
+    exit 1
+fi
+
 # ---- the simulator: lock, remember, change, and always put back ---------------------------
 LOCK="${STRIDE_SIM_LOCK_ROOT:-/tmp}/lock-$(sim_lock_slug "$NAME")"
 LOCK_RC=0
 sim_lock_take "$LOCK" a11y_sweep || LOCK_RC=$?
 [[ $LOCK_RC -eq 0 ]] || exit "$LOCK_RC"
 # Until restore() below takes over: a signal during the next lines must not strand the lock.
-trap 'sim_lock_release; [[ -n "${APP_COPY_DIR:-}" ]] && rm -rf "$APP_COPY_DIR"' EXIT
+trap 'sim_lock_release; rm -rf "$FRAME_DIR"; [[ -n "${APP_COPY_DIR:-}" ]] && rm -rf "$APP_COPY_DIR"' EXIT
 
 APP_COPY_DIR="${APP_COPY_DIR:-}"
+BLANK_FILES=()
+CAPTURED=0
 WAS_BOOTED=0
 PREV_SIZE=""
 PREV_LOOK=""
@@ -292,7 +343,14 @@ restore() {
     [[ $WAS_BOOTED -eq 0 ]] && xcrun simctl shutdown "$UDID" >/dev/null 2>&1 || true
     # Only a lock this run took (never the caller's STRIDE_SIM_LOCK_LABEL hold).
     sim_lock_release
+    rm -rf "$FRAME_DIR"
     [[ -n "$APP_COPY_DIR" ]] && rm -rf "$APP_COPY_DIR"
+    # Blank frames (header) fail the run, after everything above is put back.
+    if [[ $status -eq 0 && ${#BLANK_FILES[@]} -gt 0 ]]; then
+        echo "✗ ${#BLANK_FILES[@]} blank frame(s), still blank after a retake:"
+        printf '    %s\n' "${BLANK_FILES[@]}"
+        status=1
+    fi
     exit $status
 }
 trap restore EXIT
@@ -334,16 +392,29 @@ clear_recovery_log
 # -inlineCard none (RELEASE-1.4.2.md D14): no "Your week" card on Today, whatever the weekday, so a
 # run on a Monday or Tuesday draws the same Today as any other day, and the app writes none of the
 # card's state (the free cap's weeks) into the device's defaults. Every launch here is a FREE one.
-# W8's Pro sweep captures the card on purpose with `-inlineCard week` (and `-demoPro`); a later
-# `-inlineCard` in "$@" is not read (the app takes the first), so pass the card there, not here.
+# The Pro sweep captures the card on purpose: it sets INLINE_CARD=week for that one call, which
+# REPLACES `none` here. A second `-inlineCard` in "$@" would not be read (the app takes the first).
+#
+# Each PNG then goes through the blank-frame check (header): a blank one is retaken once, after
+# twice the settle time; one still blank is listed in BLANK_FILES, which fails the run.
 capture() {
     local file="$1"; shift
-    xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
-    xcrun simctl launch "$UDID" "$BUNDLE_ID" -demo -stride_onboarding_completed YES -inlineCard none \
-        "${LANG_ARGS[@]+"${LANG_ARGS[@]}"}" "$@" >/dev/null
-    sleep "$SETTLE"
-    xcrun simctl io "$UDID" screenshot --type=png "$OUT/$file" >/dev/null 2>&1
-    echo "    ✓ $file"
+    local attempt verdict
+    for attempt in 1 2; do
+        xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
+        xcrun simctl launch "$UDID" "$BUNDLE_ID" -demo -stride_onboarding_completed YES -inlineCard "${INLINE_CARD:-none}" \
+            "${LANG_ARGS[@]+"${LANG_ARGS[@]}"}" "$@" >/dev/null
+        sleep $(( SETTLE * attempt ))
+        xcrun simctl io "$UDID" screenshot --type=png "$OUT/$file" >/dev/null 2>&1
+        if verdict="$("$FRAME_CHECK" "$OUT/$file")"; then
+            CAPTURED=$((CAPTURED + 1))
+            echo "    ✓ $file"
+            return 0
+        fi
+        echo "    ⚠ $file: $(awk '{ print $1, $2 }' <<<"$verdict") ink — retaking after $(( SETTLE * 2 )) s"
+    done
+    BLANK_FILES+=("$OUT/$file")
+    echo "    ✗ $file is BLANK after a retake"
 }
 if [[ "$SET" == core || "$SET" == all ]]; then
     capture 01_today.png    -tab 0
@@ -375,7 +446,59 @@ if [[ "$SET" == core || "$SET" == all ]]; then
     capture 15_details_stats.png   -tab 1 -demoScenario details -statsScrollTo detail
     capture 15_details_heatmap.png -tab 1 -demoScenario details -statsScrollTo heatmap
 fi
-if [[ "$SET" != sync ]]; then
+if [[ "$SET" == pro ]]; then
+    # The Pro sweep (header). `-demoPro` with `-demo` seeds DemoData.Scenario.pro; `-demoScenario
+    # pro` without it draws the same data for a free user.
+    PRO=(-demoPro)
+    FREE_OVER_PRO=(-demoScenario pro)
+    capture 20_pro_today.png -tab 0 "${PRO[@]}"
+    INLINE_CARD=week capture 21_today_card_pro.png -tab 0 "${PRO[@]}"
+    INLINE_CARD=week capture 21_today_card_free.png -tab 0 "${FREE_OVER_PRO[@]}"
+    capture 22_stats_pro.png -tab 1 "${PRO[@]}"
+    for anchor in insights trend strength beststreaks; do
+        capture "22_stats_pro_$anchor.png" -tab 1 "${PRO[@]}" -statsScrollTo "$anchor"
+    done
+    if [[ "$SIZE" == accessibility-* ]]; then
+        capture 22_stats_pro_detail.png -tab 1 "${PRO[@]}" -statsScrollTo detail
+    fi
+    for anchor in insights strength; do
+        capture "23_stats_young_$anchor.png" -tab 1 "${PRO[@]}" -statsHabit "Drink Water" -statsScrollTo "$anchor"
+    done
+    capture 24_stats_locked_preview.png -tab 1 "${FREE_OVER_PRO[@]}" -statsScrollTo insights
+    capture 25_review_this.png -tab 1 "${PRO[@]}" -openReview this
+    capture 25_review_last.png -tab 1 "${PRO[@]}" -openReview last
+    capture 26_review_free_paywall.png -tab 1 "${FREE_OVER_PRO[@]}" -openReview last
+    # Every fixture PaywallFixture names (Shared/PaywallModel.swift), in its order.
+    for fixture in loading loadFailed trial ineligible unknownEligibility noOffer pro yen \
+                   purchasing pending restored nothingFound restoreFailed purchaseFailed unlocked; do
+        capture "30_paywall_$fixture.png" -tab 0 -paywall -paywallFixture "$fixture"
+        if [[ "$SIZE" == accessibility-* ]]; then
+            for anchor in cta terms; do
+                capture "30_paywall_${fixture}_at_$anchor.png" -tab 0 -paywall -paywallFixture "$fixture" \
+                    -paywallScrollTo "$anchor"
+            done
+        fi
+    done
+    # Back to the plain demo set, as the sync set ends: the next run on this device starts clean.
+    xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
+    xcrun simctl launch "$UDID" "$BUNDLE_ID" -demo -stride_onboarding_completed YES -inlineCard none >/dev/null
+    sleep "$SETTLE"
+    xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
+fi
+if [[ "$SET" == store ]]; then
+    # The App Store frames (header, O9): the free four as 1.4.1's, then the two Pro ones.
+    capture 01_today.png    -tab 0
+    capture 02_stats.png    -tab 1
+    capture 03_history.png  -tab 1 -openHistory "Read 30 min"
+    capture 04_settings.png -tab 2
+    capture 05_weekly_review.png       -tab 1 -demoPro -openReview last
+    capture 06_advanced_analytics.png  -tab 1 -demoPro -statsScrollTo insights
+    xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
+    xcrun simctl launch "$UDID" "$BUNDLE_ID" -demo -stride_onboarding_completed YES -inlineCard none >/dev/null
+    sleep "$SETTLE"
+    xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
+fi
+if [[ "$SET" != sync && "$SET" != pro && "$SET" != store ]]; then
     # History (header): over Stats, on today and twenty days back; at accessibility sizes each
     # again at its editor, which the month grid pushes below the fold there.
     HISTORY_HABIT="Read 30 min"
@@ -449,4 +572,4 @@ if [[ "$SET" == sync || "$SET" == all ]]; then
     clear_recovery_log
 fi
 
-echo "✓ $(ls "$OUT"/*.png | wc -l | tr -d ' ') PNGs at $SIZE in $OUT"
+echo "✓ $CAPTURED PNGs at $SIZE in $OUT, each past the blank-frame check$([[ ${#BLANK_FILES[@]} -gt 0 ]] && echo " (${#BLANK_FILES[@]} blank: below)")"
