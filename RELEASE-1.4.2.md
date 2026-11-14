@@ -1680,8 +1680,28 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
     - Hosted on iPhone 17, both zones, all passed: SettingsProRowsTests 12, TodayWeekCardTests 10,
       ShellTests 20, StatsRenderTests 18, WeeklyReviewRenderTests 12, PaywallRenderTests 13.
     - The whole hosted suite in Tokyo at 6a0555a: 413 run, 2 failed, both in W2's
-      StoreKitStatusTests: `testAnEarlierMonthlyMakesYearlysTrialIneligible` and
+      StoreKitStatusTests: `testAnEarlierMonthlyMakesYearlysTrialIneligible` (now
+      `testThePaywallRereadsYearlysTrialEligibilityAcrossAMonthly`) and
       `testBillingRetryShowsThePaymentRow`. SKTestSession took effect on this iOS 27.0 device,
       where it had been skipped before (O21), and CI still skips them. They are diagnosed on the
       iOS 18.5 device next (gate 4).
     - StrideMac builds.
+- 2026-11-14, **Gate 4's StoreKit half on iOS 18.5** (9bc2ee3; worktree agent 219620f, test file only).
+  On Soundpost-iOS18 with `STRIDE_HOSTED_NO_SKIPS`: StoreKitStatusTests and
+  StoreKitConfigurationLoadTests 20 of 20 pass, none skipped. W2's SKTestSession cases have now run
+  for the first time. StoreService and PurchaseOutcome are unchanged.
+  - **Eligibility.** The old test assumed that any earlier Monthly blocks Yearly's trial for
+    good. The session says ineligible only while Monthly is active, and eligible again once an
+    unused Monthly lapses. The paywall shows what StoreKit says, which is honest (3.1.2).
+    - The test is now `testThePaywallRereadsYearlysTrialEligibilityAcrossAMonthly`. It checks the
+      real risk: a stale "eligible" reused on the paywall's next appearance.
+    - StoreKit's own answer lags a `buyProduct` by up to about 3 s.
+    - Unverified: whether the production App Store follows the session's rule.
+  - **iOS 27.0, where CI runs:** 18 pass, 2 skip, each with a measured reason.
+    - Eligibility never changes in the session there.
+    - In billing retry, `currentEntitlements` still holds Monthly for a month, so StoreKit itself
+      reports the user as entitled, and `isPro` follows it by design.
+  - **The trial-renewal case took 1048 s once** (screen locked). It did not reproduce: 10.6 s in
+    the class, 24.2 s alone. Timing lines are now logged; the unbounded
+    `refreshPurchasedProducts()` is the first suspect if it recurs.
+  - StrideTests 824 / 2 / 0 in both zones.
