@@ -21,6 +21,9 @@
 #   01_today, 02_stats, 03_history, 04_settings   free, the standard demo set (1.4.1's four);
 #   05_weekly_review                              last week's review, `-demoPro`;
 #   06_advanced_analytics                         Insights with the PRO chip, `-demoPro`.
+# Take the store's Pro frames Thursday to Sunday (the simulator's local day): Insights compares
+# this week with last only from its fourth counted day, so Monday to Wednesday Morning Run's card
+# has 2 lines (the record and Sunday) instead of 3 (StatsInsights.momentum(for:)).
 # Each locale's launch carries `-AppleLanguages` / `-AppleLocale` (a11y_sweep.sh --lang), so the
 # app's text is that locale's; the demo habits keep their English names in every locale.
 #

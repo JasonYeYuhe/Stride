@@ -312,9 +312,11 @@ final class StatsRenderTests: XCTestCase {
     /// (100% → 0%)" here. Since D7 (RELEASE-1.4.2.md) the card no longer hides: under its header it
     /// says "Nothing to compare yet this week" — this week has nothing counted before the
     /// check-in. W5's first cut said "Not enough recent check-ins to compare" to this perfect user
-    /// (W5 review). The same user on Wednesday 06-03 with Tuesday missed is told so: Down,
-    /// 100% → 50%, and Toughest on Tuesday (4 of 5 Tuesdays in the window against 100% everywhere
-    /// else, and Tuesday's all-time count tied for the lowest By Weekday bar).
+    /// (W5 review). The same user on Friday 06-05 with Tuesday missed is told so: Down,
+    /// 100% → 75%, and Toughest on Tuesday (4 of 5 Tuesdays in the window against 100% everywhere
+    /// else, and Tuesday's all-time count, 4, alone at the bottom of the By Weekday bars). On
+    /// Wednesday 06-03 it said "Down (100% → 50%)" after two days, and "Toughest on Tuesday" over
+    /// three equal bars (pre-freeze review A1 and A4).
     ///
     /// Weekly Review is hosted in WeeklyReviewRenderTests, on a fixed clock over its own cache; its
     /// numbers are `WeeklyReviewMath.review`, which WeeklyReviewMathTests pin host-less.
@@ -339,10 +341,11 @@ final class StatsRenderTests: XCTestCase {
         XCTAssertEqual(labels, [marker, appLocalized("Insights"), nothingYet], "no line: the card says why")
         XCTAssertFalse(labels.contains(appLocalized("Not enough recent check-ins to compare")))
 
-        let missed = try habit("Run", created: created, checkedIn: may + [Self.key(6, 1)])
-        window.rootViewController = hostingController(card(missed, today: Self.key(6, 3)))
+        let missed = try habit("Run", created: created,
+                               checkedIn: may + [Self.key(6, 1), Self.key(6, 3), Self.key(6, 4)])
+        window.rootViewController = hostingController(card(missed, today: Self.key(6, 5)))
         let toughest = appLocalized("Toughest on \(appCalendar.weekdaySymbols[2])")
-        let down = appLocalized("Down vs last week (\("100%") → \("50%"))")
+        let down = appLocalized("Down vs last week (\("100%") → \("75%"))")
         try await waitUntil("Toughest on Tuesday") {
             labels = self.elements(in: window) { _ in true }.compactMap(\.accessibilityLabel)
             return labels.contains(toughest)
@@ -379,8 +382,10 @@ final class StatsRenderTests: XCTestCase {
     /// The change tiles by the habit's age on Monday 07-20 (D7): 18 days old, one "Since start";
     /// 80 days and done every day, "30-Day Change" and "Since start", two different numbers; 80
     /// days but used only since 07-06, one "Since start" — its 30-day window starts where the
-    /// score was still 0, so the two would be the same number (W5 review); 196 days, the 30- and
-    /// 90-day changes. Since start is the score itself (the walk starts from 0), signed.
+    /// score was still 0, so the two would be the same number (W5 review); 196 days but used only
+    /// since 07-06, one "30-Day Change": the score was 0 both 30 and 90 days ago, so the 30- and
+    /// 90-day changes are the same number (pre-freeze review A5); 196 days and done every day, the
+    /// 30- and 90-day changes. Since start is the score itself (the walk starts from 0), signed.
     func testAYoungHabitShowsSinceStartTiles() async throws {
         let thirty = appLocalized("30-Day Change"), ninety = appLocalized("90-Day Change")
         let since = appLocalized("Since start")
@@ -390,7 +395,11 @@ final class StatsRenderTests: XCTestCase {
             ("18 days", Self.key(7, 2), lately, [since]),
             ("80 days, every day", Self.key(5, 1), Self.keys(from: Self.key(5, 1), count: 80), [thirty, since]),
             ("80 days, used lately", Self.key(5, 1), lately, [since]),
-            ("196 days", Self.key(1, 5), lately, [thirty, ninety]),
+            ("196 days, used lately", Self.key(1, 5), lately, [thirty]),
+            ("196 days, every day but Sundays until 05-31", Self.key(1, 5),
+             Self.keys(from: Self.key(1, 5), count: 196).filter {
+                 $0 > Self.key(5, 31) || HabitStats.weekday(ofDay: HabitStats.dayNumber(ofKey: $0)) != 1
+             }, [thirty, ninety]),
         ]
         let window = try host(Text(verbatim: "test.tiles.marker"))
         for item in cases {
@@ -411,9 +420,7 @@ final class StatsRenderTests: XCTestCase {
                 XCTAssertEqual(numbers(in: spoken), [StatsInsights.displayedChangeSinceStart(of: s)], "\(item.name): \(spoken)")
                 XCTAssertEqual(StatsInsights.displayedChangeSinceStart(of: s), HabitScore.displayValue(s.strength))
             }
-            // With Since start: one tile, or two different values. (Past 90 days the 30- and 90-day
-            // changes can still be equal for a habit unused until lately; not W5's rule.)
-            guard shown.contains(since) else { continue }
+            // One tile, or two different values (W5 review; past 90 days, A5).
             let values = shown.map { title -> [Int] in
                 let tile = elements(in: window) { ($0.accessibilityLabel ?? "").hasPrefix(title) }.first
                 let spoken = [tile?.accessibilityLabel, tile?.accessibilityValue].compactMap { $0 }.joined(separator: " ")
@@ -426,15 +433,17 @@ final class StatsRenderTests: XCTestCase {
 
     /// Insights with nothing to say draws its header and why (D7): a habit created Wednesday
     /// 07-15 with no check-in waits for its first full week (07-20 to 07-26); on Monday 07-27,
-    /// with nothing of the week counted, has "Nothing to compare yet this week"; from Tuesday
-    /// 07-28 (this week 0%, last week 0%), "Not enough recent check-ins to compare".
+    /// with nothing of the week counted, has "Nothing to compare yet this week", and so until this
+    /// week has 4 counted days (pre-freeze review A4); from Friday 07-31 (this week 0%, last week
+    /// 0%), "Not enough recent check-ins to compare".
     func testInsightsEmptyStatesRender() async throws {
         let fresh = try habit("Stretch", created: Self.key(7, 15), checkedIn: [])
         let header = appLocalized("Insights")
         let cases: [(today: Date, text: String)] = [
             (Self.key(7, 20), appLocalized("Insights appear after your first full week")),
             (Self.key(7, 27), appLocalized("Nothing to compare yet this week")),
-            (Self.key(7, 28), appLocalized("Not enough recent check-ins to compare")),
+            (Self.key(7, 28), appLocalized("Nothing to compare yet this week")),
+            (Self.key(7, 31), appLocalized("Not enough recent check-ins to compare")),
         ]
         let window = try host(Text(verbatim: "test.empty.marker"))
         for item in cases {
@@ -856,15 +865,16 @@ extension StatsRenderTests {
     /// readable value) is `testThePreviewDrawsLevelsNotScores`.
     ///
     /// The users of `testInsightsSayNothingToAUserWhoNeverMisses`: one who never misses (no
-    /// line), and one who missed a Tuesday (Toughest on Tuesday, Down vs last week: 2 lines).
+    /// line), and one who missed a Tuesday, on Friday (Toughest on Tuesday, Down vs last week: 2 lines).
     func testTheLockedCardCountsInsightsCardsLines() async throws {
         let created = Self.key(5, 1)
         let may = Self.keys(from: created, count: 31)
         let neverHabit = try habit("Read", created: created, checkedIn: may)
-        let missedHabit = try habit("Run", created: created, checkedIn: may + [Self.key(6, 1)])
+        let missedHabit = try habit("Run", created: created,
+                                    checkedIn: may + [Self.key(6, 1), Self.key(6, 3), Self.key(6, 4)])
         let cases: [(name: String, habit: Habit, stats: HabitStats, lines: Int)] = [
             ("never misses", neverHabit, stats(neverHabit, today: Self.key(6, 1)), 0),
-            ("missed a Tuesday", missedHabit, stats(missedHabit, today: Self.key(6, 3)), 2),
+            ("missed a Tuesday", missedHabit, stats(missedHabit, today: Self.key(6, 5)), 2),
         ]
         let title = appLocalized("Advanced Analytics")
         let message = appLocalized("Insights, the 8-week trend, the strength chart and your top 5 streaks")

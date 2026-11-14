@@ -121,17 +121,18 @@ final class SettingsProRowsTests: XCTestCase {
     /// subscription expired, a refund) Settings clears it, and the rows never draw it without Pro.
     func testPurchasesRestoredGoesWhenTheEntitlementDoes() async throws {
         typealias Rows = SettingsProRows
-        XCTAssertNil(Rows.restoreOutcome(.restored, afterProChangeTo: false, isRestoring: false))
-        XCTAssertEqual(Rows.restoreOutcome(.restored, afterProChangeTo: true, isRestoring: false), .restored)
-        XCTAssertEqual(Rows.restoreOutcome(.restored, afterProChangeTo: false, isRestoring: true), .restored,
-                       "a restore's own refresh decides its answer itself")
-        // The other answers go once Pro arrives from elsewhere, and stay true while it does not.
+        XCTAssertNil(Rows.restoreOutcome(.restored, afterProChangeTo: false))
+        XCTAssertEqual(Rows.restoreOutcome(.restored, afterProChangeTo: true), .restored)
+        // The other answers go once Pro arrives, and stay true while it does not. Also while a
+        // restore runs (pre-freeze review B5): the paywall's Restore, run over Settings, brought
+        // Pro, and Settings kept "No purchases found" under "All features unlocked". Settings'
+        // own restore clears its answer before it starts, so nothing needs keeping for it.
         for outcome in [RestoreOutcome.nothingFound, .failed] {
-            XCTAssertNil(Rows.restoreOutcome(outcome, afterProChangeTo: true, isRestoring: false), "\(outcome)")
-            XCTAssertEqual(Rows.restoreOutcome(outcome, afterProChangeTo: false, isRestoring: false), outcome)
-            XCTAssertEqual(Rows.restoreOutcome(outcome, afterProChangeTo: true, isRestoring: true), outcome)
+            XCTAssertNil(Rows.restoreOutcome(outcome, afterProChangeTo: true), "\(outcome)")
+            XCTAssertEqual(Rows.restoreOutcome(outcome, afterProChangeTo: false), outcome)
         }
-        XCTAssertNil(Rows.restoreOutcome(nil, afterProChangeTo: false, isRestoring: false))
+        XCTAssertNil(Rows.restoreOutcome(nil, afterProChangeTo: false))
+        XCTAssertNil(Rows.restoreOutcome(nil, afterProChangeTo: true))
 
         // Drawn: a stale `.restored` under the lapsed rows says nothing.
         try await expect(.lapsed(expiredOn: date), isPro: false, restore: .restored,

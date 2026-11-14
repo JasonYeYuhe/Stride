@@ -167,9 +167,14 @@ struct SubscriptionStatusMirror: Equatable {
     /// The offer the transaction was bought under (1.4.2 D6). `.freeTrial` on a subscribed status:
     /// the user is in the trial, and `expirationDate` is the first charge.
     var offer: OfferMirror
+    /// The product the next renewal is for (`RenewalInfo.autoRenewPreference`); nil when the
+    /// renewal info could not be verified. It differs from `productID` after a change of plan
+    /// that waits for the renewal: Yearly → Monthly during the trial is charged as Monthly.
+    var autoRenewProductID: String?
 
     init(productID: String, state: State, expirationDate: Date? = nil, willAutoRenew: Bool? = nil,
-         gracePeriodExpirationDate: Date? = nil, revocationDate: Date? = nil, offer: OfferMirror = .none) {
+         gracePeriodExpirationDate: Date? = nil, revocationDate: Date? = nil, offer: OfferMirror = .none,
+         autoRenewProductID: String? = nil) {
         self.productID = productID
         self.state = state
         self.expirationDate = expirationDate
@@ -177,6 +182,7 @@ struct SubscriptionStatusMirror: Equatable {
         self.gracePeriodExpirationDate = gracePeriodExpirationDate
         self.revocationDate = revocationDate
         self.offer = offer
+        self.autoRenewProductID = autoRenewProductID
     }
 
     /// Apple is still charging, or trying to: the "payment problem" states.
@@ -209,8 +215,11 @@ enum ProStatus: Equatable {
     case active(productID: String, renewsOn: Date?, willAutoRenew: Bool?)
     /// Entitled through the introductory free trial (RELEASE-1.4.2.md D6). `firstChargeOn` is the
     /// trial's end (the transaction's expiration); `willAutoRenew` is nil when the renewal info
-    /// could not be verified, and then claims nothing: no date, no charge.
-    case trial(productID: String, firstChargeOn: Date?, willAutoRenew: Bool?)
+    /// could not be verified, and then claims nothing: no date, no charge. `chargedProductID`: the
+    /// product the first charge is for when it is not `productID` (the renewal info's
+    /// `autoRenewPreference`, after a switch of plan during the trial), else nil (pre-freeze
+    /// review B6).
+    case trial(productID: String, firstChargeOn: Date?, willAutoRenew: Bool?, chargedProductID: String? = nil)
     /// Billing retry or grace period: "Payment problem — update your payment method" + Manage.
     /// `graceUntil`: while in the grace period, when Pro ends unless the payment goes through.
     case billingIssue(productID: String, graceUntil: Date?)
@@ -233,8 +242,8 @@ enum ProStatus: Equatable {
     /// The rules, in order:
     /// 1. Lifetime entitled → `.lifetime`; it never lapses, whatever a subscription says.
     /// 2. A subscription entitled → `.billingIssue` when a status is in the grace period (or
-    ///    billing retry), else `.active` from the subscribed status — preferring the entitled
-    ///    product's — or `.trial` when that status was bought under the free trial (1.4.2 D6).
+    ///    billing retry), else `.active` from the entitled product's subscribed status — never
+    ///    another product's — or `.trial` when that status was bought under the free trial (1.4.2 D6).
     ///    When no status agrees (unavailable, unverified, stale), `.active` with no date: an
     ///    entitled subscriber is never lapsed.
     /// 3. Nothing entitled → `.billingIssue` while Apple retries the charge; `.never` while a
@@ -255,11 +264,16 @@ enum ProStatus: Equatable {
             if let issue = statuses.first(where: \.hasBillingIssue) {
                 return .billingIssue(productID: issue.productID, graceUntil: graceEnd(of: issue))
             }
+            // Only the entitled product's own status: another product's (the plan before a switch,
+            // read before the entitlement changed) would name the wrong plan, and a stale
+            // `.freeTrial` its trial row with the wrong date (pre-freeze review B7). Without one,
+            // the entitled product with no date, until the next read.
             let subscribed = statuses.filter { $0.state == .subscribed }
-            if let live = subscribed.first(where: { entitledSubscriptions.contains($0.productID) }) ?? subscribed.first {
+            if let live = subscribed.first(where: { entitledSubscriptions.contains($0.productID) }) {
                 if live.offer == .freeTrial {
+                    let charged = live.autoRenewProductID.flatMap { $0 == live.productID ? nil : $0 }
                     return .trial(productID: live.productID, firstChargeOn: live.expirationDate,
-                                  willAutoRenew: live.willAutoRenew)
+                                  willAutoRenew: live.willAutoRenew, chargedProductID: charged)
                 }
                 return .active(productID: live.productID, renewsOn: live.expirationDate, willAutoRenew: live.willAutoRenew)
             }
@@ -338,7 +352,7 @@ enum ProSettingsRow: Hashable {
         case .active(let productID, let renewsOn, let willAutoRenew):
             guard isPro else { return [.upgrade, .restore] }
             return [.unlocked, .plan(.subscription(productID: productID), dateLine(renewsOn, willAutoRenew)), .manage]
-        case .trial(let productID, _, _):
+        case .trial(let productID, _, _, _):
             // The plan row carries no date line: the trial's own line (`trialLine`) says when the
             // first charge comes, or when the trial ends.
             guard isPro else { return [.upgrade, .restore] }
@@ -377,10 +391,15 @@ enum ProSettingsRow: Hashable {
     /// - Parameter displayPrices: the loaded products' `displayPrice` by product id; empty when
     ///   the products have not loaded (they load at launch and can be missing offline). Without
     ///   the trial product's price the line keeps the date and drops the price.
+    ///
+    /// The price is the product the first charge is for: `chargedProductID` when the plan was
+    /// switched during the trial (Yearly → Monthly is charged Monthly's price), else the trial's
+    /// own. Never the trial product's price for another product's charge (pre-freeze review B6).
     static func trialLine(for status: ProStatus, isPro: Bool, displayPrices: [String: String]) -> TrialLine? {
-        guard isPro, case .trial(let productID, let firstChargeOn, let willAutoRenew) = status else { return nil }
+        guard isPro, case .trial(let productID, let firstChargeOn, let willAutoRenew, let charged) = status else { return nil }
         guard let firstChargeOn, let willAutoRenew else { return .undated }
-        return willAutoRenew ? .firstCharge(on: firstChargeOn, price: displayPrices[productID]) : .endsOn(firstChargeOn)
+        return willAutoRenew ? .firstCharge(on: firstChargeOn, price: displayPrices[charged ?? productID])
+                             : .endsOn(firstChargeOn)
     }
 }
 

@@ -155,10 +155,9 @@ struct SettingsView: View {
                                     onManage: { showingManageSubscriptions = true })
                 }
                 // An answer about an earlier state goes once Pro changes from elsewhere
-                // (`SettingsProRows.restoreOutcome(_:afterProChangeTo:isRestoring:)`).
+                // (`SettingsProRows.restoreOutcome(_:afterProChangeTo:)`).
                 .onChange(of: store.isPro) { _, isPro in
-                    restoreOutcome = SettingsProRows.restoreOutcome(restoreOutcome, afterProChangeTo: isPro,
-                                                                    isRestoring: store.isRestoring)
+                    restoreOutcome = SettingsProRows.restoreOutcome(restoreOutcome, afterProChangeTo: isPro)
                 }
 
                 // Account & Sync
@@ -1713,14 +1712,18 @@ struct SettingsProRows: View {
         }
     }
 
-    /// What Restore's answer becomes when `isPro` changes while it is shown. A restore's own
-    /// change (`isRestoring`) keeps it. Otherwise "No purchases found" and "Couldn't reach the App
-    /// Store" go once Pro arrives from elsewhere (they would sit under "All features unlocked"), and
-    /// "Purchases restored" goes once Pro is gone again (expired, refunded, revoked): it must never
-    /// sit under "Upgrade to Pro" or "Pro ended".
-    static func restoreOutcome(_ outcome: RestoreOutcome?, afterProChangeTo isPro: Bool,
-                               isRestoring: Bool) -> RestoreOutcome? {
-        guard !isRestoring, let outcome else { return outcome }
+    /// What Restore's answer becomes when `isPro` changes while it is shown: "No purchases found"
+    /// and "Couldn't reach the App Store" go once Pro arrives (they would sit under "All features
+    /// unlocked"), and "Purchases restored" goes once Pro is gone again (expired, refunded,
+    /// revoked): it must never sit under "Upgrade to Pro" or "Pro ended".
+    ///
+    /// Whatever is restoring. Settings' own restore clears its answer before it starts and writes
+    /// the new one after (`SettingsView.restorePurchases`), so there is nothing here to keep for
+    /// it; the store's `isRestoring` is also true for the paywall's Restore, and exempting it kept
+    /// an earlier "No purchases found" under "All features unlocked" when that restore brought
+    /// Pro (pre-freeze review B5).
+    static func restoreOutcome(_ outcome: RestoreOutcome?, afterProChangeTo isPro: Bool) -> RestoreOutcome? {
+        guard let outcome else { return nil }
         if outcome == .restored { return isPro ? outcome : nil }
         return isPro ? nil : outcome
     }

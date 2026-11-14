@@ -114,15 +114,30 @@ struct ProPaywallView: View {
             return fixture == .restored ? .unlocked : fixture.phase
         }
         #endif
-        if let action { return action }
+        // This paywall's own step wins while it is under way or has its own screen: the purchase
+        // overlay, Ask to Buy's line, unlocked.
+        if let action, !Self.yieldsToEligibilityRead(action) { return action }
         // Loading until this appearance's load or eligibility re-read returns (`prepared`), and
-        // while entitlements that just changed have eligibility read again: no stale trial.
+        // while entitlements that just changed have eligibility read again: no stale trial, and
+        // the plan area waits for the answer even under Restore's answer or a failed purchase
+        // (pre-freeze review B2).
         guard prepared, !store.isCheckingEligibility else { return .loading }
+        if let action { return action }
         if !model.plans.isEmpty { return .ready }
         // Between retries `loadError` holds the last attempt's failure while `isLoading` stays
         // true: still loading. Before the first load starts, neither is set: loading too.
         if !store.isLoading, let loadError = store.loadError { return .loadFailed(loadError) }
         return .loading
+    }
+
+    /// The steps of this paywall's own that only sit beside the plans — Restore's answer and a
+    /// failed purchase — and so give way to `.loading` while eligibility is read again: the plans
+    /// and the CTA they show would otherwise be drawn without the answer.
+    static func yieldsToEligibilityRead(_ action: PaywallPhase) -> Bool {
+        switch action {
+        case .restore, .purchaseFailed: return true
+        case .loading, .loadFailed, .ready, .purchasing, .pending, .unlocked: return false
+        }
     }
 
     /// This paywall's purchase, or any purchase or restore the store is running: the CTA, Restore
@@ -188,13 +203,17 @@ struct ProPaywallView: View {
                     showFixtureAlert()
                     return
                 }
-                // Entitled already when it appears, with a presenter that resumes something (the
-                // shell, D8): the entitlement landed between the press and the sheet, which no
-                // `onChange` below will ever see. Close and resume, as an entitlement from
-                // elsewhere does. Without `onEntitled`, unchanged.
-                if let onEntitled, store.isPro {
+                // Entitled already when it appears: the entitlement landed between the press and
+                // the sheet, which no `onChange` below will ever see, or a Pro user opened it from
+                // where it is always offered (onboarding's "What's in Stride Pro" after a
+                // reinstall). There is nothing to sell: close, and resume what the presenter
+                // carried (`onEntitled`, the shell's, D8), as an entitlement from elsewhere does.
+                // Until the pre-freeze review (B4) a presenter without `onEntitled` kept it open,
+                // selling a Lifetime owner a subscription, and a cancel there read "Stride Pro is
+                // unlocked".
+                if store.isPro {
                     dismiss()
-                    onEntitled()
+                    onEntitled?()
                     return
                 }
                 await store.preparePaywall()
@@ -544,7 +563,9 @@ struct ProPaywallView: View {
                         .multilineTextAlignment(.center)
                         .accessibilityIdentifier("\(id).pending")
                 }
-                if let plan = model.selectedPlan, let cta = model.cta, let terms = model.terms {
+                // Only beside the plans (B1): while loading, the model's products can be loaded
+                // with an eligibility answer that is being read again.
+                if phase.showsPlans, let plan = model.selectedPlan, let cta = model.cta, let terms = model.terms {
                     Button(action: buySelectedPlan) {
                         ctaLabel(cta)
                             .font(.headline)
@@ -695,24 +716,29 @@ struct ProPaywallView: View {
     /// it ran, so an entitlement that arrived meanwhile — from elsewhere, or the pending purchase
     /// approved — is never re-checked by `onChange`: whatever the outcome, Pro now unlocks, and
     /// Continue and `onUnlock` still run.
-    static func settled(_ next: PaywallPhase?, isPro: Bool) -> PaywallPhase? {
-        isPro ? .unlocked : next
+    ///
+    /// Only for an entitlement that arrived during the action (`wasPro` false: not Pro when it
+    /// started). A user already Pro whose purchase was cancelled or failed was told "Stride Pro is
+    /// unlocked" as if that purchase had done it (pre-freeze review B4).
+    static func settled(_ next: PaywallPhase?, isPro: Bool, wasPro: Bool) -> PaywallPhase? {
+        isPro && !wasPro ? .unlocked : next
     }
 
     private func buySelectedPlan() {
         // Never two purchases at once, nor a purchase beside a restore (the CTA is disabled too).
-        guard !isFixture, !isBusy, let plan = model.selectedPlan,
+        guard !isFixture, !isBusy, phase.showsPlans, let plan = model.selectedPlan,
               let product = store.products.first(where: { $0.id == plan.id }) else { return }
+        let wasPro = store.isPro
         action = .purchasing
         Task {
             do {
                 switch try await store.purchase(product) {
                 case .purchased: action = .unlocked
-                case .pending: action = Self.settled(.pending, isPro: store.isPro)
-                case .cancelled, .failedVerification: action = Self.settled(nil, isPro: store.isPro)
+                case .pending: action = Self.settled(.pending, isPro: store.isPro, wasPro: wasPro)
+                case .cancelled, .failedVerification: action = Self.settled(nil, isPro: store.isPro, wasPro: wasPro)
                 }
             } catch {
-                action = Self.settled(nil, isPro: store.isPro)
+                action = Self.settled(nil, isPro: store.isPro, wasPro: wasPro)
                 // A cancel StoreKit threw rather than returned goes back to the plans in silence.
                 guard action == nil, !StoreService.isCancel(error) else { return }
                 errorMessage = error.localizedDescription
@@ -723,12 +749,15 @@ struct ProPaywallView: View {
 
     private func restorePurchases() {
         guard !isFixture, !isBusy else { return }
+        let wasPro = store.isPro
         Task {
             let outcome = await store.restorePurchases()
             // A purchase owns the screen: Restore's answer never overwrites it (its button and
             // the CTA wait for each other, so this is a guard, not a path).
             guard action != .purchasing, !store.isPurchasing else { return }
-            if store.isPro {
+            // Unlocked by this restore, or by an entitlement that arrived while it ran; never for
+            // a user who was Pro already, whose restore is answered as it went (B4).
+            if store.isPro, outcome == .restored || !wasPro {
                 unlockedByRestore = outcome == .restored
                 action = .unlocked
             } else {

@@ -58,26 +58,31 @@ final class DemoDataProScenarioTests: XCTestCase {
     }
 
     /// Statistics' habit: the record line, momentum up, toughest on Sunday; both long Strength tiles.
+    /// Momentum waits for this week's fourth counted day (pre-freeze review A4), so Monday to
+    /// Wednesday the card has the record line and Sunday only.
     @MainActor
-    func testMorningRunHasThreeInsightLinesEveryDay() throws {
+    func testMorningRunHasItsInsightLinesEveryDay() throws {
         for offset in 0..<7 {
             let seeded = try Self.seed(offset)
             let stats = seeded.stats("Morning Run")
             let lines = StatsInsights.insightLines(for: stats)
-            XCTAssertEqual(lines.count, 3, "day \(offset): \(lines)")
-            guard lines.count == 3 else { continue }
+            let expected = seeded.weekday >= 3 ? 3 : 2
+            XCTAssertEqual(lines.count, expected, "day \(offset): \(lines)")
+            guard lines.count == expected else { continue }
             if case .record(let gap, let inWeeks) = lines[0] {
                 XCTAssertEqual(gap.record, 14, "day \(offset)")
                 XCTAssertFalse(inWeeks)
             } else {
                 XCTFail("day \(offset): first line \(lines[0])")
             }
-            if case .momentum(let momentum) = lines[1] {
-                XCTAssertEqual(momentum.direction, .up, "day \(offset)")
-            } else {
-                XCTFail("day \(offset): second line \(lines[1])")
+            if expected == 3 {
+                if case .momentum(let momentum) = lines[1] {
+                    XCTAssertEqual(momentum.direction, .up, "day \(offset)")
+                } else {
+                    XCTFail("day \(offset): second line \(lines[1])")
+                }
             }
-            XCTAssertEqual(lines[2], .toughest(1), "day \(offset): toughest on Sunday")
+            XCTAssertEqual(lines.last, .toughest(1), "day \(offset): toughest on Sunday")
             XCTAssertEqual(StatsInsights.strengthChanges(for: stats), [.thirtyDays, .ninetyDays], "day \(offset)")
         }
     }

@@ -358,8 +358,23 @@ final class PaywallRenderTests: XCTestCase {
     /// was skipped) unlocks, whatever the outcome; without one, the outcome's own state.
     func testAnEntitlementThatArrivedDuringAPurchaseUnlocks() {
         for next in [nil, PaywallPhase.pending, .restore(.nothingFound)] {
-            XCTAssertEqual(ProPaywallView.settled(next, isPro: true), .unlocked, "\(String(describing: next))")
-            XCTAssertEqual(ProPaywallView.settled(next, isPro: false), next, "\(String(describing: next))")
+            XCTAssertEqual(ProPaywallView.settled(next, isPro: true, wasPro: false), .unlocked, "\(String(describing: next))")
+            XCTAssertEqual(ProPaywallView.settled(next, isPro: false, wasPro: false), next, "\(String(describing: next))")
+            // Pre-freeze review B4: Pro before the action started is not this action's doing; a
+            // cancelled purchase never reads "Stride Pro is unlocked".
+            XCTAssertEqual(ProPaywallView.settled(next, isPro: true, wasPro: true), next, "\(String(describing: next))")
+        }
+    }
+
+    /// Pre-freeze review B2: while eligibility is read again, Restore's answer and a failed
+    /// purchase give the plan area to the loading state (their plans and CTA would be drawn
+    /// without the answer); a purchase, Ask to Buy's line and unlocked keep their own screen.
+    func testAnEligibilityReadTakesThePlanAreaFromRestoresAnswer() {
+        for action in [PaywallPhase.restore(.nothingFound), .restore(.failed), .purchaseFailed] {
+            XCTAssertTrue(ProPaywallView.yieldsToEligibilityRead(action), "\(action)")
+        }
+        for action in [PaywallPhase.purchasing, .pending, .unlocked] {
+            XCTAssertFalse(ProPaywallView.yieldsToEligibilityRead(action), "\(action)")
         }
     }
 
