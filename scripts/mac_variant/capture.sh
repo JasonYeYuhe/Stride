@@ -25,8 +25,11 @@
 #      not read: without Screen Recording permission macOS redacts them anyway.
 #   3. `screencapture -x -o -l <window id>` into the temp dir: -o drops the shadow, so the image
 #      is exactly the window's frame, title bar included; -x keeps it silent.
-#   4. The helper samples the PNG. Nearly all transparent, or one colour, is a blank capture: the
-#      app running this script has no Screen Recording permission. It prints how to grant it.
+#   4. scripts/frame_check.swift, the sweeps' blank check, reads the PNG: area-averaged, the band
+#      16–88 % from the top, the detail column of a window (the whole width for a sheet alone).
+#      Nearly all transparent, one or two colours, or under 0.3 % ink there is a blank capture,
+#      most often because the app running this script has no Screen Recording permission. It
+#      prints how to grant it. (Until 1.4.2 a nearest-neighbour 160×100 sample of the whole image.)
 #   5. `sips -g pixelWidth -g pixelHeight`: exactly 2880×1800 (or --size), else it stops and
 #      says what size the window is. 2880×1800 is a 1440×900 pt window on a 2x display (the
 #      owner's 4K display at 2x): launch the DEBUG variant with `-windowSize 1440x900`
@@ -52,7 +55,7 @@
 # THE SWEEP (RELEASE-1.4.2.md W8 and gate 10), the one mode that launches and stops the variant:
 #
 #   scripts/mac_variant/capture.sh --sweep <out dir> [--set paywall|review|pro|all]
-#                                  [--lang <code>]... [--width full|min|both] [--activate]
+#                                  [--lang <code>]... [--width full|min|both] [--activate] [--force]
 #
 # For each capture it launches the DEBUG variant BY PATH ($DEBUG_APP, after `build.sh --preflight`
 # passes on it) with `open <path> --args -demo -stride_onboarding_completed YES -inlineCard none
@@ -78,13 +81,35 @@
 # screen without a sheet gives the first only. Each goes through the blank check below; a blank or
 # missing capture is retried once, then counted, and the sweep exits 1 if any remain.
 #
+# The guards, each a refusal rather than a guess:
+#   - a stored session: the variant shares its container, defaults and Keychain service with the
+#     Release variant (a production client), and every launch here passes `-demo`, which ERASES the
+#     store without tombstones. Before launching anything the sweep looks for the variant's Keychain
+#     item (`security find-generic-password -s <variant id>`, attributes only, never the secret) and
+#     its `stride_session_account` default; either one refuses the run (exit 4) unless `--force` is
+#     given. Sign the variant out first (Settings → Sign Out in the Debug variant).
+#   - one instance at a time: before each `open` no instance may run, and the instance found after
+#     it must have a pid no earlier launch had, so an old instance brought forward again can never
+#     be saved under a new capture's name. If it cannot be stopped (SIGTERM, 10 s), the sweep ends.
+#   - an interrupt (INT/TERM) stops the instance it launched, by that pid, never by name.
+#
 # It needs the variant's window ON THE CURRENT SPACE and frontmost. macOS does not let a process
 # started from a background shell take the screen from the app in front (2026-11-14: launched while
 # Chrome was frontmost in its own Space, the variant's windows were on another Space and could not
 # be captured, `screencapture -l` says "could not create image from window"). Without --activate
 # the sweep stops there (exit 3) and says so; with --activate it brings the variant forward by
 # bundle id (only after checking the one instance is this Debug launch), which switches the
-# owner's screen to it for every capture: run it only when nobody is using the Mac.
+# owner's screen to it for every capture — about 200 launches and 20 minutes or more for `--set all`
+# — after a printed warning and a 10-second countdown: run it only when nobody is using the Mac.
+# Even without --activate, each `open` asks macOS to bring the variant forward; on a Mac in use it
+# may take the screen for a moment on every launch.
+#
+# StoreKit: the StrideMac scheme's `storeKitConfiguration` (project.yml) is applied only by Xcode's
+# Run action, which starts the app under its debugger with a StoreKit testing session attached.
+# `open <path>`, the only launch these rules allow, gets no such session, and `xcodebuild` has no
+# Run action for a Mac app; so the variant has no products, and the paywall's evidence on the Mac is
+# its fixtures (`-paywallFixture`, RELEASE-1.4.2.md W8). Gate 3's purchase runs under SKTestSession
+# on iOS.
 #
 # Environment:
 #   TMPDIR                    where the helper is compiled and the capture first lands (mktemp -d)
@@ -163,8 +188,15 @@ fi
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/stride-capture.XXXXXX")"
 KEEP_WORK=0
+# --sweep: the pid of the variant instance it launched and has not stopped yet.
+LAUNCHED_PID=""
 cleanup() {
     local status=$?
+    # An interrupted sweep stops what it launched: that pid only, never anything by name.
+    if [[ -n "$LAUNCHED_PID" ]] && kill -0 "$LAUNCHED_PID" 2>/dev/null; then
+        echo "  stopping the variant this sweep launched (pid $LAUNCHED_PID)"
+        kill "$LAUNCHED_PID" 2>/dev/null || true
+    fi
     if [[ $KEEP_WORK -eq 1 ]]; then echo "  (kept: $WORK)"; else rm -rf "$WORK"; fi
     exit "$status"
 }
@@ -181,7 +213,7 @@ screen_recording_help() {
 EOF
 }
 
-# ---- the helper: lookup by bundle id + PID, and the blank check ------------------------------
+# ---- the helper: lookup by bundle id + PID ---------------------------------------------------
 cat >"$WORK/main.swift" <<'SWIFT'
 import AppKit
 import CoreGraphics
@@ -224,45 +256,20 @@ case "find":
     for w in windows { print("window=\(w.id) \(w.width)x\(w.height) at \(w.x),\(w.y)") }
     exit(windows.isEmpty ? 3 : 0)
 
-case "blank":
-    // blank <png>: exit 1 when the image is nearly all transparent or one colour.
-    guard args.count == 3 else { fail(2, "usage: blank <png>") }
-    guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: args[2]) as CFURL, nil),
-          let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { fail(2, "unreadable image") }
-    let width = 160, height = 100
-    var pixels = [UInt8](repeating: 0, count: width * height * 4)
-    let drawn: Bool = pixels.withUnsafeMutableBytes { buffer in
-        guard let context = CGContext(data: buffer.baseAddress, width: width, height: height,
-                                      bitsPerComponent: 8, bytesPerRow: width * 4,
-                                      space: CGColorSpaceCreateDeviceRGB(),
-                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
-        context.interpolationQuality = .none
-        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-        return true
-    }
-    guard drawn else { fail(2, "could not sample the image") }
-    var transparent = 0
-    var colours: [UInt32: Int] = [:]
-    for i in stride(from: 0, to: pixels.count, by: 4) {
-        if pixels[i + 3] < 8 { transparent += 1; continue }
-        let key = UInt32(pixels[i] >> 4) << 8 | UInt32(pixels[i + 1] >> 4) << 4 | UInt32(pixels[i + 2] >> 4)
-        colours[key, default: 0] += 1
-    }
-    let total = width * height
-    let opaque = total - transparent
-    let transparentPercent = transparent * 100 / total
-    let dominantPercent = opaque > 0 ? (colours.values.max() ?? 0) * 100 / opaque : 100
-    print("transparent=\(transparentPercent)% colours=\(colours.count) dominant=\(dominantPercent)%")
-    exit(transparentPercent >= 90 || dominantPercent >= 97 || colours.count <= 2 ? 1 : 0)
-
 default:
-    fail(2, "usage: find <variant id> <real id> | blank <png>")
+    fail(2, "usage: find <variant id> <real id>")
 }
 SWIFT
 
 HELPER="$WORK/capture-helper"
 if ! xcrun swiftc -swift-version 5 -o "$HELPER" "$WORK/main.swift" >"$WORK/helper-build.log" 2>&1; then
     echo "✗ could not compile the window-lookup helper:"; sed 's/^/    /' "$WORK/helper-build.log" | head -20
+    exit 1
+fi
+# The blank check (header, step 4): the sweeps' own, scripts/frame_check.swift.
+FRAME_CHECK="$WORK/frame_check"
+if ! xcrun swiftc -O -o "$FRAME_CHECK" "$(cd "$(dirname "$0")/.." && pwd)/frame_check.swift" >"$WORK/frame-build.log" 2>&1; then
+    echo "✗ could not compile scripts/frame_check.swift:"; sed 's/^/    /' "$WORK/frame-build.log" | head -20
     exit 1
 fi
 
@@ -289,6 +296,34 @@ if [[ -n "$SWEEP_DIR" ]]; then
         echo "✗ a $VARIANT_ID instance is already running: quit it first (--args reach only a new process)."
         exit 4
     fi
+    # A stored session (header): `-demo` erases the store this container shares with the Release
+    # variant, a production client. The Keychain is asked for the item's attributes only.
+    session=()
+    if security find-generic-password -s "$VARIANT_ID" >/dev/null 2>&1; then
+        session+=("a Keychain item for service $VARIANT_ID")
+    fi
+    prefs="$HOME/Library/Containers/$VARIANT_ID/Data/Library/Preferences/$VARIANT_ID.plist"
+    if [[ -f "$prefs" ]] && /usr/libexec/PlistBuddy -c 'Print :stride_session_account' "$prefs" >/dev/null 2>&1; then
+        session+=("stride_session_account in its defaults")
+    fi
+    if [[ ${#session[@]} -gt 0 ]]; then
+        if [[ $FORCE -eq 0 ]]; then
+            echo "✗ refusing: the variant holds a stored session ($(IFS=";"; echo "${session[*]}")). Every launch here passes"
+            echo "  -demo, which erases the store it shares with the Release variant (a production client),"
+            echo "  without tombstones. Sign the variant out first, or pass --force to run anyway."
+            exit 4
+        fi
+        echo "⚠ --force: running over a stored session ($(IFS=";"; echo "${session[*]}"))."
+    fi
+    if [[ $ACTIVATE -eq 1 ]]; then
+        echo "⚠ --activate brings the variant to the front for EVERY capture: about 200 launches and 20+"
+        echo "  minutes of this Mac's screen for --set all. Do not use the Mac meanwhile. Ctrl-C to stop."
+        for left in 10 9 8 7 6 5 4 3 2 1; do printf '\r  starting in %2d s ' "$left"; sleep 1; done
+        echo
+    else
+        echo "  (each launch still asks macOS to bring the variant forward; on a Mac in use it may take"
+        echo "   the screen for a moment every time)"
+    fi
     SETTLE="${STRIDE_MAC_SETTLE:-5}"
     MIN_WINDOW="${STRIDE_MAC_MIN_WINDOW:-600x700}"
     [[ "$MIN_WINDOW" =~ $SIZE_RE ]] || { echo "✗ STRIDE_MAC_MIN_WINDOW '$MIN_WINDOW' is not <W>x<H>"; exit 2; }
@@ -299,20 +334,62 @@ if [[ -n "$SWEEP_DIR" ]]; then
     GEOMETRY="$SWEEP_DIR/geometry.txt"
     FAILED=()
     TAKEN=0
+    SEEN_PIDS=" "
 
-    # stop_variant <pid>: SIGTERM to that pid only, then wait for it to go.
+    # stop_variant <pid>: SIGTERM to that pid only, then wait for it to go. One that will not stop
+    # ends the sweep: the next launch would find two instances, or bring this one forward again.
     stop_variant() {
         kill "$1" 2>/dev/null || true
         local i
-        for i in $(seq 1 40); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.25; done
-        echo "    ⚠ pid $1 still running 10 s after SIGTERM"
-        return 1
+        for i in $(seq 1 40); do
+            if ! kill -0 "$1" 2>/dev/null; then
+                [[ "$LAUNCHED_PID" == "$1" ]] && LAUNCHED_PID=""
+                return 0
+            fi
+            sleep 0.25
+        done
+        echo "✗ pid $1 still runs 10 s after SIGTERM: stopping the sweep (stop it yourself, by that pid)"
+        LAUNCHED_PID=""
+        exit 1
+    }
+
+    # launch_variant <args...>: `open` the Debug variant by path; sets `pid` to the NEW instance's.
+    # Refuses when an instance already runs, or when the one found has a pid an earlier launch had.
+    launch_variant() {
+        found="$(sweep_found)"
+        if [[ "$(sweep_value "$found" instances)" != "0" ]]; then
+            echo "✗ an instance (pid $(sweep_value "$found" pid)) runs before this launch: stopping the sweep"
+            exit 4
+        fi
+        open "$DEBUG_APP" --args "$@"
+        pid=""
+        for _ in $(seq 1 40); do
+            found="$(sweep_found)"
+            pid="$(sweep_value "$found" pid)"
+            [[ -n "$pid" ]] && break
+            sleep 0.25
+        done
+        [[ -n "$pid" ]] || return 1
+        LAUNCHED_PID="$pid"
+        if [[ "$SEEN_PIDS" == *" $pid "* ]]; then
+            echo "✗ the instance found (pid $pid) is one an earlier launch made: stopping the sweep"
+            stop_variant "$pid"
+            exit 4
+        fi
+        SEEN_PIDS+="$pid "
+        local path
+        path="$(sweep_value "$found" path)"
+        if [[ "$(cd "$path" 2>/dev/null && pwd -P)" != "$real_app" ]]; then
+            echo "✗ refusing: the running $VARIANT_ID (pid $pid) is $path, not the Debug variant launched"
+            stop_variant "$pid"
+            exit 4
+        fi
     }
 
     # sweep_one <name> <width> <lang> <switches...>
     sweep_one() {
         local name="$1" width="$2" lang="$3"; shift 3
-        local frame=1440x900 locale_id dir attempt pid path main sheet line id dims x y rest ok
+        local frame=1440x900 locale_id dir attempt main sheet line id dims x y rest ok
         [[ "$width" == min ]] && frame="$MIN_WINDOW"
         case "$lang" in
             en) locale_id=en_US ;; es) locale_id=es_ES ;; ja) locale_id=ja_JP ;; ko) locale_id=ko_KR ;;
@@ -323,21 +400,10 @@ if [[ -n "$SWEEP_DIR" ]]; then
         dir="$SWEEP_DIR/$width-$lang"
         mkdir -p "$dir"
         for attempt in 1 2; do
-            open "$DEBUG_APP" --args -demo -stride_onboarding_completed YES -inlineCard none \
-                -windowSize "$frame" "${lang_args[@]+"${lang_args[@]}"}" "$@"
-            pid=""
-            for _ in $(seq 1 40); do
-                found="$(sweep_found)"
-                pid="$(sweep_value "$found" pid)"
-                [[ -n "$pid" ]] && break
-                sleep 0.25
-            done
-            if [[ -z "$pid" ]]; then echo "    ⚠ $name: the variant did not start"; continue; fi
-            path="$(sweep_value "$found" path)"
-            if [[ "$(cd "$path" 2>/dev/null && pwd -P)" != "$real_app" ]]; then
-                echo "✗ refusing: the running $VARIANT_ID (pid $pid) is $path, not the Debug variant launched"
-                stop_variant "$pid"
-                exit 4
+            if ! launch_variant -demo -stride_onboarding_completed YES -inlineCard none \
+                    -windowSize "$frame" "${lang_args[@]}" "$@"; then
+                echo "    ⚠ $name: the variant did not start"
+                continue
             fi
             sleep "$SETTLE"
             if [[ $ACTIVATE -eq 1 ]]; then
@@ -345,6 +411,11 @@ if [[ -n "$SWEEP_DIR" ]]; then
                 sleep 1
             fi
             found="$(sweep_found)"
+            if [[ "$(sweep_value "$found" pid)" != "$pid" ]]; then
+                echo "✗ the instance changed under the capture (pid $(sweep_value "$found" pid), launched $pid): stopping"
+                stop_variant "$pid"
+                exit 4
+            fi
             if [[ "$(sweep_value "$found" frontmost_pid)" != "$pid" ]] || ! grep -q '^window=' <<<"$found"; then
                 stop_variant "$pid"
                 echo "✗ the variant's window is not on screen and in front (frontmost: $(sweep_value "$found" frontmost))."
@@ -359,19 +430,19 @@ if [[ -n "$SWEEP_DIR" ]]; then
             x="${rest%,*}"; y="${rest#*,}"
             ok=1
             screencapture -x -R "$x,$y,${dims%x*},${dims#*x}" "$dir/$name.png" 2>/dev/null || ok=0
-            [[ $ok -eq 1 ]] && "$HELPER" blank "$dir/$name.png" >/dev/null 2>&1 || ok=0
+            [[ $ok -eq 1 ]] && "$FRAME_CHECK" "$dir/$name.png" >/dev/null 2>&1 || ok=0
             line="$width-$lang/$name window=$dims at $x,$y"
             if [[ -n "$sheet" && $ok -eq 1 ]]; then
                 local sid sdims srest sx sy
                 read -r sid sdims _ srest <<<"$sheet"
                 sx="${srest%,*}"; sy="${srest#*,}"
                 screencapture -x -o -l "$sid" "$dir/${name}_sheet.png" 2>/dev/null || ok=0
-                [[ $ok -eq 1 ]] && "$HELPER" blank "$dir/${name}_sheet.png" >/dev/null 2>&1 || ok=0
+                [[ $ok -eq 1 ]] && "$FRAME_CHECK" --full-width "$dir/${name}_sheet.png" >/dev/null 2>&1 || ok=0
                 # Does the sheet end inside the window (gate 10's 700-pt check)?
                 local bottom=$(( y + ${dims#*x} )) sbottom=$(( sy + ${sdims#*x} ))
                 line+=" sheet=$sdims at $sx,$sy $( (( sbottom <= bottom )) && echo "inside ($(( bottom - sbottom )) pt to spare)" || echo "OVERFLOWS by $(( sbottom - bottom )) pt")"
             fi
-            stop_variant "$pid" || true
+            stop_variant "$pid"
             if [[ $ok -eq 1 ]]; then
                 echo "$line" >>"$GEOMETRY"
                 TAKEN=$((TAKEN + 1))
@@ -408,11 +479,10 @@ if [[ -n "$SWEEP_DIR" ]]; then
         fi
     done
     # Back to the plain demo set in the variant's own container, then stopped.
-    open "$DEBUG_APP" --args -demo -stride_onboarding_completed YES -inlineCard none
-    sleep "$SETTLE"
-    found="$(sweep_found)"
-    pid="$(sweep_value "$found" pid)"
-    [[ -n "$pid" ]] && stop_variant "$pid" || true
+    if launch_variant -demo -stride_onboarding_completed YES -inlineCard none; then
+        sleep "$SETTLE"
+        stop_variant "$pid"
+    fi
     echo "✓ $TAKEN capture(s) in $SWEEP_DIR; geometry in $GEOMETRY"
     if [[ ${#FAILED[@]} -gt 0 ]]; then
         echo "✗ ${#FAILED[@]} failed or blank:"; printf '    %s\n' "${FAILED[@]}"
@@ -508,7 +578,10 @@ fi
 
 # ---- 4. blank? -----------------------------------------------------------------------------
 status=0
-sample="$("$HELPER" blank "$SHOT" 2>&1)" || status=$?
+# A window other than the main one (--window-id: Settings, a sheet) has no sidebar column.
+width_flag=()
+[[ -n "$WINDOW_ID" ]] && width_flag=(--full-width)
+sample="$("$FRAME_CHECK" "${width_flag[@]+"${width_flag[@]}"}" "$SHOT" 2>&1)" || status=$?
 if [[ $status -ne 0 ]]; then
     KEEP_WORK=1
     if [[ $status -eq 1 ]]; then
