@@ -39,6 +39,8 @@
 # Both modes: the required-reason APIs each shipped privacy manifest declares, exactly
 # (check_required_reasons, 1.4.1): the app's, and on iOS the widget's. The archive is checked
 # because it is what was built; the export because it is what is uploaded.
+# Both modes: no DEBUG launch switch in what ships (RELEASE-1.4.2.md D14, gate 9;
+# check_no_debug_sentinel). A Debug-configuration archive fails here.
 set -uo pipefail   # no -e: report every failed check, then exit on the count
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -146,6 +148,26 @@ check_manifest_reasons() {
     else
         check_required_reasons "Stride.app (macOS)" "$app/Contents/Resources/PrivacyInfo.xcprivacy" \
             "$APP_REQUIRED_REASONS"
+    fi
+}
+
+# RELEASE-1.4.2.md D14: the DEBUG launch switches' parser (StrideDebugLaunchFlags in StrideApp.swift)
+# prints this line, and it exists only under `#if DEBUG`. The switches themselves cannot be the probe:
+# Swift keeps string literals of up to 15 bytes inside the instructions, where no text search finds
+# them (`-demoPro` is 8 bytes); this one is 24, so the compiler puts it in __cstring, where it does.
+# DebugLaunchFlagScanTests keeps every switch and this sentinel inside `#if DEBUG` in the sources;
+# this checks the binary that was built.
+DEBUG_SENTINEL="[StrideDebugLaunchFlags]"
+
+# check_no_debug_sentinel <app> — both modes. Every file of the bundle, not just the executable: a
+# Debug build keeps the app's code in <exe>.debug.dylib, and an appex or framework could carry it.
+check_no_debug_sentinel() {
+    local app="${1%/}" hits
+    hits="$(grep -r -l -a -F -- "$DEBUG_SENTINEL" "$app" 2>/dev/null | sed "s|^$app/||")"
+    if [[ -n "$hits" ]]; then
+        fail "DEBUG launch switches compiled in: \"$DEBUG_SENTINEL\" in $(echo $hits) — a Debug build, or a switch outside #if DEBUG"
+    else
+        pass "no DEBUG launch switch: \"$DEBUG_SENTINEL\" in no file of $(basename "$app")"
     fi
 }
 
@@ -274,6 +296,7 @@ if [[ "$MODE" == "exported" ]]; then
     fi
     check_signature "$APP"
     check_manifest_reasons "$APP"
+    check_no_debug_sentinel "$APP"
     if (( CHECK_FAILED > 0 )); then
         echo "  ✗ $CHECK_FAILED check(s) failed — this export must not be uploaded."
         exit 1
@@ -314,6 +337,7 @@ case "$PLATFORM" in
         ;;
 esac
 check_manifest_reasons "$APP"
+check_no_debug_sentinel "$APP"
 
 if (( CHECK_FAILED > 0 )); then
     echo "  ✗ $CHECK_FAILED check(s) failed — this archive must not be uploaded."
