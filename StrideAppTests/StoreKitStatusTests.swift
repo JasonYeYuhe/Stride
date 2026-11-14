@@ -35,6 +35,12 @@ import StoreKitTest
 /// anywhere: Configuration.storekit's hand-written `"version" : 2`, not the `{major, minor}`
 /// object Xcode writes, made the session load nothing there — no error, no products — so they
 /// skipped on every runtime (W5-SK-1; StoreServiceTests now pins the format on every runtime).
+///
+/// **The iOS 27.0 simulator is in between** (2026-11-14): the session takes effect there, and
+/// every case runs except two whose setup the session does not reproduce, which skip saying so:
+/// billing retry keeps the entitlement (`testBillingRetryShowsThePaymentRow`), and Yearly's
+/// eligibility never turns false after a Monthly
+/// (`testThePaywallRereadsYearlysTrialEligibilityAcrossAMonthly`). Both run on 18.5.
 @MainActor
 final class StoreKitStatusTests: XCTestCase {
 
@@ -50,9 +56,19 @@ final class StoreKitStatusTests: XCTestCase {
     /// parallel builds (load average 79, 2026-10-15) a session change took most of 15 s to apply,
     /// and one `Transaction.updates` delivery took longer.
     private static let patience: Duration = .seconds(30)
+    /// When this test's setUp began, for `mark`.
+    private var startedAt = ContinuousClock.now
+
+    /// One timing line in xcodebuild's log (the host app's stdout, flushed in batches): how long
+    /// this test has run, and the step it reached. A slow run then shows which StoreKit call
+    /// stalled (gate 4 on 2026-11-14: one case took 1048 s once).
+    private func mark(_ step: String) {
+        print("[StoreKitStatusTests] \(name) +\(ContinuousClock.now - startedAt): \(step)")
+    }
 
     override func setUp() async throws {
         try await super.setUp()
+        startedAt = ContinuousClock.now
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "Configuration", withExtension: "storekit"))
         session = try SKTestSession(contentsOf: url)
         session.resetToDefaultState()
@@ -60,6 +76,7 @@ final class StoreKitStatusTests: XCTestCase {
         session.clearTransactions()
         store = StoreService(listensForTransactions: false)
         try await requireAWorkingSession()
+        mark("setUp done")
     }
 
     /// Skips (the class doc says why) unless the session's configuration is what StoreKit
@@ -94,14 +111,17 @@ final class StoreKitStatusTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        mark("tearDown")
         store?.stopListeningForTransactions()
         store = nil
         if let session {
             try? await session.setSimulatedError(nil, forAPI: .verification)
             session.clearTransactions()
+            mark("tearDown: transactions cleared")
             session.resetToDefaultState()
         }
         session = nil
+        mark("tearDown done")
         try await super.tearDown()
     }
 
@@ -168,7 +188,11 @@ final class StoreKitStatusTests: XCTestCase {
                          _ what: String, file: StaticString = #filePath, line: UInt = #line) async {
         let deadline = ContinuousClock.now + timeout
         repeat {
+            let began = ContinuousClock.now
             await store.refreshPurchasedProducts()
+            if ContinuousClock.now - began > .seconds(5) {
+                mark("\(what): one refreshPurchasedProducts() took \(ContinuousClock.now - began)")
+            }
             if condition(), expectedPro.map({ store.isPro == $0 }) ?? true { return }
             try? await Task.sleep(for: .milliseconds(200))
         } while ContinuousClock.now < deadline
@@ -333,6 +357,13 @@ final class StoreKitStatusTests: XCTestCase {
 
     /// Billing retry with no grace period: no entitlement while Apple retries, so the payment row,
     /// Manage and Restore — never lapsed.
+    ///
+    /// Skips where the session keeps the paid period through the forced renewal. On the iOS 27.0
+    /// simulator (2026-11-14) the status turns `.inBillingRetryPeriod` at once, but
+    /// `Transaction.currentEntitlements` still holds Monthly's transaction with its expiry a month
+    /// out, so StoreKit itself says entitled: `isPro` follows the entitlement by design (D12, D6),
+    /// and the rows are the entitled billing-issue set (PurchaseOutcomeTests pins that status). On
+    /// iOS 18.5 the forced renewal ends the period and the entitlement goes, and this runs.
     func testBillingRetryShowsThePaymentRow() async throws {
         session.shouldEnterBillingRetryOnRenewal = true
         _ = try await buy(.monthlyPro)
@@ -340,7 +371,33 @@ final class StoreKitStatusTests: XCTestCase {
 
         await refresh(until: {
             if case .billingIssue = store.proStatus { return true } else { return false }
-        }, isPro: false, "billing retry")
+        }, "billing retry")
+        // The entitlement can trail the status (refresh's doc); wait for it to go.
+        let deadline = ContinuousClock.now + Self.patience
+        while store.isPro, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(200))
+            await store.refreshPurchasedProducts()
+        }
+        if store.isPro, case .billingIssue = store.proStatus {
+            var entitledUntil: Date?
+            for await result in Transaction.currentEntitlements {
+                if case .verified(let transaction) = result, transaction.productID == monthlyID {
+                    entitledUntil = transaction.expirationDate
+                }
+            }
+            if let entitledUntil, entitledUntil > Date() {
+                let os = ProcessInfo.processInfo.operatingSystemVersionString
+                throw XCTSkip("""
+                    SKTestSession on this simulator (\(os)) keeps Monthly's paid period through \
+                    forceRenewalOfSubscription into billing retry: the status is \
+                    .inBillingRetryPeriod, but Transaction.currentEntitlements still holds the \
+                    transaction until \(entitledUntil), so StoreKit says entitled and isPro (from \
+                    the entitlements, D12) is true. Billing retry WITHOUT the entitlement cannot be \
+                    set up here; gate 4 runs this on iOS 18.5 with STRIDE_HOSTED_NO_SKIPS.
+                    """)
+            }
+        }
+        XCTAssertFalse(store.isPro, "billing retry: the entitlement did not go within \(Self.patience)")
         guard case .billingIssue(let productID, let graceUntil) = store.proStatus else { return }
         XCTAssertEqual(productID, monthlyID)
         XCTAssertNil(graceUntil, "no grace period")
@@ -437,13 +494,17 @@ final class StoreKitStatusTests: XCTestCase {
         // buy can race and fail without a bug; if it does, read the session's transactions
         // (an introductory one, then a renewal) before changing the rate or the check.
         session.timeRate = .oneRenewalEveryTenSeconds
+        mark("timeRate set")
         try await loadThePaywall()
+        mark("paywall loaded")
         _ = try await buy(.yearlyPro)
+        mark("bought: \(store.proStatus)")
         if case .trial = store.proStatus {} else { XCTFail("bought Yearly's trial: \(store.proStatus)") }
 
         await refresh(until: {
             if case .active(let productID, _, _) = store.proStatus { return productID == yearlyID } else { return false }
         }, isPro: true, timeout: .seconds(60), "the trial renewed")
+        mark("renewed: \(store.proStatus), \(session.allTransactions().count) session transactions")
         XCTAssertNil(trialLine)
     }
 
@@ -469,31 +530,92 @@ final class StoreKitStatusTests: XCTestCase {
         XCTAssertNil(trialLine)
     }
 
-    /// Eligibility is per subscription group: an Apple ID that had Monthly is ineligible for
-    /// Yearly's trial, and the paywall then states none ("Subscribe", the renewal terms). In ONE
-    /// process, as a Mac app left open lives it: the products load once while eligible, Monthly
-    /// is bought and lapses, and the paywall's next appearance (`preparePaywall`, which does not
-    /// reload the products) must not sell the trial from the first answer (Guideline 3.1.2).
-    func testAnEarlierMonthlyMakesYearlysTrialIneligible() async throws {
+    /// The paywall re-reads Yearly's intro-offer eligibility each time it appears
+    /// (`preparePaywall`, which does not reload the products), so it never sells the trial from an
+    /// earlier answer (Guideline 3.1.2), and it states what StoreKit answers, never a rule of its
+    /// own. In ONE process, as a Mac app left open lives it: the products load while eligible,
+    /// then Monthly is bought elsewhere (another device; here `session.buyProduct`, so this store
+    /// runs no refresh and still holds the first answer). Once StoreKit itself answers
+    /// "ineligible", the paywall's next appearance must state no trial ("Subscribe", the renewal
+    /// terms). The store's `isPro` is still false then, so the trial goes because of the new
+    /// answer, not because of Pro.
+    ///
+    /// iOS 18.5 (2026-11-14, gate 4), what StoreKit answers:
+    /// - right after `session.buyProduct`, still `true`, from every read (the loaded product, a
+    ///   freshly loaded one, the static `isEligibleForIntroOffer(for:)`); `false` about 3 s later.
+    ///   So the test waits for StoreKit's own `false` first: a re-read before it would rightly
+    ///   get `true`.
+    /// - once Monthly has lapsed, `true` again (Monthly redeemed no intro offer), so the paywall
+    ///   offers the trial, which StoreKit would then grant. Until then this test was
+    ///   `testAnEarlierMonthlyMakesYearlysTrialIneligible` and asserted `false` after the lapse: a
+    ///   rule the session does not follow, and not one StoreService can impose. It now asserts
+    ///   only that the paywall agrees with a fresh read.
+    func testThePaywallRereadsYearlysTrialEligibilityAcrossAMonthly() async throws {
         try await loadThePaywall()
         XCTAssertEqual(store.paywallModel.trialDays, 7, "a clean session is eligible")
+        let group = try XCTUnwrap(store.products.first { $0.id == yearlyID }?.subscription?.subscriptionGroupID)
 
-        _ = try await buy(.monthlyPro)
-        XCTAssertFalse(store.isCheckingEligibility)
-        XCTAssertEqual(store.introOfferEligibility[yearlyID], false, "read again when the entitlements changed")
-        try session.expireSubscription(productIdentifier: monthlyID)
-        await refresh(until: {
-            if case .lapsed = store.proStatus { return true } else { return false }
-        }, isPro: false, "Monthly expired")
+        let session = self.session!, monthlyID = self.monthlyID
+        _ = try await completing("Monthly bought elsewhere") {
+            _ = try await session.buyProduct(identifier: monthlyID)
+            return true
+        }
+        let deadline = ContinuousClock.now + Self.patience
+        while await Product.SubscriptionInfo.isEligibleForIntroOffer(for: group), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        let storeKitAfterTheBuy = await Product.SubscriptionInfo.isEligibleForIntroOffer(for: group)
+        mark("StoreKit's eligibility with Monthly active: \(storeKitAfterTheBuy)")
+        guard !storeKitAfterTheBuy else {
+            // iOS 27.0 simulator (2026-11-14): still `true` from StoreKit itself after the whole
+            // patience, so there is no changed answer for the paywall to re-read.
+            let os = ProcessInfo.processInfo.operatingSystemVersionString
+            throw XCTSkip("""
+                SKTestSession on this simulator (\(os)) still answers \
+                isEligibleForIntroOffer(for:) true for Yearly's group \(Self.patience) after Monthly \
+                was bought (iOS 18.5 answers false within ~3 s), so the eligibility change this test \
+                needs never happens here. Gate 4 runs it on iOS 18.5 with STRIDE_HOSTED_NO_SKIPS.
+                """)
+        }
+        XCTAssertEqual(store.introOfferEligibility[yearlyID], true, "no refresh has run: the first answer, now stale")
+        XCTAssertFalse(store.isPro, "no refresh has run")
 
         let store = self.store!
         try await completing("the paywall's next appearance") { await store.preparePaywall() }
         XCTAssertFalse(store.isCheckingEligibility)
-        XCTAssertEqual(store.introOfferEligibility[yearlyID], false)
+        XCTAssertEqual(store.introOfferEligibility[yearlyID], false, "read again: Monthly is active")
         let model = store.paywallModel
         XCTAssertNil(model.trialDays)
         XCTAssertEqual(model.cta, .subscribe)
         XCTAssertEqual(model.terms, .renewsYearly)
+
+        // The store learns of the Monthly (as the app would, through `Transaction.updates`) before
+        // it expires, as in the other expiry cases. Expired at once instead, it stayed active past
+        // the patience in one gate-4 run on 18.5 (2026-11-14), loaded Mac, and lapsed in the others.
+        await refresh(until: {
+            if case .active = store.proStatus { return true } else { return false }
+        }, isPro: true, "Monthly seen")
+        try session.expireSubscription(productIdentifier: monthlyID)
+        await refresh(until: {
+            if case .lapsed = store.proStatus { return true } else { return false }
+        }, isPro: false, "Monthly expired")
+        // StoreKit's answer may still be changing after the lapse, as after the buy: the paywall's
+        // appearance must fall between two reads that agree.
+        var storeKitSays = false
+        let settle = ContinuousClock.now + Self.patience
+        repeat {
+            let before = await Product.SubscriptionInfo.isEligibleForIntroOffer(for: group)
+            try await completing("the paywall's appearance after the lapse") { await store.preparePaywall() }
+            storeKitSays = await Product.SubscriptionInfo.isEligibleForIntroOffer(for: group)
+            if before == storeKitSays { break }
+            try await Task.sleep(for: .milliseconds(500))
+        } while ContinuousClock.now < settle
+        mark("StoreKit's eligibility after Monthly lapsed: \(storeKitSays)")
+        XCTAssertFalse(store.isCheckingEligibility)
+        XCTAssertEqual(store.introOfferEligibility[yearlyID], storeKitSays, "the paywall holds StoreKit's answer")
+        let after = store.paywallModel
+        XCTAssertEqual(after.trialDays, storeKitSays ? 7 : nil)
+        XCTAssertEqual(after.cta, storeKitSays ? .startTrial(days: 7) : .subscribe)
     }
 
     /// Ask to Buy: the purchase is pending and grants nothing; once approved, Pro arrives.
