@@ -14,8 +14,16 @@ What it sets (RELEASE-1.4.1.md, owner decisions of 2026-10-21, after W9's ASC re
     description left out Weekly Review, one of D11's three Pro features. Names and descriptions
     use the app catalogs' own words ("Lifetime", the Settings upsell line).
 
-Monthly, the subscription group, prices and availability are left alone. ASC limits: a name at
-most 35 characters, a description at most 55; checked before anything is sent. A changed
+1.4.2 (RELEASE-1.4.2.md D16, O22) adds the App Review note of all three products (`reviewNote`).
+The live notes predate D11: Monthly and Yearly said "unlocks unlimited habits, advanced statistics,
+widgets, smart reminders, and iCloud sync" (all free), Lifetime "habit groups + advanced analytics"
+without Weekly Review. Each note now says D11's three things, in the review notes' own words
+(docs/review-notes-1.4.1.md), and where the paywall is. The dry run prints every live note next to
+the proposed one, changed or not.
+
+Monthly's localizations, the subscription group, prices and availability are left alone. ASC
+limits: a name at most 35 characters, a description at most 55, a review note at most 4,000;
+checked before anything is sent. A changed
 localization of an approved product goes to App Review with the next version submission.
 SUBSCRIPTIONS in setup_iap.py carries the same Yearly copy, so the two scripts agree.
 """
@@ -29,9 +37,27 @@ import asc_api as a
 V1 = "https://api.appstoreconnect.apple.com/v1"
 V2 = "https://api.appstoreconnect.apple.com/v2"
 APP_ID = "6761262334"
+MONTHLY_ID = "yyh.stride.habittracker.pro.monthly"
 YEARLY_ID = "yyh.stride.habittracker.pro.yearly"
 LIFETIME_ID = "yyh.stride.habittracker.pro.lifetime"
-NAME_MAX, DESCRIPTION_MAX = 35, 55
+NAME_MAX, DESCRIPTION_MAX, REVIEW_NOTE_MAX = 35, 55, 4000
+
+# D11's three things, as docs/review-notes-1.4.1.md words them for App Review. setup_iap.py builds
+# its creation note from the same text, so a product created later starts right.
+PRO_REVIEW_NOTE = (
+    "Stride Pro adds three things: Habit Groups; Advanced Analytics (Insights, the 8-week Trend "
+    "chart, the Strength chart and your top 5 streaks); and Weekly Review. Everything else is "
+    "free, including the Strength score and History. The paywall is under Settings > Upgrade to "
+    "Pro (on the Mac, Stride > Settings…), or Unlock with Pro on the Advanced Analytics card in "
+    "Statistics."
+)
+REVIEW_NOTES = {
+    MONTHLY_ID: "Stride Pro Monthly is an auto-renewable subscription, billed monthly. " + PRO_REVIEW_NOTE,
+    YEARLY_ID: "Stride Pro Yearly is an auto-renewable subscription, billed yearly. " + PRO_REVIEW_NOTE,
+    LIFETIME_ID: "Stride Pro (Lifetime) is a one-time purchase (non-consumable) that unlocks the same "
+                 "Pro as the subscriptions, and can be restored with Restore Purchases. " + PRO_REVIEW_NOTE,
+}
+REVIEW_NOTE_LABELS = {MONTHLY_ID: "Monthly", YEARLY_ID: "Yearly", LIFETIME_ID: "Lifetime"}
 
 YEARLY_DESCRIPTIONS = {
     "en-US": "Full access billed yearly",
@@ -75,18 +101,42 @@ def check_limits():
             problems.append(f"Lifetime {loc} name is {len(name)} characters")
         if len(text) > DESCRIPTION_MAX:
             problems.append(f"Lifetime {loc} description is {len(text)} characters")
+    for product, note in REVIEW_NOTES.items():
+        if len(note) > REVIEW_NOTE_MAX:
+            problems.append(f"{REVIEW_NOTE_LABELS[product]} review note is {len(note)} characters")
     if problems:
         sys.exit("✗ over ASC's limits:\n  " + "\n  ".join(problems))
 
 
-def yearly_localizations():
+def subscriptions():
+    """{product id: the subscription resource} for Monthly and Yearly, each exactly once."""
     groups = call("GET", f"{V1}/apps/{APP_ID}/subscriptionGroups", params={"include": "subscriptions"})
-    subs = [i for i in groups.get("included", []) if i["type"] == "subscriptions"
-            and i["attributes"].get("productId") == YEARLY_ID]
-    if len(subs) != 1:
-        sys.exit(f"✗ expected one {YEARLY_ID}, found {len(subs)}")
-    return call("GET", f"{V1}/subscriptions/{subs[0]['id']}/subscriptionLocalizations",
+    found = {}
+    for product in (MONTHLY_ID, YEARLY_ID):
+        subs = [i for i in groups.get("included", []) if i["type"] == "subscriptions"
+                and i["attributes"].get("productId") == product]
+        if len(subs) != 1:
+            sys.exit(f"✗ expected one {product}, found {len(subs)}")
+        found[product] = subs[0]
+    return found
+
+
+def yearly_localizations():
+    return call("GET", f"{V1}/subscriptions/{subscriptions()[YEARLY_ID]['id']}/subscriptionLocalizations",
                 params={"limit": 50})["data"]
+
+
+def live_review_notes():
+    """{product id: (url, resource type, resource id, the live note)} for all three products."""
+    notes = {}
+    for product, sub in subscriptions().items():
+        notes[product] = (f"{V1}/subscriptions/{sub['id']}", "subscriptions", sub["id"],
+                          sub["attributes"].get("reviewNote"))
+    iap_id, _ = lifetime()
+    iap = call("GET", f"{V2}/inAppPurchases/{iap_id}")["data"]
+    notes[LIFETIME_ID] = (f"{V2}/inAppPurchases/{iap_id}", "inAppPurchases", iap_id,
+                          iap["attributes"].get("reviewNote"))
+    return notes
 
 
 def lifetime():
@@ -133,6 +183,19 @@ def main():
                          f"Lifetime {locale}: {have['attributes'].get('name')!r} / "
                          f"{have['attributes'].get('description')!r} → {name!r} / {text!r}"))
 
+    print("App Review notes (live → proposed):")
+    for product, (url, kind, rid, have) in live_review_notes().items():
+        want = REVIEW_NOTES[product]
+        label = REVIEW_NOTE_LABELS[product]
+        print(f"  {label} ({product})")
+        print(f"    live:     {have!r}")
+        print(f"    proposed: {want!r}" + ("  (same)" if have == want else ""))
+        if have != want:
+            plan.append(("PATCH", url,
+                         {"data": {"type": kind, "id": rid, "attributes": {"reviewNote": want}}},
+                         f"{label} review note: {have!r} → {want!r}"))
+    print()
+
     if not plan:
         print("✓ Nothing to change: the live copy already matches.")
         return
@@ -161,6 +224,8 @@ def main():
     _, locs = lifetime()
     got = {l["attributes"]["locale"]: (l["attributes"].get("name"), l["attributes"].get("description")) for l in locs}
     bad += [f"Lifetime {k}" for k, v in LIFETIME.items() if got.get(k) != v]
+    bad += [f"{REVIEW_NOTE_LABELS[p]} review note" for p, (_, _, _, note) in live_review_notes().items()
+            if note != REVIEW_NOTES[p]]
     bad = [b for b in bad if b not in skipped]
     if bad:
         sys.exit(f"✗ read-back differs: {', '.join(bad)}")
@@ -171,7 +236,8 @@ def main():
         for w in by_hand:
             print(f"    {w}")
     else:
-        print("✓ Read back: Yearly's 6 descriptions and Lifetime's 6 localizations are as set.")
+        print("✓ Read back: Yearly's 6 descriptions, Lifetime's 6 localizations and the three "
+              "review notes are as set.")
 
 
 if __name__ == "__main__":

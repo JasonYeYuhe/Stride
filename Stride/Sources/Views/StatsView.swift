@@ -18,8 +18,10 @@ struct StatsView: View {
     private var selectedHabit: Habit? {
         habits.first { $0.id == shell.statsHabitID } ?? habits.first
     }
-    @State private var showingWeeklyReview = false
-    @State private var showingPaywall = false
+    // No sheets of its own (RELEASE-1.4.2.md D8): the Weekly Review button and the locked card
+    // issue the shell's request (`ShellState.issue`), decided from `isPro` at the tap, and the
+    // shell presents it. A paywall presented from here was torn down with the locked card the
+    // moment a purchase in it turned Statistics Pro.
     private var store = StoreService.shared
     /// Every number on this screen comes from here (RELEASE-1.4.1.md D3), read once per render
     /// and handed down — never kept across renders.
@@ -150,10 +152,13 @@ struct StatsView: View {
                                     // is Pro too, but it is not behind this card: its toolbar
                                     // button sells it. The paywall's row says the same
                                     // (LocalizationSourceScanTests.testProClaimsNameExactlyD11sSet).
+                                    // D12: a blurred preview of this habit's own strength, and
+                                    // how many insights Pro has about it.
                                     ProLockedCard(
                                         title: "Advanced Analytics",
-                                        message: "Insights, the 8-week trend, the strength chart and your top 5 streaks"
-                                    ) { showingPaywall = true }
+                                        message: "Insights, the 8-week trend, the strength chart and your top 5 streaks",
+                                        preview: stats
+                                    ) { shell.issue(.lockedAnalyticsCard, isPro: store.isPro) }
                                     .statsLaunchAnchor("analytics")
                                 }
                                 WeeklyBarChart(habit: habit, stats: stats)
@@ -177,21 +182,39 @@ struct StatsView: View {
             // tab shows: every kept tab's toolbar lands in the shell's one navigation bar (D2).
             if isActive && !habits.isEmpty {
                 ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        if store.isPro { showingWeeklyReview = true } else { showingPaywall = true }
-                    } label: {
-                        Image(systemName: "calendar.badge.clock")
-                    }
-                    .accessibilityLabel("Weekly Review")
+                    weeklyReviewButton
                 }
             }
         }
-        .sheet(isPresented: $showingWeeklyReview) {
-            WeeklyReviewView()
+    }
+
+    /// D12's Weekly Review button: the review for Pro, the paywall resuming it for anyone else,
+    /// decided at the tap and latched in the shell's request (D8). A crown beside the icon for a
+    /// free user, as the locked card and Today's card mark what Pro opens. Its name is the same
+    /// for both: the crown is decoration, and the paywall says what it sells.
+    private var weeklyReviewButton: some View {
+        Button {
+            shell.issue(.weeklyReviewButton, isPro: store.isPro)
+        } label: {
+            HStack(spacing: 2) {
+                Image(systemName: "calendar.badge.clock")
+                if !store.isPro {
+                    Image(systemName: "crown.fill")
+                        .imageScale(.small)
+                        .foregroundStyle(.yellow)
+                }
+            }
         }
-        .sheet(isPresented: $showingPaywall) {
-            ProPaywallView()
-        }
+        .accessibilityLabel("Weekly Review")
+        // The Mac's pointer tooltip; the menu's View → Weekly Review ⇧⌘R is its shortcut there.
+        .help("Weekly Review")
+        #if os(iOS)
+        // An iPad keyboard's ⇧⌘R (D12). Not on the Mac, whose menu owns it (a second binding
+        // would be a duplicate), nor on an iPhone. The shell refuses a press that arrives while the
+        // window presents anything — Share below, a shell sheet, an alert (`ShellState.issue`).
+        .keyboardShortcut(UIDevice.current.userInterfaceIdiom == .pad
+                          ? KeyboardShortcut("r", modifiers: [.command, .shift]) : nil)
+        #endif
     }
 }
 
@@ -678,8 +701,28 @@ struct DetailCardHeaderLayout: Layout {
 struct ProLockedCard: View {
     let title: LocalizedStringKey
     let message: LocalizedStringKey
+    /// D12's preview: this habit's stats, for the blurred shape of its own 8-week strength and
+    /// the count of insights Pro has about it. Nil draws the card without them.
+    var preview: HabitStats?
     let action: () -> Void
     @Environment(\.dynamicTypeSize) private var typeSize
+
+    init(title: LocalizedStringKey, message: LocalizedStringKey, preview: HabitStats? = nil,
+         action: @escaping () -> Void) {
+        self.title = title
+        self.message = message
+        self.preview = preview
+        self.action = action
+    }
+
+    /// How many lines InsightsCard draws for these stats — its own function, so the number
+    /// cannot drift from the card it stands for (D12).
+    static func insightCount(_ stats: HabitStats) -> Int {
+        InsightsCard.lines(for: stats).count
+    }
+
+    /// The preview's height, at every text size: decoration, so it never grows with the type.
+    static let previewHeight: CGFloat = 44
 
     /// A capsule while the label is one line. At accessibility sizes it wraps ("Unlock / with Pro"
     /// at AX5), and a capsule's half-height ends ran into both lines (gate 8).
@@ -690,8 +733,13 @@ struct ProLockedCard: View {
     }
 
     var body: some View {
+        // `count`: a name LocalizationSourceScanTests types as an integer (`%lld`).
+        let count = preview.map(Self.insightCount) ?? 0
         Button(action: action) {
             VStack(spacing: 10) {
+                if let preview {
+                    StrengthShapePreview(weeks: preview.weeklyStrength)
+                }
                 Image(systemName: "crown.fill")
                     .font(.title2)
                     .foregroundStyle(.yellow)
@@ -702,6 +750,12 @@ struct ProLockedCard: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                // Only with something to say: "0 insights" would sell nothing.
+                if count >= 1 {
+                    Text("Stride Pro has \(count) insights about this habit")
+                        .font(.footnote.weight(.medium))
+                        .multilineTextAlignment(.center)
+                }
                 Text("Unlock with Pro")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.white)
@@ -717,6 +771,55 @@ struct ProLockedCard: View {
             .background(RoundedRectangle(cornerRadius: 16).fill(Color.appSecondaryBackground))
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// D12's locked-card preview: the shape of the user's own 8-week strength (StrengthCard's bars,
+/// `HabitStats.weeklyStrength`), with no numbers, no dates and no axis, drawn so that no week's
+/// value can be read off it:
+/// - **relative, not absolute:** each week against the series' own highest, so the tallest bar
+///   is always full height and the free Strength tile cannot calibrate the scale;
+/// - **three levels** (`levels`), never the score itself: a week reads as low, middle or high;
+/// - **one colour**, the same opacity for every bar (opacity would encode the score again);
+/// - **heavily blurred**, wider than a bar, so no edge can be measured.
+/// VoiceOver skips it: it is a picture of what Pro shows, and what it would say is the numbers
+/// it hides.
+struct StrengthShapePreview: View {
+    /// Each week's score, 0…1, oldest first.
+    let weeks: [Double]
+
+    /// The number of heights a bar can take above 0.
+    static let levelCount = 3
+
+    /// Each week as a level: 0 for a week with no strength (before the habit, or nothing yet),
+    /// else 1…`levelCount` by its share of the series' highest week, rounded up. Every week 0
+    /// draws every bar at level 0.
+    static func levels(_ weeks: [Double]) -> [Int] {
+        guard let top = weeks.max(), top > 0 else { return weeks.map { _ in 0 } }
+        return weeks.map { score in
+            guard score > 0 else { return 0 }
+            // Less a hair, so a share that is exactly a step (a third, two thirds) does not round up
+            // to the next one through floating-point noise (0.1 / 0.3 × 3 is 1.0000000000000002).
+            let steps = score / top * Double(levelCount) - 1e-9
+            return min(levelCount, max(1, Int(steps.rounded(.up))))
+        }
+    }
+
+    var body: some View {
+        let height = ProLockedCard.previewHeight
+        HStack(alignment: .bottom, spacing: 6) {
+            ForEach(Array(Self.levels(weeks).enumerated()), id: \.offset) { _, level in
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(Color.green.opacity(0.45))
+                    .frame(width: 14, height: level == 0 ? 6 : height * CGFloat(level) / CGFloat(Self.levelCount))
+            }
+        }
+        .frame(height: height, alignment: .bottom)
+        .padding(8)
+        // Wider than a bar and its gap: neighbouring bars run together and every top edge is a
+        // gradient; only the rise and fall stay.
+        .blur(radius: 10, opaque: false)
+        .accessibilityHidden(true)
     }
 }
 
@@ -750,185 +853,6 @@ enum StatsWeeks {
         style.timeZone = HabitCalendar.utc.timeZone
         style.locale = appLocale
         return style
-    }
-}
-
-// MARK: - Trend (last 8 weeks completion rate)
-struct TrendCard: View {
-    let habit: Habit
-    /// This render's stats (StatsView): eight `Habit.completionRate` calls built eight.
-    let stats: HabitStats
-    @Environment(\.dynamicTypeSize) private var typeSize
-    /// Room for the value and date labels around the bars: 30 at the default size, where the
-    /// chart was a fixed 110 pt that the labels overflowed as soon as they could grow.
-    @ScaledMetric(relativeTo: .caption2) private var labelRoom: CGFloat = 30
-
-    private struct WeekPoint: Identifiable {
-        /// The week's Monday: stable across renders (a fresh UUID per render rebuilt every bar).
-        let id: Date
-        let label: String
-        /// Spoken instead of `label` (StatsWeeks.spoken).
-        let spokenDate: String
-        /// Nil: nothing of the week to count (`HabitStats.countedRate`) — before the habit
-        /// started, or this week before anything is due or done. Drawn as no bar and no number,
-        /// where it was a grey bar marked 0 like a missed week (2026-10-22).
-        let rate: Double?
-        /// The week ended before the habit existed (`HabitStats.endsBeforeStart`): only then is a
-        /// week without a rate "Not started" to VoiceOver.
-        let beforeStart: Bool
-    }
-
-    private var points: [WeekPoint] {
-        let spoken = StatsWeeks.spoken
-        return StatsWeeks.mondays(endingWithWeekOf: stats.today).map { start in
-            WeekPoint(
-                id: start,
-                label: StatsWeeks.label.string(from: start),
-                spokenDate: start.formatted(spoken),
-                // This week counts today once it is done, as Insights' momentum does.
-                rate: stats.countedRate(ofWeekStarting: start),
-                beforeStart: stats.endsBeforeStart(weekStarting: start)
-            )
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("8-Week Trend")
-                .font(.headline)
-                .accessibilityAddTraits(.isHeader)
-
-            // Eight columns get about 37 pt each: past the largest non-accessibility size "12/28"
-            // no longer fits one, so accessibility sizes draw one row per week instead.
-            let rows = typeSize.isAccessibilitySize
-            let layout = rows
-                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10))
-                : AnyLayout(HStackLayout(alignment: .bottom, spacing: 6))
-            layout {
-                ForEach(points) { point in
-                    Group {
-                        if rows {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Text(point.label)
-                                        .scaledSystemFont(size: 8)
-                                    Spacer()
-                                    if let rate = point.rate {
-                                        Text("\(Int(rate * 100))")
-                                            .scaledSystemFont(size: 9)
-                                    }
-                                }
-                                .foregroundStyle(.secondary)
-                                if let rate = point.rate {
-                                    HorizontalBar(fraction: rate, fill: fill(rate))
-                                }
-                            }
-                        } else {
-                            VStack(spacing: 4) {
-                                // The column is bottom-aligned: a week with no rate keeps only its
-                                // date, under an empty slot.
-                                if let rate = point.rate {
-                                    Text("\(Int(rate * 100))")
-                                        .scaledSystemFont(size: 9)
-                                        .foregroundStyle(.secondary)
-                                    RoundedRectangle(cornerRadius: 4)
-                                        .fill(fill(rate))
-                                        .frame(height: max(4, CGFloat(rate) * 80))
-                                }
-                                Text(point.label)
-                                    .scaledSystemFont(size: 8)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                    // Between the default and the accessibility sizes (XL–XXXL)
-                                    // "12/28" can outgrow a narrow phone's column by a few points.
-                                    .minimumScaleFactor(0.7)
-                            }
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("Week of \(point.spokenDate)")
-                    // The bar's own label truncates; rounding here would speak a different number.
-                    // A week the habit has begun with nothing counted yet says only its date, as
-                    // its empty slot: "Not started" was false for it (review of bab8acf, 2026-10-22).
-                    .accessibilityValue(point.rate.map { Text(verbatim: "\(Int($0 * 100))%") }
-                                        ?? (point.beforeStart ? Text("Not started") : Text(verbatim: "")))
-                }
-            }
-            // The tallest bar is 80 pt; the rest is the two labels, so only that part scales.
-            .frame(height: rows ? nil : 80 + labelRoom)
-        }
-        .padding()
-        .background(RoundedRectangle(cornerRadius: 16).fill(Color.appSecondaryBackground))
-    }
-
-    private func fill(_ rate: Double) -> Color {
-        rate > 0 ? habit.color.opacity(0.4 + 0.6 * rate) : Color.gray.opacity(0.2)
-    }
-}
-
-// MARK: - Insights (best/worst day, momentum)
-struct InsightsCard: View {
-    let habit: Habit
-    /// This render's stats (StatsView): the weekday tallies and both weeks read one HabitStats
-    /// instead of building three.
-    let stats: HabitStats
-
-    // LocalizedStringKey, not String: a String reaches Text() as verbatim content, so these rows
-    // rendered in English in every language. Each phrase is built whole so it is one key.
-    private var insights: [(icon: String, text: LocalizedStringKey)] {
-        var out: [(String, LocalizedStringKey)] = []
-        let symbols = appCalendar.weekdaySymbols // index 0 = Sunday
-
-        // A day only when its rate stands alone, and never for times-per-week
-        // (StatsInsights.weekdayExtremes): the first of equal counts was "Toughest on Sunday" for a
-        // user who never misses, and the strongest day changed between launches (2026-10-22).
-        let days = StatsInsights.weekdayExtremes(stats.weekdayTallies, schedule: stats.schedule,
-                                                 activeDaysMask: stats.activeDaysMask)
-        if let best = days.strongest {
-            out.append(("star.fill", "Strongest on \(symbols[best - 1])"))
-        }
-        if let worst = days.toughest {
-            out.append(("exclamationmark.triangle", "Toughest on \(symbols[worst - 1])"))
-        }
-
-        // Momentum: this week so far (an unfinished today is not a miss yet) vs last week.
-        if let momentum = StatsInsights.momentum(thisWeek: stats.thisWeekRate, lastWeek: stats.lastWeekRate) {
-            // Formatted outside the key so the key carries no literal "%" to escape.
-            let was = "\(momentum.was)%"
-            let now = "\(momentum.now)%"
-            if momentum.isUp {
-                out.append(("arrow.up.right", "Up vs last week (\(was) → \(now))"))
-            } else {
-                out.append(("arrow.down.right", "Down vs last week (\(was) → \(now))"))
-            }
-        }
-        return out
-    }
-
-    var body: some View {
-        let items = insights
-        if !items.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Insights")
-                    .font(.headline)
-                    .accessibilityAddTraits(.isHeader)
-                ForEach(items.indices, id: \.self) { i in
-                    HStack(spacing: 8) {
-                        Image(systemName: items[i].icon)
-                            .font(.caption)
-                            .foregroundStyle(habit.color)
-                            .frame(width: 18)
-                            .accessibilityHidden(true)
-                        Text(items[i].text)
-                            .font(.subheadline)
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding()
-            .background(RoundedRectangle(cornerRadius: 16).fill(Color.appSecondaryBackground))
-        }
     }
 }
 

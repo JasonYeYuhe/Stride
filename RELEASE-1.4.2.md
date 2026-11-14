@@ -1,18 +1,20 @@
 # Stride 1.4.2+ — Pro worth paying for
 
 App ID `6761262334`, bundle `yyh.stride.habittracker`. **Plan dated 2026-10-27, revised the same day
-after three reviews (Review log, at the end); no code yet.** Every code citation is at `7fbb3ec`, the
+after three reviews (Review log, at the end); re-planned 2026-11-08 (N1–N6, below); `m5/1.4.2` cut
+2026-11-09 at `5ba863d` (Progress log, at the end).** Every code citation is at `7fbb3ec`, the
 `m4/1.4.1` tip.
 
-- **Branch:** `m5/1.4.2`, cut from the `m4/1.4.1` tip on the day 1.4.1 (23) is submitted for iOS.
+- **Branch:** `m5/1.4.2`, cut from the `m4/1.4.1` tip `5ba863d` on 2026-11-09, while iOS 1.4.1 (23)
+  is in review (a rejection fix goes on m4 and is merged forward).
 - **Version:** **1.4.2 (24)** (RELEASE-1.4.1.md:297). project.yml:19-20 still says 1.4.1 (23).
   DEV-PLAN-1.3.md:54 still says "build 22"; W12 corrects it.
 - **Scope of 1.4.2:**
   - **Wave A** (must ship): a trial-ready paywall, purchase and trial states, Pro that is right in a
     trial's first week, and Pro that a free user and the agent's sweep can see.
-  - **Wave B** (out by default): the rest of DEV-PLAN-1.3.md M5 (`:1253-1276`): any week, at risk,
-    notes, groups, and Today's free "N more". It comes in only if W0–W9 are merged and green on
-    **2026-11-10** (D1).
+  - **Wave B** (**out, N1**): the rest of DEV-PLAN-1.3.md M5 (`:1253-1276`): any week, at risk,
+    notes, groups, and Today's free "N more". By N1 it is X0 at the top of 1.5.0, with no
+    checkpoint; W10 and W11 below are kept only as X0's spec.
   - Also in scope: the items of RELEASE-1.4.1.md's "1.4.2 backlog" (`:923-942`) that serve this goal,
     and two acquisition items that need no code: localized store screenshots and a keyword pass
     (D19).
@@ -29,6 +31,89 @@ after three reviews (Review log, at the end); no code yet.** Every code citation
   - every ASC write and production deploy needs the owner's go;
   - six locales for every string;
   - worktree implementers, then review lenses, then an adversarial verify.
+
+## Re-plan of 2026-11-08 (read this first; it overrides the dates below)
+
+The plan below was written on 10-27 for a 1.4.1 that would be submitted the week of 11-02. iOS 1.4.1
+went in on 11-07 and the Mac on 11-07, so every date below slipped by about a week, and Phase 0's
+owner sitting (O1–O25) never happened. Nothing else in the design changed. This section records
+where things stand, the new calendar, and the decisions put to the owner on 11-08 (N1–N6, which
+replace "the owner takes O1–O25" in Phase 0 item 10). Gemini 3.8 Flash reviewed this section and
+the plan with two lenses on 11-08 (Review log, "Re-plan review, 2026-11-08"). The owner's answers are
+recorded under the table once given.
+
+### Where things stand on 2026-11-08
+
+- **1.4.1 (23):** Mac **live** since 11-08 (released by the owner). iOS **WAITING_FOR_REVIEW** since
+  11-07 04:27Z, with Stride Pro Yearly and Lifetime in the same submission. Gate 12's iOS half (a
+  Release simulator build signed in to a production test account) passed on 11-08 (RELEASE-1.4.1.md).
+  After iOS approval: `release.py release 1.4.1` (owner's go), merge PR JasonYeYuhe/Stride#10 with a
+  merge commit, tag v1.4.1, rotate the demo token (Phase 0 item 3).
+- **Production, Sentry, 3 days to 11-08:** 1.4.0+22 62 sessions / 15 users, 1.4.1+23 2 / 2, 0 crashed.
+  Still 0 subscribers and one Lifetime ever (10-22).
+- **Phase 0:** done: item 1 (kit on iOS 27.0, baselines 732 / 326+12 on Xcode 27.1; O20 taken), item 5
+  (IAP notes GET), item 6 (screenshot sets GET), O21 answered (SKTestSession still fails on iOS 27.0,
+  so StoreKit tests still need iOS 18.5). Open: items 2 (1.4.1's release), 3, 4, 7, 8, 9 (Gemini 4
+  Argon rerun; agy offers it again), 10 (now N1–N6), 11, and the new item 12 (Mac carry-overs from
+  1.4.1's gate 10: the Dock badge, three VoiceOver labels, banner actions unrun).
+- **Branch:** `m5/1.4.2` was cut from the m4 tip `5ba863d` on 11-09 (iOS 1.4.1 still in review; a
+  rejection fix goes on m4 and is merged forward, as planned).
+- **Disk:** about 43 GB free on 11-08 after the owner's clean-up.
+
+### The calendar, re-dated (replaces the table under Milestones)
+
+Both 11-08 reviewers found the first re-date too loose after the freeze (1.4.1 took 16 days from
+code freeze to iOS submission) and too tight around Thanksgiving. This calendar assumes N1 = Wave A
+only.
+
+| Date | Step |
+|---|---|
+| 11-09 | Cut `m5/1.4.2`; this file becomes RELEASE-1.4.2.md; W0 (baselines, pure moves, draft PR); N1–N6 recorded; W9 starts (Phase 0 item 7) |
+| 11-09 to 11-18 | Wave A (W1–W9; Phase 0 item 12 inside W9, which already owns NotificationService.swift). Day 1: the StoreKit simulator (O21), W2's SKTestSession cases and the paywall fixtures |
+| **11-19** | Code freeze. Anything not green follows D1's cut order |
+| 11-19 to 11-24 | Gates 1–13 on agents' time; Mac gate 10 (agent part, plus the owner's banner click, item 5); the submission sitting |
+| **11-25** | Target: iOS and Mac `finish` (the day before US Thanksgiving) |
+| **12-01** | Fallback `finish` if any gate is red on 11-24; **12-04** is the latest that leaves a rejection round before the late-December slowdown |
+| ~12-01 to 12-08 | Approval, MANUAL release, the trial offer per N2, gate 14, then the promotional text |
+
+### Decisions put to the owner on 11-08
+
+Everything not listed here takes the default in "Owner decisions" (O2, O4–O9, O11–O14, O16–O25).
+Each ASC write, download and deploy still needs its own go.
+
+| # | Question | Options | Recommended |
+|---|---|---|---|
+| N1 | 1.4.2's scope, now that the calendar slipped a week (O1) | (a) Wave A only; Wave B moves to the top of 1.5.0 now, no checkpoint. (b) Keep the checkpoint, moved to 11-18: Wave B only if W0–W9 are merged and green. (c) Commit to A + B and submit about 12-11 | **(a)**: both reviewers; Wave B serves users with history, not a 7-day trial |
+| N2 | When the 7-day Yearly trial goes live (O3) | (a) after iOS and Mac 1.4.2 are both live, then gate 14. (d) in the release sitting, while both are PENDING_DEVELOPER_RELEASE. (b) on iOS release day even if the Mac lags | **(d), falling back to (b)** if the Mac is more than 3 days behind iOS: the reviewers split (product b, engineering a); (d) gives both platforms a paywall that states the trial on day one, and almost all volume is iOS |
+| N3 | Ratings (O10) | (a) a Settings → About row only (rule 4 unchanged). (b) amend rule 4 for one system `requestReview(in:)` after a streak milestone | **(b)**, as a narrow amendment: Apple's own prompt (the system caps it at 3 a year), once per version at most, only after a 7-day streak or a met week, never in the first 3 days or during onboarding. 2 ratings in 7 months is the store page's weakest point. It is the owner's rule, so the owner decides |
+| N4 | A new Pro category (O15) | (a) none in 1.4.2. (b) alternate app icons. (c) a Today group focus filter | **(a)**: both reviewers; revisit for 1.5.0 |
+| N5 | The Mac Dock badge (1.4.0's gap, owner 11-07: "角标 1.4.2 修") | In Wave A as Phase 0 item 12; Mac gate 10 checks it through the Dock's `AXStatusLabel` | Yes (already the owner's call) |
+| N6 | Gemini 4 Argon rerun (Phase 0 item 9) | (a) run it on the cut tip before W0 merges. (b) skip; Flash's 11-08 review stands | **(b)**: both reviewers; Argon reviews 1.4.2's finished branch before the freeze instead |
+
+**The owner's answers (2026-11-08, all as recommended):** N1 = (a) Wave A only; Wave B is X0 at the
+top of 1.5.0. N2 = (d): create the offer in the release sitting while iOS and Mac 1.4.2 are both
+PENDING_DEVELOPER_RELEASE and release both, then gate 14; if the Mac is more than 3 days behind iOS,
+(b) on iOS release day. N3 = (b), the narrow amendment of rule 4 (DEV-PLAN-1.3.md:34-38):
+- only `requestReview(in:)` (StoreKit's system prompt), from W7, at most once per app version
+  (`UserDefaults.standard`, never synced or backed up), only right after a check-in that completes
+  a 7-day streak or meets a week, never in the first 3 days after install, during onboarding, or
+  with a sheet showing; the Settings → About "Rate Stride" row (D13) stays;
+- W7 adds a pure `ReviewPromptRule` (Shared/) with unit tests for each condition, and a hosted test
+  that a Release-config path cannot call it under `-demo`/UI-test flags; gate 8's sweep never meets it.
+N4 = (a), N5 = yes (inside W9), N6 = (b). Gemini's other suggestions (R9–R12): none adopted; O5,
+O8, X2 and D15 stay as planned. Every other O takes its default.
+
+**Where N1–N6 change the rest of this file** (the sections below keep their 10-27 text; these
+override it):
+
+| N | Overrides |
+|---|---|
+| N1 | Scope and D1: no Wave B checkpoint; W10 and W11 become 1.5.0's X0. W0 makes no Wave B stub (`Views/WeeklyReviewShare.swift`) and puts no Wave B string in the copy deck. W8's sweep has no Wave B navigation. W12's D11 lockstep runs after W3 and W4 only |
+| N2 | O3 and D5: the offer is created in the release sitting while iOS and Mac 1.4.2 are both PENDING_DEVELOPER_RELEASE, both are released, then gate 14; if the Mac is more than 3 days behind iOS, on iOS release day |
+| N3 | O10, D13, rule 4 and "Out of scope": one system `requestReview(in:)` from W7 under the conditions above, through a pure `Shared/ReviewPromptRule.swift` (W7's files) with `StrideTests/ReviewPromptRuleTests.swift` and a hosted no-call test under `-demo`/UI-test flags. The Settings → About row (D13) stays. W12 records the amendment in DEV-PLAN-1.3.md rule 4. W0's copy deck needs no string for it (the system prompt has none) |
+| N4 | O15: no new Pro category in 1.4.2 |
+| N5 | Phase 0 item 12 runs inside W9. Its Dock-badge fix is W9's (NotificationService.swift). Its three VoiceOver labels touch SettingsView.swift, AddHabitView.swift and `Shared/*.lproj`, which W0 owns, so the integrator lands them after W0 merges |
+| N6 | Phase 0 item 9 is cancelled. Gemini 4 Argon High reviews the finished 1.4.2 branch before the 11-19 freeze, with Gemini 3.8 Flash High, on a throwaway `git archive` copy |
 
 ## Why this plan
 
@@ -299,8 +384,15 @@ change serves.
    (dry run first). If a live note names anything but D11's three things, the owner decides O22: a
    `--yes` PATCH, or a web-UI edit if the API answers 409 (as for approved localizations,
    NEXT_SESSION_PROMPT.md:15).
+   - **Done 2026-10-27 (GET):** Monthly and Yearly (APPROVED) both say "unlocks unlimited habits,
+     advanced statistics, widgets, smart reminders, and iCloud sync"; Lifetime (APPROVED) says
+     "unlocks Pro (habit groups + advanced analytics)", without Weekly Review. Neither is D11's
+     set, so O22 is live.
 6. **Agent, GET only:** `store_screenshots.py list` for each of the 6 locales, to see which locales
    have their own sets (D19).
+   - **Done 2026-10-27 (iOS 1.4.1):** only en-US has sets (iPhone 6.9"/6.5", iPad 13"/12.9" with 4
+     each, three Watch sets with 1 each); es-ES, ja, ko, zh-Hans and zh-Hant have none and fall
+     back to en-US.
 7. **Agent, read-only:** write W9's `scripts/metrics_snapshot.py` first. Record the 1.4.0/1.4.1
    baseline in the progress log:
    - weekly active production devices, by release;
@@ -312,13 +404,30 @@ change serves.
    naming it), then ask the owner or the Soundpost session before borrowing it. Create
    `Stride-StoreKit-iOS18` (iOS 18.5, 2–5 GB) only if it cannot be borrowed, tell the owner, and
    give the `xcrun simctl delete` command when 1.4.2 is submitted. Never delete Soundpost-iOS18.
-9. **Plan review rerun:** Gemini 4 Argon High via agy (`gemini-4-argon-high`, passed by its full id)
+9. **Cancelled by N6 (2026-11-08).** Argon reviews the finished branch before the freeze instead.
+   The original item: **Plan review rerun:** Gemini 4 Argon High via agy (`gemini-4-argon-high`, passed by its full id)
    did not run on 10-27 (429 quota, Review log). Rerun it on a throwaway `git archive` copy of the
    cut tip plus this file, never on the repo and never in Chrome, when its quota resets (about
    11-02), before W0's merge. Its findings go into "Plan review (rerun)" with the same format.
-10. The owner takes O1–O25 or their defaults.
+10. **Done 2026-11-08:** N1–N6 (Re-plan, above) replace this; every other O takes its default.
 11. **Optional, independent of the release:** **[owner]** set `SENTRY_DSN` on the server, and raise
     pm2-logrotate's retention from 7 to 30 (RELEASE-1.4.1.md:932-933).
+12. **Carried from 1.4.1's Mac gate 10 (2026-11-07; owner: "角标 1.4.2 修").** Mac 1.4.1 (23) shipped
+    without these; none is new in 1.4.1 (RELEASE-1.4.1.md, "Mac gate 10 remainder").
+    - **The Mac Dock badge never shows (gate 10 item 12, FAIL since 1.4.0).** NotificationService's
+      updateBadge / updateBadgeAndWait / setBadge call only `center.setBadgeCount`; usernoted
+      stores the count (10→9 on a check-in) but the Dock shows nothing, while
+      `NSApp.dockTile.badgeLabel = "10"` (set through lldb on the variant) shows at once. Fix: on
+      macOS also set `NSApp.dockTile.badgeLabel` (nil at 0), only while
+      `notificationSettings().badgeSetting == .enabled`, so turning Badges off still hides it.
+      Test it on the variant by reading the Dock's `AXStatusLabel` (scripts/mac_variant/README.md).
+      X2 later moves the count onto DailyProgress; this fix only changes where it is shown.
+    - **VoiceOver, from the AX audit (scripts/mac_variant/axdump.swift):** Settings' Language
+      pop-up has no title link ("System Default, pop-up button"); Settings' habit rows speak their
+      emoji; Add Habit's two text fields are titled by their placeholders, not "Habit Name". Every
+      new string in 6 languages.
+    - **Mac banner actions (item 5) are still unrun by anyone:** the owner marks Done on a banner
+      once with the app running and once quit, in 1.4.2's gate 10. Agents cannot reach the buttons.
 
 ## Spec corrections
 
@@ -955,7 +1064,8 @@ Placement rules are 1.4.1's. `Shared/` holds pure values only:
 ## Submission checklist (1.4.2)
 
 - [ ] 1.4.1 is released, and m5 has merged m4's tip and `main`.
-- [ ] **[owner]** The demo token is rotated, and the review notes' password matches.
+- [x] **[owner]** The demo token is rotated (2026-11-11).
+- [ ] **[owner]** At submission, the new token is pasted into ASC's Sign-In Password for iOS and Mac.
 - [ ] Gates 1–13 are green on the final tree, gate 10 included. Signing preflight:
       `security show-keychain-info`, plus a 1-second codesign probe.
 - [ ] **[owner]** docs/terms.html (with Lifetime and the trial sentence) is published to stride-site
@@ -1106,13 +1216,14 @@ download, still need a go for each action.
 
 - The branch is cut from m5's tip at 1.4.2's iOS submission.
 - **The order is fixed now, on reasoning, not on readouts:** about 2 of 17 recent installs come back,
-  so X2 (the daily loop) goes first whatever the readouts show. Then X1, then X3. Readout 1 can only
+  so X2 (the daily loop) goes first after X0 (N1) whatever the readouts show. Then X1, then X3. Readout 1 can only
   put a fix first if S1 or S4 show breakage, and trim X1's size.
 - No `@Model` change and no wire change.
 
 | X | Scope | Files | Tests | Size |
 |---|---|---|---|---|
-| **X2** the daily loop (free), first | One pure `DailyProgress` (done, due, rest, met for the week, not started) for Today's card, the badge, the Dock, the widget and group headers. Perfect days join the review. Reminders stay quiet for a habit that is done or not due today, on the answer of the spike run during 1.4.2's review wait (can the widget remove the app's pending requests?). The Daily Reminder skips a perfect day (`.timeSensitive` already gone in 1.4.2). A reminder offer whose permission prompt appears on the tap. A "missed yesterday?" row that opens History | Shared/DailyProgress.swift, TodayView.swift, NotificationService.swift, Shared/ReminderPlan.swift, StrideWidget/Sources/StrideWidget.swift, Shared/WidgetTimelinePlan.swift | Parity across the five surfaces; a reminder never under-fires; over budget, the plan is unchanged; `notifications.py` checks against the pending store; `upgrade.sh --reminders` | L |
+| **X0** Wave B of 1.4.2 (N1), first | W10 and W11 as specified under Workstreams, and Wave B's strings, sweep frames and D11 lines | As W10 and W11 | As W10 and W11 | L + S |
+| **X2** the daily loop (free), after X0 | One pure `DailyProgress` (done, due, rest, met for the week, not started) for Today's card, the badge, the Dock, the widget and group headers. Perfect days join the review. Reminders stay quiet for a habit that is done or not due today, on the answer of the spike run during 1.4.2's review wait (can the widget remove the app's pending requests?). The Daily Reminder skips a perfect day (`.timeSensitive` already gone in 1.4.2). A reminder offer whose permission prompt appears on the tap. A "missed yesterday?" row that opens History | Shared/DailyProgress.swift, TodayView.swift, NotificationService.swift, Shared/ReminderPlan.swift, StrideWidget/Sources/StrideWidget.swift, Shared/WidgetTimelinePlan.swift | Parity across the five surfaces; a reminder never under-fires; over budget, the plan is unchanged; `notifications.py` checks against the pending store; `upgrade.sh --reminders` | L |
 | **X1** Groups worth paying for | Statistics chips: All, then groups, then habits (StatsView.swift:108-129). An Overview card: the 30-day rate and mean strength, each with its 30-day change; members ranked by strength; an 8-week combined trend. "All habits" sits under Advanced Analytics, a group's Overview under Habit Groups. One cache read per render. Today's group header shows "2/3", free (TodayView.swift:268-281). New Group becomes a small sheet with a name and a colour; New Group in Settings (Pro); recolour, reorder (`sortOrder` and `touch()`), a confirmation before delete, and a Mac context menu with accessibility actions. Editing existing groups stays free. The D11 lockstep for the Groups and Analytics sentences. O18 | StatsView.swift, Views/OverviewCard.swift, TodayView.swift, Views/GroupsSection.swift, SettingsView.swift, AddHabitView.swift | The Overview equals its members' cached stats; StatsPerformanceTests; a rehearsal in which a recolour and a reorder on A arrive on B (SyncModels.swift:60-67; sync.js:779-791); a lapsed user keeps every group | M–L |
 | **X3** review notification (O16) | A switch in Settings; the permission prompt only when it is turned on; Mondays 09:00; a tap opens last week; removed on lapse; re-titled on a language change (NotificationService.swift:356-360); budget 64 − 3 − 4 (ReminderPlan.swift:35) | Shared/ReminderPlan.swift, NotificationService.swift, SettingsView.swift | ReminderPlanTests; hosted tests that it is scheduled only for Pro users who opted in | S |
 | **X4** carried | Whatever 1.4.2 cut or left out (D1), Wave B first | — | — | — |
@@ -1251,3 +1362,393 @@ throwaway `git archive` copy. Gemini 4 Argon stays Phase 0 item 9.
 | G2-8 | Weekly Review share image belongs in Wave A (medium) | Owner option on O1; default unchanged (Wave B) |
 | G2-9 | Cut Wave B formally now (medium) | Rejected: Wave B is already out by default and enters only at the 11-10 checkpoint (D1); the checkpoint costs nothing |
 | G2-10 | `AppStore.sync()` throws `userCancelled` on a cancelled Apple Account sheet (low) | Accepted: D6, `RestoreOutcome.cancelled` |
+
+### Re-plan review, 2026-11-08 (Gemini 3.8 Flash High, two lenses, fact-checked by Claude)
+
+Run through the agy MCP bridge on throwaway `git archive` copies of `8003f04`+this file (never the
+repo). Lens P = product and business, lens E = engineering, release and schedule.
+
+**Votes.** N1: P (a), E (a). N2: P (b), E (a). N3: P (b). N4: P (a). N5: E yes. N6: P (b), E (b).
+
+| # | Lens | Finding | Verdict | Change |
+|---|---|---|---|---|
+| R1 | E | The 11-25 freeze leaves 8 days for gates and sittings, against 1.4.1's 16 from freeze to submission, and lands on Thanksgiving | Confirmed (RELEASE-1.4.1.md:1065-1186) | Calendar above: freeze 11-19, target `finish` 11-25, fallback 12-01, latest 12-04 |
+| R2 | E | Phase 0 item 12 (the Dock badge) and W9 (`.timeSensitive`) both edit NotificationService.swift, breaking "parallel workstreams never share a file" | Confirmed (NotificationService.swift:274, :698-718) | Item 12's code goes into W9 |
+| R3 | E | D8's text says MenuCommands "reads `StoreService.shared.isPro` when clicked"; it only sets `shell.request = .weeklyReview` and ContentView decides (MenuCommands.swift:92-95, ContentView.swift:251-257) | Confirmed | W4 latches the destination at issue (D8), as already designed; the sentence is wrong, not the design |
+| R4 | E | Workstream paths like `Views/TodayCards.swift` and bare `ShellState.swift` could be created at the repo root, outside project.yml's `Stride/Sources` | Confirmed as a risk (ShellState.swift is Stride/Sources/Views/) | Convention: `Views/` = `Stride/Sources/Views/`; every new file is created under `Stride/Sources/` or `Shared/`, and xcodegen drift must be clean (W0) |
+| R5 | E | Gate 3's shell purchase lives in ShellTests, but the iOS 18.5 StoreKit run is usually limited to StoreKitStatusTests and StoreKitConfigurationLoadTests | Confirmed as a gap | Gate 3's 18.5 run adds `-only-testing:StrideAppTests/ShellTests` |
+| R6 | E | Gate 10 item 5 (banner actions) cannot be run by an agent | Confirmed (RELEASE-1.4.1.md, 11-07) | Owner-only in the Mac sitting; NotificationRouterTests are the agent's gate |
+| R7 | E | Dock badge: AppKit off the main thread | **Refuted**: NotificationService is `@MainActor` (:92-93); `setBadge`'s `Task {}` inherits it | — |
+| R8 | E | Dock badge: NSDockTile's label exists only while the app runs; updates from other devices or midnight are not shown while it is quit; concurrent settings reads can land out of order; turning Badges off must clear it | Confirmed | Item 12: set the label at every `setBadge`, at launch and at scene activation; read `badgeSetting` once per activation and cache it; nil when off or 0; a hosted macOS test of the label rule |
+| R9 | P | The Today week card ends for good after 3 free weeks or one ×; long-term users, the likeliest buyers, never see it again | Owner's call (O5) | Put to the owner |
+| R10 | P | Pro in onboarding is a small text button; make the last page a skippable Pro page with "Start 7-Day Free Trial" | Rejected by default: that is the onboarding paywall that Out of scope and rule 4 rule out | Put to the owner |
+| R11 | P | Reminders that fire after a habit is done hurt a trial week; pull "quiet when done" from 1.5.0's X2 into 1.4.2 | Owner's call: X2's spike (can the widget remove the app's pending requests?) has not run; pulling it in adds risk to Wave A | Put to the owner; the spike runs during 1.4.2's review wait either way |
+| R12 | P | `metrics_snapshot.py` and the ASC Analytics request (O13) are over-built for ~12 downloads a month | Partly: the reports are thresholded at this volume (the plan says so), but the script lets the agent report without the owner reading dashboards | Put to the owner |
+
+## Progress log
+
+- 2026-11-09, **branch cut.** `m5/1.4.2` cut from the `m4/1.4.1` tip `5ba863d`; PLAN-1.4.2.md
+  renamed to this file (pure rename, its own commit); N1–N6 written into the sections they
+  override (Re-plan, "Where N1–N6 change the rest of this file"). `release.py show 1.4.1`: iOS
+  WAITING_FOR_REVIEW, Mac READY_FOR_SALE. Disk 26 GB free, so no simulator is booted for now (global
+  rule: under 30 GB).
+- 2026-11-09, **W9 merged** (18d82c5; worktree agent, reviewed by the integrator). Builds green (iOS
+  generic simulator, macOS); StrideTests on macOS 732 run, 2 skipped, 0 failed (ReminderPlanTests
+  12/12 unchanged); `test_metrics_snapshot.py` 8/8.
+  - **Phase 0 item 7, baseline** (`metrics_snapshot.py`, production, 2026-11-08 11:36Z, Monday weeks
+    in UTC): 8 weeks 87 devices, 592 sessions, 99.8 % crash-free (one crash, 1.2.1+15, week of
+    09-14); 1.4.0+22 44 devices / 353 sessions, 1.4.1+23 3 / 4, both 100 %. Week of 11-02 (partial):
+    21 devices, 121 sessions. First downloads 23, updates 35 over 8 weeks. Pro: no sale in 8 weeks;
+    0 active subscriptions, 0 trials, no subscription event. Written reviews: 1 (2026-04-04).
+    Ratings count: the owner reads it at the next sitting.
+  - **Phase 0 item 5 / O22, dry run only:** live notes unchanged since 10-27 (Monthly and Yearly
+    name "smart reminders, and iCloud sync"; Lifetime omits Weekly Review). The proposed notes say
+    D11's three things. The same dry run still lists 7 of 1.4.1's localization edits as not live
+    (Yearly's 6 descriptions still say "save 44%", Lifetime en-US's old description): `--yes`, or
+    the web UI on a 409, is the owner's go.
+  - **Phase 0 item 12, Dock badge:** on the Mac variant the Dock's `AXStatusLabel` read 10 within
+    2 s of two launches and after an activation. Open for Mac gate 10: once, on the first launch
+    right after a rebuild, the label stayed nil until the next activation (not reproduced); and
+    Badges off was not toggled (a system setting).
+  - History's sheet `minHeight` 620 → 520: Done ends 60 pt inside a 700-pt window. AddHabitView has
+    the same `minHeight: 620` (W0's file): checked after W0 merges.
+  - docs/terms.html changed in the repo only; the public copy (stride-site) is updated with the
+    release, on the owner's go.
+- 2026-11-09, **W0 merged** (d4fb6a8; worktree agent, reviewed by the integrator). Version 1.4.2
+  (24); the two moves byte-identical (`cmp`); `PaywallTrigger` (7 cases) passed by every presenter,
+  Settings and Statistics on `.sheet(item:)`; `ShellRequest.weeklyReview(week:)` and
+  `.paywall(trigger:resume:)`; stubs PaywallModel (W2), WeeklyReviewMath (W1), InlinePrompts and
+  TodayCards (W7), no WeeklyReviewShare (N1); D14's four switches and the 24-byte sentinel, all
+  under `#if DEBUG`, with DebugLaunchFlagScanTests; the Wave A copy deck, 40 keys plus 8 plurals ×
+  6 locales, positional in every two-argument key (W12 prunes what ends up unused).
+  - **Baselines on Xcode 27.1 at a7d8e67:** StrideTests (macOS, host-less) 732 run, 2 skipped, in
+    Tokyo and in Los Angeles; after W0 734 / 2 in both. Hosted (732 on iOS 27.0, Phase 0 item 1)
+    not re-run: disk below 30 GB, so `PaywallTriggerTests` and ShellTests' new call sites are
+    compiled only. xcodegen drift clean.
+- 2026-11-09, **W0+W9 review and N5's Mac carry-overs.**
+  - An independent read-only review of a7d8e67..d4fb6a8 found no high-severity defect; three low
+    ones are fixed in e63f4b7: the Dock label's generation is taken in call order (an older count
+    whose `setBadgeCount` reply came back late could win); `setup_iap.py` refuses to write without
+    `--yes` (a bare run priced, submitted the IAPs and resubmitted the open iOS version);
+    terms.html says a trial is charged when it ends.
+  - **N5 merged** (affdee4), checked with `axdump` on the Mac variant: Settings' Language pop-up
+    is "Language" (macOS); Settings' habit rows no longer speak the emoji (iOS and macOS, as Today
+    and History already did); Add Habit's fields are "Habit Name" and "Description" (macOS). No new
+    string. New Habit's sheet `minHeight` 620 → 520: at a 700-pt window it ended 37 pt below the
+    window, now Cancel and Save end 60 pt inside it.
+  - For W3: ProPaywallView.swift:184 still has a 620-pt `minHeight` on macOS (same 700-pt check).
+    For W12/gate 8: Add Habit's preview still reads "⭐, Your Habit".
+  - StrideTests on macOS at affdee4: 734 run, 2 skipped, 0 failed.
+- 2026-11-09, **four operating decisions** (owner, after Gemini 3.8 Flash High with two lenses,
+  release/product and engineering/risk, on a `git archive` copy; both lenses picked the same option
+  each time, and the owner took all four):
+  - **A, hosted tests:** CI runs the hosted suite on every push to PR #12 (it ran 338 cases on
+    10-22 and 10-26; 10-26 failed one, LocalDataFlowTests
+    `testAnEraseRemovesTheExportFilesButTheLastTenMinutes`). Local simulators wait for free disk
+    over 30 GB. The owner emptied the Trash on 11-09; free space is still 23.4 GB.
+  - **B, iOS 18.5:** borrow Soundpost-iOS18 (DAF29479, iOS 18.5, Shutdown, no lock) for W2's
+    SKTestSession cases and gate 3, under `/tmp/lock-soundpost-ios18`, never erased.
+  - **C, `iap_copy.py --yes`:** after iOS 1.4.1 is approved and released, while no review is open.
+    Re-run the dry run first to see which of the 7 localization edits went live with the approval.
+    Any 409 goes through the web UI.
+  - **D:** m5 pushed; draft PR JasonYeYuhe/Stride#12 into main, marked as stacked on #10.
+  - Fact-checks: the engineering lens said the CI hosted step had never run on xcode-27 (false,
+    above). Both lenses suggested `simctl delete unavailable` and pruning DerivedData; both are the
+    owner's call under the global rules. The release lens asked for a review-notes line on the
+    trial: D5 already keeps the trial out of What's New and off the paywall until the offer
+    exists. W12 adds one sentence to the notes.
+- 2026-11-09, **W1 and W2's pure half merged** (939501f; worktree agents, reviewed by the
+  integrator). StrideTests on macOS at the merge: 769 run, 2 skipped, 0 failed, in Tokyo and Los
+  Angeles (734 + W2's 14 + W1's 21).
+  - **W2 (pure):** `PaywallModel` (kind order, Yearly selected, trial only when eligible == true and
+    not Pro, P1W = P7D = 7, per-month rounded up to the currency's minor unit, savings rounded
+    down), `PaywallPhase`, 15 DEBUG fixtures; additive `RestoreOutcome`, `ProductLoadError`,
+    `OfferMirror` on the status mirror, `ProStatus.trial`, and `ProSettingsRow.trialLine` (a
+    separate line rather than a new row case, since SettingsView is W7's). The hosted half
+    (StoreService adoption, 8 listed steps; Configuration.storekit; SKTestSession on
+    Soundpost-iOS18) waits for disk over 30 GB.
+  - **W1:** `WeeklyReviewMath` (week ranges, the opening week switching at Thursday 00:00, rows
+    with the 4-counted-day rule, highlights, group sections, `weekGoal`, `isAtRisk`, the evening
+    time), the 12-week weekday tally, strength on a day. One review render of 50 × 1,095 takes
+    0.0013 s. Choices beyond the spec text, for the lenses: (1) at risk for a times-per-week habit
+    created mid-week compares only the creation week's share of the goal (goal × days owned / 7,
+    rounded up); (2) the "90 % never Slipped" test uses 85 % (one week cannot make 90 %); (3) the
+    performance bound leaves out notes (Wave B's read).
+  - demo_check's new "last week" block was run once against the production demo account through
+    `check_demo_account.sh` (read-only pull; the token is read over SSH from the server's .env and
+    never printed). It shows Journal as most improved, Meditate as slipped, and Read 30 Minutes
+    (−15 to 85 %) correctly not slipped.
+- **11-09, CI.** iOS 1.4.1 still WAITING_FOR_REVIEW (unchanged). PR #12's hosted suite failed on
+  496cd4a, on 11-08 and again on a re-run 11-09, at one test only:
+  `HabitHistoryTests.testAChangedNoteOverTheCapIsNeverDroppedWithoutAsking` could not find
+  yesterday's day cell (329 passed, 12 skipped). Not 1.4.2's code: the only History change since
+  the cut is macOS-only, and the test passed on m4's 10-26 run with the same Xcode (27A9275); the
+  runner image moved from 20261023 to 20261103. Likely cause (not proven locally, disk under
+  30 GB): focusing the note scrolls the page to the editor and the LazyVGrid's rows leave the
+  accessibility tree. Test-only fix: scroll History to its top before picking a day, and on the 1st
+  show the month before (yesterday is not in this month's grid). Compiled for the simulator; CI
+  decides. Owner OK'd the push.
+- 2026-11-09, **W2's hosted half and W3 merged** (a861b7b; one worktree agent, f7ee729 + e1c34d5,
+  then an independent adversarial review whose nine findings were fixed in b431802). CI on 2ddb2d4
+  was green (330 hosted passed, 12 skipped): the History test fix held.
+  - **W2 (hosted):** StoreService builds `paywallModel` from product mirrors; `purchase` returns
+    `PurchaseOutcome` (`.pending` included); `restorePurchases() -> RestoreOutcome` from the real
+    entitlements; `loadError` is a `ProductLoadError`; the status mirror carries the offer (17.2
+    `transaction.offer`, legacy `offerType` fallback); `displayPrices`. Intro-offer eligibility is
+    re-read on each paywall appearance and on every entitlement change, and no trial is stated
+    while it is read (review finding: one read per process would sell a lapsed user a trial
+    StoreKit charges at once). Configuration.storekit: Lifetime 39.99, Yearly "Full access billed
+    yearly" with a P1W free trial. StoreKitStatusTests gains the W2 SKTestSession cases, compiled
+    only: they run on the iOS 18.5 device (watch the 10 s renewal racing `.trial`).
+  - **W3:** D4's paywall: Yearly first and selected, one CTA, the billed price largest, the
+    per-month figure and savings from the model; the bar (`safeAreaInset`) with CTA, terms and
+    links, inline at accessibility sizes or above 45 % of the height; every state with
+    `-paywallFixture`; trigger subtitles (pinned in LocalizationSourceScanTests) and row order;
+    Continue → `onUnlock`. No close mid-purchase; a thrown cancel is silent; any action that ends
+    with Pro goes to "unlocked". Mac sheet `minHeight` 520 (was 620), `idealHeight` 570: **gate 10
+    measures the bar in a 700-pt window and the cards on the first screen.** PaywallRenderTests
+    (new) compiled only; CI runs them. No new strings; "BEST VALUE", "Unlock the full experience"
+    and the two old load-error strings are now unused (W12 prunes them). StrideTests 770 / 2 / 0
+    in both zones. Mac variant captures not taken (window on another Space): W8.
+- 2026-11-10, **iOS 1.4.1 approved and released** (PENDING_DEVELOPER_RELEASE at the daily check;
+  `release.py release 1.4.1 --platform IOS` on the owner's go → READY_FOR_SALE; Mac live since
+  11-08). Part 1, each step on the owner's go: PR #10 marked ready and merged into main with a merge
+  commit (7ea3df5; its 10-26 red was LocalDataFlowTests' flaky export-cleanup check, green on m5);
+  annotated tag `v1.4.1` on c9c3d8e ("Code = 86a1e3e; later commits are docs and scripts"),
+  pushed. Decision C: the dry run then listed only the 3 IAP review notes (the 7 localization edits
+  went live with the approval); `iap_copy.py --yes` applied them, read back as set. Open: the
+  demo-token rotation (Phase 0 item 3, owner; steps given 11-10), and Sentry on 1.4.1 (23) once
+  iOS has a day of sessions.
+- 2026-11-10, **CI fixes and W4 merged** (79d70a6).
+  - **CI on 3b90a03 was red** (two hosted tests); fixed in f064c68. PaywallRenderTests drew the
+    704 × 1000 iPad sheet in the scene's 402 × 874 iPhone window, so the bar could never be "on the
+    first screen" (3b90a03's screen-frame change was the wrong fix); `show` now sizes its window to
+    the frame under test. BackgroundSyncTests' resubmit test hit handle()'s 2 s answer wait on a
+    loaded runner; it now passes a 60 s bound (its submitter answers at once).
+  - **W4** (a86876b, review fixes a2a2788):
+    - D8: `MenuCommandRules.destination(for:isPro:)` latches review or paywall at the press, for
+      the locked card (`.analytics`, no resume), the Stats toolbar button and Mac ⇧⌘R
+      (`.weeklyReview`, resume the review) and Today's card (`.today`, resume last week; W7 wires
+      the card). ContentView presents what was latched; Stats' two sheets are gone. Continue sets
+      the resume (`ShellState.continueAfterUnlock`).
+    - Issue rule (`takesIssuedRequest`): dropped while a shell sheet is on screen, refused while
+      the window presents anything else (Stats' Share, account choice, an alert), otherwise taken,
+      replacing a request SwiftUI never showed. On-screen state comes from the sheet's
+      appear/disappear, so a request that never showed cannot block later presses.
+    - Cold start: ProPaywallView gains `onEntitled`; the shell's paywall that closes because the
+      user is already entitled still opens the review it carried (1.4.1 behaviour kept).
+    - D12: crown on the toolbar button for free users, `.help`, ⇧⌘R on iPad only. Locked-card
+      preview: 8-week strength shape, scaled to its own max and cut to 3 levels, one opacity,
+      blur 10, hidden from VoiceOver; "Stride Pro has N insights" from the extracted
+      `InsightsCard.lines(for:)`, shown when N ≥ 1. **W5: `lines(for:)` returns real insights
+      only; D7's empty-state lines must not go there**, or the locked card counts them.
+    - AX5 iPad sidebar (carried from 1.4.1): stacked titles stay on one line and scale to 0.5;
+      needs gate 8's Spanish PNG.
+    - Not done (N1): `shell.todayFocusHabitID`.
+    - An independent adversarial review found no blocker. Its 2 medium, 2 low and test findings
+      are fixed in a2a2788; the cold-start resume is tested at unit level only (no DEBUG `isPro`
+      override in StoreService). StrideTests 774 / 2 / 0 in both zones; hosted tests compiled,
+      CI runs them; StrideMac builds.
+- 2026-11-11, **demo token rotated** (owner, Phase 0 item 3). New token generated into 1Password,
+  `DEMO_TOKEN` replaced in /root/stride-server/.env, `node seed-demo.js` rerun. CI on c6c7f73
+  (run 42816606840) green. `scripts/check_demo_account.sh` passed with the new token: 8 habits,
+  521 entries, 0 rejected rows, 0 with no history, 0 created today; one zero current streak
+  (Practice Guitar, by its pattern); the weekly review opens on 2026-11-02. Left for the owner:
+  delete the `.env.bak-*` backup, and paste the token into ASC at the 1.4.2 submission.
+- 2026-11-11, **W5 merged** (44b1b3f; worktree agent 5095ed1, review fixes 3b41e89).
+  - D7 as specified, in StatsInsights (pure) and StatsProCards:
+    - Strength draws no bar before the start ("Not started").
+    - Its tiles depend on the habit's age (today − startDay): ≤ 30 days "Since start" alone;
+      31–90 days "30-Day Change" and "Since start", or "Since start" alone when the two numbers
+      are equal; > 90 days unchanged. The ≤ 30 is one day wider than "younger than 30": at day 30
+      the 30-day window reaches the day before the start.
+    - Change colours use `readableText`.
+    - Insights always draws.
+    - A level week reads "Level with last week".
+    - The weekday line reads the 12-week tally and needs:
+      - 4 due occurrences of every scheduled weekday;
+      - the named day ≥ 15 points from every other scheduled weekday (exact integers);
+      - agreement with By Weekday's all-time counts (the named day at least tied for top or
+        bottom).
+    - The record line. At most 3 lines: record, momentum, weekday.
+    - A PRO chip (#23863C, white at 4.62:1, hidden from VoiceOver).
+    - `lines(for:)` stays real insights only.
+  - **One new key, all 5 translated locales:** "Nothing to compare yet this week". It is a third
+    empty state, shown past the first full week while this week has nothing counted. Without it,
+    a user who never misses read "Not enough recent check-ins to compare" every Monday before the
+    check-in (review finding).
+  - **Review** (independent, read-only). Fixed in 3b41e89:
+    - that empty state;
+    - equal Strength tiles at 31–90 days;
+    - the weekday line contradicting By Weekday;
+    - the chip's 4.5000:1 with no margin.
+
+    Left open, for the "disprove" lens before the freeze:
+    - Momentum compares this week so far with a whole last week (pre-existing). On a Sunday
+      morning the same pattern reads "Down (85% → 83%)".
+    - Past 90 days, a habit used only lately can show equal 30- and 90-Day Change (both true).
+  - `StatsInsights.weeklyReview` stays until W6 merges.
+  - **Tests:**
+    - StrideTests 794 run / 2 skipped / 0 failed in Tokyo and Los Angeles (`TEST_RUNNER_TZ`; a bare
+      `TZ=` does not reach the test process).
+    - Hosted StatsRenderTests compiled only (disk 21 GB); CI runs them.
+    - StrideMac builds.
+- 2026-11-13, **W6 merged** (018bbd3; worktree agent 68058d8, review fixes 7ca067e). CI on 8cef628
+  green after one rerun (AuthServiceTests and HabitHistoryTests timed out at about 22 s on the
+  runner; both pass locally).
+  - **D8 Wave A in WeeklyReviewView.**
+    - The opening week: the requested week, else this week from Thursday ("This week so far"),
+      else last week ("Last week", with dates in UTC).
+    - The change in points through the stringsdict, or "Level with the previous week".
+    - "Most improved" and "Slipped" from WeeklyReviewMath, under "Highlights so far" while the week
+      is open; no heading when nothing qualifies.
+    - `readableText` colours; the environment StatsCache.
+    - Mac sheet 560×680 ideal, 420×520 minimum.
+    - `StatsInsights.weeklyReview` removed.
+  - ContentView now passes the requested week. Before, the review ignored it.
+  - **Deviations:**
+    - The ring has no caption ("This Week" would contradict a header saying "Last week").
+    - No ring when the week has nothing to count.
+    - An earlier requested week is titled by its dates.
+  - **Unused now, for W12 to prune:** "This Week", "%lld%% vs last week", "Best: %@ %@",
+    "Needs work: %@ %@", and the "Up/Down %lld percent vs last week" labels.
+  - **Review** (independent, read-only), fixed in 7ca067e, with WeeklyReviewMath unit tests:
+    - a habit's change and highlight also need 4 counted days in its previous week. A habit
+      created and missed on a Sunday read "+85 points, Most improved" the next Monday;
+    - times-per-week habits are compared only once their week is over. One check-in on Thursday
+      read as 100 %;
+    - with no requested week and nothing that existed last week, the review opens on this week,
+      instead of a brand-new user's empty "Last week";
+    - one clock: the stats are built for `WeeklyReviewMath.today(now:calendar:)`, the same day
+      the header uses. At exactly 00:00 UTC in Los Angeles they had disagreed;
+    - two tests that could not fail are replaced, including a literal "May 25 – 31";
+    - stale comments in ShellState and StatsRenderTests are corrected.
+  - **Left open:**
+    - The ring is the mean over every row, but the change is the mean over habits with both weeks,
+      so a new habit at 0 % can lower the ring under a "+5 points" line (W1's design; the "disprove"
+      lens decides before the freeze).
+    - The readable colours are not yet measured on the Mac's window background (gate 8; StrengthCard
+      too).
+  - **Tests:**
+    - StrideTests 794 run / 2 skipped / 0 failed in Tokyo and Los Angeles.
+    - Hosted, run locally on iPhone 17 (disk 67 GB): the whole StrideAppTests suite 391 run / 20
+      skipped / 0 failed in Tokyo at 68058d8. After the fixes, WeeklyReviewRenderTests (12),
+      StatsRenderTests (18) and ShellTests (20) passed in both zones. In Los Angeles one ShellTests
+      case stalled 15 minutes inside a 5 s wait while the screen was locked, then passed on rerun.
+    - StrideMac builds.
+- 2026-11-14, **W7 merged** (9a8cc32; worktree agent 6a0555a, review fixes c3138e9).
+  - **D12, the Today card.** `InlinePrompts` decides it, `TodayWeekCard` draws it under the
+    progress card.
+    - It shows Monday 00:00 to Tuesday 23:59 local time, once last week has a counted rate. Its
+      number is the Weekly Review ring's.
+    - Pro: "Last week: N%" every week; × hides it for that week.
+    - Free: no number; at most 3 weeks ever; × ends it for good.
+    - At most one card. The dismissal state lives in `UserDefaults.standard` only.
+    - A tap goes through W4's issue rule: Pro opens last week's review; free opens
+      `.paywall(.today, resume:)`.
+  - **Onboarding:** the last page has a "What's in Stride Pro" text button (`.onboarding`). It
+    opens only on tap; the primary button and the page height are unchanged.
+  - **Settings:**
+    - The Pro rows are extracted into `SettingsProRows`, carried over verbatim.
+    - Restore results show inline.
+    - The D6 trial line comes from `ProSettingsRow.trialLine`.
+    - "Rate Stride" in About.
+    - The 1.4.1 carry-over "#FF9500 4d" was Settings' habit rows; TodayView already used
+      `readableText`.
+  - **New Group:** buying from it continues into New Group.
+  - **N3:**
+    - `ReviewPromptRule` (pure) and `ReviewPrompter` call SwiftUI's `requestReview`, at most once
+      per `CFBundleShortVersionString`. The version is recorded before the call.
+    - It asks only after a check-in on today that lifts the current streak to a multiple of 7, or
+      takes a times-per-week count across its goal.
+    - Never in the first 3 days after the install date, during onboarding, or with any sheet,
+      alert or cover up.
+    - Never in an automated run: any launch argument, or an XCTest host.
+    - **Install date:** the first Today appearance or check-in on 1.4.2 or later, so upgraders
+      start the clock at the upgrade (W12 records this in DEV-PLAN rule 4).
+    - A source scan pins `requestReview` to Today's hook and the prompter.
+  - No missing keys: 14 new keys from W0's deck are in use.
+  - **Review** (independent, read-only), fixed in c3138e9:
+    - `a11y_sweep.sh` passes `-inlineCard none` on every launch, so a Monday or Tuesday run no
+      longer draws the free card into the baselines. **W8:** put `-inlineCard week` in place of
+      it for the Pro card; the app reads only the first `-inlineCard`.
+    - Automated runs write nothing to the app's defaults.
+    - "Purchases restored" clears when Pro ends.
+    - **For W8:** `mac_variant/capture.sh` still needs `-inlineCard none`.
+  - **Tests:**
+    - StrideTests 824 run / 2 skipped / 0 failed in Tokyo and Los Angeles.
+    - Hosted on iPhone 17, both zones, all passed: SettingsProRowsTests 12, TodayWeekCardTests 10,
+      ShellTests 20, StatsRenderTests 18, WeeklyReviewRenderTests 12, PaywallRenderTests 13.
+    - The whole hosted suite in Tokyo at 6a0555a: 413 run, 2 failed, both in W2's
+      StoreKitStatusTests: `testAnEarlierMonthlyMakesYearlysTrialIneligible` (now
+      `testThePaywallRereadsYearlysTrialEligibilityAcrossAMonthly`) and
+      `testBillingRetryShowsThePaymentRow`. SKTestSession took effect on this iOS 27.0 device,
+      where it had been skipped before (O21), and CI still skips them. They are diagnosed on the
+      iOS 18.5 device next (gate 4).
+    - StrideMac builds.
+- 2026-11-14, **Gate 4's StoreKit half on iOS 18.5** (9bc2ee3; worktree agent 219620f, test file only).
+  On Soundpost-iOS18 with `STRIDE_HOSTED_NO_SKIPS`: StoreKitStatusTests and
+  StoreKitConfigurationLoadTests 20 of 20 pass, none skipped. W2's SKTestSession cases have now run
+  for the first time. StoreService and PurchaseOutcome are unchanged.
+  - **Eligibility.** The old test assumed that any earlier Monthly blocks Yearly's trial for
+    good. The session says ineligible only while Monthly is active, and eligible again once an
+    unused Monthly lapses. The paywall shows what StoreKit says, which is honest (3.1.2).
+    - The test is now `testThePaywallRereadsYearlysTrialEligibilityAcrossAMonthly`. It checks the
+      real risk: a stale "eligible" reused on the paywall's next appearance.
+    - StoreKit's own answer lags a `buyProduct` by up to about 3 s.
+    - Unverified: whether the production App Store follows the session's rule.
+  - **iOS 27.0, where CI runs:** 18 pass, 2 skip, each with a measured reason.
+    - Eligibility never changes in the session there.
+    - In billing retry, `currentEntitlements` still holds Monthly for a month, so StoreKit itself
+      reports the user as entitled, and `isPro` follows it by design.
+  - **The trial-renewal case took 1048 s once** (screen locked). It did not reproduce: 10.6 s in
+    the class, 24.2 s alone. Timing lines are now logged; the unbounded
+    `refreshPurchasedProducts()` is the first suspect if it recurs.
+  - StrideTests 824 / 2 / 0 in both zones.
+- 2026-11-14, **W8 merged** (b8764df; worktree agent a70cce0..b035230, review fixes 0e289a3..47b51e6).
+  - **DemoData `Scenario.pro`** (`-demo -demoPro`). `.standard` is untouched.
+    - It is laid out by weekday, so every Pro sentence is true on any day: Morning Run's three
+      Insights lines and record of 14; last week's Read as Most improved and Journal as Slipped;
+      the Today card.
+    - DemoDataProScenarioTests covers all 7 weekdays.
+  - **New DEBUG switches** `-openReview this|last` and `-statsHabit`. They are pinned in
+    DebugLaunchFlagScanTests, with `-openHistory` and `-historyDay`.
+  - **`a11y_sweep.sh`:**
+    - `--pro` and `--set store`; a Pro card capture replaces the first `-inlineCard` with `week`.
+    - `frame_check.swift` checks every PNG. It measures 16–88 % from the top, and on regular width
+      only the detail column. A blank or a launch crash is retaken once, then fails the run.
+    - Devices are chosen by exact name on `STRIDE_SIM_RUNTIME` (default 27.0), exactly one match,
+      or by UDID.
+  - **`screenshots.sh`:** O9's six frames per locale and device. It scales evenly, then crops.
+    It only prints `store_screenshots.py` dry runs.
+  - **`verify_archive.sh`:**
+    - It fails a Debug archive (the sentinel in the app; a DEBUG-only DemoData note in the appex)
+      and passes a Release one. Both were built unsigned and checked.
+    - The sentinel proves only that the app target is not a Debug build; the source scan covers
+      DEBUG code elsewhere.
+  - **`mac_variant/capture.sh --sweep`:**
+    - It launches by path, stops by pid, and requires a new pid after each `open`.
+    - Ctrl-C stops the instance it launched.
+    - It refuses to run while a session is stored, unless given `--force`.
+    - `--activate` warns and counts down first.
+    - A launch by path cannot use the scheme's StoreKit configuration (only Xcode's Run action
+      attaches it), so the paywall fixtures stay the Mac evidence.
+  - **Carried checks:**
+    - The onboarding link and the readable colours on the Mac backgrounds pass by computation
+      (5.02:1 and 4.65:1 at the lowest); they are to be measured in the Mac sweep.
+    - Add Habit's preview no longer reads the emoji.
+  - **Captured:** iPhone 17 Pro Max, default size, the Pro set: 29 PNGs, all passing the blank
+    check. They are in ~/Library/Caches/Stride-build/w8-captures/, not committed.
+  - **Pending:**
+    - Free disk fell to 27–29 GB (swap grew while two simulators ran), so these wait for > 30 GB:
+      - the Pro sweep at AX5 on iPhone, and at both sizes on iPad;
+      - `screenshots.sh` for en and ja;
+      - the free old-vs-new comparison.
+    - The Mac sweep waits for the owner's screen; the variant's windows opened on another Space.
+    - The hosted tests of the two new switches (HabitEntryCommitTests) compile only.
+  - **Owner, before any Release-variant launch:** the Mac test variant's container holds a
+    session for `demo@stride-review.com`, and its local store was replaced by demo data, twice,
+    without tombstones. The Debug variant talks only to localhost; the Release variant shares the
+    container and would sync it. Sign the variant out first. (The 11-11 reseed signed every device
+    out server-side, so the stored token is probably dead, but nothing has checked that.)
+  - StrideTests 830 run / 2 skipped / 0 failed in Tokyo and Los Angeles.

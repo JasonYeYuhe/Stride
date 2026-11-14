@@ -71,6 +71,9 @@ struct StrideApp: App {
         // `-demoScenario accountConflict | accountUnknownOwner`: the account screen with fake
         // accounts and no network sign-in, for screenshots (AccountChoiceRouter.demoRequest).
         AccountChoiceRouter.shared.request = AccountChoiceRouter.demoRequest()
+        // D14's switches, parsed once, before StoreService reads `-demoPro`; this prints the
+        // `[StrideDebugLaunchFlags]` sentinel line.
+        _ = StrideDebugLaunchFlags.current
         #endif
         // Instantiate StoreService now so its Transaction.updates listener is running before any
         // network work. It used to be created lazily, and on macOS the default Today tab never
@@ -431,7 +434,41 @@ struct StrideApp: App {
     private static func openLaunchHistory(in shell: ShellState, context: ModelContext) {
         guard !launchHistoryAsked else { return }
         launchHistoryAsked = true
-        if let request = launchHistoryRequest(in: context) { shell.request = request }
+        if let request = launchHistoryRequest(in: context) ?? launchReviewRequest() { shell.request = request }
+        if let habitID = launchStatsHabitID(in: context) { shell.statsHabitID = habitID }
+    }
+
+    /// `-openReview this|last` (RELEASE-1.4.2.md W8): the Weekly Review on this week or last, as a
+    /// Pro press would issue it, and for anyone else the paywall that resumes it (D8's
+    /// `.weeklyReview` trigger), so the sweep and the Mac captures can draw both (`simctl` has no
+    /// touch input). DEBUG-only like `-openHistory`.
+    @MainActor
+    static func launchReviewRequest(arguments: [String] = CommandLine.arguments, now: Date = Date(),
+                                    calendar: Calendar = .current, isPro: Bool? = nil) -> ShellRequest? {
+        guard let flag = arguments.firstIndex(of: "-openReview"), flag + 1 < arguments.count else { return nil }
+        let isPro = isPro ?? StoreService.shared.isPro
+        let thisWeek = WeeklyReviewMath.weekRange(containing: now, in: calendar)
+        let week: WeeklyReviewMath.WeekRange
+        switch arguments[flag + 1] {
+        case "this": week = thisWeek
+        case "last": week = thisWeek.previous
+        default: return nil
+        }
+        let review = MenuCommandRules.ProDestination.review(week: week.monday)
+        return ShellRequest(isPro ? review : .paywall(trigger: .weeklyReview, resume: review))
+    }
+
+    /// `-statsHabit <habit name | index>` (W8): the habit Statistics shows, matched as
+    /// `-openHistory`'s, so the sweep can draw a habit other than the first. DEBUG-only.
+    @MainActor
+    static func launchStatsHabitID(arguments: [String] = CommandLine.arguments, in context: ModelContext) -> UUID? {
+        guard let flag = arguments.firstIndex(of: "-statsHabit"), flag + 1 < arguments.count else { return nil }
+        let wanted = arguments[flag + 1]
+        let descriptor = FetchDescriptor<Habit>(predicate: #Predicate { !$0.isArchived },
+                                                sortBy: [SortDescriptor(\.sortOrder), SortDescriptor(\.createdAt)])
+        guard let habits = try? context.fetch(descriptor) else { return nil }
+        return (habits.first(where: { $0.name == wanted })
+            ?? Int(wanted).flatMap({ habits.indices.contains($0) ? habits[$0] : nil }))?.id
     }
     #endif
 
@@ -752,6 +789,71 @@ enum LaunchWindowSize {
     }
 }
 #endif
+#endif
+
+#if DEBUG
+/// RELEASE-1.4.2.md D14: the launch switches the Pro sweep and the paywall fixtures use, DEBUG-only
+/// like `-paywall` (ContentView) and `-demo` (`prepareStore`). Launch arguments cannot reach a
+/// store build (only Xcode, simctl and XCUITest pass them), but the Mac app can be started with
+/// `open --args`, so none of this is compiled into Release at all.
+///
+/// - `-demoPro`: `StoreService.isPro` is true. W8 adds `DemoData.Scenario.pro` under `-demo`;
+///   the free `.standard` set stays as it is.
+/// - `-paywallFixture <state>`: the paywall drawn from a `PaywallModel` fixture (W2 names the
+///   states, W3 draws them). Parsed and inert until then.
+/// - `-paywallScrollTo cta|terms|plans`: scrolls the paywall on launch, as `-statsScrollTo` does
+///   (W3's anchors). Parsed and inert until then.
+/// - `-inlineCard none|week`: fixes Today's inline card (W7). Parsed and inert until then.
+///
+/// The guards: StrideTests' DebugLaunchFlagScanTests checks that each flag's literal appears only
+/// inside `#if DEBUG`, and parsing prints the 24-byte sentinel `[StrideDebugLaunchFlags]`, which
+/// W8's `verify_archive.sh` looks for in a Release binary. The flags themselves cannot be that
+/// probe: Swift keeps literals of up to 15 bytes inside the instructions, where no text search
+/// finds them (mac_variant/build.sh), and `-demoPro`, `-inlineCard` and `-paywallFixture` are all
+/// that short.
+struct StrideDebugLaunchFlags: Equatable {
+    enum PaywallScrollTarget: String {
+        case cta, terms, plans
+    }
+
+    enum InlineCard: String {
+        /// `none`: no inline card, whatever the day (the sweeps' default).
+        case off = "none"
+        /// `week`: the "Your week" card, whatever the day.
+        case week
+    }
+
+    var demoPro = false
+    /// The raw state name; W2 turns it into a fixture.
+    var paywallFixture: String?
+    var paywallScrollTo: PaywallScrollTarget?
+    var inlineCard: InlineCard?
+
+    /// The line this parser prints, and what a Release binary must not contain (24 bytes).
+    static let sentinel = "[StrideDebugLaunchFlags]"
+
+    /// This process's switches, parsed once (StrideApp.init forces it, so the sentinel line is
+    /// printed at launch).
+    static let current: StrideDebugLaunchFlags = {
+        let flags = parse(CommandLine.arguments)
+        print("\(sentinel) demoPro=\(flags.demoPro) paywallFixture=\(flags.paywallFixture ?? "-") paywallScrollTo=\(flags.paywallScrollTo?.rawValue ?? "-") inlineCard=\(flags.inlineCard?.rawValue ?? "-")")
+        return flags
+    }()
+
+    /// The switches in `arguments`. A value that is missing or unknown leaves its switch off.
+    static func parse(_ arguments: [String]) -> StrideDebugLaunchFlags {
+        func value(after flag: String) -> String? {
+            guard let index = arguments.firstIndex(of: flag), index + 1 < arguments.count else { return nil }
+            return arguments[index + 1]
+        }
+        var flags = StrideDebugLaunchFlags()
+        flags.demoPro = arguments.contains("-demoPro")
+        flags.paywallFixture = value(after: "-paywallFixture")
+        flags.paywallScrollTo = value(after: "-paywallScrollTo").flatMap(PaywallScrollTarget.init(rawValue:))
+        flags.inlineCard = value(after: "-inlineCard").flatMap(InlineCard.init(rawValue:))
+        return flags
+    }
+}
 #endif
 
 extension Notification.Name {

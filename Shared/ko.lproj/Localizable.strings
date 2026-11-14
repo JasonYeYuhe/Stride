@@ -606,3 +606,95 @@
 /* Statistics' 8-week Trend: what VoiceOver reads, after the week, for a week that ended before the
    habit existed. Nothing is drawn for it, and it must not sound like 0% or a missed week. */
 "Not started" = "시작 전";
+
+/* 1.4.2 W0 */
+
+/* 1.4.2 (W0): the Wave A copy deck (RELEASE-1.4.2.md). Every key below is added before the code
+   that uses it, so the parallel workstreams never touch these files.
+
+   The paywall's subtitle under "Stride Pro", by why it was opened (D4): Statistics' locked card;
+   the Weekly Review button and Today's week card; New Group; Settings and onboarding; the
+   "Pro ended" row. "Pro adds three things" are the three feature rows under it. */
+"See what's changing, not just where you are" = "지금의 위치뿐 아니라 무엇이 변하고 있는지 확인하세요";
+"See how your week went" = "한 주가 어땠는지 확인하세요";
+"Organize your habits into groups" = "습관을 그룹으로 정리하세요";
+"Almost everything is free. Pro adds three things." = "거의 모든 기능은 무료입니다. Pro는 세 가지를 더합니다.";
+"Welcome back" = "다시 오신 것을 환영합니다";
+
+/* The paywall's one buy button (D4), for the selected plan: Monthly or Yearly without a trial,
+   and Lifetime. The trial's button is "Start %lld-day free trial" in Localizable.stringsdict. */
+"Subscribe" = "구독하기";
+"Buy Lifetime" = "평생 이용권 구매";
+
+/* The selected plan's terms, beside the buy button (D4). Each %@ is a price as the App Store
+   formats it ("$19.99", "¥3,000"). "/year" and "/month" are this catalog's words, never the App
+   Store's: the in-app language can differ from the device's. These are legal terms: say exactly
+   when a subscription renews and how to stop it, as the line below them does. "%@/month" alone is
+   the small per-month figure on the Yearly plan (its price divided by 12). The trial's terms are
+   in Localizable.stringsdict. */
+"%@/year. Renews automatically unless cancelled at least 24 hours before the end of the period." = "%@/년. 기간 종료 최소 24시간 전에 해지하지 않으면 자동으로 갱신됩니다.";
+"%@/month. Renews automatically unless cancelled at least 24 hours before the end of the period." = "%@/월. 기간 종료 최소 24시간 전에 해지하지 않으면 자동으로 갱신됩니다.";
+"One payment of %@. No subscription." = "%@ 1회 결제. 구독이 아닙니다.";
+"%@/month" = "%@/월";
+
+/* The trial clause the paywall's legal line gains (D4), the same words as the App Store
+   description's (D16). It must stay true whether or not a trial is offered. "Any unused part of a
+   trial ends when you subscribe": buying a plan during a free trial ends what is left of it. */
+"If a free trial is offered, you are charged when it ends unless you cancel at least 24 hours before it ends. Any unused part of a trial ends when you subscribe." = "무료 체험이 제공되는 경우, 체험 종료 최소 24시간 전에 해지하지 않으면 체험이 끝날 때 요금이 청구됩니다. 구독을 구매하면 남은 무료 체험 기간은 종료됩니다.";
+
+/* The paywall's states (D4, D6): the plans could not load (with Try Again); a purchase waiting
+   for approval (Ask to Buy); the three answers of Restore Purchases, shown inline; and a purchase
+   that went through, with Continue. */
+"Stride Pro options couldn't load. Check your connection and try again." = "Stride Pro 옵션을 불러오지 못했습니다. 연결을 확인한 후 다시 시도하세요.";
+"Waiting for approval. Stride Pro unlocks when it's approved." = "승인을 기다리는 중입니다. 승인되면 Stride Pro가 잠금 해제됩니다.";
+"Purchases restored" = "구매가 복원되었습니다";
+"No purchases found for this Apple ID" = "이 Apple ID로 구매한 항목이 없습니다";
+"Couldn't reach the App Store" = "App Store에 연결할 수 없습니다";
+"Stride Pro is unlocked" = "Stride Pro가 잠금 해제되었습니다";
+
+/* Settings' Stride Pro rows during a free trial (D6). In "first charge of %@ on %@" the first %@
+   is the price, the second the date; without a loaded price the row drops it ("first charge on
+   %@"); "Trial ends on %@" is a trial whose auto-renew is off; "Free trial" alone when the
+   renewal date cannot be verified. "Rate Stride" is a row in Settings > About that opens the App
+   Store's review page (D13). */
+"Free trial · first charge of %@ on %@" = "무료 체험 · %2$@에 %1$@ 첫 결제";
+"Free trial · first charge on %@" = "무료 체험 · %@에 첫 결제";
+"Trial ends on %@" = "%@에 체험 종료";
+"Free trial" = "무료 체험";
+"Rate Stride" = "Stride 평가하기";
+
+/* Statistics' Pro cards in a habit's first weeks (D7). Insights explains itself instead of
+   hiding: before the habit's first full Monday-to-Sunday week; when this week has nothing counted
+   yet to compare with last week ("Nothing to compare yet this week": before today's check-in on a
+   Monday, or before a weekly or specific-days habit's first due day of the week); and when recent
+   weeks hold too few check-ins to compare. "Level with last week": momentum with no change. "Since start" is
+   the Strength card's change since the habit began, for a habit younger than 30 days. "PRO" is
+   the small chip on each Pro card's header; VoiceOver does not read it. */
+"Insights appear after your first full week" = "인사이트는 첫 한 주가 끝나면 표시됩니다";
+"Not enough recent check-ins to compare" = "비교할 만큼 최근 체크인이 충분하지 않습니다";
+"Nothing to compare yet this week" = "이번 주는 아직 비교할 기록이 없습니다";
+"Level with last week" = "지난주와 같음";
+"Since start" = "시작 이후";
+"PRO" = "PRO";
+
+/* Weekly Review (D8): the title of an unfinished week once 4 of its days have passed, or of
+   last week; the change against the previous week when nothing moved (a change in points is in
+   Localizable.stringsdict); and the highlights: the habit that rose most, the habit that dropped
+   most ("Slipped"), and their heading while the week is unfinished. */
+"This week so far" = "이번 주 지금까지";
+"Last week" = "지난주";
+"Level with the previous week" = "전주와 같음";
+"Most improved" = "가장 많이 향상";
+"Slipped" = "하락";
+"Highlights so far" = "지금까지의 하이라이트";
+
+/* Today's "Your week" card (D12), on Monday and Tuesday: for Pro, last week's overall rate
+   and a button to the review; for a free user, no number, and the same button opens the paywall.
+   Its close button hides it until next week (Pro), or for good (free).
+   "What's in Stride Pro" is a text button on onboarding's last page that opens the paywall. */
+"Last week: %lld%%" = "지난주: %lld%%";
+"Your Weekly Review is ready" = "주간 리뷰가 준비되었습니다";
+"See your Weekly Review" = "주간 리뷰 보기";
+"Hide until next week" = "다음 주까지 숨기기";
+"Don't show again" = "다시 표시 안 함";
+"What's in Stride Pro" = "Stride Pro에 포함된 기능";

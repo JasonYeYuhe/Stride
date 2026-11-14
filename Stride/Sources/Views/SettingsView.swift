@@ -59,10 +59,16 @@ struct SettingsView: View {
     @State private var eraseError: String?
 
     // Store
-    @State private var showingPaywall = false
+    /// The paywall, and why it is open (RELEASE-1.4.2.md D4): Upgrade to Pro passes `.settings`,
+    /// the "Pro ended" row `.lapsed` (`paywallTrigger(for:)`). One sheet for both.
+    @State private var paywallTrigger: PaywallTrigger?
     /// Manage Subscription on iOS: `manageSubscriptionsSheet` (the Mac opens Apple's page instead,
     /// `SubscriptionManagement.manageRoute`).
     @State private var showingManageSubscriptions = false
+    /// Restore Purchases' answer, shown inline under the Stride Pro rows (RELEASE-1.4.2.md D6):
+    /// "Purchases restored", "No purchases found for this Apple ID", "Couldn't reach the App
+    /// Store"; a cancelled Apple Account sheet says nothing. 1.4.1's row was a silent `try?`.
+    @State private var restoreOutcome: RestoreOutcome?
     @State private var showingLogin = false
     /// "Sign in again to keep syncing" in the Account section: the row's tap and its login sheet,
     /// as Today's (E2E S9). The sheet hangs on the List: the sign-in ends the row.
@@ -78,7 +84,7 @@ struct SettingsView: View {
     /// False while the iPad shell keeps Settings alive but hidden (RELEASE-1.4.0.md D2); the
     /// "when shown" refreshes below wait for it. Always true in the Mac's Settings window.
     @Environment(\.shellTabIsActive) private var isActive
-    @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.colorScheme) private var colorScheme
 
     private var activeHabits: [Habit] {
         allHabits.filter { !$0.isArchived }
@@ -141,9 +147,18 @@ struct SettingsView: View {
                 // ended. No Redeem Code: no offer code ships in 1.4.1 (O9,
                 // `SubscriptionManagement.showsRedeemCode`).
                 Section {
-                    ForEach(ProSettingsRow.rows(for: store.proStatus, isPro: store.isPro), id: \.self) { row in
-                        proRow(row)
-                    }
+                    SettingsProRows(status: store.proStatus, isPro: store.isPro,
+                                    displayPrices: store.displayPrices, restoreOutcome: restoreOutcome,
+                                    isRestoring: store.isRestoring,
+                                    onPaywall: { paywallTrigger = $0 },
+                                    onRestore: restorePurchases,
+                                    onManage: { showingManageSubscriptions = true })
+                }
+                // An answer about an earlier state goes once Pro changes from elsewhere
+                // (`SettingsProRows.restoreOutcome(_:afterProChangeTo:isRestoring:)`).
+                .onChange(of: store.isPro) { _, isPro in
+                    restoreOutcome = SettingsProRows.restoreOutcome(restoreOutcome, afterProChangeTo: isPro,
+                                                                    isRestoring: store.isRestoring)
                 }
 
                 // Account & Sync
@@ -317,7 +332,10 @@ struct SettingsView: View {
                         ForEach(activeHabits) { habit in
                             let habitStats = stats[habit.id]
                             HStack {
+                                // Decorative, as on Today's rows and History's header: the
+                                // combined row speaks the name, not "person running, Morning Run".
                                 Text(habit.emoji)
+                                    .accessibilityHidden(true)
                                 Text(habit.name)
                                 Spacer()
                                 VStack(alignment: .trailing, spacing: 2) {
@@ -330,10 +348,14 @@ struct SettingsView: View {
                                         HStack(spacing: 2) {
                                             Image(systemName: "flame.fill")
                                                 .scaledSystemFont(size: 9, relativeTo: .caption2)
+                                                .foregroundStyle(.orange)
+                                            // #FF9500 is 2.1:1 on the white row (1.4.1's gate 8):
+                                            // the words take a darker shade of it, as Today's
+                                            // streak does; the flame keeps the system orange.
                                             Text(habit.streakUnit == "week" ? "\(streak)w" : "\(streak)d")
                                                 .font(.caption2)
+                                                .foregroundStyle(Color.readableText(hex: "#FF9500", in: colorScheme))
                                         }
-                                        .foregroundStyle(.orange)
                                         .accessibilityElement(children: .ignore)
                                         .accessibilityLabel(habit.streakUnit == "week"
                                             ? "\(streak) week streak"
@@ -425,6 +447,7 @@ struct SettingsView: View {
                         ForEach(archivedHabits) { habit in
                             HStack {
                                 Text(habit.emoji)
+                                    .accessibilityHidden(true)
                                 Text(habit.name)
                                     .foregroundStyle(.secondary)
                                 Spacer()
@@ -473,6 +496,12 @@ struct SettingsView: View {
                     } label: {
                         Label("Language", systemImage: "globe")
                     }
+                    #if os(macOS)
+                    // The Mac's grouped Form did not link this pop-up to its Label, as it does
+                    // Add Habit's plain-text Frequency and Group, so VoiceOver said only
+                    // "System Default, pop-up button" (axdump, 1.4.1 gate 10).
+                    .accessibilityLabel(Text("Language"))
+                    #endif
                 } header: {
                     Text("Language")
                 } footer: {
@@ -587,6 +616,11 @@ struct SettingsView: View {
                         #endif
                     }
                     LabeledContent("Data Storage", value: dataStorageValue)
+                    // D13: Apple's write-a-review page, on the user's tap only. The one system
+                    // prompt (N3) is Today's, after a milestone check-in (`ReviewPromptRule`).
+                    Link(destination: ReviewPromptRule.writeReviewURL) {
+                        Label("Rate Stride", systemImage: "star")
+                    }
                 }
 
                 Section("Legal") {
@@ -621,8 +655,8 @@ struct SettingsView: View {
             .sheet(item: $habitToEdit) { habit in
                 AddHabitView(editingHabit: habit)
             }
-            .sheet(isPresented: $showingPaywall) {
-                ProPaywallView()
+            .sheet(item: $paywallTrigger) { trigger in
+                ProPaywallView(trigger: trigger)
             }
             #if os(iOS)
             .manageSubscriptionsSheet(isPresented: $showingManageSubscriptions)
@@ -1003,169 +1037,21 @@ struct SettingsView: View {
 
     // MARK: - Stride Pro (D12)
 
-    /// One row of the Stride Pro section, worded (`ProSettingsRow`).
-    @ViewBuilder
-    private func proRow(_ row: ProSettingsRow) -> some View {
+    /// The paywall trigger of a Stride Pro row that opens the paywall (RELEASE-1.4.2.md D4):
+    /// Upgrade to Pro `.settings`, "Pro ended on <date>" `.lapsed`; nil for every other row.
+    /// Pinned by StrideAppTests' PaywallTriggerTests.
+    static func paywallTrigger(for row: ProSettingsRow) -> PaywallTrigger? {
         switch row {
-        case .upgrade:
-            // At accessibility sizes the crown goes above the words, which then get the row's
-            // width: beside it they had about 230 pt at AX5, and the title broke inside a word,
-            // "Up- / grade to / Pro" (gate 8).
-            let crown = Image(systemName: "crown.fill")
-                .font(.title2)
-                .foregroundStyle(.yellow)
-                .accessibilityHidden(true)
-            Button {
-                showingPaywall = true
-            } label: {
-                HStack(spacing: 12) {
-                    if !typeSize.isAccessibilitySize { crown }
-                    VStack(alignment: .leading, spacing: 2) {
-                        if typeSize.isAccessibilitySize { crown }
-                        Text("Upgrade to Pro")
-                            .font(.headline)
-                            .foregroundStyle(.primary)
-                        // The paywall's three rows, in one line (RELEASE-1.4.1.md D11); every
-                        // catalog words it with the rows' own titles. Pinned by
-                        // LocalizationSourceScanTests.testProClaimsNameExactlyD11sSet.
-                        Text("Habit groups, advanced analytics & weekly review")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .accessibilityHidden(true)
-                }
-                .padding(.vertical, 4)
-            }
-            .buttonStyle(.plain)
-        case .restore:
-            // Discoverable restore path: a returning buyer whose entitlement isn't detected can
-            // recover Pro without opening the paywall.
-            Button("Restore Purchases") {
-                Task { await store.restorePurchases() }
-            }
-        case .unlocked:
-            HStack(spacing: 12) {
-                Image(systemName: "crown.fill")
-                    .font(.title2)
-                    .foregroundStyle(.yellow)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Stride Pro")
-                        .font(.headline)
-                    Text("All features unlocked")
-                        .font(.caption)
-                        .foregroundStyle(.green)
-                }
-            }
-            .padding(.vertical, 4)
-            .accessibilityElement(children: .combine)
-        case .plan(let plan, let line):
-            VStack(alignment: .leading, spacing: 2) {
-                LabeledContent("Plan") { planName(plan) }
-                if let line {
-                    planDateLine(line)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .accessibilityElement(children: .combine)
-        case .billingIssue:
-            Label {
-                Text("Payment problem — update your payment method")
-                    .fixedSize(horizontal: false, vertical: true)
-            } icon: {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-            }
-        case .stillRenews:
-            Label {
-                Text("A subscription still renews")
-                    .fixedSize(horizontal: false, vertical: true)
-            } icon: {
-                Image(systemName: "arrow.triangle.2.circlepath")
-                    .foregroundStyle(.orange)
-            }
-        case .manage:
-            manageSubscriptionRow
-        case .lapsed(let endedOn):
-            // One row (D12): what happened and the way back, which is the paywall.
-            let dateLabel = Self.proDate(endedOn)
-            Button {
-                showingPaywall = true
-            } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "crown")
-                        .font(.title2)
-                        .foregroundStyle(.secondary)
-                        .accessibilityHidden(true)
-                    Text("Pro ended on \(dateLabel)")
-                        .foregroundStyle(.primary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer()
-                    Text("Resubscribe")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.green)
-                }
-                .padding(.vertical, 4)
-            }
-            .buttonStyle(.plain)
+        case .upgrade: return .settings
+        case .lapsed: return .lapsed
+        case .restore, .unlocked, .plan, .billingIssue, .stillRenews, .manage: return nil
         }
     }
 
-    /// Manage Subscription: Apple's sheet in the app on iOS; Apple's page on the Mac, where the
-    /// sheet does not exist, and for the iPhone app on a Mac (`SubscriptionManagement`).
-    @ViewBuilder
-    private var manageSubscriptionRow: some View {
-        switch SubscriptionManagement.manageRoute(on: .current) {
-        case .sheet:
-            Button {
-                showingManageSubscriptions = true
-            } label: {
-                Label("Manage Subscription", systemImage: "creditcard")
-            }
-        case .url(let url):
-            Link(destination: url) {
-                Label("Manage Subscription", systemImage: "creditcard")
-            }
-        }
-    }
-
-    /// The plan row's value: the plan's name, as the paywall names it.
-    private func planName(_ plan: ProSettingsRow.Plan) -> Text {
-        switch plan {
-        case .lifetime:
-            return Text("Lifetime")
-        case .subscription(let productID):
-            switch StrideProduct(rawValue: productID) {
-            case .monthlyPro: return Text("Monthly")
-            case .yearlyPro: return Text("Yearly")
-            case .lifetimePro: return Text("Lifetime")
-            case nil: return Text("Stride Pro")
-            }
-        }
-    }
-
-    /// Two whole sentences, so each is one key.
-    private func planDateLine(_ line: ProSettingsRow.DateLine) -> Text {
-        switch line {
-        case .renews(let date):
-            let dateLabel = Self.proDate(date)
-            return Text("Renews on \(dateLabel)")
-        case .expires(let date):
-            let dateLabel = Self.proDate(date)
-            return Text("Expires on \(dateLabel)")
-        }
-    }
-
-    /// A subscription date — an instant, not a day-key, so in the device's zone — in the picked
-    /// language.
-    @MainActor
-    private static func proDate(_ date: Date) -> String {
-        date.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted).locale(appLocale))
+    /// Restore Purchases from Settings' row: its answer stays under the rows (D6).
+    private func restorePurchases() {
+        restoreOutcome = nil
+        Task { restoreOutcome = await store.restorePurchases() }
     }
 
     /// The Active Habits rows' stats, by habit: one StatsCache read for all of them.
@@ -1791,5 +1677,256 @@ struct DeleteAccountView: View {
         } else {
             Text("All your habits, records, and account information will be permanently removed from our servers.")
         }
+    }
+}
+
+// MARK: - Stride Pro rows (RELEASE-1.4.1.md D12, RELEASE-1.4.2.md D6)
+
+/// Settings' Stride Pro rows, worded: what `ProSettingsRow.rows` lists for the status and the
+/// entitlement, the trial's line under its plan (`ProSettingsRow.trialLine`), and Restore's answer
+/// inline. Its own view, with everything it reads passed in, so a hosted test draws it for every
+/// `ProStatus` (SettingsProRowsTests) without StoreKit.
+struct SettingsProRows: View {
+    let status: ProStatus
+    let isPro: Bool
+    /// The loaded products' prices by id (`StoreService.displayPrices`); empty offline.
+    let displayPrices: [String: String]
+    let restoreOutcome: RestoreOutcome?
+    let isRestoring: Bool
+    /// Upgrade to Pro (`.settings`) and Resubscribe (`.lapsed`): `SettingsView.paywallTrigger(for:)`.
+    let onPaywall: (PaywallTrigger) -> Void
+    let onRestore: () -> Void
+    /// Manage Subscription where it is Apple's sheet (iOS); elsewhere the row is a link.
+    let onManage: () -> Void
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    var body: some View {
+        ForEach(ProSettingsRow.rows(for: status, isPro: isPro), id: \.self) { row in
+            proRow(row)
+        }
+        if let restoreOutcome, let answer = Self.restoreAnswer(restoreOutcome, isPro: isPro) {
+            answer
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("settings.restoreAnswer")
+        }
+    }
+
+    /// What Restore's answer becomes when `isPro` changes while it is shown. A restore's own
+    /// change (`isRestoring`) keeps it. Otherwise "No purchases found" and "Couldn't reach the App
+    /// Store" go once Pro arrives from elsewhere (they would sit under "All features unlocked"), and
+    /// "Purchases restored" goes once Pro is gone again (expired, refunded, revoked): it must never
+    /// sit under "Upgrade to Pro" or "Pro ended".
+    static func restoreOutcome(_ outcome: RestoreOutcome?, afterProChangeTo isPro: Bool,
+                               isRestoring: Bool) -> RestoreOutcome? {
+        guard !isRestoring, let outcome else { return outcome }
+        if outcome == .restored { return isPro ? outcome : nil }
+        return isPro ? nil : outcome
+    }
+
+    /// Restore's answer (D6), as the paywall words it. A cancel says nothing, and "Purchases
+    /// restored" is said only while the entitlement is there.
+    static func restoreAnswer(_ outcome: RestoreOutcome, isPro: Bool) -> Text? {
+        switch outcome {
+        case .restored: return isPro ? Text("Purchases restored") : nil
+        case .nothingFound: return Text("No purchases found for this Apple ID")
+        case .failed: return Text("Couldn't reach the App Store")
+        case .cancelled: return nil
+        }
+    }
+
+    /// One row of the Stride Pro section, worded (`ProSettingsRow`).
+    @ViewBuilder
+    private func proRow(_ row: ProSettingsRow) -> some View {
+        switch row {
+        case .upgrade:
+            // At accessibility sizes the crown goes above the words, which then get the row's
+            // width: beside it they had about 230 pt at AX5, and the title broke inside a word,
+            // "Up- / grade to / Pro" (gate 8).
+            let crown = Image(systemName: "crown.fill")
+                .font(.title2)
+                .foregroundStyle(.yellow)
+                .accessibilityHidden(true)
+            Button {
+                if let trigger = SettingsView.paywallTrigger(for: row) { onPaywall(trigger) }
+            } label: {
+                HStack(spacing: 12) {
+                    if !typeSize.isAccessibilitySize { crown }
+                    VStack(alignment: .leading, spacing: 2) {
+                        if typeSize.isAccessibilitySize { crown }
+                        Text("Upgrade to Pro")
+                            .font(.headline)
+                            .foregroundStyle(.primary)
+                        // The paywall's three rows, in one line (RELEASE-1.4.1.md D11); every
+                        // catalog words it with the rows' own titles. Pinned by
+                        // LocalizationSourceScanTests.testProClaimsNameExactlyD11sSet.
+                        Text("Habit groups, advanced analytics & weekly review")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                }
+                .padding(.vertical, 4)
+            }
+            .buttonStyle(.plain)
+        case .restore:
+            // Discoverable restore path: a returning buyer whose entitlement isn't detected can
+            // recover Pro without opening the paywall. Its answer shows under the rows (D6).
+            HStack {
+                Button("Restore Purchases", action: onRestore)
+                    .disabled(isRestoring)
+                if isRestoring {
+                    Spacer()
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+        case .unlocked:
+            HStack(spacing: 12) {
+                Image(systemName: "crown.fill")
+                    .font(.title2)
+                    .foregroundStyle(.yellow)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Stride Pro")
+                        .font(.headline)
+                    Text("All features unlocked")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                }
+            }
+            .padding(.vertical, 4)
+            .accessibilityElement(children: .combine)
+        case .plan(let plan, let line):
+            VStack(alignment: .leading, spacing: 2) {
+                LabeledContent("Plan") { planName(plan) }
+                if let line {
+                    planDateLine(line)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if let trial = ProSettingsRow.trialLine(for: status, isPro: isPro, displayPrices: displayPrices) {
+                    // The trial's plan row has no date line of its own (D6): this says when the
+                    // first charge comes, or when the trial ends, with Manage after it.
+                    trialLine(trial)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .accessibilityElement(children: .combine)
+        case .billingIssue:
+            Label {
+                Text("Payment problem — update your payment method")
+                    .fixedSize(horizontal: false, vertical: true)
+            } icon: {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+            }
+        case .stillRenews:
+            Label {
+                Text("A subscription still renews")
+                    .fixedSize(horizontal: false, vertical: true)
+            } icon: {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .foregroundStyle(.orange)
+            }
+        case .manage:
+            manageSubscriptionRow
+        case .lapsed(let endedOn):
+            // One row (D12): what happened and the way back, which is the paywall.
+            let dateLabel = Self.proDate(endedOn)
+            Button {
+                if let trigger = SettingsView.paywallTrigger(for: row) { onPaywall(trigger) }
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "crown")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    Text("Pro ended on \(dateLabel)")
+                        .foregroundStyle(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Text("Resubscribe")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.green)
+                }
+                .padding(.vertical, 4)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    /// Manage Subscription: Apple's sheet in the app on iOS; Apple's page on the Mac, where the
+    /// sheet does not exist, and for the iPhone app on a Mac (`SubscriptionManagement`).
+    @ViewBuilder
+    private var manageSubscriptionRow: some View {
+        switch SubscriptionManagement.manageRoute(on: .current) {
+        case .sheet:
+            Button(action: onManage) {
+                Label("Manage Subscription", systemImage: "creditcard")
+            }
+        case .url(let url):
+            Link(destination: url) {
+                Label("Manage Subscription", systemImage: "creditcard")
+            }
+        }
+    }
+
+    /// The plan row's value: the plan's name, as the paywall names it.
+    private func planName(_ plan: ProSettingsRow.Plan) -> Text {
+        switch plan {
+        case .lifetime:
+            return Text("Lifetime")
+        case .subscription(let productID):
+            switch StrideProduct(rawValue: productID) {
+            case .monthlyPro: return Text("Monthly")
+            case .yearlyPro: return Text("Yearly")
+            case .lifetimePro: return Text("Lifetime")
+            case nil: return Text("Stride Pro")
+            }
+        }
+    }
+
+    /// Two whole sentences, so each is one key.
+    private func planDateLine(_ line: ProSettingsRow.DateLine) -> Text {
+        switch line {
+        case .renews(let date):
+            let dateLabel = Self.proDate(date)
+            return Text("Renews on \(dateLabel)")
+        case .expires(let date):
+            let dateLabel = Self.proDate(date)
+            return Text("Expires on \(dateLabel)")
+        }
+    }
+
+    /// The trial's line (D6): with the price when the products loaded, the date without it, no
+    /// date when the renewal info could not be verified.
+    private func trialLine(_ line: ProSettingsRow.TrialLine) -> Text {
+        switch line {
+        case .firstCharge(let date, let price?):
+            let dateLabel = Self.proDate(date)
+            return Text("Free trial · first charge of \(price) on \(dateLabel)")
+        case .firstCharge(let date, nil):
+            let dateLabel = Self.proDate(date)
+            return Text("Free trial · first charge on \(dateLabel)")
+        case .endsOn(let date):
+            let dateLabel = Self.proDate(date)
+            return Text("Trial ends on \(dateLabel)")
+        case .undated:
+            return Text("Free trial")
+        }
+    }
+
+    /// A subscription date — an instant, not a day-key, so in the device's zone — in the picked
+    /// language.
+    @MainActor
+    static func proDate(_ date: Date) -> String {
+        date.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted).locale(appLocale))
     }
 }

@@ -6,7 +6,8 @@ import SwiftData
 // the network and real data, so it is deliberately not a test target.
 //
 // Per habit: records, streak, best, 30-day rate and created (unchanged since 1.3), then
-// strength 0–100, its Δ30 in points, the completed days of the last 30 and the top 3 runs.
+// strength 0–100, its Δ30 in points, the completed days of the last 30 and the top 3 runs;
+// then the "last week" block (Weekly Review's numbers for the finished week before this one).
 // Exit codes: 1 no token or sign-in, 2 a broken account, 3 stale (every streak 0), 4 a habit
 // done on at least 25 of the last 30 days scoring below 0.75 (RELEASE-1.4.1.md gate 2).
 @MainActor
@@ -53,6 +54,7 @@ func run() async throws {
     // TZ=America/Los_Angeles).
     let live = HabitStats.liveRecordIDs(of: habits, in: context)
     var weak: [String] = []
+    var reviewInputs: [(habit: Habit, stats: HabitStats)] = []
     for habit in habits.sorted(by: { $0.name < $1.name }) {
         let streak = habit.currentStreak()
         let rate = Int(habit.completionRate() * 100)
@@ -79,7 +81,9 @@ func run() async throws {
                      stats.strengthDelta30 * 100, doneIn30,
                      (top3.isEmpty ? "none" : top3.joined(separator: ", ")) as NSString))
         if doneIn30 >= 25 && stats.strength < 0.75 { weak.append(habit.name) }
+        reviewInputs.append((habit, stats))
     }
+    printLastWeek(reviewInputs, groups: try context.fetch(FetchDescriptor<HabitGroup>(sortBy: [SortDescriptor(\.sortOrder)])))
     print("no history: \(noHistory) | zero current streak: \(zeroStreak) | zero 30-day rate: \(zeroRate) | created today: \(createdToday) | rejected rows: \(rowIssues.count)")
 
     // Before any exit below, so a failing run doesn't leave a session behind.
@@ -106,6 +110,42 @@ func run() async throws {
         print("FAIL: strength below 75 on a habit done on at least 25 of the last 30 days: \(weak.joined(separator: ", "))")
         exit(4)
     }
+}
+
+/// The "last week" block (RELEASE-1.4.2.md W1): what Weekly Review computes for the finished week
+/// before this one, from the same `HabitStats` as above (`WeeklyReviewMath`), plus the week the
+/// review opens on today and the habits at risk now (D10, with no reminder on: 18:00). Printed
+/// only; nothing here fails the check.
+@MainActor
+func printLastWeek(_ inputs: [(habit: Habit, stats: HabitStats)], groups: [HabitGroup]) {
+    let now = Date()
+    let calendar = Calendar.current
+    let week = WeeklyReviewMath.weekRange(containing: now, in: calendar).previous
+    let opening = WeeklyReviewMath.openingWeek(now: now, calendar: calendar)
+    let review = WeeklyReviewMath.review(of: inputs.map { WeeklyReviewMath.HabitInput(habit: $0.habit, stats: $0.stats) },
+                                         week: week, groupOrder: groups.map(\.id))
+    let day = HabitCalendar.dayStringFormatter
+    func percent(_ rate: Double?) -> String { rate.map { String(format: "%3d%%", StatsInsights.percent($0)) } ?? "   -" }
+    func signed(_ points: Int?) -> String { points.map { String(format: "%+d", $0) } ?? "-" }
+    print("last week \(day.string(from: week.monday))..\(day.string(from: week.sunday)) (finished: \(review.isFinished)); the review opens today on \(opening.relation) \(day.string(from: opening.week.monday))")
+    for row in review.rows {
+        let (habit, stats) = inputs[row.index]
+        let tag = row.index == review.mostImproved ? " [most improved]" : row.index == review.slipped ? " [slipped]" : ""
+        print(String(format: "  %-20@ rate=%@ previous=%@ change=%@ strength %@ pts%@",
+                     habit.name as NSString, percent(row.rate), percent(row.previousRate),
+                     signed(row.changePoints), signed(WeeklyReviewMath.strengthChangePoints(of: stats, week: week)),
+                     tag))
+    }
+    let name: (Int?) -> String = { $0.map { inputs[$0].habit.name } ?? "none" }
+    print("  overall \(percent(review.overall)) change \(signed(review.changePoints)) points | most improved: \(name(review.mostImproved)) | slipped: \(name(review.slipped))")
+    let groupName = Dictionary(groups.map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a })
+    print("  sections: " + review.sections.map { section in
+        "\(section.groupID.flatMap { groupName[$0] } ?? "Ungrouped") \(percent(section.rate)) (\(section.members.count))"
+    }.joined(separator: ", "))
+    let atRisk = inputs.filter {
+        WeeklyReviewMath.isAtRisk($0.habit, stats: $0.stats, now: now, calendar: calendar, dailyReminder: nil)
+    }.map(\.habit.name)
+    print("  at risk now: \(atRisk.isEmpty ? "none" : atRisk.joined(separator: ", "))")
 }
 
 try await run()

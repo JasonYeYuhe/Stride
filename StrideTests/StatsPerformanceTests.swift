@@ -199,6 +199,50 @@ final class StatsPerformanceTests: XCTestCase {
         XCTAssertLessThan(seconds, 7.5)
     }
 
+    /// Weekly Review's reads at the largest account (RELEASE-1.4.2.md Data safety 4), from the
+    /// built set StatsCache holds: one review render (the opening week's `WeeklyReviewMath.review`
+    /// with every habit's strength change and its 12-week weekday tally), and the review of every
+    /// one of the 157 weeks the three years touch — any week the review can be asked for. Wave B's
+    /// notes read is not in 1.4.2 (N1), so none is timed. First measured: one render
+    /// 0.0013 s, every week 0.040 s
+    /// (2026-11-08; the same run's 50 × 1,095 full build took 2.24 s against its first 1.49 s).
+    func testAnyWeekReviewReadsOnFiftyHabitsTimesThreeYears() throws {
+        let store = try coldStore(habits: 50, days: 1_095)
+        let stats = buildAll(store)
+        let inputs = zip(store.habits, stats).map { WeeklyReviewMath.HabitInput(habit: $0, stats: $1) }
+        let thisWeek = WeeklyReviewMath.weekRange(containing: store.today, in: .current)
+        let weeks = (0..<157).map { WeeklyReviewMath.WeekRange(containingDay: thisWeek.mondayNumber - 7 * $0) }
+
+        let (rendered, renderSeconds) = timed { () -> Int in
+            let opening = WeeklyReviewMath.openingWeek(now: Date(), calendar: .current)
+            let review = WeeklyReviewMath.review(of: inputs, week: opening.week)
+            var sum = review.rows.count
+            for s in stats {
+                sum += WeeklyReviewMath.strengthChangePoints(of: s, week: opening.week) ?? 0
+                sum += s.recentWeekdayTallies.count
+            }
+            return sum
+        }
+        XCTAssertGreaterThan(rendered, 50)
+
+        let (reviews, allSeconds) = timed { () -> [WeeklyReviewMath.Review] in
+            weeks.map { week in
+                let review = WeeklyReviewMath.review(of: inputs, week: week)
+                for s in stats { _ = WeeklyReviewMath.strengthChangePoints(of: s, week: week) }
+                return review
+            }
+        }
+        XCTAssertEqual(reviews.count, 157)
+        XCTAssertEqual(reviews[1].rows.count, 50)
+        XCTAssertTrue(reviews[1].isFinished)
+        XCTAssertFalse(reviews[0].isFinished)
+        XCTAssertEqual(reviews[1].rows[0].changePoints, 0, "a yes/no habit done every day: level")
+        print(String(format: "PERF weekly review 50x1095 (from built stats): one render %.4f s, all 157 weeks %.3f s",
+                     renderSeconds, allSeconds))
+        XCTAssertLessThan(renderSeconds, 0.0065)
+        XCTAssertLessThan(allSeconds, 0.20)
+    }
+
     // MARK: - Harness
 
     private struct Store {

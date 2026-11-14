@@ -253,9 +253,17 @@ final class HabitHistoryTests: XCTestCase {
         // Another day asks too, and the day stays until the answer.
         let todayCell = "history.day." + HistoryLink.dayString(of: todayKey)
         let yesterdayCell = "history.day." + HistoryLink.dayString(of: HabitCalendar.dayKey(for: try daysAgo(1)))
+        let sameMonth = Calendar.current.isDate(try daysAgo(1), equalTo: today, toGranularity: .month)
+        try await scrollHistoryToTop(in: window)
+        if !sameMonth {
+            // On the 1st, yesterday is in the month before; showing it writes and asks nothing.
+            try await activate(identified: "history.previousMonth", in: window)
+        }
         try await activate(identified: yesterdayCell, in: window)
         let atDay = try await alert(titled: capQuestion)
-        XCTAssertTrue(isSelected(todayCell, in: window), "today stays selected while it asks")
+        if sameMonth {
+            XCTAssertTrue(isSelected(todayCell, in: window), "today stays selected while it asks")
+        }
 
         // Discard Changes: the stored note is back, untouched, and the picked day follows.
         try await answer(atDay, appLocalized("Discard Changes"))
@@ -738,6 +746,30 @@ final class HabitHistoryTests: XCTestCase {
 
     private func isSelected(_ id: String, in root: NSObject) -> Bool {
         elements(in: root) { self.identifier(of: $0) == id }.first?.accessibilityTraits.contains(.selected) ?? false
+    }
+
+    /// Scrolls the presented sheet back to its top, where the month grid is, and waits for its
+    /// days to be in the tree again. On CI's simulator (xcode-27-arm64 image of 2026-11-03 on)
+    /// no day could be found after typing a note, whatever the date (PR #12's runs on 11-08 and
+    /// 11-09; it passed on 10-26 with the same app code): focusing the note scrolls the page to
+    /// the editor, and the grid is a LazyVGrid, whose rows scrolled off leave the accessibility
+    /// tree. A VoiceOver user scrolls up to pick a day the same way. The failure message carries
+    /// the offsets it found, in case the cause is another.
+    private func scrollHistoryToTop(in window: UIWindow) async throws {
+        let sheet = try XCTUnwrap(host?.presentedViewController?.view, "History is presented")
+        var scrollViews: [UIScrollView] = []
+        func collect(_ view: UIView) {
+            if let scroll = view as? UIScrollView { scrollViews.append(scroll) }
+            view.subviews.forEach(collect)
+        }
+        collect(sheet)
+        let offsets = scrollViews.map { "\($0.contentOffset.y)" }.joined(separator: ", ")
+        for scroll in scrollViews {
+            scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: -scroll.adjustedContentInset.top), animated: false)
+        }
+        try await waitUntil("the month's days are back in the tree (scroll offsets were \(offsets))") {
+            !self.elements(in: window) { self.identifier(of: $0)?.hasPrefix("history.day.") == true }.isEmpty
+        }
     }
 
     // MARK: - Typing and alerts

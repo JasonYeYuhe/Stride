@@ -47,7 +47,11 @@ final class StoreService {
     private(set) var isLoading = false
 
     var isPro: Bool {
-        !purchasedProductIDs.isEmpty
+        #if DEBUG
+        // `-demoPro` (RELEASE-1.4.2.md D14): the Pro sweep without a purchase. DEBUG-only.
+        if StrideDebugLaunchFlags.current.demoPro { return true }
+        #endif
+        return !purchasedProductIDs.isEmpty
     }
 
     /// What Settings shows about Pro (RELEASE-1.4.1.md D12): the plan, its renewal date, a
@@ -90,11 +94,52 @@ final class StoreService {
         updateListenerTask = nil
     }
 
-    private(set) var loadError: String?
+    /// Why the last load ended without products (RELEASE-1.4.2.md D6): a kind the paywall words
+    /// in one sentence, the same for both. The raw detail goes only to the Sentry report
+    /// (`reportProductLoad`), never to the screen. Nil while loading and once products load.
+    private(set) var loadError: ProductLoadError?
     private var loadAttempts = 0
     private static let maxRetries = 5
 
+    /// `product.subscription?.isEligibleForIntroOffer` by product id, read once per load, before
+    /// the products are published (so the paywall never draws "Subscribe" and then swaps in the
+    /// trial). A product that is not a subscription, or whose answer was never read, has no
+    /// entry: unknown, which the paywall reads as not eligible (D4).
+    private(set) var introOfferEligibility: [String: Bool] = [:]
+    /// True while `refreshIntroOfferEligibility()` re-reads it: the paywall states no trial and
+    /// draws its loading state meanwhile, so a stale "eligible" never shows and nothing swaps.
+    private(set) var isCheckingEligibility = false
+    /// Bumped by each eligibility read, so only the newest one writes its answer.
+    @ObservationIgnored
+    private var eligibilityGeneration = 0
+
     // MARK: - Load Products
+
+    /// What the paywall runs each time it appears: the products if none are loaded (which reads
+    /// eligibility with them), else eligibility again. Eligibility changes inside one process — a
+    /// trial or Monthly that lapsed, a refund — and a Mac app can stay open for weeks, so the
+    /// answer read at the first load must not sell a trial StoreKit would charge for at once
+    /// (Guideline 3.1.2).
+    func preparePaywall() async {
+        if products.isEmpty {
+            await loadProducts()
+        } else {
+            await refreshIntroOfferEligibility()
+        }
+    }
+
+    /// Asks the loaded subscriptions for `isEligibleForIntroOffer` again: on each paywall
+    /// appearance and whenever the entitlements change. No trial is stated until it returns.
+    func refreshIntroOfferEligibility() async {
+        guard !products.isEmpty else { return }
+        eligibilityGeneration &+= 1
+        let generation = eligibilityGeneration
+        isCheckingEligibility = true
+        let answers = await Self.introOfferEligibility(of: products)
+        guard generation == eligibilityGeneration else { return }   // a newer read writes
+        introOfferEligibility = answers
+        isCheckingEligibility = false
+    }
 
     func loadProducts() async {
         guard products.isEmpty else { return }
@@ -104,6 +149,7 @@ final class StoreService {
 
     func retryLoadProducts() async {
         products = []
+        introOfferEligibility = [:]
         loadError = nil
         loadAttempts = 0
         await fetchProducts()
@@ -131,13 +177,19 @@ final class StoreService {
                 let storeProducts = try await Product.products(for: ids)
                 if storeProducts.isEmpty {
                     lastFailure = .noProducts
-                    loadError = "No products returned by the App Store (attempt \(loadAttempts)/\(Self.maxRetries))"
+                    loadError = .noProducts
                     if loadAttempts < Self.maxRetries {
                         let delay = pow(2.0, Double(loadAttempts)) // 2s, 4s, 8s, 16s
                         try await Task.sleep(for: .seconds(delay))
                         continue
                     }
                 } else {
+                    // Eligibility first, then the products: one publish, with the trial decided.
+                    eligibilityGeneration &+= 1
+                    introOfferEligibility = await Self.introOfferEligibility(of: storeProducts)
+                    isCheckingEligibility = false
+                    // The paywall orders by plan kind (PaywallModel), never by price; the price
+                    // order stays for anything that lists `products` directly.
                     products = storeProducts.sorted { $0.price < $1.price }
                     loadError = nil
                     return
@@ -146,7 +198,7 @@ final class StoreService {
                 return
             } catch {
                 lastFailure = .error(error)
-                loadError = error.localizedDescription
+                loadError = .storeError
                 if loadAttempts < Self.maxRetries {
                     let delay = pow(2.0, Double(loadAttempts))
                     try? await Task.sleep(for: .seconds(delay))
@@ -156,43 +208,119 @@ final class StoreService {
         }
     }
 
-    // MARK: - Yearly Saving
-
-    /// Whole percent the yearly plan saves over twelve months of the monthly one, from the
-    /// storefront's real prices: 1 − yearly / (12 × monthly), rounded DOWN so the badge never
-    /// promises more than the prices deliver (2.99/mo and 19.99/yr save 44.28% → "SAVE 44%";
-    /// 49.6% would read 49, not 50). Nil — no badge — when either product is missing or the
-    /// yearly plan saves nothing. The badge used to be a bare "SAVE" with no figure; a hard-coded figure would go
-    /// stale the first time a price tier or storefront changed.
-    var yearlySavingsPercent: Int? {
-        guard let monthly = products.first(where: { $0.id == StrideProduct.monthlyPro.rawValue }),
-              let yearly = products.first(where: { $0.id == StrideProduct.yearlyPro.rawValue }) else {
-            return nil
+    /// Each subscription's `isEligibleForIntroOffer`, asked once per load. Eligibility is per
+    /// subscription group, so Monthly and Yearly answer the same; asking each keeps the mirror
+    /// honest if a second group ever appears.
+    private static func introOfferEligibility(of products: [Product]) async -> [String: Bool] {
+        var answers: [String: Bool] = [:]
+        for product in products {
+            guard let subscription = product.subscription else { continue }
+            answers[product.id] = await subscription.isEligibleForIntroOffer
         }
-        return Self.savingsPercent(monthlyPrice: monthly.price, yearlyPrice: yearly.price)
+        return answers
     }
 
-    /// `Product.price` is a `Decimal` in the storefront's currency; both products share it.
-    nonisolated static func savingsPercent(monthlyPrice: Decimal, yearlyPrice: Decimal) -> Int? {
-        let twelveMonths = monthlyPrice * 12
-        guard twelveMonths > 0 else { return nil }
-        var fraction = (1 - yearlyPrice / twelveMonths) * 100
-        var percent = Decimal()
-        NSDecimalRound(&percent, &fraction, 0, .down)
-        let whole = NSDecimalNumber(decimal: percent).intValue
-        return whole > 0 ? whole : nil
+    // MARK: - The paywall's values (RELEASE-1.4.2.md D4)
+
+    /// The loaded products as the pure paywall needs them. A product whose id is not one of
+    /// `StrideProduct`'s is left out.
+    var paywallMirrors: [PaywallProductMirror] {
+        // Unknown while a re-read runs: the last answer may be stale (`preparePaywall`).
+        products.compactMap {
+            Self.paywallMirror($0, eligible: isCheckingEligibility ? nil : introOfferEligibility[$0.id])
+        }
+    }
+
+    /// What the paywall draws: the plans by kind, the selection, the CTA and terms kinds, Yearly's
+    /// per-month figure and the savings badge (rounded down, `PaywallModel.savingsPercent`).
+    /// With `isPro` it states no trial: a Lifetime owner is "eligible" for Yearly's.
+    var paywallModel: PaywallModel { PaywallModel(products: paywallMirrors, isPro: isPro) }
+
+    /// Each loaded product's `displayPrice` by product id, for Settings' trial line
+    /// (`ProSettingsRow.trialLine`). Empty until the products load (they can be missing offline):
+    /// the line then keeps its date and drops the price.
+    var displayPrices: [String: String] {
+        Dictionary(products.map { ($0.id, $0.displayPrice) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// `amount` formatted as the product's own price is (its `priceFormatStyle`: the storefront's
+    /// currency and locale), for Yearly's per-month figure. Nil when the product is not loaded.
+    func formattedPrice(_ amount: Decimal, productID: String) -> String? {
+        products.first { $0.id == productID }.map { $0.priceFormatStyle.format(amount) }
+    }
+
+    /// One product as `PaywallProductMirror`; nil for an id that is not `StrideProduct`'s.
+    /// `eligible`: what `isEligibleForIntroOffer` answered at load, nil if it was never read.
+    nonisolated static func paywallMirror(_ product: Product, eligible: Bool?) -> PaywallProductMirror? {
+        let kind: PaywallProductMirror.Kind
+        switch StrideProduct(rawValue: product.id) {
+        case .monthlyPro: kind = .monthly
+        case .yearlyPro: kind = .yearly
+        case .lifetimePro: kind = .lifetime
+        case nil: return nil
+        }
+        let style = product.priceFormatStyle
+        let currencyCode = style.currencyCode
+        var introOffer: PaywallProductMirror.IntroOffer?
+        if let offer = product.subscription?.introductoryOffer, let period = periodMirror(offer.period) {
+            // An offer of several periods lasts all of them; a free trial is one period.
+            let length = SubscriptionPeriodMirror(value: period.value * max(1, offer.periodCount), unit: period.unit)
+            introOffer = .init(paymentMode: paymentMode(offer.paymentMode), period: length)
+        }
+        return PaywallProductMirror(
+            id: product.id, kind: kind, price: product.price, displayPrice: product.displayPrice,
+            period: product.subscription.flatMap { periodMirror($0.subscriptionPeriod) },
+            currencyCode: currencyCode,
+            currencyFractionDigits: PaywallProductMirror.fractionDigits(currencyCode: currencyCode, locale: style.locale),
+            introOffer: introOffer,
+            // Only a subscription has an answer; Lifetime's stays nil, and no rule reads it.
+            eligible: product.subscription == nil ? nil : eligible)
+    }
+
+    nonisolated static func periodMirror(_ period: Product.SubscriptionPeriod) -> SubscriptionPeriodMirror? {
+        let unit: SubscriptionPeriodMirror.Unit
+        switch period.unit {
+        case .day: unit = .day
+        case .week: unit = .week
+        case .month: unit = .month
+        case .year: unit = .year
+        @unknown default: return nil
+        }
+        return SubscriptionPeriodMirror(value: period.value, unit: unit)
+    }
+
+    nonisolated static func paymentMode(_ mode: Product.SubscriptionOffer.PaymentMode) -> OfferMirror.PaymentMode {
+        switch mode {
+        case .freeTrial: return .freeTrial
+        case .payAsYouGo: return .payAsYouGo
+        case .payUpFront: return .payUpFront
+        default: return .unknown
+        }
     }
 
     // MARK: - Purchase
 
-    /// True when the product was bought and granted; false for a cancel or a pending purchase
-    /// (Ask to Buy), which the paywall leaves open in silence. Throws for StoreKit's own errors and
-    /// for an unverified purchase (`StoreError.failedVerification`), which the paywall shows.
+    /// True from the start of `purchase(_:)` until it returns, its entitlement refresh included.
+    /// The paywall's auto-dismiss on `isPro` (D4) fires only for an entitlement that arrives from
+    /// elsewhere while no purchase or restore runs, so the purchase it started can say "Stride
+    /// Pro is unlocked" with Continue instead of vanishing.
+    private(set) var isPurchasing = false
+    /// The same for `restorePurchases()`: its refresh can grant Pro, and the paywall answers it
+    /// inline instead of closing.
+    private(set) var isRestoring = false
+
+    /// What the purchase did (RELEASE-1.4.2.md D6): bought and granted, cancelled, or pending (Ask
+    /// to Buy, or a purchase that needs more from the user; its transaction arrives through
+    /// `Transaction.updates` if it completes). Throws for StoreKit's own errors and for an
+    /// unverified purchase (`StoreError.failedVerification`), which the paywall shows in its
+    /// alert: `PurchaseOutcome.failedVerification` is never returned.
     ///
     /// The adapter of D12: StoreKit's result becomes a `PurchaseResultMirror`, and what it means
     /// is `PurchaseOutcome`'s pure mapping (Shared/PurchaseOutcome.swift), pinned host-less by
     /// PurchaseOutcomeTests and end to end by StoreKitStatusTests.
-    func purchase(_ product: Product) async throws -> Bool {
+    func purchase(_ product: Product) async throws -> PurchaseOutcome {
+        isPurchasing = true
+        defer { isPurchasing = false }
         let result: Product.PurchaseResult
         do {
             result = try await product.purchase()
@@ -232,21 +360,37 @@ final class StoreService {
             mirror = .unknown
         }
 
-        switch PurchaseOutcome(mirror) {
-        case .purchased:
-            return true
-        case .cancelled, .pending:
-            return false
-        case .failedVerification:
+        let outcome = PurchaseOutcome(mirror)
+        if case .failedVerification = outcome {
             throw StoreError.failedVerification(underlying: verificationError)
         }
+        return outcome
     }
 
     // MARK: - Restore
 
-    func restorePurchases() async {
-        try? await AppStore.sync()
+    /// `AppStore.sync()`, then the entitlements again (D6). The answer is for the paywall (and
+    /// later Settings) to word inline; a caller may ignore it. Adds no Sentry capture (Data
+    /// safety 10).
+    ///
+    /// `entitledAfter` is read from the real entitlements (`purchasedProductIDs`), never from
+    /// `isPro`, which DEBUG's `-demoPro` sets: a sweep run with it still hears "No purchases
+    /// found" for an Apple ID that owns nothing.
+    @discardableResult
+    func restorePurchases() async -> RestoreOutcome {
+        isRestoring = true
+        defer { isRestoring = false }
+        let sync: RestoreSyncResult
+        do {
+            try await AppStore.sync()
+            sync = .synced
+        } catch let error as StoreKitError {
+            if case .userCancelled = error { sync = .userCancelled } else { sync = .failed }
+        } catch {
+            sync = .failed
+        }
         await refreshPurchasedProducts()
+        return RestoreOutcome(sync: sync, entitledAfter: !purchasedProductIDs.isEmpty)
     }
 
     // MARK: - Check Entitlements
@@ -275,6 +419,10 @@ final class StoreService {
         let generation = statusReadGeneration
         if entitlementsChanged {
             setProStatus(resolveProStatus(statuses: lastStatuses, lifetimeRevokedOn: lastLifetimeRevokedOn))
+            // A subscription that started, lapsed or was refunded changes intro-offer
+            // eligibility (it is per subscription group): read it again, stating no trial
+            // until it returns (`isCheckingEligibility`).
+            await refreshIntroOfferEligibility()
         }
         let statuses = await readSubscriptionStatuses()
         var lifetimeRevokedOn: Date?
@@ -314,7 +462,8 @@ final class StoreService {
             #endif
             return nil
         }
-        let mirrored = statuses.compactMap(Self.mirror)
+        let products = self.products
+        let mirrored = statuses.compactMap { Self.mirror($0, products: products) }
         return mirrored.isEmpty ? nil : mirrored
     }
 
@@ -351,7 +500,12 @@ final class StoreService {
     }
 
     /// StoreKit's status, as the pure mirror. Nil when its transaction fails verification.
-    private nonisolated static func mirror(_ status: Product.SubscriptionInfo.Status) -> SubscriptionStatusMirror? {
+    ///
+    /// `products`: the loaded products (possibly none), for the offer below iOS 17.2 / macOS 14.2,
+    /// where a transaction says only that it was bought under an introductory offer, not which
+    /// kind (`offer(of:products:)`). Display only: `isPro` never reads it (D6).
+    nonisolated static func mirror(_ status: Product.SubscriptionInfo.Status,
+                                   products: [Product]) -> SubscriptionStatusMirror? {
         let transaction: StoreKit.Transaction
         switch status.transaction {
         case .verified(let verified):
@@ -378,7 +532,43 @@ final class StoreService {
             expirationDate: transaction.expirationDate,
             willAutoRenew: renewal?.willAutoRenew,
             gracePeriodExpirationDate: renewal?.gracePeriodExpirationDate,
-            revocationDate: transaction.revocationDate)
+            revocationDate: transaction.revocationDate,
+            offer: offer(of: transaction, products: products))
+    }
+
+    /// The offer `transaction` was bought under (D6, G2-3): from `transaction.offer` on iOS 17.2 /
+    /// macOS 14.2 and later. Below that only `offerType` exists, and `.introductory` is the free
+    /// trial only when the loaded product's own intro offer is one; without the products it is an
+    /// ordinary active row.
+    nonisolated static func offer(of transaction: StoreKit.Transaction, products: [Product]) -> OfferMirror {
+        if #available(iOS 17.2, macOS 14.2, *) {
+            return OfferMirror.fromTransactionOffer(type: transaction.offer.map { offerType($0.type) },
+                                                    paymentMode: transaction.offer?.paymentMode.map(paymentMode))
+        }
+        let product = products.first { $0.id == transaction.productID }
+        return OfferMirror.fromLegacyOfferType(
+            transaction.offerType.map(offerType),
+            productIntroPaymentMode: product?.subscription?.introductoryOffer.map { paymentMode($0.paymentMode) })
+    }
+
+    nonisolated static func offerType(_ type: StoreKit.Transaction.OfferType) -> OfferMirror.OfferType {
+        switch type {
+        case .introductory: return .introductory
+        case .promotional: return .promotional
+        case .code: return .code
+        case .winBack: return .winBack
+        default: return .unknown
+        }
+    }
+
+    @available(iOS 17.2, macOS 14.2, *)
+    nonisolated static func paymentMode(_ mode: StoreKit.Transaction.Offer.PaymentMode) -> OfferMirror.PaymentMode {
+        switch mode {
+        case .freeTrial: return .freeTrial
+        case .payAsYouGo: return .payAsYouGo
+        case .payUpFront: return .payUpFront
+        default: return .unknown
+        }
     }
 
     // MARK: - Transaction Listener
@@ -454,7 +644,9 @@ final class StoreService {
         reportFailure(domain: ns.domain, code: ns.code, step: "purchase \(productID)", tags: underlyingTags(of: error))
     }
 
-    private nonisolated static func isCancel(_ error: Error) -> Bool {
+    /// A cancel, however StoreKit delivered it: never reported, and the paywall returns to its
+    /// plans in silence instead of showing "Purchase Error".
+    nonisolated static func isCancel(_ error: Error) -> Bool {
         if let storeKit = error as? StoreKitError, case .userCancelled = storeKit { return true }
         return error is CancellationError
     }
@@ -482,304 +674,5 @@ final class StoreService {
         #if DEBUG
         print("[StoreKit] \(step) failed: \(domain) \(code) \(tags)")
         #endif
-    }
-}
-
-// MARK: - Pro Paywall View
-
-struct ProPaywallView: View {
-    @Environment(\.dismiss) private var dismiss
-    let store = StoreService.shared
-
-    @State private var isPurchasing = false
-    @State private var showError = false
-    @State private var errorMessage = ""
-
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 24) {
-                    // Header
-                    VStack(spacing: 12) {
-                        Image(systemName: "crown.fill")
-                            .scaledSystemFont(size: 56, relativeTo: .largeTitle)
-                            .foregroundStyle(.yellow.gradient)
-                            .accessibilityHidden(true)
-                            // Decoration: uncapped it pushes the feature list off the first
-                            // screen at the largest sizes.
-                            .dynamicTypeSize(...DynamicTypeSize.accessibility2)
-
-                        Text("Stride Pro")
-                            .font(.largeTitle.bold())
-
-                        Text("Unlock the full experience")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.top, 20)
-
-                    // Features: exactly what Pro is (RELEASE-1.4.1.md D11), the same three things
-                    // as Settings' upsell and the store's STRIDE PRO block, and the same Advanced
-                    // Analytics sentence as Statistics' locked card. "Your top 5 streaks", never
-                    // "your best streaks": the free detail card keeps its Best Streak tile.
-                    // Everything else — habits, reminders, widgets, sync, measurable and flexible
-                    // habits, the Strength tile, History — is free.
-                    // LocalizationSourceScanTests.testProClaimsNameExactlyD11sSet pins the rows.
-                    VStack(alignment: .leading, spacing: 16) {
-                        ProFeatureRow(icon: "folder.fill", color: .blue, title: "Habit Groups", subtitle: "Organize habits into collapsible groups")
-                        ProFeatureRow(icon: "chart.line.uptrend.xyaxis", color: .green, title: "Advanced Analytics", subtitle: "Insights, the 8-week trend, the strength chart and your top 5 streaks")
-                        ProFeatureRow(icon: "calendar.badge.clock", color: .orange, title: "Weekly Review", subtitle: "A look back at how your week went")
-                    }
-                    .padding(.horizontal, 24)
-
-                    // Pricing
-                    if store.isLoading {
-                        ProgressView()
-                            .padding()
-                    } else if store.products.isEmpty {
-                        VStack(spacing: 12) {
-                            Image(systemName: "exclamationmark.triangle")
-                                .font(.title2)
-                                .foregroundStyle(.secondary)
-                            Text("Unable to load subscription options.")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                            if let error = store.loadError {
-                                Text(error)
-                                    .font(.caption)
-                                    .foregroundStyle(.tertiary)
-                                    .multilineTextAlignment(.center)
-                            } else {
-                                Text("Please check your internet connection and try again.")
-                                    .font(.caption)
-                                    .foregroundStyle(.tertiary)
-                                    .multilineTextAlignment(.center)
-                            }
-                            Button("Try Again") {
-                                Task { await store.retryLoadProducts() }
-                            }
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 24)
-                            .padding(.vertical, 10)
-                            .background(Capsule().fill(.green))
-                        }
-                        .padding(.horizontal, 24)
-                    } else {
-                        VStack(spacing: 12) {
-                            ForEach(store.products) { product in
-                                let isLifetime = product.id.contains("lifetime")
-                                let isYearly = product.id.contains("yearly")
-                                PricingCard(
-                                    title: isLifetime ? "Lifetime" : (isYearly ? "Yearly" : "Monthly"),
-                                    price: product.displayPrice + (isLifetime ? "" : (isYearly ? appLocalized("/yr") : appLocalized("/mo"))),
-                                    badge: isLifetime ? "BEST VALUE" : (isYearly ? yearlyBadge : nil),
-                                    subtitle: isLifetime ? "One-time purchase — yours forever" : (isYearly ? "Billed annually" : nil),
-                                    highlighted: isLifetime
-                                ) {
-                                    purchaseProduct(product)
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 24)
-                    }
-
-                    // Restore
-                    Button("Restore Purchases") {
-                        Task { await store.restorePurchases() }
-                    }
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-
-                    // Legal
-                    VStack(spacing: 4) {
-                        Text("Payment will be charged to your Apple ID account. The Monthly and Yearly plans auto-renew unless cancelled at least 24 hours before the end of the period; Lifetime is a one-time purchase.")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .multilineTextAlignment(.center)
-
-                        HStack(spacing: 16) {
-                            Link("Terms of Use", destination: URL(string: "https://jasonyeyuhe.github.io/stride-site/terms")!)
-                            Link("Privacy Policy", destination: URL(string: "https://jasonyeyuhe.github.io/stride-site/privacy")!)
-                        }
-                        .font(.caption2)
-                    }
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 20)
-                }
-            }
-            .background(Color.appBackground)
-            .navigationTitle("")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .task {
-                await store.loadProducts()
-                await store.refreshPurchasedProducts()
-            }
-            // A Lifetime owner can land here from a feature that was still locked on a cold
-            // start; once the entitlement read comes back, stop selling them what they own.
-            .onChange(of: store.isPro) { _, isPro in
-                if isPro { dismiss() }
-            }
-            .alert("Purchase Error", isPresented: $showError) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text(errorMessage)
-            }
-            .overlay {
-                if isPurchasing {
-                    Color.black.opacity(0.3)
-                        .ignoresSafeArea()
-                    ProgressView("Processing...")
-                        .padding()
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
-                }
-            }
-        }
-        #if os(macOS)
-        // A ScrollView has no ideal height, and a Mac sheet sized to it is a sliver. Here, not at
-        // the call sites: Stats, Weekly Review's menu item, New Habit's groups and Settings all
-        // present it (sheet audit, 2026-10-22). History's size; the legal lines scroll.
-        .frame(minWidth: 460, idealWidth: 520, minHeight: 620)
-        #endif
-    }
-
-    /// "SAVE 44%": the interpolation is typed as a LocalizedStringKey here, outside the ternary
-    /// that picks it, so the runtime key is "SAVE %lld%%" — never a pre-formatted String.
-    private var yearlyBadge: LocalizedStringKey? {
-        guard let percent = store.yearlySavingsPercent else { return nil }
-        return "SAVE \(percent)%"
-    }
-
-    private func purchaseProduct(_ product: Product) {
-        isPurchasing = true
-        Task {
-            do {
-                let success = try await store.purchase(product)
-                isPurchasing = false
-                if success {
-                    dismiss()
-                }
-            } catch {
-                isPurchasing = false
-                errorMessage = error.localizedDescription
-                showError = true
-            }
-        }
-    }
-}
-
-// MARK: - Supporting Views
-
-struct ProFeatureRow: View {
-    let icon: String
-    let color: Color
-    let title: LocalizedStringKey
-    let subtitle: LocalizedStringKey
-
-    var body: some View {
-        HStack(spacing: 14) {
-            Image(systemName: icon)
-                .font(.title3)
-                .foregroundStyle(color)
-                .frame(width: 36, height: 36)
-                .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        // The icon is decorative; the two lines are one feature.
-        .accessibilityElement(children: .combine)
-    }
-}
-
-struct PricingCard: View {
-    let title: LocalizedStringKey
-    let price: String
-    var badge: LocalizedStringKey? = nil
-    var subtitle: LocalizedStringKey? = nil
-    var highlighted: Bool = false
-    let action: () -> Void
-
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-
-    var body: some View {
-        Button(action: action) {
-            Group {
-                // Title, badge and price side by side left each a third of the card at the
-                // accessibility sizes: "Life/tim/e", "BEST VALU/E", "$19.9/9". From AX1 up each
-                // gets its own line; below it the layout is the one the store screenshots show.
-                if dynamicTypeSize.isAccessibilitySize {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(title)
-                            .font(.headline)
-                        if let badge { badgeView(badge) }
-                        subtitleView
-                        Text(price)
-                            .font(.title3.bold())
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                } else {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 6) {
-                                Text(title)
-                                    .font(.headline)
-                                if let badge { badgeView(badge) }
-                            }
-                            subtitleView
-                        }
-                        Spacer()
-                        Text(price)
-                            .font(.title3.bold())
-                    }
-                }
-            }
-            .accessibilityElement(children: .combine)
-            .padding()
-            .background(
-                RoundedRectangle(cornerRadius: 14)
-                    .fill(Color.appSecondaryBackground)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14)
-                            .stroke(highlighted ? Color.green : Color.clear, lineWidth: 2)
-                    )
-            )
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func badgeView(_ badge: LocalizedStringKey) -> some View {
-        Text(badge)
-            .scaledSystemFont(size: 9, weight: .bold, relativeTo: .caption2)
-            .foregroundStyle(.white)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(Capsule().fill(.green))
-    }
-
-    @ViewBuilder
-    private var subtitleView: some View {
-        if let subtitle {
-            Text(subtitle)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
     }
 }

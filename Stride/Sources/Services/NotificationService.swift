@@ -4,6 +4,8 @@ import SwiftData
 import os.log
 #if os(iOS)
 import UIKit
+#elseif os(macOS)
+import AppKit
 #endif
 
 /// The part of `UNUserNotificationCenter` that plans reminders: add, remove, list — and, since
@@ -271,7 +273,6 @@ final class NotificationService {
         content.title = appLocalized("Stride Reminder 🏃")
         content.body = randomEveningMessage()
         content.sound = .default
-        content.interruptionLevel = .timeSensitive
 
         var dateComponents = DateComponents()
         dateComponents.hour = reminderHour
@@ -691,10 +692,10 @@ final class NotificationService {
     /// the rule the widget and Today's card share (a schedule-aware count would have to change all
     /// of them at once; D3 leaves it to the backlog).
     ///
-    /// On both platforms since 1.4.0 (D3): `setBadgeCount` is macOS 13+ too, where it badges the
-    /// Dock tile under the same two rules as on iOS — the notification permission, asked when a
-    /// reminder is switched on, and the user's own Badges switch. Fire and forget: the count is
-    /// read now and set on the next turn.
+    /// On both platforms since 1.4.0 (D3), under the same two rules as on iOS — the notification
+    /// permission, asked when a reminder is switched on, and the user's own Badges switch. On macOS
+    /// `setBadgeCount` alone never reached the Dock, so 1.4.2 also sets the tile's label
+    /// (`showOnDock`). Fire and forget: the count is read now and set on the next turn.
     func updateBadge(modelContainer: ModelContainer) {
         guard let habits = unarchivedHabits(in: modelContainer) else { return }
         setBadge(Self.remaining(of: habits, now: Date()))
@@ -704,7 +705,14 @@ final class NotificationService {
     /// process can be suspended as soon as it returns, taking a fire-and-forget set with it.
     func updateBadgeAndWait(modelContainer: ModelContainer) async {
         guard let habits = unarchivedHabits(in: modelContainer) else { return }
-        try? await center.setBadgeCount(Self.remaining(of: habits, now: Date()))
+        let count = Self.remaining(of: habits, now: Date())
+        #if os(macOS)
+        let generation = nextDockBadgeGeneration()
+        #endif
+        try? await center.setBadgeCount(count)
+        #if os(macOS)
+        await showOnDock(count, generation: generation)
+        #endif
     }
 
     private static func remaining(of habits: [Habit], now: Date) -> Int {
@@ -714,8 +722,54 @@ final class NotificationService {
 
     private func setBadge(_ count: Int) {
         let center = self.center
-        Task { try? await center.setBadgeCount(count) }
+        #if os(macOS)
+        // Taken now, in call order, not when `setBadgeCount` answers: replies can come back out of
+        // order, and the newest count must win.
+        let generation = nextDockBadgeGeneration()
+        #endif
+        Task {
+            try? await center.setBadgeCount(count)
+            #if os(macOS)
+            await showOnDock(count, generation: generation)
+            #endif
+        }
     }
+
+    #if os(macOS)
+    /// The newest badge request, numbered when it is made (not when its awaits return), so an
+    /// older count whose replies come back late cannot overwrite a newer one.
+    private var dockBadgeGeneration = 0
+
+    private func nextDockBadgeGeneration() -> Int {
+        dockBadgeGeneration += 1
+        return dockBadgeGeneration
+    }
+
+    /// The Dock tile's label (RELEASE-1.4.2.md Phase 0 item 12, N5). On the Mac `setBadgeCount`
+    /// only stores the count: usernoted had it (10→9 on a check-in) while the Dock showed nothing
+    /// from 1.4.0 to 1.4.1. The tile's own label shows at once, but it lives only as long as the
+    /// process, so it is set wherever the badge is — launch, activation, every save and day change
+    /// (StrideApp's `setupNotifications` and `installProcessTriggers` all go through `setBadge`).
+    ///
+    /// Under the same rules as the system badge: only while Stride's Badges switch is on (which
+    /// also needs the notification permission), and no label at 0. Turning Badges off in System
+    /// Settings clears it at the next activation, i.e. on coming back to the app.
+    ///
+    /// Only over the real center: a test's recording center never touches the host's Dock tile.
+    private func showOnDock(_ count: Int, generation: Int) async {
+        guard let real = center as? UNUserNotificationCenter else { return }
+        guard generation == dockBadgeGeneration else { return }
+        let enabled = await real.notificationSettings().badgeSetting == .enabled
+        guard generation == dockBadgeGeneration else { return }
+        NSApp.dockTile.badgeLabel = Self.dockLabel(count: count, badgesEnabled: enabled)
+    }
+
+    /// nil (no badge) at 0, below 0, or with Badges off; otherwise the count.
+    static func dockLabel(count: Int, badgesEnabled: Bool) -> String? {
+        guard badgesEnabled, count > 0 else { return nil }
+        return String(count)
+    }
+    #endif
 
     /// In a fresh context: what is saved, never what a view holds unsaved.
     private func unarchivedHabits(in modelContainer: ModelContainer) -> [Habit]? {

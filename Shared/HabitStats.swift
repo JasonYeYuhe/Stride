@@ -699,9 +699,30 @@ final class HabitStats {
     /// rates, where `completionsPerWeekday` (By Weekday's bars) counts every completed day. Only
     /// scheduled weekdays that have come due are present; empty for times-per-week, which has no
     /// weekday schedule.
-    private(set) lazy var weekdayTallies: [Int: StatsInsights.WeekdayTally] = {
+    private(set) lazy var weekdayTallies: [Int: StatsInsights.WeekdayTally] = weekdayTallies(from: startDayNumber)
+
+    /// How many weeks `recentWeekdayTallies` covers (RELEASE-1.4.2.md D7: the weekday line reads
+    /// the last 12 weeks only).
+    static let recentWeekdayWeeks = 12
+
+    /// `weekdayTallies` over the last `recentWeekdayWeeks` weeks only (D7), beside the all-time
+    /// one: the 84 days ending the last counted day, from `startDay` at the earliest. A weekday
+    /// fully inside the window is due 12 times; a habit younger than the window has fewer, which
+    /// is what D7's minimum of 4 due occurrences of every scheduled weekday reads.
+    private(set) lazy var recentWeekdayTallies: [Int: StatsInsights.WeekdayTally] =
+        weekdayTallies(lastWeeks: Self.recentWeekdayWeeks)
+
+    /// `weekdayTallies` over the `weeks` × 7 days ending the last counted day, from `startDay` at
+    /// the earliest (rolling days, not Monday-anchored weeks, so every weekday has the same
+    /// number of chances in a full window).
+    func weekdayTallies(lastWeeks weeks: Int) -> [Int: StatsInsights.WeekdayTally] {
+        weekdayTallies(from: max(startDayNumber, lastCountedDayNumber - 7 * max(0, weeks) + 1))
+    }
+
+    /// The tallies from day `first` through the last counted day.
+    private func weekdayTallies(from first: Int) -> [Int: StatsInsights.WeekdayTally] {
         guard schedule != .timesPerWeek else { return [:] }
-        let first = startDayNumber, last = lastCountedDayNumber
+        let last = lastCountedDayNumber
         guard first <= last else { return [:] }
         let span = last - first + 1
         var due: [Int: Int] = [:]
@@ -710,13 +731,30 @@ final class HabitStats {
             due[Self.weekday(ofDay: first + offset)] = (span - offset + 6) / 7
         }
         var done: [Int: Int] = [:]
-        for day in completed where day >= first && day <= last && isScheduled(day) {
-            done[Self.weekday(ofDay: day), default: 0] += 1
+        if span < completed.count {
+            // A short window (the 12-week one) over a long history: walk the window's days.
+            for day in first...last where completed.contains(day) && isScheduled(day) {
+                done[Self.weekday(ofDay: day), default: 0] += 1
+            }
+        } else {
+            for day in completed where day >= first && day <= last && isScheduled(day) {
+                done[Self.weekday(ofDay: day), default: 0] += 1
+            }
         }
         return due.reduce(into: [:]) { tallies, entry in
             tallies[entry.key] = StatsInsights.WeekdayTally(done: done[entry.key] ?? 0, due: entry.value)
         }
-    }()
+    }
+
+    /// How many days the counted rate of the week starting `monday` (a day-key) covers: from
+    /// `startDay` (or the Monday) through the last counted day (or the Sunday). 7 for a whole
+    /// week the habit existed in; 0 when none of it is counted yet. Weekly Review's change and
+    /// highlights need 4 of them in a week not yet over (RELEASE-1.4.2.md D8).
+    func countedDayCount(ofWeekStarting monday: Date) -> Int {
+        let first = dayNumber(of: monday)
+        let from = max(first, startDayNumber), through = min(first + 6, lastCountedDayNumber)
+        return max(0, through - from + 1)
+    }
 
     private func weeklyGoalRate(from first: Int, to last: Int) -> Double {
         let goal = Double(max(1, timesPerWeek))
@@ -750,6 +788,28 @@ final class HabitStats {
 
     /// Today's strength, 0…1 (shown 0–100 via `HabitScore.displayValue`).
     private(set) lazy var strength: Double = strengthSeries.current
+
+    /// The strength at the end of `day`, 0…1: 0 before the walk starts, today's latest score
+    /// after its last walked day (today's unfinished input is not applied, as for `strength`).
+    func strength(on day: Date) -> Double {
+        strengthSeries.score(onDay: dayNumber(of: day))
+    }
+
+    /// The change in strength over the Monday-anchored week starting `monday` (a day-key): its
+    /// end-of-week score (the latest, for this week) less the previous week's (RELEASE-1.4.2.md
+    /// D9's chip), in score units (−1…1). Nil for a week that ended before `startDay` or starts
+    /// after today: the habit has no strength there to change.
+    func strengthChange(ofWeekStarting monday: Date) -> Double? {
+        strengthWeekEnds(ofWeekStarting: monday).map { $0.end - $0.previous }
+    }
+
+    /// `strengthChange`'s two scores: the end of the week starting `monday` (the latest, for this
+    /// week) and the end of the week before it (0 before the walk). Nil as for `strengthChange`.
+    func strengthWeekEnds(ofWeekStarting monday: Date) -> (previous: Double, end: Double)? {
+        let first = Self.monday(ofWeekContaining: dayNumber(of: monday))
+        guard first + 6 >= startDayNumber, first <= todayNumber else { return nil }
+        return strengthSeries.weekEndScores(ofWeekStartingDay: first)
+    }
 
     /// The change in strength over the last 30 / 90 days, in score units (−1…1).
     private(set) lazy var strengthDelta30: Double = strengthSeries.delta(days: 30)

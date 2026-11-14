@@ -426,8 +426,10 @@ final class BackgroundSyncTests: XCTestCase {
 
         let noStore = Submits()
         let recorder = Recorder()
+        // The submitter answers at once, so the long bound only matters on a loaded runner, where
+        // the detached utility-priority submit can take over the default 2 s to start (PR #12's CI).
         let ran = await BackgroundSync.handle(container: nil, environment: environment(
-            sync, recorder, submitter: .init { noStore.receive($0) }))
+            sync, recorder, submitter: .init { noStore.receive($0) }), answerWait: .seconds(60))
         XCTAssertFalse(ran)
         XCTAssertEqual(noStore.reasons, [.resubmit])
         XCTAssertEqual(recorder.refreshes, 0, "no run")

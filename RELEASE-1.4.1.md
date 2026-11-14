@@ -142,6 +142,8 @@ Plan-text consequences, applied below:
   review-notes edits, IAP and subscription localization edits, `finish 1.4.1`, `release 1.4.1`.
 - **Pre-approved:** only `release.py release 1.4.0 --platform MAC_OS` (NEXT_SESSION_PROMPT.md:9).
   Any further pre-approval is one line from the owner, recorded here.
+- **2026-11-04, owner: "你直接上传吧 如果可以的话"** — `build-appstore.sh all --upload` for 1.4.1 (23).
+  Upload only: `finish` (attach and submit) still needs its own go per platform.
 
 **P1. Magic-link fix. Step 0: now, on the owner's go, whatever the Mac review state.**
 The first action of the next session is to ask the owner for a go on A and for O5's answer. No app
@@ -824,7 +826,7 @@ about 2 agent-days from branch cut to iOS submission (2026-10-10 to 2026-10-11, 
   October 22, 2026, and is verified live, as 1.3.1's was (RELEASE-1.3.1.md). The page lists
   exactly what the app sends Sentry, so these captures do not ship before it says so
   (SyncService.logDiagnostic holds its own back for that reason; review of 830a551, 2026-10-22).
-- [ ] **[owner]** `release.py finish 1.4.1 <build> --platform IOS` first. Mac follows only after gate
+- [x] **[owner]** `release.py finish 1.4.1 <build> --platform IOS` first. Mac follows only after gate
   10 passes, with its owner sitting done: `finish 1.4.1 <build> --platform MAC_OS`. Each platform
   needs its own go.
 - [ ] **[owner]** After approval, `release.py release 1.4.1`; merge the m4 PR with a merge commit;
@@ -1060,6 +1062,317 @@ Owner-approved or recommended, not in 1.4.1:
     Today (details), light Statistics heatmap, light History, dark Today (the live listing also
     has 4). The paywall is left out: the Debug variant's products never load (spinner). The Mac
     sidebar has no Settings tab (`-tab 2` shows Today).
+- 2026-10-27, **the kit on Xcode 27.1's iOS 27.0 devices** (PLAN-1.4.2.md Phase 0 item 1, O20):
+  - `sim_e2e/lib.sh` and its README: A = iPhone 17 Pro `C53F6992-0C4E-4D44-8833-B7878C5407E2`,
+    B = iPhone 17 Pro Max `8C431EC3-6480-449C-A60E-9EAB6BBDBF16` (iOS 27.0). The other scripts pick
+    by name, and each name is unique on 27.0 (the 27.1 runtime has only iPhone Duo), so they are
+    unchanged.
+  - Baselines at c9c3d8e (code = 86a1e3e), Xcode 27.1, the same counts as 10-22 on 26.5:
+    - selftest 114/0;
+    - StrideTests (macOS) 732 run, 730 passed + 2 known skips, in Tokyo and under
+      `TEST_RUNNER_TZ=America/Los_Angeles` (the PARITY line names each zone);
+    - hosted 326 passed + 12 skipped, on the Pro Max (iPhone 17 had never been booted and the disk
+      was under 30 GB), into the warm Stride-hosted-tests root. The Pro Max then needs
+      `app.sh reset` before kit use (done by `clean`).
+  - **O21 answered: SKTestSession still fails on iOS 27.0** (Build 24A434): StoreKitStatusTests 11
+    of 11 and StoreKitConfigurationLoadTests 1 of 1 skip, as on 26.5 (FB22774836). StoreKit tests
+    still need iOS 18.5.
+  - Signing preflight passes (console unlocked, login keychain no-timeout, a 1 s Apple
+    Distribution codesign probe). `release.py show 1.4.1`: both records PREPARE_FOR_SUBMISSION,
+    What's New ×6. `iap_copy.py` dry run: the 7 web-UI edits (Yearly ×6, Lifetime en-US) are
+    still open.
+  - **Found: iCloud evicts the repo when the disk is low.** With 28 GB free, 253 files of
+    `server/node_modules` (and 3 under `build/`) were `dataless`. The kit's server copy symlinks
+    `node_modules`, so `start-server.sh` hung 6 min until fileproviderd fetched what `index.js`
+    required. `brctl download server/node_modules` requests the rest. Keep the disk above 30 GB on
+    gate days.
+  - Blocked: gate 3, gate 7 iOS and X2's signed-in branch need the iOS Simulator tool, and access to
+    the Pro Max was declined at the prompt. The Pro was held by another project's session from
+    21:55. The 1.4.0 (22) build is left installed on the Pro Max, signed out.
+- 2026-11-08 20:18–20:22, **Gate 12, iOS half, PASS** (owner: "你先把 gate 12 做了吧"). Release
+  1.4.1 (23) iphonesimulator build, ad-hoc signed (scratchpad build_release_sim.sh, root
+  ~/Library/Caches/Stride-build/sim-e2e/builds/release-current), on iPhone 17 Pro C53F6992 (iOS
+  27.0), talking to https://stride-api.colorarchive.me. A fresh install first showed "Sign in again
+  to keep syncing" (a keychain token left by the localhost kit, not a production sign-out).
+  - Production `request-link` for `<owner>+stride-smoke@gmail.com` (decision 4) answered "Check
+    your email" twice; the 17:59 token expired unused, the owner pasted the 20:18 one. No agent
+    saw or entered the token. Two sends breaks gate 11's "at most one per sitting" (the second
+    replaced an expired token); next time ask the owner to be ready before sending.
+  - Signed in, Settings showed the smoke address. Added "Gate 12 smoke", ticked it: Today read
+    "Synced just now"; Sync Now ran clean. Home-screen "Stride Habits" widget placed: "1 of 1, All
+    done!". Background → foreground: still signed in, no crash.
+  - Deleted through the app (Settings → Delete Account → Continue → Delete My Account, the sheet
+    reading "Signed in as" the smoke address): signed out, 0 habits, no crash. No API call by
+    the agent.
+  - Gate 11 is green too: production `request-link` returned success and the mail arrived (the
+    owner read the token from it). Nothing of 1.4.1's own is left before `release.py release
+    1.4.1` except App Review.
+- 2026-11-08, **Mac 1.4.1 (23) is LIVE** (READY_FOR_SALE, releaseType still MANUAL, so it was
+  released by hand; no agent transcript ran `release.py release 1.4.1`, so presumably the owner in
+  ASC). iOS 1.4.1 still WAITING_FOR_REVIEW. Sentry production, 3 days: 1.4.1+23 2 healthy
+  sessions / 2 users, 0 crashed; 1.4.0+22 62 / 15, 0 crashed. No new production issue since
+  STRIDE-APPLE-3 (11-02). m4/1.4.1 stays unmerged until iOS is approved and released.
+- 2026-11-07, **Mac 1.4.1 (23) submitted** (owner: "提交 Mac 吧，角标 1.4.2 修"):
+  `release.py finish 1.4.1 23 --platform MAC_OS` attached build 23, created review submission
+  7906d145-6c9d-4953-beff-eff31a2e7d42 and submitted; `show` reads WAITING_FOR_REVIEW on both
+  platforms. The Dock badge fix, the three VoiceOver findings and the unrun banner-action check
+  go to PLAN-1.4.2.md Phase 0 item 12. Still before `release.py release 1.4.1`: gate 12's iOS
+  half (the production token in the Release build).
+- 2026-11-07 17:42–18:30, **Mac gate 10 remainder, agent-run** (owner: "你直接来弄吧 你全权负责").
+  Debug variant launched by path (launch checks passed each time; the real group store still dated
+  Sep 9), quit by its menu. System Settings and Finder grants were declined, full-screen control
+  was approved and released unused.
+  - **12, FAIL, and it is 1.4.0's, not 1.4.1's.** The Badges switch is on for `…mactest` (bit 1 of
+    its `flags`, 310386702, the same value as Telegram's, whose badge shows). `setBadgeCount(10)`
+    succeeds and usernoted stores it (db2 `app.badge` 10, then 9 after a check-in, so the count
+    tracks within the second), yet the Dock's `AXStatusLabel` stays empty. Setting
+    `NSApp.dockTile.badgeLabel = "10"` in the same process (lldb, Debug's get-task-allow) put
+    "10" on the Dock at once. So on this Mac, `UNUserNotificationCenter.setBadgeCount` does not
+    reach the Dock tile; D3's Dock badge has never been seen working (1.4.0 shipped it unrun,
+    RELEASE-1.4.0.md:922). Not proven for the App Store build (the real-id app is never run here),
+    but nothing in the code differs. Fix for 1.4.2: on macOS also set `NSApp.dockTile.badgeLabel`
+    (nil at 0), only while `notificationSettings().badgeSetting == .enabled`.
+  - **5, not run.** Both test reminders were delivered as banners with the app hidden (17:54,
+    17:56, 17:57; usernoted "Presenting … as banner"), but no agent path reaches their buttons:
+    banners are not in NotificationCenter's accessibility tree (0 windows while shown), and
+    opening Notification Center needs the menu-bar clock, a Finder grant (declined). The action
+    path is unchanged since 1.4.0 apart from one line in `NotificationActionHandler.swift`
+    (`git diff v1.4.0..HEAD`), and `NotificationRouterTests` covers the routing, so the risk is
+    the live Mac 1.4.0's.
+  - **VoiceOver, the accessibility-tree substitute, PASS** (`scripts/mac_variant/axdump.swift`,
+    new: what VoiceOver reads, without turning it on). Today, Statistics, History, the paywall,
+    Settings and Add Habit: every control has a spoken name; rows carry their state, value
+    ("0 of 8 glasses" on the count row, as AXValueDescription) and custom actions (Edit Habit,
+    Mark … complete, Add 1); History's days are "Saturday, November 7" + "Completed". Not covered:
+    speech order and the icon/colour grids (opaque groups; labelled in code, AddHabitView:146,175).
+    Small, pre-existing, for 1.4.2: Settings' Language pop-up has no title link (VoiceOver says
+    "System Default, pop-up button"); Settings' habit rows speak their emoji; Add Habit's two
+    text fields are titled by their placeholders ("e.g., Read 30 minutes"), not "Habit Name".
+  - Test state restored: Read 30 Minutes and Water reminders off again (the relaunch rescheduled
+    only the original five requests); Morning Run stays checked for Nov 7 (variant data).
+  - **Gate 10 outcome:** nothing found is new in 1.4.1. The Mac submission of 1.4.1 (23) is
+    the owner's go, as every submission is.
+- 2026-11-07 13:35–13:47, **Mac items 5 and 12, agent's part** (owner: "Mac 那几项你能做的先做吧";
+  Debug variant built 2026-10-22 21:58, launched by path; launch checks passed: "Store opened by
+  the app, outside the App Group", the real group store still dated Sep 9; quit by its menu):
+  - **Notification permission is already granted** to `…mactest`, so neither item waits on a
+    permission prompt any more. Settings → Daily Reminder was on; set to 13:39, the
+    `stride.daily.evening` request was delivered at 13:39:00 (usernoted: "scheduled for delivery",
+    "Presenting … as banner", alertStyle banner). The variant was frontmost, so its willPresent
+    answered `[]` (no banner on screen while active), as designed. Reminder time put back to 8:00 PM.
+  - **12, open, likely a settings question:** the app set the badge (Stride log "Setting badge count
+    to 10", no error; usernoted's db2 `app` row for `…mactest` holds badge 10), yet the Dock shows
+    none, before and after another app became active (Hide Stride). The Dock's AX `AXStatusLabel`
+    reads badges reliably (Messages = 2 at the same moment). Most likely "Badge application icon"
+    is off for the variant in System Settings → Notifications; the agent's read-only look at
+    System Settings was declined. **Owner:** check that toggle for the Stride entry whose banner
+    you saw; if it is on and the Dock still shows no badge, it is a 1.4.1 bug.
+  - **5, open:** banner actions (Mark Done / Add 1 / Snooze) are clicks in Notification Center's
+    own UI, outside the granted app. Owner, or grant Notification Center for one sitting.
+  - VoiceOver spoken pass: still the owner's (turning VoiceOver on is a system setting).
+  - New probes for the kit: per-app notification settings are no longer in
+    `com.apple.ncprefs.plist` (123 apps there, no Stride); `osascript` over the Dock's
+    `AXStatusLabel` reads every visible badge without screen control.
+- 2026-11-05..07, **iOS 1.4.1 (23) SUBMITTED** (owner: "没问题的话 都上传asc吧", then chose "edit
+  the purchase text first, then submit iOS"; "你直接改吧"; "你直接来加吧"). Submission
+  `6dab069d-66c1-41b6-86f0-949e50935cc4`, WAITING_FOR_REVIEW since 2026-11-07T04:27:27Z, 3 items:
+  the iOS version, Stride Pro Yearly, Stride Pro Lifetime. Mac stays PREPARE_FOR_SUBMISSION until
+  gate 10 (items 5, 12, the spoken VoiceOver pass).
+  - Build 23 was VALID on both platforms (uploaded 2026-11-03 08:31 / 08:34 PST).
+  - The 7 IAP web-UI edits, made by the agent in Chrome (the built-in browser would not render
+    Apple's sign-in): Yearly ×6 descriptions without "save 44%", Lifetime en-US with Weekly
+    Review. `iap_copy.py --yes` first confirmed the API still answers 409 for ACTIVE
+    localizations. Read back through the API: each has an APPROVED copy (live until approval)
+    and a PREPARE_FOR_SUBMISSION copy with the new text. Both products were then added to the
+    draft review submission with **Add for Review**; Lifetime's 5 non-English localizations
+    from 2026-10-22 ride along.
+  - Trap: an IAP-only draft review submission has `platform: null`, so `filter[platform]` matches
+    it for IOS **and** MAC_OS. `release.py submit` reused it for IOS, as intended.
+  - **New Apple age-rating question.** The first submit failed: 409 STATE_ERROR on the version,
+    associated error ENTITY_ERROR.ATTRIBUTE.REQUIRED `socialMedia` on the age-rating
+    declaration. Answered `socialMedia: false` on the editable appInfo's declaration
+    (`c22766fd…`; Stride has no social features); `socialMediaAgeRestricted` left null, and
+    Apple accepted the submit. The declaration is app-wide, so the Mac submit needs nothing more.
+    `ageRatingDeclarations/{id}` GET answers 403; read it through
+    `appInfos/{id}/ageRatingDeclaration`. asc_api.py truncates `associatedErrors`; post the
+    request with `requests` to see them.
+  - Gate 11 on submission day: check_email_auth.sh PASS (DMARC and apex-SPF advisories as before);
+    production `/health` ok.
+  - Gate 12 iOS half (production token in the Release build) was not run; the owner chose to
+    submit iOS once the IAP edits were in, and that path did not include it. Still open, before
+    `release.py release 1.4.1`.
+- 2026-11-04 00:58–01:32, **1.4.1 (23) UPLOADED, iOS and macOS** (owner's go above; upload only,
+  nothing attached or submitted). Tree `30e783b` (code = 86a1e3e). Preflight: console unlocked,
+  login keychain unlocked (no-timeout), the script's own signing and Xcode-license checks passed;
+  no dataless file in the sources; `release.py show 1.4.1`: both records PREPARE_FOR_SUBMISSION,
+  What's New ×6. `build-appstore.sh all --upload`: both archives passed `verify_archive` (ids,
+  1.4.1 (23), privacy manifests, Sentry, background modes, widget appex) and `--exported`; dSYMs
+  kept in `build/dsyms/1.4.1-23/{ios,macos}` and sent to Sentry stride-apple; "Upload succeeded"
+  for Stride.ipa and Stride.pkg. The exportArchive "Upload Symbols Failed" warnings name only the
+  prebuilt Sentry.framework's UUIDs. Log: `~/Library/Caches/Stride-build/build-appstore-1.4.1-23.log`.
+  - **Found: iCloud sync duplicates break a regenerated project.** `xcodegen` takes whole folders,
+    so the untracked `Shared/SentryBootstrap 3.swift` (a second `enum SentryBootstrap`) and three
+    `StrideTests/* 2.swift` went into the regenerated pbxproj (22 references; the tracked one has
+    none), which would have failed the archive. They were moved to the scratchpad for the build
+    and moved back afterwards, untouched. Check `git status --untracked-files=all` for `* [0-9].swift`
+    before any release build.
+  - The previous `build/appstore` (gate 10.1's 1.4.1 (23) archives, and duplicate 1.2.0/1.2.1 Mac
+    archives) was moved, not deleted, to `~/Library/Caches/Stride-build/appstore-kept-2026-11-04`
+    before the script's `rm -rf`.
+  - Next for the owner: the 7 web-UI IAP edits; gate 11 (production `request-link`) and gate 12's
+    iOS half (a production token); the privacy page; then `finish 1.4.1 23 --platform IOS` with its
+    own go. Mac `finish` waits for gate 10 (items 5 and 12, the VoiceOver pass).
+- 2026-11-03 02:06–02:24, **gate 10.4 "a History edit syncs to iPhone B" PASS; X2 signed-in branch
+  PASS** (owner: "可以的"; kit server `gate7`; load 6–60).
+  - **Gate 10.4, the open item.** Mac variant (Debug, built 2026-10-22 21:58 after the last code
+    change; preflight passed: localhost:3002). Its own test store (5 demo habits, 63 records, from
+    the October sittings) was copied to the scratchpad and moved to the Trash so the sign-in would
+    not merge it into the kit demo account. Launched by path: "Store opened by the app, outside the
+    App Group", the store only in `…mactest/Data/Documents/`, the real group `Stride.store` still
+    dated Sep 9 (checked again after quitting). Computer use granted on the variant only
+    (background). Settings → Sign In → token (pull: 10 habits, 520 entries). Statistics → Read 30
+    Minutes → History on Wednesday 2026-10-28 (no server row): ticked → `370ED188`, 84 check-ins,
+    the heatmap cell and By Weekday (Wed 9 → 10) updated; File → Sync Now pushed
+    `370ED188@2026-10-28`; **B's launch pull stored it, and B's History shows the 28th completed**
+    (`b1-has-1028.png`). Untick → Sync Now → `deletedEntryIds=1[370ED188]` → B: 0 rows. Re-tick →
+    `B6ABAFBA` → B pulled it. End state: **exactly one 10-28 record, `B6ABAFBA…`, on the Mac, on B
+    and on the server** (`b2-one-record-1028.png`). Variant quit from its menu.
+    - The heatmap's AX press (what the tool's click becomes) opens History on today, as designed
+      (`accessibilityAction { openHistory(on: Date()) }`); a pointer click on a cell opening its day
+      passed in the first sitting. The day was picked in History's calendar.
+    - File → Sync Now does nothing while the History sheet is up; Done first.
+    - Gate 10.4 still open: the spoken VoiceOver pass (needs the owner to turn VoiceOver on).
+  - **X2, signed-in branch (gate 7, non-Gregorian).** B (Pro Max) `app.sh clean … 1.4.0 --revoke`
+    (revoked the kit demo account's 6 sessions; B ended signed out), then the global locale
+    `ja_JP@calendar=japanese`. 1.4.0 (22) with `-demo`: 5 habits, 63 records, all keyed in year
+    0008. Signed in to a fresh kit account `x2-signedin@stride-review.com` (user 10). 1.4.0's push:
+    `applied=habits:5,entries:0`, **63 entries `invalid_value`** (the server guard); Settings
+    "63 changes can't sync / A value the server doesn't accept 63" (`n1-140-signedin-held.png`);
+    server: 5 habits, 0 entries. `upgrade.sh … --label ng-140to141-japanese-signedin` (exit 0,
+    PASS). First 1.4.1 launch: "**Day-key repair: 63 found, 63 re-keyed, 0 replaced, 63 holds
+    lifted, 0 undecodable, 0 left held**, 0 days merged, 0 tombstones"; its push `applied=entries:63
+    skipped=0` with the same ids at their real days. **Server: 63 entries, 2026-10-20 to
+    2026-11-03, none at 0008.** Second launch: no repair line, nothing pushed, Settings has no held
+    row (`n2-141-settings-after.png`); the store still 63 records. Locale back to `en_US`.
+  - B is left on 1.4.1 (23), signed in as `x2-signedin@…` (5 habits), widget still on page 1; the
+    kit demo account's sessions are revoked (the iPad shows signed out on its next launch).
+  - Evidence: `~/Library/Caches/Stride-build/sim-e2e/evidence/gate104-2026-11-03/` and
+    `…/x2-signedin-2026-11-03/` (screens, `upgrade-output.txt`, `server-e2e.txt`); the upgrade's
+    own record in `…/upgrades/ng-140to141-japanese-signedin/`. Server `gate7` stopped, lock released.
+- 2026-11-03 01:11–01:36, **gate 3 PASS: iPad leg and widget leg** (owner granted the iOS Simulator
+  tool; kit server `gate7`; iPad Pro 13-inch (M5) and B = Pro Max, both 1.4.1 (23)). Load was 15 at
+  the start, then another session pushed it to 290–450; taps landed but some needed a retry.
+  - **iPad leg: PASS.** Fresh install, so onboarding was marked done with `simctl spawn … defaults
+    write yyh.stride.habittracker stride_onboarding_completed -bool YES` (`app.sh` is iPhone-only);
+    signed in with a pasted token (pull: 10 habits, 518 entries). Statistics → "Read 30 Minutes" →
+    tapped the 2026-10-18 heatmap cell (the nearest unticked past day on the server): **History
+    opened on Sunday, October 18** (`ipad1-history-opens-1018.png`). Ticked (a drag): 81 → 82,
+    heatmap and Best streak (17 → 27) updated on Done. Sync Now pushed `364FCAE9@2026-10-18`; B's
+    launch pull stored it (**B sees it**). Unticked → Sync Now pushed `deletedEntryIds=1[364FCAE9]`;
+    B's pull removed it. Re-ticked → new record `4B68AD5C@2026-10-18`, Sync Now, B pulled it. End
+    state: **exactly one 10-18 record, `4B68AD5C…`, on the iPad, on B and on the server**
+    (`b4-one-record-1018.png`: B's History on 10-18, Completed on, 83 check-ins).
+    - History edits do not sync by themselves (sync runs at launch, foreground, background and on
+      Sync Now: StrideApp.swift syncIfLoggedIn, SettingsView); the gate's "after Sync Now" matches.
+    - B's first launch here also pushed its local-only 10-30 tick from 10-30 (`24A0A472`).
+  - **Widget leg (D14): PASS.** Stride's large widget re-placed on B's page 1 (it has the per-habit
+    check buttons; the small one is a ring only). Setup: the widget ticked today (2026-11-03) →
+    `F51D751D`; the app opened on Statistics showed it (Current streak 1, Tue 14). Home → the
+    widget **un-checked** it (B's store: `F51D751D` gone, tombstone queued) while the app process
+    stayed alive (pid 93339) → `simctl launch` brought **the same process** to the foreground:
+    **Stats show the day cleared** (0/10, Current streak 0, Tue 13, 30-day 83 → 80 %) and
+    **History's cell for the 3rd is clear** (Completed off, 83 check-ins). **History's re-check
+    created a new record** `B11DC3A2` (84 check-ins, exactly one 11-03 row). Evidence
+    `w1-stats-today-ticked.png` … `w5-history-rechecked.png`.
+    - Sync follow-through: the next push sent `B11DC3A2` but no deletion for `F51D751D`; the
+      server has one 11-03 row (`B11DC3A2`). A second widget un-check, this time not re-checked,
+      queued `B11DC3A2` in `stride_deleted_entry_ids_widget` and the next launch pushed
+      `deletedEntryIds=1[B11DC3A2]` (server: 0 rows for 11-03). So the widget's tombstones do
+      reach the server; in the first run the same-day re-check superseded the queued one.
+  - SpringBoard menus (Add Widget, the gallery rows, the Add Widget button, edit-mode Done) ignore
+    the iOS Simulator tool's plain `tap`, which closed edit mode instead (the 10-30 failure);
+    a `touch_path` press-and-release on the same point (hold ~200 ms) works every time.
+  - Evidence: `~/Library/Caches/Stride-build/sim-e2e/evidence/gate3-2026-11-03/` (screens above,
+    `ipad2-unticked.png`, `ipad3-reticked.png`, `server-e2e.txt`). The widget stays on B's page 1
+    for the rest of the release work; remove it when 1.4.1 is done.
+- 2026-10-30, **gate 3: B sync and untick/re-tick PASS; iPad and widget legs open** (kit server `gate7`, A = Pro,
+  B = Pro Max, both on 1.4.1 (23)). Both phones were found shut down after the iOS 27.0 runtime image
+  was re-copied by `simdiskimaged` (nobody here touched it); booting them pushed load to ~960 and
+  swap to its last 370 MB, and both went down again once while RoastMate's UI tests booted a third
+  simulator. Load swung 5–960 throughout; taps landed 10–30 s late or not at all.
+  - **A:** signed in with a pasted login token; History opened on "Read 30 Minutes" 2026-10-09
+    (21 days back, the nearest unticked day) with `-openHistory … -historyDay -21`; Completed
+    switched on (a drag; taps on the Toggle never registered): 80 → 81 check-ins and the cell
+    filled in the same render. Sync Now pushed exactly one entry, `5344236B@2026-10-09`.
+  - **B:** its pull received that entry (`since … out=entries:1`), but it never reached B's store
+    (517 records). `sample` shows B's main thread blocked in a synchronous XPC reply inside
+    `UNUserNotificationCenter.removePendingNotificationRequests`, called from
+    `setupNotifications` (StrideApp.swift:502) → `rescheduleAllHabitReminders` →
+    `replaceReminder` (NotificationService.swift:406); the simulator's usernotificationsd was
+    itself waiting on the notification-settings service. The same block explains two earlier B
+    launches that got a 200 session answer yet showed "Sign In" and never synced. A restart of B
+    did not clear it. B is the only device with notification permission and reminder habits (from
+    gate 7); on 10-28 the same B synced normally.
+  - Not an app defect as far as we can tell (the daemon never answers), but it shows that a stuck
+    notification daemon freezes sign-in and sync with it: rescheduling runs on the main actor
+    before the launch sync. Candidate hardening for 1.4.2, not a 1.4.1 blocker.
+  - Evidence: `~/Library/Caches/Stride-build/sim-e2e/evidence/gate3-2026-10-30/` (both samples of
+    B's Stride, usernotificationsd's sample, the day's server log lines).
+  - **Rerun 17:50–18:20 (owner: "reset B, sign in again, rerun once the load drops"):** `app.sh
+    reset promax` (no notification permission any more); B came back signed in through the
+    Keychain session and pulled in full (518 records, `5344236B` among them).
+    - **B shows the day: PASS.** B's History on 10-09: cell filled, Completed on, 81 check-ins.
+    - **Untick and re-tick: PASS.** A unticked (A: 517 records, `5344236B` gone); A's launch sync
+      pushed `deletedEntryIds=1[5344236B]`; B's pull applied `deletions:1` (B: 517, gone). A
+      re-ticked; A's sync pushed one new entry `A2A10918@2026-10-09`; B pulled it. End state:
+      exactly one 10-09 record for "Read 30 Minutes" on A, on B and on the server
+      (`A2A10918…`, value 1). Syncs were taken as launch syncs (relaunch), not Sync Now.
+    - **iPad leg: not run.** iPad Pro 13-inch (M5) booted and 1.4.1 installed, but the iOS
+      Simulator tool's access to it was never granted (the request went unanswered), and
+      `app.sh` only drives the two iPhones (`simctl launch` works). Shut down again, its lock
+      removed.
+    - **Widget leg: not run.** The Stride widget is gone from B's home screen (SpringBoard's
+      layout was reset by today's forced shutdowns); re-placing it failed at load 200–500, where
+      home-screen taps landed late and out of order. B has today (10-30) ticked for "Read 30
+      Minutes" (`24A0A472…`, local only, not synced), ready for the widget's un-check.
+    - Toggles: drags work, taps never do (History and Settings alike); after a while with no
+      input landing at all, reopening the simulator panel (detach + attach) brought it back.
+    - Evidence adds `b1-has-1009.png`, `a2-unticked.png`, `b2-deleted.png`, `a3-reticked.png`,
+      `b3-one-record.png`. Server `gate7` stopped (DB kept), locks released.
+  - Still to run: the iPad leg and the widget leg. Both PASS on 2026-11-03 (entry above).
+- 2026-10-27/29, **gate 7 iOS PASS: all 4 legs** on the Pro Max (owner granted access; the Pro was
+  still held by another session). Kit server `gate7` (fresh, seeded demo); a Stride widget placed on
+  page 1 once (it survives `reset`); two reminder habits made on 1.4.0 and synced: "Daily"
+  `304F1BEE-B5DA-4731-9C32-A57A9A402B7B` and "MWF" (Mon/Wed/Fri) `72FFDF1A-8692-43CC-80B8-EA9047222711`.
+  Before each leg one old check-in was deleted "from another device" (README recipe).
+  - **w1, 1.4.0 (22) → 1.4.1 (23): PASS.** Reminders before and after: daily bare id, M/W/F `.2 .4 .6`;
+    both categories registered. No default.store, no recovered edit; the widget opened at the old
+    build's marker 1 (NOTE, no migration); the remote deletion arrived as `deletions:1`.
+  - **w2, 1.3.1 (21) → 1.4.1 (23): PASS.** 1.3.1 had one bare trigger per habit; after the first
+    1.4.1 launch the M/W/F habit has exactly `.2 .4 .6` and no bare id, the daily habit keeps its
+    bare id. Same store-gate, default.store and recovered-edit results; no whole-store push on the
+    relaunch.
+  - **w3, 1.3.0 (19) → 1.4.1 (23): PASS** (2026-10-29, screen unlocked). 1.3.0 writes no marker, so
+    this leg exercises the gate itself: the widget was turned away once (`waitForApp(noMarker)`) and
+    opened the store only after the app wrote marker 1. 529 rows marked, the first full pull asked
+    `?deletionsSince=`, the remote deletion arrived as `deletions:1` (519 → 518 records), no
+    recovered edit, no default.store. Reminders: bare id + bare id → bare id + `.2 .4 .6`, both
+    categories registered. The relaunch pushed no whole store.
+  - **w4, 1.2.3 (17) → 1.4.1 (23): PASS.** Same results as w3 (528 rows marked, 518 → 517 records,
+    widget turned away once, then opened after marker 1). 1.2.3 schedules habit reminders only at
+    launch (`StrideApp.swift:123`), so after Allow it needs one relaunch before `app.sh reminders`
+    lists the bare ids. That relaunch pushed 1.2.3's whole store (as 1.2.3 always does); the server
+    kept the M/W/F habit's `specificDays`/mask 42 (`updated_at` unchanged), and 1.4.1 then converted
+    it to `.2 .4 .6`.
+  - No `clean` was needed for 1.2.3: the gate7 session was still live, so `reset` to v1.2.3 came back
+    signed in (`user=1`). `clean` is only for a signed-out start.
+  - Evidence: `~/Library/Caches/Stride-build/sim-e2e/upgrades/w1-140to141-widget-rem`,
+    `w2-131to141-widget-rem`, `w3-130to141-widget-rem`, `w4-123to141-widget-rem`.
+  - **Found: the iOS Simulator tool's input does not reach the simulator while the Mac's console
+    is locked.** From the 01:34 lock every tap and swipe failed or was dropped; screenshots and
+    simctl kept working. Before that, at load 400–900 (other sessions), inputs were slow and
+    often dropped: type tokens through `simctl pbcopy` + Paste (typed text loses characters), and
+    drag a Toggle instead of tapping it.
 - 2026-10-22, **P4 / gate 10.4, second sitting** (full-screen control approved, then background
   control on a variant rebuilt at the m4 tip):
   - 7 (Settings key): New Habit, both exports and all of View disabled; Close and Window → Stride
@@ -1089,7 +1402,7 @@ Owner-approved or recommended, not in 1.4.1:
     turn VoiceOver on (a system setting): not run.
   - Still open: 5 and 12 (banners and the Dock badge need the notification permission prompt,
     which only the owner can answer; Finder/Dock access was declined), and "a History edit syncs
-    to iPhone B" (needs the simulator tool).
+    to iPhone B" (needs the simulator tool; PASS on 2026-11-03, entry at the top).
 - 2026-10-22, **ASC writes A–E + pricing** (owner: "同意 A–E，定价也按你推荐的来"; the agent's
   own ASC writes were refused by the permission classifier, so the owner ran
   `scripts/asc_writes_1_4_1.sh`, then asked the agent to run it, which went through):
@@ -1163,7 +1476,7 @@ Owner-approved or recommended, not in 1.4.1:
     its real 2026 day; later launches do nothing; Today, Statistics (By Weekday now right) and
     History ("October 8 Reiwa") are right. The kit server's guard answers a 1.4.0 push of 0008 with
     invalid_value and a 1.3.0 push with 426. Not run: the signed-in branch (held rows lifted, the
-    server ending with the real days), which needs UI input.
+    server ending with the real days), which needs UI input. PASS on 2026-11-03 (entry at the top).
   - **Blocked: gate 3 (partly) and gate 7 iOS.** The iOS Simulator MCP crashed repeatedly while the
     host ran at load average 400–1000 with swap nearly full (other sessions' builds plus this
     archive), then refused every call until the simulator panel is reopened. Done before that, on

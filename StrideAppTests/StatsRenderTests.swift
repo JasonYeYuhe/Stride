@@ -307,13 +307,17 @@ final class StatsRenderTests: XCTestCase {
     }
 
     /// Insights for a user who never misses, on Monday 06-01 before the check-in: no strongest or
-    /// toughest day and no momentum, so the card draws nothing. a146384 said "Toughest on Sunday",
-    /// a Strongest day from a Dictionary's order and "Down vs last week (100% → 0%)" here. The same
-    /// user on Wednesday 06-03 with Tuesday missed is told so: Toughest on Tuesday, 100% → 50%.
+    /// toughest day, no momentum, and the run is the record, so the card has no line. a146384 said
+    /// "Toughest on Sunday", a Strongest day from a Dictionary's order and "Down vs last week
+    /// (100% → 0%)" here. Since D7 (RELEASE-1.4.2.md) the card no longer hides: under its header it
+    /// says "Nothing to compare yet this week" — this week has nothing counted before the
+    /// check-in. W5's first cut said "Not enough recent check-ins to compare" to this perfect user
+    /// (W5 review). The same user on Wednesday 06-03 with Tuesday missed is told so: Down,
+    /// 100% → 50%, and Toughest on Tuesday (4 of 5 Tuesdays in the window against 100% everywhere
+    /// else, and Tuesday's all-time count tied for the lowest By Weekday bar).
     ///
-    /// Weekly Review is not hosted here: it reads `Date()` through `StatsCache.shared`, so no test
-    /// can pin it to a Monday. Its numbers are `StatsInsights.weeklyReview` over
-    /// `HabitStats.thisWeekRate` and `lastWeekRate`, which StatsInsightsTests pin host-less.
+    /// Weekly Review is hosted in WeeklyReviewRenderTests, on a fixed clock over its own cache; its
+    /// numbers are `WeeklyReviewMath.review`, which WeeklyReviewMathTests pin host-less.
     func testInsightsSayNothingToAUserWhoNeverMisses() async throws {
         let created = Self.key(5, 1)
         let may = Self.keys(from: created, count: 31)
@@ -327,11 +331,13 @@ final class StatsRenderTests: XCTestCase {
         }
         let window = try host(card(never, today: Self.key(6, 1)))
         var labels: [String] = []
+        let nothingYet = appLocalized("Nothing to compare yet this week")
         try await waitUntil("the card's render") {
             labels = self.elements(in: window) { _ in true }.compactMap(\.accessibilityLabel)
-            return labels.contains(marker)
+            return labels.contains(marker) && labels.contains(nothingYet)
         }
-        XCTAssertEqual(labels, [marker], "the card draws nothing")
+        XCTAssertEqual(labels, [marker, appLocalized("Insights"), nothingYet], "no line: the card says why")
+        XCTAssertFalse(labels.contains(appLocalized("Not enough recent check-ins to compare")))
 
         let missed = try habit("Run", created: created, checkedIn: may + [Self.key(6, 1)])
         window.rootViewController = hostingController(card(missed, today: Self.key(6, 3)))
@@ -342,6 +348,170 @@ final class StatsRenderTests: XCTestCase {
             return labels.contains(toughest)
         }
         XCTAssertEqual(Set(labels), [marker, appLocalized("Insights"), toughest, down])
+    }
+
+    // MARK: - D7: Pro is right in its first week (RELEASE-1.4.2.md, W5)
+
+    /// StrengthCard for a habit created Thursday 07-02 and done every day since, on Monday 07-20:
+    /// the four weeks that ended before it existed draw no bar and read "Not started" (1.4.1 drew
+    /// grey bars marked 0 and read them as 0); its own weeks read their scores.
+    func testStrengthDrawsNoBarsBeforeTheStart() async throws {
+        let created = Self.key(7, 2)
+        let walk = try habit("Walk", created: created, checkedIn: Self.keys(from: created, count: 18))
+        let walkStats = stats(walk, today: Self.key(7, 20))
+        let window = try host(StrengthCard(habit: walk, stats: walkStats))
+
+        let spoken = StatsWeeks.spoken
+        let labels = Self.keys(from: Self.key(6, 1), count: 8, every: 7).map { appLocalized("Week of \($0.formatted(spoken))") }
+        let notStarted = appLocalized("Not started")
+        var values: [String] = []
+        try await waitUntil("Strength's eight weeks") {
+            let weeks = labels.compactMap { label in self.elements(in: window) { $0.accessibilityLabel == label }.first }
+            values = weeks.map { $0.accessibilityValue ?? "" }
+            return weeks.count == labels.count
+        }
+        XCTAssertEqual(Array(values.prefix(4)), Array(repeating: notStarted, count: 4))
+        XCTAssertEqual(values.dropFirst(4).map { numbers(in: $0) },
+                       walkStats.weeklyStrength.dropFirst(4).map { [HabitScore.displayValue($0)] })
+        XCTAssertTrue(walkStats.weeklyStrength.dropFirst(4).allSatisfy { $0 > 0 })
+    }
+
+    /// The change tiles by the habit's age on Monday 07-20 (D7): 18 days old, one "Since start";
+    /// 80 days and done every day, "30-Day Change" and "Since start", two different numbers; 80
+    /// days but used only since 07-06, one "Since start" — its 30-day window starts where the
+    /// score was still 0, so the two would be the same number (W5 review); 196 days, the 30- and
+    /// 90-day changes. Since start is the score itself (the walk starts from 0), signed.
+    func testAYoungHabitShowsSinceStartTiles() async throws {
+        let thirty = appLocalized("30-Day Change"), ninety = appLocalized("90-Day Change")
+        let since = appLocalized("Since start")
+        let today = Self.key(7, 20)
+        let lately = Self.keys(from: Self.key(7, 6), count: 14)
+        let cases: [(name: String, created: Date, checkedIn: [Date], expected: [String])] = [
+            ("18 days", Self.key(7, 2), lately, [since]),
+            ("80 days, every day", Self.key(5, 1), Self.keys(from: Self.key(5, 1), count: 80), [thirty, since]),
+            ("80 days, used lately", Self.key(5, 1), lately, [since]),
+            ("196 days", Self.key(1, 5), lately, [thirty, ninety]),
+        ]
+        let window = try host(Text(verbatim: "test.tiles.marker"))
+        for item in cases {
+            let h = try habit(item.name, created: item.created, checkedIn: item.checkedIn)
+            let s = stats(h, today: today)
+            window.rootViewController = hostingController(StrengthCard(habit: h, stats: s))
+            var shown: [String] = []
+            try await waitUntil("\(item.name): the tiles") {
+                shown = [thirty, ninety, since].filter { title in
+                    !self.elements(in: window) { ($0.accessibilityLabel ?? "").hasPrefix(title) }.isEmpty
+                }
+                return shown == item.expected
+            }
+            XCTAssertEqual(shown, item.expected, item.name)
+            if item.expected.contains(since) {
+                let tile = elements(in: window) { ($0.accessibilityLabel ?? "").hasPrefix(since) }.first
+                let spoken = [tile?.accessibilityLabel, tile?.accessibilityValue].compactMap { $0 }.joined(separator: " ")
+                XCTAssertEqual(numbers(in: spoken), [StatsInsights.displayedChangeSinceStart(of: s)], "\(item.name): \(spoken)")
+                XCTAssertEqual(StatsInsights.displayedChangeSinceStart(of: s), HabitScore.displayValue(s.strength))
+            }
+            // With Since start: one tile, or two different values. (Past 90 days the 30- and 90-day
+            // changes can still be equal for a habit unused until lately; not W5's rule.)
+            guard shown.contains(since) else { continue }
+            let values = shown.map { title -> [Int] in
+                let tile = elements(in: window) { ($0.accessibilityLabel ?? "").hasPrefix(title) }.first
+                let spoken = [tile?.accessibilityLabel, tile?.accessibilityValue].compactMap { $0 }.joined(separator: " ")
+                // "30-Day Change, +5": the number after the title's own digits.
+                return Array(numbers(in: spoken).dropFirst(numbers(in: title).count))
+            }
+            XCTAssertTrue(values.count == 1 || Set(values).count == values.count, "\(item.name): \(shown) \(values)")
+        }
+    }
+
+    /// Insights with nothing to say draws its header and why (D7): a habit created Wednesday
+    /// 07-15 with no check-in waits for its first full week (07-20 to 07-26); on Monday 07-27,
+    /// with nothing of the week counted, has "Nothing to compare yet this week"; from Tuesday
+    /// 07-28 (this week 0%, last week 0%), "Not enough recent check-ins to compare".
+    func testInsightsEmptyStatesRender() async throws {
+        let fresh = try habit("Stretch", created: Self.key(7, 15), checkedIn: [])
+        let header = appLocalized("Insights")
+        let cases: [(today: Date, text: String)] = [
+            (Self.key(7, 20), appLocalized("Insights appear after your first full week")),
+            (Self.key(7, 27), appLocalized("Nothing to compare yet this week")),
+            (Self.key(7, 28), appLocalized("Not enough recent check-ins to compare")),
+        ]
+        let window = try host(Text(verbatim: "test.empty.marker"))
+        for item in cases {
+            let s = stats(fresh, today: item.today)
+            XCTAssertTrue(InsightsCard.lines(for: s).isEmpty)
+            window.rootViewController = hostingController(InsightsCard(habit: fresh, stats: s))
+            var labels: [String] = []
+            try await waitUntil("the empty state \(item.text)") {
+                labels = self.elements(in: window) { _ in true }.compactMap(\.accessibilityLabel)
+                return labels.contains(item.text)
+            }
+            XCTAssertEqual(labels, [header, item.text])
+        }
+    }
+
+    /// The record line as drawn (D7): daily from Friday 05-01, a 10-day record, 05-11 missed, then
+    /// 05-12 to 05-14 done; on 05-15 before the check-in the card's first line is "7 days from
+    /// your record of 10", through the stringsdict plural key "%lld days from your record of
+    /// %lld" (its weeks twin for times-per-week), resolved, never shown as the raw key.
+    func testTheRecordLineRendersThroughItsPluralKey() async throws {
+        let created = Self.key(5, 1)
+        let run = try habit("Run", created: created,
+                            checkedIn: Self.keys(from: created, count: 10) + Self.keys(from: Self.key(5, 12), count: 3))
+        let s = stats(run, today: Self.key(5, 15))
+        let lines = InsightsCard.lines(for: s)
+        let key = lines.first.flatMap { Mirror(reflecting: $0.text).children.first { $0.label == "key" }?.value as? String }
+        XCTAssertEqual(key, "%lld days from your record of %lld")
+        let away = 7, best = 10
+        let expected = appLocalized("\(away) days from your record of \(best)")
+        XCTAssertFalse(expected.contains("%"), expected)
+        XCTAssertFalse(appLocalized("\(away) weeks from your record of \(best)").contains("%"))
+
+        let window = try host(InsightsCard(habit: run, stats: s))
+        var labels: [String] = []
+        try await waitUntil("the record line") {
+            labels = self.elements(in: window) { _ in true }.compactMap(\.accessibilityLabel)
+            return labels.contains(expected)
+        }
+        XCTAssertEqual(labels.dropFirst().first, expected, "the record line comes first: \(labels)")
+        XCTAssertLessThanOrEqual(labels.count, 1 + StatsInsights.maximumInsightLines)
+    }
+
+    /// The PRO chip on the four Pro cards' headers is decoration: nothing VoiceOver reaches says
+    /// "PRO", each header is still a header with its own title, and Strength's stays one element
+    /// with its score ("Strength, 74").
+    func testTheProChipIsNotInTheAccessibilityTree() async throws {
+        let created = Self.key(5, 1)
+        let read = try habit("Read", created: created, checkedIn: Self.keys(from: created, count: 60))
+        let s = stats(read, today: Self.key(7, 20))
+        let pro = appLocalized("PRO")
+        let strength = appLocalized("Strength")
+        let cards: [(title: String, view: AnyView)] = [
+            (appLocalized("Insights"), AnyView(InsightsCard(habit: read, stats: s))),
+            (appLocalized("8-Week Trend"), AnyView(TrendCard(habit: read, stats: s))),
+            (strength, AnyView(StrengthCard(habit: read, stats: s))),
+            (appLocalized("Your Top 5 Streaks"), AnyView(BestStreaksCard(habit: read, stats: s))),
+        ]
+        let window = try host(Text(verbatim: "test.chip.marker"))
+        for card in cards {
+            window.rootViewController = hostingController(card.view)
+            var all: [NSObject] = []
+            var headers: [NSObject] = []
+            try await waitUntil("\(card.title)'s header") {
+                all = self.elements(in: window) { _ in true }
+                headers = all.filter { ($0.accessibilityLabel ?? "").hasPrefix(card.title) && $0.accessibilityTraits.contains(.header) }
+                return !headers.isEmpty
+            }
+            let spoken = all.flatMap { [$0.accessibilityLabel, $0.accessibilityValue].compactMap { $0 } }
+            XCTAssertFalse(spoken.contains { $0.contains(pro) }, "\(card.title): \(spoken)")
+            XCTAssertEqual(headers.count, 1, card.title)
+            let label = headers.first?.accessibilityLabel ?? ""
+            if card.title == strength {
+                XCTAssertEqual(numbers(in: label), [HabitScore.displayValue(s.strength)], "one heading with its score: \(label)")
+            } else {
+                XCTAssertEqual(label, card.title)
+            }
+        }
     }
 
     // MARK: - The detail card's header (W3-1, W3-A11Y-1)
@@ -653,5 +823,115 @@ final class StatsRenderTests: XCTestCase {
             }
             try await Task.sleep(for: .milliseconds(50))
         }
+    }
+}
+
+// MARK: - D12: the locked card's preview (RELEASE-1.4.2.md, W4)
+
+extension StatsRenderTests {
+
+    /// The locked Advanced Analytics card, as Statistics draws it for a free user over `stats`.
+    private func lockedCard(_ stats: HabitStats) -> some View {
+        ProLockedCard(
+            title: "Advanced Analytics",
+            message: "Insights, the 8-week trend, the strength chart and your top 5 streaks",
+            preview: stats
+        ) {}
+    }
+
+    /// The whole numbers in `text`, in order.
+    private func numbers(in text: String) -> [Int] {
+        text.split { !$0.isNumber }.compactMap { Int($0) }
+    }
+
+    /// "Stride Pro has N insights about this habit" counts exactly the lines InsightsCard draws
+    /// for the same stats — through InsightsCard's own `lines(for:)`, so the two cannot drift —
+    /// and is not shown when it would say 0.
+    ///
+    /// Also a guard on what the card speaks (one element: the Button merges its children): no
+    /// number but the message's own and the count. Today the preview draws only shapes, which are
+    /// no element and add nothing to the label, so this cannot catch a hidden preview being made
+    /// visible; it fails when any spoken number — a score or a date added to the preview or
+    /// anywhere in the card without hiding it — reaches the label. The preview's own claim (no
+    /// readable value) is `testThePreviewDrawsLevelsNotScores`.
+    ///
+    /// The users of `testInsightsSayNothingToAUserWhoNeverMisses`: one who never misses (no
+    /// line), and one who missed a Tuesday (Toughest on Tuesday, Down vs last week: 2 lines).
+    func testTheLockedCardCountsInsightsCardsLines() async throws {
+        let created = Self.key(5, 1)
+        let may = Self.keys(from: created, count: 31)
+        let neverHabit = try habit("Read", created: created, checkedIn: may)
+        let missedHabit = try habit("Run", created: created, checkedIn: may + [Self.key(6, 1)])
+        let cases: [(name: String, habit: Habit, stats: HabitStats, lines: Int)] = [
+            ("never misses", neverHabit, stats(neverHabit, today: Self.key(6, 1)), 0),
+            ("missed a Tuesday", missedHabit, stats(missedHabit, today: Self.key(6, 3)), 2),
+        ]
+        let title = appLocalized("Advanced Analytics")
+        let message = appLocalized("Insights, the 8-week trend, the strength chart and your top 5 streaks")
+        let insightsHeader = appLocalized("Insights")
+        // D7's empty states are drawn by the card, never counted as lines (W5).
+        let emptyStates = [appLocalized("Insights appear after your first full week"),
+                           appLocalized("Nothing to compare yet this week"),
+                           appLocalized("Not enough recent check-ins to compare")]
+        let marker = "test.lockedCard.marker"
+        let window = try host(Text(verbatim: marker))
+
+        for item in cases {
+            let name = item.name, expected = item.lines
+            XCTAssertEqual(InsightsCard.lines(for: item.stats).count, expected, "\(name): InsightsCard's lines")
+            XCTAssertEqual(ProLockedCard.insightCount(item.stats), expected, "\(name): the locked card's count")
+            XCTAssertTrue(item.stats.weeklyStrength.contains { $0 > 0 }, "\(name): a preview with a shape to hide")
+
+            // What InsightsCard draws: its rows under the header.
+            window.rootViewController = hostingController(VStack {
+                Text(verbatim: marker)
+                InsightsCard(habit: item.habit, stats: item.stats)
+            })
+            var rows: [String] = []
+            var shownEmpty: [String] = []
+            try await waitUntil("\(name): InsightsCard's render") {
+                let labels = self.elements(in: window) { _ in true }.compactMap(\.accessibilityLabel)
+                rows = labels.filter { $0 != marker && $0 != insightsHeader && !emptyStates.contains($0) }
+                shownEmpty = labels.filter { emptyStates.contains($0) }
+                return labels.contains(marker) && labels.contains(insightsHeader)
+            }
+            XCTAssertEqual(rows.count, expected, "\(name): the rows InsightsCard drew: \(rows)")
+            XCTAssertEqual(shownEmpty.count, expected == 0 ? 1 : 0, "\(name): one empty state, only with no line")
+
+            // What the locked card says over the same stats.
+            window.rootViewController = hostingController(lockedCard(item.stats))
+            var label = ""
+            try await waitUntil("\(name): the locked card") {
+                label = self.elements(in: window) { ($0.accessibilityLabel ?? "").hasPrefix(title) }
+                    .first?.accessibilityLabel ?? ""
+                return !label.isEmpty
+            }
+            let countLine = appLocalized("Stride Pro has \(expected) insights about this habit")
+            XCTAssertEqual(label.contains(countLine), expected >= 1,
+                           "\(name): the count line only with 1 or more: \(label)")
+            XCTAssertEqual(numbers(in: label), numbers(in: message) + (expected >= 1 ? [expected] : []),
+                           "\(name): the card speaks only the message's numbers and the count: \(label)")
+        }
+    }
+
+    /// The preview draws levels, not scores (D12): each week against the series' own highest, in
+    /// three steps, so the tallest bar is always full height whatever the score, and weeks a few
+    /// points apart look the same. Two habits whose scores differ by a factor draw identical
+    /// previews; nothing absolute (the free Strength tile's number) calibrates them.
+    func testThePreviewDrawsLevelsNotScores() {
+        XCTAssertEqual(StrengthShapePreview.levels([0, 0, 0]), [0, 0, 0], "nothing yet: all flat")
+        XCTAssertEqual(StrengthShapePreview.levels([0, 0.1, 0.2, 0.3]), [0, 1, 2, 3])
+        XCTAssertEqual(StrengthShapePreview.levels([0, 0.25, 0.5, 0.75]), [0, 1, 2, 3],
+                       "scaled to the series' own highest: the same shape as the line above")
+        XCTAssertEqual(StrengthShapePreview.levels([0.70, 0.72, 0.74, 0.76]), [3, 3, 3, 3],
+                       "weeks a few points apart cannot be told apart")
+        XCTAssertEqual(StrengthShapePreview.levels([0.9, 0.3]), StrengthShapePreview.levels([0.6, 0.2]),
+                       "no absolute value survives")
+        let real = [0.12, 0.3, 0.41, 0.55, 0.62, 0.7, 0.73, 0.8]
+        let drawn = StrengthShapePreview.levels(real)
+        XCTAssertEqual(drawn.count, real.count)
+        XCTAssertTrue(drawn.allSatisfy { (0...StrengthShapePreview.levelCount).contains($0) })
+        XCTAssertLessThanOrEqual(Set(drawn).count, StrengthShapePreview.levelCount + 1, "at most 4 heights for 8 weeks")
+        XCTAssertEqual(drawn.last, StrengthShapePreview.levelCount, "the highest week is always full height")
     }
 }

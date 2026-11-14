@@ -30,6 +30,10 @@ struct AddHabitView: View {
     @State private var showingNewGroup = false
     @State private var newGroupName = ""
     @State private var showingPaywall = false
+    /// Continue after buying from New Group (RELEASE-1.4.2.md D4, `onUnlock`): the New Group alert
+    /// opens once the paywall sheet is gone — from its `onDismiss`, because SwiftUI on iOS drops an
+    /// alert raised while a sheet is dismissing (G2-2).
+    @State private var continuesToNewGroup = false
     /// Notifications are off for Stride, so a reminder switched on here would never fire.
     @State private var notificationsDenied = false
     /// Save is awaiting the permission prompt; a second tap must not insert the habit twice.
@@ -70,6 +74,10 @@ struct AddHabitView: View {
                     TextField("e.g., Read 30 minutes", text: $name)
                         #if os(macOS)
                         .textFieldStyle(.plain)
+                        // The Mac titles a field by its placeholder, so VoiceOver said "e.g., Read
+                        // 30 minutes" (axdump, 1.4.1 gate 10). Named as its section; the
+                        // placeholder is still read after the name.
+                        .accessibilityLabel(Text("Habit Name"))
                         #endif
                 }
 
@@ -78,6 +86,7 @@ struct AddHabitView: View {
                         .lineLimit(1...4)
                         #if os(macOS)
                         .textFieldStyle(.plain)
+                        .accessibilityLabel(Text("Description"))
                         #endif
                 }
 
@@ -183,6 +192,9 @@ struct AddHabitView: View {
                     HStack(spacing: 14) {
                         Text(selectedEmoji)
                             .font(.title2)
+                            // The combined row reads the name alone ("Your Habit", not "⭐, Your
+                            // Habit"), as Today, History and Settings' rows already do (N5).
+                            .accessibilityHidden(true)
                         previewNameText
                             .font(.body.weight(.medium))
                             .foregroundStyle(name.isEmpty ? .secondary : .primary)
@@ -288,7 +300,10 @@ struct AddHabitView: View {
         }
         #if os(macOS)
         // A grouped Form has no ideal height either; without this the sheet's size is a guess.
-        .frame(minWidth: 460, idealWidth: 520, minHeight: 620)
+        // 520, as History's, Weekly Review's and Templates': at 620 the sheet was 685 pt tall,
+        // and in a minimum-size (700-pt) main window it ended 37 pt below the window's bottom,
+        // with Cancel and Save across that edge (RELEASE-1.4.2.md N5). The form scrolls.
+        .frame(minWidth: 460, idealWidth: 520, minHeight: 520)
         #endif
         .sheet(isPresented: $showingTemplates) {
             // A picked template is the new habit (D15): this sheet closes with the templates
@@ -307,8 +322,14 @@ struct AddHabitView: View {
         } message: {
             Text("Organize related habits together.")
         }
-        .sheet(isPresented: $showingPaywall) {
-            ProPaywallView()
+        .sheet(isPresented: $showingPaywall, onDismiss: {
+            guard continuesToNewGroup else { return }
+            continuesToNewGroup = false
+            newGroupName = ""
+            showingNewGroup = true
+        }) {
+            // Continue dismisses the paywall, then calls this: the alert follows the dismissal.
+            ProPaywallView(trigger: .groups, onUnlock: { continuesToNewGroup = true })
         }
     }
 
@@ -498,6 +519,7 @@ struct AddHabitView: View {
                     newGroupName = ""
                     showingNewGroup = true
                 } else {
+                    continuesToNewGroup = false
                     showingPaywall = true
                 }
             } label: {
