@@ -1752,3 +1752,59 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
     container and would sync it. Sign the variant out first. (The 11-11 reseed signed every device
     out server-side, so the stored token is probably dead, but nothing has checked that.)
   - StrideTests 830 run / 2 skipped / 0 failed in Tokyo and Los Angeles.
+- 2026-11-15, **Pre-freeze whole-branch review** (merged 312247b; worktree agent b021674, 44ce45f,
+  9ebcbe8).
+  - **How it ran.** Gemini 4 Argon High via agy on a `git archive` copy of 19d88da. A whole-branch
+    prompt timed out at 15 min, so it was rerun as two lenses: (1) paywall/StoreKit vs 3.1.2 and
+    (2) week boundaries and "a sentence a user can disprove". Gemini 3.8 Flash High ran two more:
+    (3) 5.6.1 and DEBUG reach and (4) localization.
+  - Every claim was verified in code before any change. Gemini's first claim (`countedDayCount`
+    counts scheduled days) was false and is dropped.
+  - **Lens (2), weeks and disprovable sentences:**
+    - The weekday line names a day only when it stands strictly alone among the bars By Weekday
+      draws. Seven equal bars named Monday "toughest".
+    - The review's change line shows only when every row the ring counts has a change. A new habit
+      at 0 % had dropped the ring under "+15 points"; this closes the item W6 left open.
+    - Momentum uses the review's comparability rule: ≥ 4 counted days this week. A times-per-week
+      habit counts once its week is over or its goal is met. One check-in had read "Up (66% →
+      100%)".
+    - Equal 30- and 90-day Strength changes show one tile (W5's open item).
+    - With no requested week, the review opens on the week that has a rate. A Mon/Wed/Fri habit
+      created on a Saturday had given an empty "Last week".
+    - `openingWeek(requested:)` is documented as taking a day-key.
+    - **Rejected:** "the review prompt's `isToday` is wrong west of UTC". The call site passes a
+      local instant, so it is correct in every zone.
+  - **Lens (1), paywall and StoreKit (3.1.2):**
+    - The CTA and terms draw only with the plans (`PaywallPhase.showsPlans`). A second appearance
+      had shown a stale "Start 7-day free trial" while loading.
+    - Restore re-reads eligibility, and an eligibility read shows loading over a restore or failure
+      state.
+    - Overlapping product loads publish only the newest eligibility read.
+    - The paywall closes on appear for a Pro user. "Unlocked" only for an entitlement that arrived
+      during the action.
+    - Settings' restore answer no longer lingers under "All features unlocked".
+    - The trial row prices the renewal product (`autoRenewPreference`), so a trial switched to
+      Monthly states Monthly's price, or no price if Monthly isn't loaded.
+    - `ProStatus.resolve` never pairs the entitled product with another product's status.
+    - **Rejected half:** "`isCheckingEligibility` stuck on a failed retry".
+  - **Follow-ups:**
+    - Onboarding hides "What's in Stride Pro" in place for Pro users.
+    - Demo Pro shows 2 Insights lines Mon–Wed and 3 from Thursday: **take the store Pro frames
+      Thursday–Sunday** (screenshots.sh header).
+    - `demo_check` uses `openingReview`.
+  - **Lens (3), 5.6.1 and DEBUG:**
+    - 5.6.1 is clean.
+    - Every launch switch and its call site is DEBUG-only.
+    - Low, for W12: `DemoData.populate`/`insertStandardSet` compile into Release but are reachable
+      only from `#if DEBUG`.
+  - **Lens (4), localization:** Flash answered only "clean", so it is not counted as evidence; W12's
+    localization pass stands.
+  - **Behaviour now, for the owner:** while "This week so far" includes a times-per-week habit that
+    hasn't met its goal, the review shows no change line.
+  - **Tests:**
+    - StrideTests 843 run / 2 skipped / 0 failed in Tokyo and Los Angeles. The 12 new host-less
+      tests failed with the old logic put back.
+    - Hosted tests compile only (disk < 30 GB); CI runs them.
+    - StrideMac builds.
+  - **Pending captures (W8):** free disk 28.3 GB, after another session's UI tests and 7.9 GB of
+    swap. The captures move to the release preparation (they are not code).
