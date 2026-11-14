@@ -185,8 +185,18 @@ final class StoreService {
                     }
                 } else {
                     // Eligibility first, then the products: one publish, with the trial decided.
+                    // Two loads can run at once (launch's, and a paywall opened while it retries;
+                    // or Try Again): only the newest read publishes, as in
+                    // `refreshIntroOfferEligibility`. A newer one exists only if another load got
+                    // products too, and it publishes both (pre-freeze review B3).
                     eligibilityGeneration &+= 1
-                    introOfferEligibility = await Self.introOfferEligibility(of: storeProducts)
+                    let generation = eligibilityGeneration
+                    let answers = await Self.introOfferEligibility(of: storeProducts)
+                    guard generation == eligibilityGeneration else {
+                        lastFailure = nil   // this load got products: nothing to report
+                        return
+                    }
+                    introOfferEligibility = answers
                     isCheckingEligibility = false
                     // The paywall orders by plan kind (PaywallModel), never by price; the price
                     // order stays for anything that lists `products` directly.
@@ -389,7 +399,13 @@ final class StoreService {
         } catch {
             sync = .failed
         }
+        let before = purchasedProductIDs
         await refreshPurchasedProducts()
+        // A sync can bring this Apple ID's history without changing what is entitled (an expired
+        // subscription from another device), and that history decides intro-offer eligibility.
+        // The refresh re-reads it only on a change; read it here otherwise, so the paywall never
+        // keeps stating a trial the sync just made ineligible (pre-freeze review B2; 3.1.2).
+        if sync == .synced, purchasedProductIDs == before { await refreshIntroOfferEligibility() }
         return RestoreOutcome(sync: sync, entitledAfter: !purchasedProductIDs.isEmpty)
     }
 
@@ -533,7 +549,8 @@ final class StoreService {
             willAutoRenew: renewal?.willAutoRenew,
             gracePeriodExpirationDate: renewal?.gracePeriodExpirationDate,
             revocationDate: transaction.revocationDate,
-            offer: offer(of: transaction, products: products))
+            offer: offer(of: transaction, products: products),
+            autoRenewProductID: renewal?.autoRenewPreference)
     }
 
     /// The offer `transaction` was bought under (D6, G2-3): from `transaction.offer` on iOS 17.2 /

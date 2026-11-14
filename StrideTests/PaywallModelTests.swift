@@ -202,4 +202,16 @@ final class PaywallModelTests: XCTestCase {
         XCTAssertNil(PaywallFixture(launchValue: "nowhere"))
         XCTAssertNil(PaywallFixture(launchValue: nil))
     }
+
+    /// Pre-freeze review B1: the CTA and the terms are drawn only beside the plans. Loading
+    /// (products already loaded, eligibility being read again), a failed load and unlocked draw
+    /// neither, so no trial is stated from a stale answer and nothing can be bought from a spinner.
+    func testTheCTAAndTermsAreDrawnOnlyWithThePlans() {
+        let withPlans: [PaywallPhase] = [.ready, .purchasing, .pending, .restore(.nothingFound), .restore(.failed),
+                                         .restore(.restored), .purchaseFailed]
+        for phase in withPlans { XCTAssertTrue(phase.showsPlans, "\(phase)") }
+        for phase in [PaywallPhase.loading, .loadFailed(.noProducts), .loadFailed(.storeError), .unlocked] {
+            XCTAssertFalse(phase.showsPlans, "\(phase)")
+        }
+    }
 }

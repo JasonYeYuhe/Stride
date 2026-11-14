@@ -473,7 +473,7 @@ final class StoreKitStatusTests: XCTestCase {
 
         XCTAssertEqual(bought, .purchased(productID: yearlyID))
         XCTAssertTrue(store.isPro)
-        guard case .trial(let productID, let firstCharge?, let willAutoRenew) = store.proStatus else {
+        guard case .trial(let productID, let firstCharge?, let willAutoRenew, .none) = store.proStatus else {
             return XCTFail("bought Yearly's trial: \(store.proStatus)")
         }
         XCTAssertEqual(productID, yearlyID)
@@ -516,9 +516,9 @@ final class StoreKitStatusTests: XCTestCase {
         try session.disableAutoRenewForTransaction(identifier: try testTransaction(yearlyID).identifier)
 
         await refresh(until: {
-            if case .trial(_, _?, false) = store.proStatus { return true } else { return false }
+            if case .trial(_, _?, false, _) = store.proStatus { return true } else { return false }
         }, isPro: true, "auto-renew off in the trial")
-        guard case .trial(_, let ends?, false) = store.proStatus else { return }
+        guard case .trial(_, let ends?, false, _) = store.proStatus else { return }
         XCTAssertEqual(trialLine, .endsOn(ends))
 
         try session.expireSubscription(productIdentifier: yearlyID)

@@ -267,6 +267,18 @@ enum PaywallPhase: Equatable {
     case purchaseFailed
     /// "Stride Pro is unlocked" with Continue, which calls `onUnlock`.
     case unlocked
+
+    /// Whether the plans, and with them the CTA and the selected plan's terms, are drawn: only in
+    /// the phases that show the plan cards. While loading — including a paywall's second
+    /// appearance, whose products are loaded but whose eligibility is being read again — the bar
+    /// drew "Start 7-day free trial" and its terms from the last answer, enabled, beside the
+    /// spinner (pre-freeze review B1; Guideline 3.1.2).
+    var showsPlans: Bool {
+        switch self {
+        case .ready, .purchasing, .pending, .restore, .purchaseFailed: return true
+        case .loading, .loadFailed, .unlocked: return false
+        }
+    }
 }
 
 #if DEBUG

@@ -302,6 +302,41 @@ final class PurchaseOutcomeTests: XCTestCase {
                        .endsOn(renewal))
     }
 
+    /// Pre-freeze review B6: the first charge is for the product the subscription renews as
+    /// (`autoRenewPreference`). Switched from Yearly to Monthly during Yearly's trial, the charge
+    /// is Monthly's: the row said "first charge of $19.99". Without Monthly's price loaded, the
+    /// price is dropped, never Yearly's shown instead.
+    func testATrialSwitchedToMonthlyIsChargedMonthlysPrice() {
+        let switched = resolve([yearly], [SubscriptionStatusMirror(
+            productID: yearly, state: .subscribed, expirationDate: renewal, willAutoRenew: true,
+            offer: .freeTrial, autoRenewProductID: monthly)])
+        XCTAssertEqual(switched, .trial(productID: yearly, firstChargeOn: renewal, willAutoRenew: true,
+                                        chargedProductID: monthly))
+        XCTAssertEqual(rows(switched, isPro: true), [.unlocked, .plan(.subscription(productID: yearly), nil), .manage])
+        XCTAssertEqual(trialLine(switched, prices: [yearly: "$19.99", monthly: "$2.99"]),
+                       .firstCharge(on: renewal, price: "$2.99"))
+        XCTAssertEqual(trialLine(switched, prices: [yearly: "$19.99"]), .firstCharge(on: renewal, price: nil))
+        // Renewing as itself: no charged product, the trial's own price.
+        let same = resolve([yearly], [SubscriptionStatusMirror(
+            productID: yearly, state: .subscribed, expirationDate: renewal, willAutoRenew: true,
+            offer: .freeTrial, autoRenewProductID: yearly)])
+        XCTAssertEqual(same, .trial(productID: yearly, firstChargeOn: renewal, willAutoRenew: true))
+        XCTAssertEqual(trialLine(same, prices: [yearly: "$19.99", monthly: "$2.99"]), .firstCharge(on: renewal, price: "$19.99"))
+    }
+
+    /// Pre-freeze review B7: only the entitled product's status is read. Right after a switch the
+    /// provisional status is resolved from the last read, which still holds the old plan's
+    /// subscribed `.freeTrial` status: Monthly entitled showed Yearly's trial row and date. Now it
+    /// is Monthly, active, with no date until the next read. Unchanged: the entitled product's own
+    /// status wins over another's (`testTheEntitledProductsStatusIsTheOneShown`).
+    func testAnotherProductsStatusIsNeverShownForTheEntitledOne() {
+        let staleTrial = [status(yearly, .subscribed, expires: renewal, renews: true, offer: .freeTrial)]
+        XCTAssertEqual(resolve([monthly], staleTrial), .active(productID: monthly, renewsOn: nil, willAutoRenew: nil))
+        let staleActive = [status(yearly, .subscribed, expires: later, renews: true)]
+        XCTAssertEqual(resolve([monthly], staleActive), .active(productID: monthly, renewsOn: nil, willAutoRenew: nil))
+        XCTAssertNil(trialLine(resolve([monthly], staleTrial), prices: [yearly: "$19.99"]))
+    }
+
     /// Renewal info that could not be verified claims nothing: no date, no charge — "Free trial".
     func testAnUnverifiedTrialClaimsNothing() {
         let unverified = resolve([yearly], [status(yearly, .subscribed, expires: renewal, renews: nil, offer: .freeTrial)])
