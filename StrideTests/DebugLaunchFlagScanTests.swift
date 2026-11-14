@@ -25,9 +25,19 @@ final class DebugLaunchFlagScanTests: XCTestCase {
     /// `prepareStore`'s `-demo`, DemoData's `-demoScenario`, StatsView's `-statsScrollTo`).
     private static let earlierLiterals = ["-paywall", "-demo", "-demoScenario", "-statsScrollTo"]
 
+    /// The sweep's request switches (StrideApp's `launchHistoryRequest`, 1.4.1; `launchReviewRequest`
+    /// and `launchStatsHabitID`, W8), each of which must exist and be DEBUG-only like D14's.
+    private static let sweepLiterals = ["-openHistory", "-historyDay", "-openReview", "-statsHabit"]
+
+    /// What scripts/verify_archive.sh greps a built app for, besides the sentinel: a DEBUG-only text
+    /// every target compiling Shared/ carries (DemoData's details set), its probe for the widget.
+    /// Pinned here so a rename cannot leave that check passing because it looks for nothing.
+    private static let binaryProbeLiterals = ["Before breakfast, one lap of the park"]
+
     func testEachD14SwitchIsReadOnlyInsideIfDebug() throws {
-        let sites = try Self.literalSites(Self.d14Literals + Self.earlierLiterals)
-        for literal in Self.d14Literals {
+        let sites = try Self.literalSites(Self.d14Literals + Self.earlierLiterals + Self.sweepLiterals
+                                          + Self.binaryProbeLiterals)
+        for literal in Self.d14Literals + Self.sweepLiterals + Self.binaryProbeLiterals {
             XCTAssertFalse(sites.filter { $0.literal == literal }.isEmpty,
                            "\"\(literal)\" is in no source file: the scan is not reading what the app compiles")
         }

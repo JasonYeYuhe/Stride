@@ -155,20 +155,34 @@ check_manifest_reasons() {
 # prints this line, and it exists only under `#if DEBUG`. The switches themselves cannot be the probe:
 # Swift keeps string literals of up to 15 bytes inside the instructions, where no text search finds
 # them (`-demoPro` is 8 bytes); this one is 24, so the compiler puts it in __cstring, where it does.
-# DebugLaunchFlagScanTests keeps every switch and this sentinel inside `#if DEBUG` in the sources;
-# this checks the binary that was built.
+#
+# WHAT THE PROBES PROVE, and what they do not: each is one DEBUG-only text in one place, so finding
+# none proves only that the target holding it was not compiled with DEBUG. The sentinel is in the
+# app target's own code (Stride/Sources), so it proves the APP is not a Debug build. The second probe
+# is a note in Shared/DemoData.swift's `#if DEBUG` details set, which every target compiling Shared/
+# carries, the widget included (measured 2026-11-14: in a Debug archive's app and appex, in neither
+# of a Release archive's), so it proves the same of the WIDGET. Neither proves that no DEBUG-only
+# code exists elsewhere, or that every switch is behind `#if DEBUG` — that is the source scan's job
+# (StrideTests' DebugLaunchFlagScanTests, which also keeps both probes' literals in place and
+# DEBUG-only, so a rename cannot leave this check finding nothing for the wrong reason).
 DEBUG_SENTINEL="[StrideDebugLaunchFlags]"
+SHARED_DEBUG_PROBE="Before breakfast, one lap of the park"
 
 # check_no_debug_sentinel <app> — both modes. Every file of the bundle, not just the executable: a
-# Debug build keeps the app's code in <exe>.debug.dylib, and an appex or framework could carry it.
+# Debug build keeps the app's code in <exe>.debug.dylib, and the appex is a separate binary.
 check_no_debug_sentinel() {
-    local app="${1%/}" hits
-    hits="$(grep -r -l -a -F -- "$DEBUG_SENTINEL" "$app" 2>/dev/null | sed "s|^$app/||")"
-    if [[ -n "$hits" ]]; then
-        fail "DEBUG launch switches compiled in: \"$DEBUG_SENTINEL\" in $(echo $hits) — a Debug build, or a switch outside #if DEBUG"
-    else
-        pass "no DEBUG launch switch: \"$DEBUG_SENTINEL\" in no file of $(basename "$app")"
-    fi
+    local app="${1%/}" probe label hits
+    for probe in "$DEBUG_SENTINEL" "$SHARED_DEBUG_PROBE"; do
+        if [[ "$probe" == "$DEBUG_SENTINEL" ]]; then label="the app target"; else label="a target compiling Shared/ (the widget)"; fi
+        hits="$(grep -r -l -a -F -- "$probe" "$app" 2>/dev/null | sed "s|^$app/||")"
+        if [[ -n "$hits" ]]; then
+            fail "DEBUG build: \"$probe\" in $(echo $hits) — $label was compiled with DEBUG"
+        else
+            pass "not a DEBUG build: \"$probe\" in no file of $(basename "$app") ($label)"
+        fi
+    done
+    echo "    (these prove the app and the widget are not Debug builds; that no DEBUG code exists"
+    echo "     elsewhere is DebugLaunchFlagScanTests' source scan, not this check)"
 }
 
 # check_signature <signed .app>  — mode (2); see the header.
