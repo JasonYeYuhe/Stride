@@ -117,6 +117,30 @@ final class SettingsProRowsTests: XCTestCase {
                          lacks: ["Purchases restored", "No purchases found", "Couldn't reach"])
     }
 
+    /// "Purchases restored" never outlives the entitlement: once `isPro` turns false (the restored
+    /// subscription expired, a refund) Settings clears it, and the rows never draw it without Pro.
+    func testPurchasesRestoredGoesWhenTheEntitlementDoes() async throws {
+        typealias Rows = SettingsProRows
+        XCTAssertNil(Rows.restoreOutcome(.restored, afterProChangeTo: false, isRestoring: false))
+        XCTAssertEqual(Rows.restoreOutcome(.restored, afterProChangeTo: true, isRestoring: false), .restored)
+        XCTAssertEqual(Rows.restoreOutcome(.restored, afterProChangeTo: false, isRestoring: true), .restored,
+                       "a restore's own refresh decides its answer itself")
+        // The other answers go once Pro arrives from elsewhere, and stay true while it does not.
+        for outcome in [RestoreOutcome.nothingFound, .failed] {
+            XCTAssertNil(Rows.restoreOutcome(outcome, afterProChangeTo: true, isRestoring: false), "\(outcome)")
+            XCTAssertEqual(Rows.restoreOutcome(outcome, afterProChangeTo: false, isRestoring: false), outcome)
+            XCTAssertEqual(Rows.restoreOutcome(outcome, afterProChangeTo: true, isRestoring: true), outcome)
+        }
+        XCTAssertNil(Rows.restoreOutcome(nil, afterProChangeTo: false, isRestoring: false))
+
+        // Drawn: a stale `.restored` under the lapsed rows says nothing.
+        try await expect(.lapsed(expiredOn: date), isPro: false, restore: .restored,
+                         has: [appLocalized("Pro ended on \(dateLabel)"), "Restore Purchases"],
+                         lacks: ["Purchases restored"])
+        try await expect(.never, isPro: false, restore: .restored, has: ["Upgrade to Pro"],
+                         lacks: ["Purchases restored"])
+    }
+
     /// The Restore row runs Settings' restore; while it runs it is disabled.
     func testTheRestoreRowCallsRestore() async throws {
         var restores = 0

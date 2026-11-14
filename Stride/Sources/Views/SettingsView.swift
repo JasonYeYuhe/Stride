@@ -154,10 +154,11 @@ struct SettingsView: View {
                                     onRestore: restorePurchases,
                                     onManage: { showingManageSubscriptions = true })
                 }
-                // An answer about an earlier state goes once Pro changes from elsewhere ("No
-                // purchases found" under "All features unlocked"); a restore's own change keeps it.
-                .onChange(of: store.isPro) { _, _ in
-                    if !store.isRestoring, restoreOutcome != .restored { restoreOutcome = nil }
+                // An answer about an earlier state goes once Pro changes from elsewhere
+                // (`SettingsProRows.restoreOutcome(_:afterProChangeTo:isRestoring:)`).
+                .onChange(of: store.isPro) { _, isPro in
+                    restoreOutcome = SettingsProRows.restoreOutcome(restoreOutcome, afterProChangeTo: isPro,
+                                                                    isRestoring: store.isRestoring)
                 }
 
                 // Account & Sync
@@ -1703,7 +1704,7 @@ struct SettingsProRows: View {
         ForEach(ProSettingsRow.rows(for: status, isPro: isPro), id: \.self) { row in
             proRow(row)
         }
-        if let restoreOutcome, let answer = Self.restoreAnswer(restoreOutcome) {
+        if let restoreOutcome, let answer = Self.restoreAnswer(restoreOutcome, isPro: isPro) {
             answer
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -1712,10 +1713,23 @@ struct SettingsProRows: View {
         }
     }
 
-    /// Restore's answer (D6), as the paywall words it. A cancel says nothing.
-    static func restoreAnswer(_ outcome: RestoreOutcome) -> Text? {
+    /// What Restore's answer becomes when `isPro` changes while it is shown. A restore's own
+    /// change (`isRestoring`) keeps it. Otherwise "No purchases found" and "Couldn't reach the App
+    /// Store" go once Pro arrives from elsewhere (they would sit under "All features unlocked"), and
+    /// "Purchases restored" goes once Pro is gone again (expired, refunded, revoked): it must never
+    /// sit under "Upgrade to Pro" or "Pro ended".
+    static func restoreOutcome(_ outcome: RestoreOutcome?, afterProChangeTo isPro: Bool,
+                               isRestoring: Bool) -> RestoreOutcome? {
+        guard !isRestoring, let outcome else { return outcome }
+        if outcome == .restored { return isPro ? outcome : nil }
+        return isPro ? nil : outcome
+    }
+
+    /// Restore's answer (D6), as the paywall words it. A cancel says nothing, and "Purchases
+    /// restored" is said only while the entitlement is there.
+    static func restoreAnswer(_ outcome: RestoreOutcome, isPro: Bool) -> Text? {
         switch outcome {
-        case .restored: return Text("Purchases restored")
+        case .restored: return isPro ? Text("Purchases restored") : nil
         case .nothingFound: return Text("No purchases found for this Apple ID")
         case .failed: return Text("Couldn't reach the App Store")
         case .cancelled: return nil

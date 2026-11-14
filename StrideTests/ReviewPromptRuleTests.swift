@@ -125,13 +125,101 @@ final class ReviewPromptRuleTests: XCTestCase {
                                                                automated: true)), .skip(.automatedRun))
     }
 
-    /// The rule is the same in Release: nothing in ReviewPromptRule.swift is conditional, so a
+    /// The rule is the same in Release: nothing in ReviewPromptRule.swift, in the app's
+    /// `ReviewPrompter` (TodayCards.swift) or in Today's hook that calls it is conditional, so a
     /// Release build skips an automated run exactly as these tests see it.
-    func testTheRuleHasNoConditionalCompilation() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let source = try String(contentsOf: root.appendingPathComponent("Shared/ReviewPromptRule.swift"), encoding: .utf8)
-        let directives = source.split(separator: "\n").filter { $0.trimmingCharacters(in: .whitespaces).hasPrefix("#if") }
-        XCTAssertEqual(directives, [])
+    func testTheRuleAndThePrompterHaveNoConditionalCompilation() throws {
+        let rule = try Self.lines(of: "Shared/ReviewPromptRule.swift")
+        XCTAssertEqual(rule.filter(Self.isDirective), [], "Shared/ReviewPromptRule.swift")
+
+        let cards = try Self.lines(of: "Stride/Sources/Views/TodayCards.swift")
+        let prompter = try XCTUnwrap(Self.region(opening: "struct ReviewPrompter {", in: cards), "ReviewPrompter")
+        XCTAssertGreaterThan(prompter.count, 20, "the scan must read the whole struct")
+        XCTAssertEqual(cards[prompter].filter(Self.isDirective), [], "ReviewPrompter")
+
+        let today = try Self.lines(of: "Stride/Sources/Views/TodayView.swift")
+        let hook = try XCTUnwrap(Self.region(opening: Self.hookOpener, in: today), "Today's review-prompt hook")
+        XCTAssertEqual(today[hook].filter(Self.isDirective), [], "Today's review-prompt hook")
+    }
+
+    /// The wiring (N3): the system's review request is reached only from Today's review-prompt hook,
+    /// which goes through `ReviewPrompter`, and from `ReviewPrompter` itself — nowhere else in the
+    /// app, Shared/ or the widget. Its environment value is read only in TodayView's declaration.
+    func testOnlyTodaysHookAndThePrompterReachRequestReview() throws {
+        let patterns = [".requestReview", "requestReview(", "SKStoreReviewController"]
+        let declaration = "@Environment(\\.requestReview) private var requestReview"
+        var allowed: [String: [ClosedRange<Int>]] = [:]
+        let today = try Self.lines(of: "Stride/Sources/Views/TodayView.swift")
+        let hook = try XCTUnwrap(Self.region(opening: Self.hookOpener, in: today))
+        allowed["Stride/Sources/Views/TodayView.swift"] = [hook]
+        let cards = try Self.lines(of: "Stride/Sources/Views/TodayCards.swift")
+        allowed["Stride/Sources/Views/TodayCards.swift"] = [try XCTUnwrap(Self.region(opening: "struct ReviewPrompter {", in: cards))]
+
+        var sites = 0, declarations = 0
+        var outside: [String] = []
+        for root in ["Stride/Sources", "StrideWidget/Sources", "Shared"] {
+            let dir = Self.repositoryRoot.appendingPathComponent(root)
+            let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil))
+            for case let url as URL in enumerator where url.pathExtension == "swift" && !url.lastPathComponent.contains(" 2.") {
+                let name = "\(root)/\(url.path.replacingOccurrences(of: dir.path + "/", with: ""))"
+                let lines = try String(contentsOf: url, encoding: .utf8).components(separatedBy: "\n")
+                for (index, line) in lines.enumerated() {
+                    let code = Self.code(of: line)
+                    guard patterns.contains(where: code.contains) else { continue }
+                    sites += 1
+                    if code.trimmingCharacters(in: .whitespaces) == declaration, name == "Stride/Sources/Views/TodayView.swift" {
+                        declarations += 1
+                        continue
+                    }
+                    if allowed[name]?.contains(where: { $0.contains(index) }) == true { continue }
+                    outside.append("\(name):\(index + 1): \(code.trimmingCharacters(in: .whitespaces))")
+                }
+            }
+        }
+        XCTAssertEqual(declarations, 1, "TodayView's @Environment(\\.requestReview)")
+        XCTAssertGreaterThanOrEqual(sites, 3, "the scan found too few sites to be reading the sources")
+        XCTAssertEqual(outside, [], "requestReview reached outside Today's hook and ReviewPrompter")
+
+        // The hook calls the system only through the prompter.
+        let hookCode = today[hook].map(Self.code).joined(separator: "\n")
+        XCTAssertTrue(hookCode.contains("ReviewPrompter.live.afterCheckIn("), "the hook asks the prompter")
+        XCTAssertTrue(hookCode.contains("requestReview()"), "the prompter's request is the system's")
+    }
+
+    // MARK: - Source helpers
+
+    private static let hookOpener = "private var reviewPromptHook: ReviewPromptHook {"
+
+    private static var repositoryRoot: URL {
+        URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+    }
+
+    private static func lines(of path: String) throws -> [String] {
+        try String(contentsOf: repositoryRoot.appendingPathComponent(path), encoding: .utf8).components(separatedBy: "\n")
+    }
+
+    private static func isDirective(_ line: String) -> Bool {
+        line.trimmingCharacters(in: .whitespaces).hasPrefix("#if")
+    }
+
+    /// A line without its comment: a whole-line comment is empty, a trailing `//` is cut.
+    private static func code(of line: String) -> String {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("//") { return "" }
+        if let range = line.range(of: " //") { return String(line[..<range.lowerBound]) }
+        return line
+    }
+
+    /// The lines from the one containing `opener` to the brace that closes it.
+    private static func region(opening opener: String, in lines: [String]) -> ClosedRange<Int>? {
+        guard let start = lines.firstIndex(where: { $0.contains(opener) }) else { return nil }
+        var depth = 0
+        for index in start..<lines.count {
+            let code = code(of: lines[index])
+            depth += code.filter { $0 == "{" }.count - code.filter { $0 == "}" }.count
+            if depth == 0, index > start { return start...index }
+        }
+        return nil
     }
 
     // MARK: - D13

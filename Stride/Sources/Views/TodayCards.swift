@@ -30,6 +30,14 @@ enum TodayCards {
                                   state: state, ignoresWindow: forced)
     }
 
+    /// This process is an automated run (`ReviewPromptRule.isAutomatedRun`): any launch argument,
+    /// or an XCTest host. Then Today writes nothing to `UserDefaults.standard` — neither the card's
+    /// state nor the install date — the same predicate that keeps the review prompt away.
+    static var isAutomatedRun: Bool {
+        ReviewPromptRule.isAutomatedRun(arguments: ProcessInfo.processInfo.arguments,
+                                        environment: ProcessInfo.processInfo.environment)
+    }
+
     /// `-inlineCard none|week` (D14), as Today reads it.
     enum InlineOverride: Equatable {
         /// `none`: no inline card, whatever the day.
@@ -149,14 +157,28 @@ struct TodayWeekCard: View {
 /// `InlinePrompts.DismissalState` in `UserDefaults.standard` (D12). Per device on purpose; never
 /// synced, never in the backup, never read by the widget (the widget has no code that reads these
 /// keys). The hosted tests pass a scratch suite.
+///
+/// `live` is read-only in an automated run (`ReviewPromptRule.isAutomatedRun`: any launch argument,
+/// an XCTest host): a sweep or a hosted test that draws Today on a Monday or Tuesday reads the
+/// state and never writes it, so no run leaves a free week, a × or a cap in the app's defaults for
+/// the next one.
 struct InlinePromptStore {
     let defaults: UserDefaults
+    /// `save` writes nothing.
+    let readOnly: Bool
+
+    init(defaults: UserDefaults, readOnly: Bool = false) {
+        self.defaults = defaults
+        self.readOnly = readOnly
+    }
 
     static let proHiddenWeekKey = "stride_week_card_pro_hidden_week"
     static let freeWeeksShownKey = "stride_week_card_free_weeks_shown"
     static let freeEndedKey = "stride_week_card_free_ended"
 
-    static var live: InlinePromptStore { InlinePromptStore(defaults: .standard) }
+    static var live: InlinePromptStore {
+        InlinePromptStore(defaults: .standard, readOnly: TodayCards.isAutomatedRun)
+    }
 
     var state: InlinePrompts.DismissalState {
         InlinePrompts.DismissalState(
@@ -166,6 +188,7 @@ struct InlinePromptStore {
     }
 
     func save(_ state: InlinePrompts.DismissalState) {
+        guard !readOnly else { return }
         if let week = state.proHiddenWeek {
             defaults.set(week, forKey: Self.proHiddenWeekKey)
         } else {
@@ -208,9 +231,11 @@ struct ReviewPrompter {
 
     var installDate: Date? { defaults.object(forKey: Self.installDateKey) as? Date }
 
-    /// Sets the install date unless one is set.
+    /// Sets the install date unless one is set. Never in an automated run (its own arguments and
+    /// environment): a hosted test or a sweep must not start the 3-day clock of the app it runs in.
     func recordInstallDateIfNeeded() {
-        guard installDate == nil else { return }
+        guard installDate == nil,
+              !ReviewPromptRule.isAutomatedRun(arguments: arguments, environment: environment) else { return }
         defaults.set(now(), forKey: Self.installDateKey)
     }
 

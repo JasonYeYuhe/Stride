@@ -41,6 +41,9 @@ struct TodayView: View {
     /// Bumped by each write of the week card's dismissal state, which lives in
     /// `UserDefaults.standard` (`InlinePromptStore`) and is read at every render.
     @State private var weekCardRevision = 0
+    /// The card's state for this view only, in an automated run, where `InlinePromptStore.live` is
+    /// read-only: × still hides the card on screen, and nothing reaches the app's defaults.
+    @State private var unsavedWeekCardState: InlinePrompts.DismissalState?
     /// The system's rating prompt (N3), asked only through `ReviewPrompter`.
     @Environment(\.requestReview) private var requestReview
     #if DEBUG
@@ -227,7 +230,8 @@ struct TodayView: View {
             if !syncing { refreshSyncCounts() }
         }
         .onChange(of: auth.isLoggedIn) { _, _ in refreshSyncCounts() }
-        // N3: the install date `ReviewPromptRule` counts its 3 days from, recorded once.
+        // N3: the install date `ReviewPromptRule` counts its 3 days from, recorded once (never in
+        // an automated run: `recordInstallDateIfNeeded`).
         .task { ReviewPrompter.live.recordInstallDateIfNeeded() }
         // N3: the rows ask, after a write, through this hook; it knows what is presented.
         .environment(\.reviewPromptHook, reviewPromptHook)
@@ -240,7 +244,8 @@ struct TodayView: View {
     private func inlineCard(now: Date, calendar: Calendar) -> InlinePrompts.Card? {
         _ = weekCardRevision
         return TodayCards.card(habits: habits, cache: cache, now: now, calendar: calendar, isPro: store.isPro,
-                               state: InlinePromptStore.live.state, override: TodayCards.launchOverride)
+                               state: unsavedWeekCardState ?? InlinePromptStore.live.state,
+                               override: TodayCards.launchOverride)
     }
 
     private func weekCard(_ card: InlinePrompts.WeekCard) -> some View {
@@ -260,15 +265,19 @@ struct TodayView: View {
         }
     }
 
-    /// Writes the card's state, unless DEBUG's `-inlineCard` fixes the card (the sweeps write
-    /// nothing).
+    /// Writes the card's state, unless DEBUG's `-inlineCard` fixes the card. In an automated run
+    /// (a sweep, the E2E kit, a hosted test) the store is read-only: the change stays in this view.
     private func updateWeekCardState(_ change: (InlinePrompts.DismissalState) -> InlinePrompts.DismissalState) {
         guard TodayCards.launchOverride == nil else { return }
         let store = InlinePromptStore.live
-        let current = store.state
+        let current = unsavedWeekCardState ?? store.state
         let next = change(current)
         guard next != current else { return }
-        store.save(next)
+        if store.readOnly {
+            unsavedWeekCardState = next
+        } else {
+            store.save(next)
+        }
         weekCardRevision += 1
     }
 

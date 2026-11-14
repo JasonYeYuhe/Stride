@@ -193,6 +193,37 @@ final class TodayWeekCardTests: XCTestCase {
         XCTAssertEqual(requests, 0)
     }
 
+    /// An automated run writes nothing into the app's own defaults: this hosted run (an XCTest
+    /// host) gets a read-only live card store and a live prompter that records no install date, so
+    /// no hosted test or sweep leaves a free week, a × or the 3-day clock behind for the next one.
+    func testAnAutomatedRunWritesNothingToTheAppsDefaults() {
+        let standard = UserDefaults.standard
+        let keys = [InlinePromptStore.proHiddenWeekKey, InlinePromptStore.freeWeeksShownKey,
+                    InlinePromptStore.freeEndedKey, ReviewPrompter.installDateKey]
+        // Whatever an earlier build of this branch may have left behind goes first.
+        for key in keys { standard.removeObject(forKey: key) }
+
+        XCTAssertTrue(TodayCards.isAutomatedRun)
+        XCTAssertTrue(InlinePromptStore.live.readOnly)
+        InlinePromptStore.live.save(.init(proHiddenWeek: 20_605, freeWeeksShown: [20_598], freeEnded: true))
+        ReviewPrompter.live.recordInstallDateIfNeeded()
+        for key in keys {
+            XCTAssertNil(standard.object(forKey: key), "\(key) written by an automated run")
+        }
+        XCTAssertEqual(InlinePromptStore.live.state, .empty)
+
+        // The same through a store and a prompter on scratch defaults, with a sweep's arguments.
+        let readOnly = InlinePromptStore(defaults: scratch.defaults, readOnly: true)
+        readOnly.save(.init(freeWeeksShown: [20_598], freeEnded: true))
+        XCTAssertEqual(readOnly.state, .empty)
+        let sweep = ReviewPrompter(defaults: scratch.defaults, arguments: [Self.app, "-demo", "-tab", "0"],
+                                   environment: [:], appVersion: "1.4.2", now: { Date() })
+        sweep.recordInstallDateIfNeeded()
+        XCTAssertNil(sweep.installDate)
+        _ = sweep.afterCheckIn(milestone, sheetShowing: false) {}
+        XCTAssertNil(sweep.installDate, "a check-in in a sweep starts no clock either")
+    }
+
     /// The install date is recorded once and never moved.
     func testTheInstallDateIsRecordedOnce() {
         let first = Date(timeIntervalSince1970: 1_790_000_000)
