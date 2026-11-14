@@ -237,7 +237,9 @@ Before it captures, it checks:
 Then it runs `screencapture -x -o -l <window id>`, where `-o` drops the shadow so the image is the
 window's frame exactly. It keeps the capture only if:
 
-- the image is not blank (nearly all transparent, or one colour);
+- the image is not blank, by `scripts/frame_check.swift`, the sweeps' own check (nearly all
+  transparent, two colours or fewer, or under 0.3 % ink between 16 and 88 % of the height, in the
+  window's detail column);
 - it is exactly 2880×1800 px (`sips`), or the `--size` given.
 
 A rejected capture stays in a temp directory, whose path is printed. Exit status: 0 captured,
@@ -250,6 +252,28 @@ size.
 to grant it: System Settings → Privacy & Security → Screen & System Audio Recording, then
 relaunch that app. The owner grants it for the sitting and revokes it afterwards
 (RELEASE-1.4.1.md P3b).
+
+### The gate-10 sweep (`capture.sh --sweep`, RELEASE-1.4.2.md W8)
+
+The one mode that launches the variant itself: every paywall fixture and the Weekly Review in the
+six languages, and Statistics' Pro cards, at the full 1440×900 frame and at the minimum width in a
+700-pt window, with `geometry.txt` saying whether each sheet ends inside the window. The script's
+header has the details; what matters before running it:
+
+- **Sign the variant out first.** It shares its container, defaults and Keychain service with the
+  Release variant, a production client, and every sweep launch passes `-demo`, which erases the
+  store without tombstones. The sweep refuses to start while the variant holds a session (its
+  Keychain item for `yyh.stride.habittracker.mactest`, read as attributes only, or
+  `stride_session_account` in its defaults); `--force` runs it anyway. On 2026-11-14 the variant
+  held `demo@stride-review.com`'s session.
+- **It takes the screen.** The variant's window must be frontmost on the current Space. Without
+  `--activate` the sweep stops at the first launch whose window is elsewhere (exit 3); with it, it
+  brings the variant forward for every capture, about 200 launches and 20+ minutes for `--set all`,
+  after a 10-second countdown. Run it when nobody is using the Mac.
+- One instance at a time, launched by path and stopped by its pid (also on Ctrl-C); an instance
+  that will not stop ends the sweep.
+- The variant has no products: Xcode's StoreKit configuration applies only under Xcode's Run
+  action, never to a launch by path, so the fixtures are the Mac paywall's evidence.
 
 ## Cleaning up
 

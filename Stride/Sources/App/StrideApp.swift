@@ -434,7 +434,41 @@ struct StrideApp: App {
     private static func openLaunchHistory(in shell: ShellState, context: ModelContext) {
         guard !launchHistoryAsked else { return }
         launchHistoryAsked = true
-        if let request = launchHistoryRequest(in: context) { shell.request = request }
+        if let request = launchHistoryRequest(in: context) ?? launchReviewRequest() { shell.request = request }
+        if let habitID = launchStatsHabitID(in: context) { shell.statsHabitID = habitID }
+    }
+
+    /// `-openReview this|last` (RELEASE-1.4.2.md W8): the Weekly Review on this week or last, as a
+    /// Pro press would issue it, and for anyone else the paywall that resumes it (D8's
+    /// `.weeklyReview` trigger), so the sweep and the Mac captures can draw both (`simctl` has no
+    /// touch input). DEBUG-only like `-openHistory`.
+    @MainActor
+    static func launchReviewRequest(arguments: [String] = CommandLine.arguments, now: Date = Date(),
+                                    calendar: Calendar = .current, isPro: Bool? = nil) -> ShellRequest? {
+        guard let flag = arguments.firstIndex(of: "-openReview"), flag + 1 < arguments.count else { return nil }
+        let isPro = isPro ?? StoreService.shared.isPro
+        let thisWeek = WeeklyReviewMath.weekRange(containing: now, in: calendar)
+        let week: WeeklyReviewMath.WeekRange
+        switch arguments[flag + 1] {
+        case "this": week = thisWeek
+        case "last": week = thisWeek.previous
+        default: return nil
+        }
+        let review = MenuCommandRules.ProDestination.review(week: week.monday)
+        return ShellRequest(isPro ? review : .paywall(trigger: .weeklyReview, resume: review))
+    }
+
+    /// `-statsHabit <habit name | index>` (W8): the habit Statistics shows, matched as
+    /// `-openHistory`'s, so the sweep can draw a habit other than the first. DEBUG-only.
+    @MainActor
+    static func launchStatsHabitID(arguments: [String] = CommandLine.arguments, in context: ModelContext) -> UUID? {
+        guard let flag = arguments.firstIndex(of: "-statsHabit"), flag + 1 < arguments.count else { return nil }
+        let wanted = arguments[flag + 1]
+        let descriptor = FetchDescriptor<Habit>(predicate: #Predicate { !$0.isArchived },
+                                                sortBy: [SortDescriptor(\.sortOrder), SortDescriptor(\.createdAt)])
+        guard let habits = try? context.fetch(descriptor) else { return nil }
+        return (habits.first(where: { $0.name == wanted })
+            ?? Int(wanted).flatMap({ habits.indices.contains($0) ? habits[$0] : nil }))?.id
     }
     #endif
 

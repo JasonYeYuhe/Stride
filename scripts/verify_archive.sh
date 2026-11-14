@@ -39,6 +39,8 @@
 # Both modes: the required-reason APIs each shipped privacy manifest declares, exactly
 # (check_required_reasons, 1.4.1): the app's, and on iOS the widget's. The archive is checked
 # because it is what was built; the export because it is what is uploaded.
+# Both modes: no DEBUG launch switch in what ships (RELEASE-1.4.2.md D14, gate 9;
+# check_no_debug_sentinel). A Debug-configuration archive fails here.
 set -uo pipefail   # no -e: report every failed check, then exit on the count
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -147,6 +149,40 @@ check_manifest_reasons() {
         check_required_reasons "Stride.app (macOS)" "$app/Contents/Resources/PrivacyInfo.xcprivacy" \
             "$APP_REQUIRED_REASONS"
     fi
+}
+
+# RELEASE-1.4.2.md D14: the DEBUG launch switches' parser (StrideDebugLaunchFlags in StrideApp.swift)
+# prints this line, and it exists only under `#if DEBUG`. The switches themselves cannot be the probe:
+# Swift keeps string literals of up to 15 bytes inside the instructions, where no text search finds
+# them (`-demoPro` is 8 bytes); this one is 24, so the compiler puts it in __cstring, where it does.
+#
+# WHAT THE PROBES PROVE, and what they do not: each is one DEBUG-only text in one place, so finding
+# none proves only that the target holding it was not compiled with DEBUG. The sentinel is in the
+# app target's own code (Stride/Sources), so it proves the APP is not a Debug build. The second probe
+# is a note in Shared/DemoData.swift's `#if DEBUG` details set, which every target compiling Shared/
+# carries, the widget included (measured 2026-11-14: in a Debug archive's app and appex, in neither
+# of a Release archive's), so it proves the same of the WIDGET. Neither proves that no DEBUG-only
+# code exists elsewhere, or that every switch is behind `#if DEBUG` — that is the source scan's job
+# (StrideTests' DebugLaunchFlagScanTests, which also keeps both probes' literals in place and
+# DEBUG-only, so a rename cannot leave this check finding nothing for the wrong reason).
+DEBUG_SENTINEL="[StrideDebugLaunchFlags]"
+SHARED_DEBUG_PROBE="Before breakfast, one lap of the park"
+
+# check_no_debug_sentinel <app> — both modes. Every file of the bundle, not just the executable: a
+# Debug build keeps the app's code in <exe>.debug.dylib, and the appex is a separate binary.
+check_no_debug_sentinel() {
+    local app="${1%/}" probe label hits
+    for probe in "$DEBUG_SENTINEL" "$SHARED_DEBUG_PROBE"; do
+        if [[ "$probe" == "$DEBUG_SENTINEL" ]]; then label="the app target"; else label="a target compiling Shared/ (the widget)"; fi
+        hits="$(grep -r -l -a -F -- "$probe" "$app" 2>/dev/null | sed "s|^$app/||")"
+        if [[ -n "$hits" ]]; then
+            fail "DEBUG build: \"$probe\" in $(echo $hits) — $label was compiled with DEBUG"
+        else
+            pass "not a DEBUG build: \"$probe\" in no file of $(basename "$app") ($label)"
+        fi
+    done
+    echo "    (these prove the app and the widget are not Debug builds; that no DEBUG code exists"
+    echo "     elsewhere is DebugLaunchFlagScanTests' source scan, not this check)"
 }
 
 # check_signature <signed .app>  — mode (2); see the header.
@@ -274,6 +310,7 @@ if [[ "$MODE" == "exported" ]]; then
     fi
     check_signature "$APP"
     check_manifest_reasons "$APP"
+    check_no_debug_sentinel "$APP"
     if (( CHECK_FAILED > 0 )); then
         echo "  ✗ $CHECK_FAILED check(s) failed — this export must not be uploaded."
         exit 1
@@ -314,6 +351,7 @@ case "$PLATFORM" in
         ;;
 esac
 check_manifest_reasons "$APP"
+check_no_debug_sentinel "$APP"
 
 if (( CHECK_FAILED > 0 )); then
     echo "  ✗ $CHECK_FAILED check(s) failed — this archive must not be uploaded."

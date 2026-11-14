@@ -595,6 +595,50 @@ final class HistoryRouteTests: XCTestCase {
         XCTAssertNil(asked(["-openHistory"]))
         XCTAssertNil(asked(["-historyDay", "-20"]))
     }
+
+    /// `-openReview this|last` (`StrideApp.launchReviewRequest`, W8): the review on that week's
+    /// Monday for Pro, in the device's zone; for anyone else the paywall with the `.weeklyReview`
+    /// trigger, resuming that review, as a press would issue it (D8). Anything else asks for nothing.
+    func testTheSweepsReviewArgumentAsksForThatWeek() {
+        func asked(_ arguments: [String], isPro: Bool) -> ShellRequest? {
+            StrideApp.launchReviewRequest(arguments: ["Stride", "-demo"] + arguments, now: now,
+                                          calendar: calendar, isPro: isPro)
+        }
+        // Wednesday 16 September in Los Angeles (Thursday the 17th in UTC): this week is the 14th's.
+        XCTAssertEqual(asked(["-openReview", "this"], isPro: true), .weeklyReview(week: key(2026, 9, 14)))
+        XCTAssertEqual(asked(["-openReview", "last"], isPro: true), .weeklyReview(week: key(2026, 9, 7)))
+        XCTAssertEqual(asked(["-openReview", "last"], isPro: false),
+                       .paywall(trigger: .weeklyReview, resume: .weeklyReview(week: key(2026, 9, 7))))
+        XCTAssertNil(asked(["-openReview", "next"], isPro: true))
+        XCTAssertNil(asked(["-openReview"], isPro: true))
+        XCTAssertNil(asked([], isPro: true))
+    }
+
+    /// `-statsHabit <name | index>` (`StrideApp.launchStatsHabitID`, W8): matched as `-openHistory`.
+    func testTheSweepsStatsHabitArgumentPicksThatHabit() throws {
+        var listed: [Habit] = []
+        for (order, name) in ["Morning Run", "Drink Water"].enumerated() {
+            let habit = Habit(name: name)
+            habit.sortOrder = Double(order)
+            context.insert(habit)
+            listed.append(habit)
+        }
+        let archived = Habit(name: "Old")
+        archived.sortOrder = -1
+        archived.isArchived = true
+        context.insert(archived)
+        try context.save()
+
+        func picked(_ arguments: [String]) -> UUID? {
+            StrideApp.launchStatsHabitID(arguments: ["Stride", "-demo"] + arguments, in: context)
+        }
+        XCTAssertEqual(picked(["-statsHabit", "Drink Water"]), listed[1].id, "by name")
+        XCTAssertEqual(picked(["-statsHabit", "0"]), listed[0].id, "by index; the archived habit is not counted")
+        XCTAssertNil(picked(["-statsHabit", "Old"]), "archived")
+        XCTAssertNil(picked(["-statsHabit", "5"]))
+        XCTAssertNil(picked(["-statsHabit"]))
+        XCTAssertNil(picked([]))
+    }
     #endif
 }
 
