@@ -1636,3 +1636,52 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
       StatsRenderTests (18) and ShellTests (20) passed in both zones. In Los Angeles one ShellTests
       case stalled 15 minutes inside a 5 s wait while the screen was locked, then passed on rerun.
     - StrideMac builds.
+- 2026-11-14, **W7 merged** (9a8cc32; worktree agent 6a0555a, review fixes c3138e9).
+  - **D12, the Today card.** `InlinePrompts` decides it, `TodayWeekCard` draws it under the
+    progress card.
+    - It shows Monday 00:00 to Tuesday 23:59 local time, once last week has a counted rate. Its
+      number is the Weekly Review ring's.
+    - Pro: "Last week: N%" every week; × hides it for that week.
+    - Free: no number; at most 3 weeks ever; × ends it for good.
+    - At most one card. The dismissal state lives in `UserDefaults.standard` only.
+    - A tap goes through W4's issue rule: Pro opens last week's review; free opens
+      `.paywall(.today, resume:)`.
+  - **Onboarding:** the last page has a "What's in Stride Pro" text button (`.onboarding`). It
+    opens only on tap; the primary button and the page height are unchanged.
+  - **Settings:**
+    - The Pro rows are extracted into `SettingsProRows`, carried over verbatim.
+    - Restore results show inline.
+    - The D6 trial line comes from `ProSettingsRow.trialLine`.
+    - "Rate Stride" in About.
+    - The 1.4.1 carry-over "#FF9500 4d" was Settings' habit rows; TodayView already used
+      `readableText`.
+  - **New Group:** buying from it continues into New Group.
+  - **N3:**
+    - `ReviewPromptRule` (pure) and `ReviewPrompter` call SwiftUI's `requestReview`, at most once
+      per `CFBundleShortVersionString`. The version is recorded before the call.
+    - It asks only after a check-in on today that lifts the current streak to a multiple of 7, or
+      takes a times-per-week count across its goal.
+    - Never in the first 3 days after the install date, during onboarding, or with any sheet,
+      alert or cover up.
+    - Never in an automated run: any launch argument, or an XCTest host.
+    - **Install date:** the first Today appearance or check-in on 1.4.2 or later, so upgraders
+      start the clock at the upgrade (W12 records this in DEV-PLAN rule 4).
+    - A source scan pins `requestReview` to Today's hook and the prompter.
+  - No missing keys: 14 new keys from W0's deck are in use.
+  - **Review** (independent, read-only), fixed in c3138e9:
+    - `a11y_sweep.sh` passes `-inlineCard none` on every launch, so a Monday or Tuesday run no
+      longer draws the free card into the baselines. **W8:** put `-inlineCard week` in place of
+      it for the Pro card; the app reads only the first `-inlineCard`.
+    - Automated runs write nothing to the app's defaults.
+    - "Purchases restored" clears when Pro ends.
+    - **For W8:** `mac_variant/capture.sh` still needs `-inlineCard none`.
+  - **Tests:**
+    - StrideTests 824 run / 2 skipped / 0 failed in Tokyo and Los Angeles.
+    - Hosted on iPhone 17, both zones, all passed: SettingsProRowsTests 12, TodayWeekCardTests 10,
+      ShellTests 20, StatsRenderTests 18, WeeklyReviewRenderTests 12, PaywallRenderTests 13.
+    - The whole hosted suite in Tokyo at 6a0555a: 413 run, 2 failed, both in W2's
+      StoreKitStatusTests: `testAnEarlierMonthlyMakesYearlysTrialIneligible` and
+      `testBillingRetryShowsThePaymentRow`. SKTestSession took effect on this iOS 27.0 device,
+      where it had been skipped before (O21), and CI still skips them. They are diagnosed on the
+      iOS 18.5 device next (gate 4).
+    - StrideMac builds.
