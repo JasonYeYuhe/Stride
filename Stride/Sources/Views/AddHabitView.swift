@@ -192,6 +192,9 @@ struct AddHabitView: View {
                     HStack(spacing: 14) {
                         Text(selectedEmoji)
                             .font(.title2)
+                            // The combined row reads the name alone ("Your Habit", not "⭐, Your
+                            // Habit"), as Today, History and Settings' rows already do (N5).
+                            .accessibilityHidden(true)
                         previewNameText
                             .font(.body.weight(.medium))
                             .foregroundStyle(name.isEmpty ? .secondary : .primary)
