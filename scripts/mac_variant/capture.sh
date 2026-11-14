@@ -47,11 +47,50 @@
 #
 # Exit status: 0 captured; 1 capture failed or blank; 2 usage; 3 the variant is not running or has
 # no on-screen window; 4 refused (not a Debug build, not frontmost, the real app is running, more
-# than one instance, an unknown --window-id); 5 wrong pixel size.
+# than one instance, an unknown --window-id); 5 wrong pixel size; 6 (--sweep) the screen is locked.
+#
+# THE SWEEP (RELEASE-1.4.2.md W8 and gate 10), the one mode that launches and stops the variant:
+#
+#   scripts/mac_variant/capture.sh --sweep <out dir> [--set paywall|review|pro|all]
+#                                  [--lang <code>]... [--width full|min|both] [--activate]
+#
+# For each capture it launches the DEBUG variant BY PATH ($DEBUG_APP, after `build.sh --preflight`
+# passes on it) with `open <path> --args -demo -stride_onboarding_completed YES -inlineCard none
+# -windowSize <W>x<H> <the capture's switches>`, finds the one new instance by bundle id, waits
+# STRIDE_MAC_SETTLE seconds (default 5), captures, and stops it with `kill <its pid>` — never by
+# name. `-inlineCard none` comes first on every launch (the app reads only the first): no capture
+# here wants Today's card, and none writes its free-cap state.
+#   --set paywall  every PaywallFixture (`-paywall -paywallFixture <name>`; the variant has no
+#                  products, so the fixtures are the paywall's evidence), in every --lang;
+#   --set review   the Weekly Review on last week and this week (`-demoPro -openReview last|this`,
+#                  DemoData.Scenario.pro), in every --lang;
+#   --set pro      Statistics' Insights and Strength under `-demoPro` (English): the readable change
+#                  colours on the window background (gate 8);
+#   --set all      (default) all three.
+#   --lang         en, es, ja, ko, zh-Hans, zh-Hant; repeatable (default all six for paywall and
+#                  review); the same arguments as a11y_sweep.sh --lang.
+#   --width        `full`, the 1440×900 pt store frame (2880×1800 px); `min`, the window asked for
+#                  at STRIDE_MAC_MIN_WINDOW (default 600x700) — AppKit holds it at the shell's own
+#                  minimum width, and 700 pt is gate 10's height (the review and paywall sheets must
+#                  end inside it); or `both` (default).
+# Two PNGs a sheet: <name>.png, the main window's area with the sheet over it (`screencapture -R`,
+# so the sheet's fit in the window shows), and <name>_sheet.png, the sheet window alone (`-l`). A
+# screen without a sheet gives the first only. Each goes through the blank check below; a blank or
+# missing capture is retried once, then counted, and the sweep exits 1 if any remain.
+#
+# It needs the variant's window ON THE CURRENT SPACE and frontmost. macOS does not let a process
+# started from a background shell take the screen from the app in front (2026-11-14: launched while
+# Chrome was frontmost in its own Space, the variant's windows were on another Space and could not
+# be captured, `screencapture -l` says "could not create image from window"). Without --activate
+# the sweep stops there (exit 3) and says so; with --activate it brings the variant forward by
+# bundle id (only after checking the one instance is this Debug launch), which switches the
+# owner's screen to it for every capture: run it only when nobody is using the Mac.
 #
 # Environment:
 #   TMPDIR                    where the helper is compiled and the capture first lands (mktemp -d)
-#   STRIDE_MAC_VARIANT_ROOT   only for the launch command it prints (build.sh's root)
+#   STRIDE_MAC_VARIANT_ROOT   the launch command it prints, and the app --sweep launches (build.sh's root)
+#   STRIDE_MAC_SETTLE         --sweep: seconds from launch to capture (default 5)
+#   STRIDE_MAC_MIN_WINDOW     --sweep: the `min` width's window request, <W>x<H> pt (default 600x700)
 set -euo pipefail
 
 VARIANT_ID="yyh.stride.habittracker.mactest"
@@ -67,10 +106,28 @@ WINDOW_ID=""
 FORCE=0
 LIST=0
 OUT=""
+SWEEP_DIR=""
+SWEEP_SET="all"
+SWEEP_LANGS=()
+SWEEP_WIDTH="both"
+ACTIVATE=0
 SIZE_RE='^[1-9][0-9]*x[1-9][0-9]*$'
 NUM_RE='^[0-9]+$'
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --sweep)
+            [[ $# -ge 2 ]] || { echo "✗ --sweep needs an output directory"; exit 2; }
+            SWEEP_DIR="$2"; shift 2 ;;
+        --set)
+            case "${2:-}" in paywall|review|pro|all) SWEEP_SET="$2" ;; *) echo "✗ --set paywall, review, pro or all"; exit 2 ;; esac
+            shift 2 ;;
+        --lang)
+            case "${2:-}" in en|es|ja|ko|zh-Hans|zh-Hant) SWEEP_LANGS+=("$2") ;; *) echo "✗ --lang en, es, ja, ko, zh-Hans or zh-Hant"; exit 2 ;; esac
+            shift 2 ;;
+        --width)
+            case "${2:-}" in full|min|both) SWEEP_WIDTH="$2" ;; *) echo "✗ --width full, min or both"; exit 2 ;; esac
+            shift 2 ;;
+        --activate) ACTIVATE=1; shift ;;
         --size)
             [[ $# -ge 2 ]] || { echo "✗ --size needs <W>x<H> in pixels, e.g. 2560x1600"; exit 2; }
             [[ "$2" =~ $SIZE_RE ]] || { echo "✗ --size '$2' is not <W>x<H> in pixels"; exit 2; }
@@ -88,7 +145,9 @@ while [[ $# -gt 0 ]]; do
             OUT="$1"; shift ;;
     esac
 done
-if [[ $LIST -eq 1 ]]; then
+if [[ -n "$SWEEP_DIR" ]]; then
+    [[ -z "$OUT" && $LIST -eq 0 && -z "$WINDOW_ID" ]] || { echo "✗ --sweep takes no output file, --list or --window-id"; exit 2; }
+elif [[ $LIST -eq 1 ]]; then
     [[ -z "$OUT" ]] || { echo "✗ --list captures nothing; drop '$OUT'"; exit 2; }
 else
     [[ -n "$OUT" ]] || { echo "✗ no output file (usage: capture.sh [--size WxH] [--window-id N] [--force] <out.png>)"; exit 2; }
@@ -205,6 +264,161 @@ HELPER="$WORK/capture-helper"
 if ! xcrun swiftc -swift-version 5 -o "$HELPER" "$WORK/main.swift" >"$WORK/helper-build.log" 2>&1; then
     echo "✗ could not compile the window-lookup helper:"; sed 's/^/    /' "$WORK/helper-build.log" | head -20
     exit 1
+fi
+
+# ---- --sweep (header): launch by path, capture, stop by pid ----------------------------------
+if [[ -n "$SWEEP_DIR" ]]; then
+    if ioreg -n Root -d1 -a | grep -A1 IOConsoleLocked | grep -q '<true/>'; then
+        echo "✗ the screen is locked, so no window can be captured: pending the owner's unlocked screen."
+        exit 6
+    fi
+    [[ -d "$DEBUG_APP" ]] || { echo "✗ no Debug variant at $DEBUG_APP: run scripts/mac_variant/build.sh"; exit 3; }
+    if ! "$(cd "$(dirname "$0")" && pwd)/build.sh" --preflight "$DEBUG_APP" >"$WORK/preflight.log" 2>&1; then
+        tail -15 "$WORK/preflight.log" | sed 's/^/    /'
+        echo "✗ the variant's preflight failed: not launching it"
+        exit 4
+    fi
+    sweep_found() { "$HELPER" find "$VARIANT_ID" "$REAL_ID" 2>&1 || true; }
+    sweep_value() { printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -1; }
+    found="$(sweep_found)"
+    if [[ "$(sweep_value "$found" real_running)" != "0" ]]; then
+        echo "✗ refusing: the REAL $REAL_ID is running; it must never run here (mac_variant/README.md)."
+        exit 4
+    fi
+    if [[ "$(sweep_value "$found" instances)" != "0" ]]; then
+        echo "✗ a $VARIANT_ID instance is already running: quit it first (--args reach only a new process)."
+        exit 4
+    fi
+    SETTLE="${STRIDE_MAC_SETTLE:-5}"
+    MIN_WINDOW="${STRIDE_MAC_MIN_WINDOW:-600x700}"
+    [[ "$MIN_WINDOW" =~ $SIZE_RE ]] || { echo "✗ STRIDE_MAC_MIN_WINDOW '$MIN_WINDOW' is not <W>x<H>"; exit 2; }
+    case "$SWEEP_WIDTH" in full) WIDTHS=(full) ;; min) WIDTHS=(min) ;; *) WIDTHS=(full min) ;; esac
+    [[ ${#SWEEP_LANGS[@]} -gt 0 ]] || SWEEP_LANGS=(en es ja ko zh-Hans zh-Hant)
+    real_app="$(cd "$DEBUG_APP" && pwd -P)"
+    mkdir -p "$SWEEP_DIR"
+    GEOMETRY="$SWEEP_DIR/geometry.txt"
+    FAILED=()
+    TAKEN=0
+
+    # stop_variant <pid>: SIGTERM to that pid only, then wait for it to go.
+    stop_variant() {
+        kill "$1" 2>/dev/null || true
+        local i
+        for i in $(seq 1 40); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.25; done
+        echo "    ⚠ pid $1 still running 10 s after SIGTERM"
+        return 1
+    }
+
+    # sweep_one <name> <width> <lang> <switches...>
+    sweep_one() {
+        local name="$1" width="$2" lang="$3"; shift 3
+        local frame=1440x900 locale_id dir attempt pid path main sheet line id dims x y rest ok
+        [[ "$width" == min ]] && frame="$MIN_WINDOW"
+        case "$lang" in
+            en) locale_id=en_US ;; es) locale_id=es_ES ;; ja) locale_id=ja_JP ;; ko) locale_id=ko_KR ;;
+            zh-Hans) locale_id=zh_CN ;; zh-Hant) locale_id=zh_TW ;;
+        esac
+        # The same language arguments as a11y_sweep.sh --lang.
+        local lang_args=(-AppleLanguages "($lang)" -AppleLocale "$locale_id" -stride_app_language "")
+        dir="$SWEEP_DIR/$width-$lang"
+        mkdir -p "$dir"
+        for attempt in 1 2; do
+            open "$DEBUG_APP" --args -demo -stride_onboarding_completed YES -inlineCard none \
+                -windowSize "$frame" "${lang_args[@]+"${lang_args[@]}"}" "$@"
+            pid=""
+            for _ in $(seq 1 40); do
+                found="$(sweep_found)"
+                pid="$(sweep_value "$found" pid)"
+                [[ -n "$pid" ]] && break
+                sleep 0.25
+            done
+            if [[ -z "$pid" ]]; then echo "    ⚠ $name: the variant did not start"; continue; fi
+            path="$(sweep_value "$found" path)"
+            if [[ "$(cd "$path" 2>/dev/null && pwd -P)" != "$real_app" ]]; then
+                echo "✗ refusing: the running $VARIANT_ID (pid $pid) is $path, not the Debug variant launched"
+                stop_variant "$pid"
+                exit 4
+            fi
+            sleep "$SETTLE"
+            if [[ $ACTIVATE -eq 1 ]]; then
+                osascript -e "tell application id \"$VARIANT_ID\" to activate" >/dev/null 2>&1 || true
+                sleep 1
+            fi
+            found="$(sweep_found)"
+            if [[ "$(sweep_value "$found" frontmost_pid)" != "$pid" ]] || ! grep -q '^window=' <<<"$found"; then
+                stop_variant "$pid"
+                echo "✗ the variant's window is not on screen and in front (frontmost: $(sweep_value "$found" frontmost))."
+                echo "  macOS keeps a background launch off the owner's current Space. Pending: run this again"
+                echo "  with --activate while nobody uses the Mac, or with the variant's Space in front."
+                exit 3
+            fi
+            # Largest first: the main window, then the sheet when one is up.
+            main="$(sed -n 's/^window=//p' <<<"$found" | sed -n 1p)"
+            sheet="$(sed -n 's/^window=//p' <<<"$found" | sed -n 2p)"
+            read -r id dims _ rest <<<"$main"
+            x="${rest%,*}"; y="${rest#*,}"
+            ok=1
+            screencapture -x -R "$x,$y,${dims%x*},${dims#*x}" "$dir/$name.png" 2>/dev/null || ok=0
+            [[ $ok -eq 1 ]] && "$HELPER" blank "$dir/$name.png" >/dev/null 2>&1 || ok=0
+            line="$width-$lang/$name window=$dims at $x,$y"
+            if [[ -n "$sheet" && $ok -eq 1 ]]; then
+                local sid sdims srest sx sy
+                read -r sid sdims _ srest <<<"$sheet"
+                sx="${srest%,*}"; sy="${srest#*,}"
+                screencapture -x -o -l "$sid" "$dir/${name}_sheet.png" 2>/dev/null || ok=0
+                [[ $ok -eq 1 ]] && "$HELPER" blank "$dir/${name}_sheet.png" >/dev/null 2>&1 || ok=0
+                # Does the sheet end inside the window (gate 10's 700-pt check)?
+                local bottom=$(( y + ${dims#*x} )) sbottom=$(( sy + ${sdims#*x} ))
+                line+=" sheet=$sdims at $sx,$sy $( (( sbottom <= bottom )) && echo "inside ($(( bottom - sbottom )) pt to spare)" || echo "OVERFLOWS by $(( sbottom - bottom )) pt")"
+            fi
+            stop_variant "$pid" || true
+            if [[ $ok -eq 1 ]]; then
+                echo "$line" >>"$GEOMETRY"
+                TAKEN=$((TAKEN + 1))
+                echo "    ✓ $width-$lang/$name ($line)"
+                return 0
+            fi
+            echo "    ⚠ $name: blank or failed capture; retrying"
+        done
+        FAILED+=("$width-$lang/$name")
+        echo "    ✗ $width-$lang/$name"
+    }
+
+    : >"$GEOMETRY"
+    echo "==> Sweep of $DEBUG_APP (set $SWEEP_SET; ${SWEEP_LANGS[*]}; ${WIDTHS[*]}) into $SWEEP_DIR"
+    for width in "${WIDTHS[@]}"; do
+        if [[ "$SWEEP_SET" == paywall || "$SWEEP_SET" == all ]]; then
+            for lang in "${SWEEP_LANGS[@]}"; do
+                for fixture in loading loadFailed trial ineligible unknownEligibility noOffer pro yen \
+                               purchasing pending restored nothingFound restoreFailed purchaseFailed unlocked; do
+                    sweep_one "30_paywall_$fixture" "$width" "$lang" -paywall -paywallFixture "$fixture"
+                done
+            done
+        fi
+        if [[ "$SWEEP_SET" == review || "$SWEEP_SET" == all ]]; then
+            for lang in "${SWEEP_LANGS[@]}"; do
+                sweep_one 25_review_last "$width" "$lang" -demoPro -openReview last
+                sweep_one 25_review_this "$width" "$lang" -demoPro -openReview this
+            done
+        fi
+        if [[ "$SWEEP_SET" == pro || "$SWEEP_SET" == all ]]; then
+            for anchor in insights strength; do
+                sweep_one "22_stats_pro_$anchor" "$width" en -demoPro -tab 1 -statsScrollTo "$anchor"
+            done
+        fi
+    done
+    # Back to the plain demo set in the variant's own container, then stopped.
+    open "$DEBUG_APP" --args -demo -stride_onboarding_completed YES -inlineCard none
+    sleep "$SETTLE"
+    found="$(sweep_found)"
+    pid="$(sweep_value "$found" pid)"
+    [[ -n "$pid" ]] && stop_variant "$pid" || true
+    echo "✓ $TAKEN capture(s) in $SWEEP_DIR; geometry in $GEOMETRY"
+    if [[ ${#FAILED[@]} -gt 0 ]]; then
+        echo "✗ ${#FAILED[@]} failed or blank:"; printf '    %s\n' "${FAILED[@]}"
+        exit 1
+    fi
+    exit 0
 fi
 
 # ---- 1–2. the variant, by bundle id; its windows, by PID -------------------------------------
