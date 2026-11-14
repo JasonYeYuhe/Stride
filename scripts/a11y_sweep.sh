@@ -21,6 +21,9 @@
 #             existing simulator is always reused: this never creates, erases or clones one.
 #             The iPad captures (RELEASE-1.4.0.md D7) use "iPad Pro 13-inch (M5)". CLI Pulse's
 #             capture script drives that iPad and takes no lock, so check it is not in use first.
+#             A UDID is taken as it is; a name must match exactly one device on the runtime
+#             STRIDE_SIM_RUNTIME (default 27.0), or the run stops naming every match (the global
+#             simulator rule: exact name and runtime, never a guess).
 #   --app     skip the build and install this .app instead — e.g. one built from another
 #             checkout, to capture a before/after pair from the same script. It must be a
 #             Debug build: `-demo`, `-paywall` and `-openHistory` are compiled out of Release.
@@ -60,10 +63,12 @@
 # standard set, as 1.4.1's), then 05_weekly_review (last week) and 06_advanced_analytics (Insights
 # with the PRO chip), both `-demoPro`. scripts/screenshots.sh sizes and files them.
 #
-# Every PNG this run writes goes through a blank-frame check (scripts/frame_check.swift): one that
-# comes back blank (a window with nothing drawn, as three 1.4.1 store frames did under load) is
-# retaken once after a longer wait; one still blank is reported with ✗ and the sweep exits 1 after
-# putting the simulator back.
+# Every PNG this run writes goes through a blank-frame check (scripts/frame_check.swift), and the
+# app must still be running when it is taken (the pid `simctl launch` printed; a launch crash
+# leaves the Home screen in the PNG). One that comes back blank (a window with nothing drawn, as
+# three 1.4.1 store frames did under load) or without the app is retaken once after a longer
+# wait; one that fails again is reported with ✗ and the sweep exits 1 after putting the simulator
+# back. SETTLE must be whole seconds.
 #
 # What it does: builds Stride (Debug, its own derived data) unless --app is given; boots the
 # simulator if it is not booted; sets the content size, light appearance and a fixed 9:41
@@ -176,6 +181,7 @@
 #                             shared checkout (spm_cache_args, same file).
 #   STRIDE_SPM_DIR            the shared Swift package checkout (scripts/ci/build_cache.sh)
 #   STRIDE_A11Y_SETTLE        seconds to wait after each launch before capturing (default 4)
+#   STRIDE_SIM_RUNTIME        the iOS runtime a --device NAME is matched on (default 27.0)
 #   STRIDE_SIM_LOCK_ROOT      directory for the per-device mutex `lock-<device-slug>` (default
 #                             /tmp, the root every project and scripts/sim_e2e/lock.sh use; it
 #                             was $TMPDIR before 1.4.0, which excluded nobody). Several agents
@@ -246,24 +252,41 @@ fi
 OUT="${OUT:-$PROJECT_DIR/build/a11y/$LABEL}"
 SETTLE="${STRIDE_A11Y_SETTLE:-4}"
 
-# Resolve to ONE UDID (same rule as scripts/ci/run_hosted_tests.sh: a name can exist under
-# several runtimes, so prefer a booted one, then the newest runtime).
-UDID="$(xcrun simctl list devices available -j | WANT="$WANT" /usr/bin/python3 -c '
-import json, os, re, sys
-want = os.environ["WANT"]
-found = []
+# Resolve to ONE UDID by the global simulator rule: a UDID as given, or the exact name on exactly
+# one runtime, STRIDE_SIM_RUNTIME (default iOS 27.0, the current runtime; "18.5" for the legacy
+# device). No match, or more than one, stops the run with the matches named: it never guesses
+# between devices (until 1.4.2 it preferred a booted one, then the newest runtime).
+RUNTIME="${STRIDE_SIM_RUNTIME:-27.0}"
+RESOLVED="$(xcrun simctl list devices available -j | WANT="$WANT" RUNTIME="$RUNTIME" /usr/bin/python3 -I -c '
+import json, os, sys
+want, runtime_wanted = os.environ["WANT"], os.environ["RUNTIME"]
+key_wanted = "com.apple.CoreSimulator.SimRuntime.iOS-" + runtime_wanted.replace(".", "-")
+by_udid, by_name = [], []
 for runtime, devs in json.load(sys.stdin)["devices"].items():
     if ".SimRuntime.iOS-" not in runtime:
         continue
-    version = tuple(int(x) for x in re.findall(r"\d+", runtime.split("iOS-")[-1]))
-    found += [(d, version) for d in devs if want in (d["udid"], d["name"])]
-found.sort(key=lambda dv: (dv[0]["state"] == "Booted", dv[1]), reverse=True)
-print(found[0][0]["udid"] if found else "")
+    version = runtime.split("iOS-")[-1].replace("-", ".")
+    for d in devs:
+        if d["udid"] == want:
+            by_udid.append((d, version))
+        elif d["name"] == want:
+            by_name.append((d, version, runtime == key_wanted))
+if by_udid:
+    print("ok " + by_udid[0][0]["udid"])
+    sys.exit()
+exact = [m for m in by_name if m[2]]
+if len(exact) == 1:
+    print("ok " + exact[0][0]["udid"])
+else:
+    named = "; ".join(d["name"] + " iOS " + v + " " + d["udid"] for d, v, _ in by_name) or "none"
+    print("%d matches for %r on iOS %s (every runtime: %s)" % (len(exact), want, runtime_wanted, named))
 ')" || { echo "✗ xcrun simctl list failed (CoreSimulator wedged? killall -9 com.apple.CoreSimulator.CoreSimulatorService)"; exit 1; }
-if [[ -z "$UDID" ]]; then
-    echo "✗ No available iOS simulator named '$WANT'. This script never creates one."
+if [[ "$RESOLVED" != "ok "* ]]; then
+    echo "✗ $RESOLVED."
+    echo "  Pass --device <UDID>, or STRIDE_SIM_RUNTIME=<x.y> for another runtime. This script never creates one."
     exit 1
 fi
+UDID="${RESOLVED#ok }"
 NAME="$(xcrun simctl list devices available | grep -F "$UDID" | sed -E 's/^ *(.*) \([0-9A-F-]{36}\).*/\1/' | head -1)"
 
 # ---- build (outside the lock: it does not touch the simulator) ----------------------------
@@ -392,20 +415,31 @@ clear_recovery_log
 # -inlineCard none (RELEASE-1.4.2.md D14): no "Your week" card on Today, whatever the weekday, so a
 # run on a Monday or Tuesday draws the same Today as any other day, and the app writes none of the
 # card's state (the free cap's weeks) into the device's defaults. Every launch here is a FREE one.
-# The Pro sweep captures the card on purpose: it sets INLINE_CARD=week for that one call, which
-# REPLACES `none` here. A second `-inlineCard` in "$@" would not be read (the app takes the first).
+# The Pro sweep captures the card on purpose: `capture --card week <file> …` REPLACES `none` here
+# for that one call (an argument, so nothing in the environment can change a free launch). A second
+# `-inlineCard` in "$@" would not be read (the app takes the first).
 #
-# Each PNG then goes through the blank-frame check (header): a blank one is retaken once, after
-# twice the settle time; one still blank is listed in BLANK_FILES, which fails the run.
+# Each PNG then goes through two checks; a failure is retaken once, after twice the settle time,
+# and one that fails again is listed in BLANK_FILES, which fails the run:
+#   - the app is still running after the screenshot: `simctl launch` prints its pid, a host
+#     process, so a launch that crashed (the Home screen in the PNG) is caught however it looks;
+#   - the blank-frame check (header).
 capture() {
+    local card=none
+    if [[ "$1" == --card ]]; then card="$2"; shift 2; fi
     local file="$1"; shift
-    local attempt verdict
+    local attempt verdict launched pid
     for attempt in 1 2; do
         xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
-        xcrun simctl launch "$UDID" "$BUNDLE_ID" -demo -stride_onboarding_completed YES -inlineCard "${INLINE_CARD:-none}" \
-            "${LANG_ARGS[@]+"${LANG_ARGS[@]}"}" "$@" >/dev/null
+        launched="$(xcrun simctl launch "$UDID" "$BUNDLE_ID" -demo -stride_onboarding_completed YES -inlineCard "$card" \
+            "${LANG_ARGS[@]+"${LANG_ARGS[@]}"}" "$@" 2>&1)" || true
+        pid="$(sed -n "s/^$BUNDLE_ID: *\([0-9][0-9]*\)$/\1/p" <<<"$launched" | head -1)"
         sleep $(( SETTLE * attempt ))
         xcrun simctl io "$UDID" screenshot --type=png "$OUT/$file" >/dev/null 2>&1
+        if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+            echo "    ⚠ $file: the app is not running after the screenshot (launch said: $(tr '\n' ' ' <<<"$launched")) — retaking"
+            continue
+        fi
         if verdict="$("$FRAME_CHECK" "$OUT/$file")"; then
             CAPTURED=$((CAPTURED + 1))
             echo "    ✓ $file"
@@ -414,7 +448,7 @@ capture() {
         echo "    ⚠ $file: $(awk '{ print $1, $2 }' <<<"$verdict") ink — retaking after $(( SETTLE * 2 )) s"
     done
     BLANK_FILES+=("$OUT/$file")
-    echo "    ✗ $file is BLANK after a retake"
+    echo "    ✗ $file is blank, or the app was not running, after a retake"
 }
 if [[ "$SET" == core || "$SET" == all ]]; then
     capture 01_today.png    -tab 0
@@ -452,8 +486,8 @@ if [[ "$SET" == pro ]]; then
     PRO=(-demoPro)
     FREE_OVER_PRO=(-demoScenario pro)
     capture 20_pro_today.png -tab 0 "${PRO[@]}"
-    INLINE_CARD=week capture 21_today_card_pro.png -tab 0 "${PRO[@]}"
-    INLINE_CARD=week capture 21_today_card_free.png -tab 0 "${FREE_OVER_PRO[@]}"
+    capture --card week 21_today_card_pro.png -tab 0 "${PRO[@]}"
+    capture --card week 21_today_card_free.png -tab 0 "${FREE_OVER_PRO[@]}"
     capture 22_stats_pro.png -tab 1 "${PRO[@]}"
     for anchor in insights trend strength beststreaks; do
         capture "22_stats_pro_$anchor.png" -tab 1 "${PRO[@]}" -statsScrollTo "$anchor"

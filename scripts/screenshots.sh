@@ -26,10 +26,14 @@
 #
 # Laid out for scripts/store_screenshots.py, one folder per App Store locale and display type:
 #   <out>/<locale>/iphone69   APP_IPHONE_67          1320×2868, as captured (iPhone 17 Pro Max)
-#   <out>/<locale>/iphone65   APP_IPHONE_65          1284×2778, resized
+#   <out>/<locale>/iphone65   APP_IPHONE_65          1284×2778, scaled and cropped
 #   <out>/<locale>/ipad13     APP_IPAD_PRO_3GEN_129  2064×2752, as captured (iPad Pro 13-inch (M5))
-#   <out>/<locale>/ipad129    APP_IPAD_PRO_129       2048×2732, resized
+#   <out>/<locale>/ipad129    APP_IPAD_PRO_129       2048×2732, scaled and cropped
 # with <locale> en-US, es-ES, ja, ko, zh-Hans or zh-Hant. The raw captures stay in <out>/raw/.
+# A smaller size is never a stretch: the capture is scaled evenly until it covers the target, then
+# centre-cropped (1320×2868 → 1284×2790, 6 px off the top and the bottom; 2064×2752 → 2049×2732,
+# under a pixel off each side). `sips -z` to both sides squeezed the iPhone's height 0.6 % more
+# than its width.
 #
 # Every PNG written (raw and resized) goes through scripts/frame_check.swift, the sweep's
 # blank-frame check, and its pixel size is checked against the display type; any failure exits 1.
@@ -41,8 +45,9 @@
 # and no set has used them since 1.4.0. The generator is left as it was, unused.
 #
 # Environment: STRIDE_A11Y_SETTLE (seconds per launch; default 8 here, as 1.4.1's store run under
-# load needed more than the sweep's 4), STRIDE_SIM_LOCK_LABEL, STRIDE_A11Y_DERIVED_DATA and
-# STRIDE_SPM_DIR, all as in a11y_sweep.sh.
+# load needed more than the sweep's 4), STRIDE_SIM_LOCK_LABEL, STRIDE_SIM_RUNTIME (the runtime the
+# two device names are matched on, default 27.0: exactly one device each, or the sweep stops),
+# STRIDE_A11Y_DERIVED_DATA and STRIDE_SPM_DIR, all as in a11y_sweep.sh.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -141,7 +146,19 @@ for lang in "${LANGS[@]}"; do
 done
 
 # ---- lay out, resize, check ----------------------------------------------------------------
-# <display folder> <raw device> <pixel size, or "" to keep the capture's>
+# cover_and_crop <src> <dst> <width> <height>: scaled evenly (aspect kept) to cover the target,
+# then centre-cropped to it (header).
+cover_and_crop() {
+    local src="$1" dst="$2" w="$3" h="$4" sw sh
+    read -r sw sh < <(sips -g pixelWidth -g pixelHeight "$src" | awk '/pixelWidth:/ { w = $2 } /pixelHeight:/ { h = $2 } END { print w, h }')
+    if (( sw * h > w * sh )); then
+        sips --resampleHeight "$h" "$src" --out "$dst" >/dev/null    # wider than the target: fit the height
+    else
+        sips --resampleWidth "$w" "$src" --out "$dst" >/dev/null     # taller: fit the width
+    fi
+    sips -c "$h" "$w" "$dst" >/dev/null
+}
+# <display folder> <raw device> <pixel size> <keep the capture, or resize>
 LAYOUT=("iphone69 iphone 1320x2868 keep" "iphone65 iphone 1284x2778 resize"
         "ipad13 ipad 2064x2752 keep" "ipad129 ipad 2048x2732 resize")
 WRITTEN=()
@@ -163,7 +180,7 @@ for lang in "${LANGS[@]}"; do
             if [[ "$mode" == keep ]]; then
                 cp "$src" "$dest/$frame.png"
             else
-                sips -z "${size#*x}" "${size%x*}" "$src" --out "$dest/$frame.png" >/dev/null
+                cover_and_crop "$src" "$dest/$frame.png" "${size%x*}" "${size#*x}"
             fi
             dims="$(sips -g pixelWidth -g pixelHeight "$dest/$frame.png" | awk '/pixelWidth:/ { w = $2 } /pixelHeight:/ { h = $2 } END { print w "x" h }')"
             if [[ "$dims" != "$size" ]]; then
