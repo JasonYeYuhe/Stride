@@ -1705,3 +1705,50 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
     the class, 24.2 s alone. Timing lines are now logged; the unbounded
     `refreshPurchasedProducts()` is the first suspect if it recurs.
   - StrideTests 824 / 2 / 0 in both zones.
+- 2026-11-14, **W8 merged** (b8764df; worktree agent a70cce0..b035230, review fixes 0e289a3..47b51e6).
+  - **DemoData `Scenario.pro`** (`-demo -demoPro`). `.standard` is untouched.
+    - It is laid out by weekday, so every Pro sentence is true on any day: Morning Run's three
+      Insights lines and record of 14; last week's Read as Most improved and Journal as Slipped;
+      the Today card.
+    - DemoDataProScenarioTests covers all 7 weekdays.
+  - **New DEBUG switches** `-openReview this|last` and `-statsHabit`. They are pinned in
+    DebugLaunchFlagScanTests, with `-openHistory` and `-historyDay`.
+  - **`a11y_sweep.sh`:**
+    - `--pro` and `--set store`; a Pro card capture replaces the first `-inlineCard` with `week`.
+    - `frame_check.swift` checks every PNG. It measures 16–88 % from the top, and on regular width
+      only the detail column. A blank or a launch crash is retaken once, then fails the run.
+    - Devices are chosen by exact name on `STRIDE_SIM_RUNTIME` (default 27.0), exactly one match,
+      or by UDID.
+  - **`screenshots.sh`:** O9's six frames per locale and device. It scales evenly, then crops.
+    It only prints `store_screenshots.py` dry runs.
+  - **`verify_archive.sh`:**
+    - It fails a Debug archive (the sentinel in the app; a DEBUG-only DemoData note in the appex)
+      and passes a Release one. Both were built unsigned and checked.
+    - The sentinel proves only that the app target is not a Debug build; the source scan covers
+      DEBUG code elsewhere.
+  - **`mac_variant/capture.sh --sweep`:**
+    - It launches by path, stops by pid, and requires a new pid after each `open`.
+    - Ctrl-C stops the instance it launched.
+    - It refuses to run while a session is stored, unless given `--force`.
+    - `--activate` warns and counts down first.
+    - A launch by path cannot use the scheme's StoreKit configuration (only Xcode's Run action
+      attaches it), so the paywall fixtures stay the Mac evidence.
+  - **Carried checks:**
+    - The onboarding link and the readable colours on the Mac backgrounds pass by computation
+      (5.02:1 and 4.65:1 at the lowest); they are to be measured in the Mac sweep.
+    - Add Habit's preview no longer reads the emoji.
+  - **Captured:** iPhone 17 Pro Max, default size, the Pro set: 29 PNGs, all passing the blank
+    check. They are in ~/Library/Caches/Stride-build/w8-captures/, not committed.
+  - **Pending:**
+    - Free disk fell to 27–29 GB (swap grew while two simulators ran), so these wait for > 30 GB:
+      - the Pro sweep at AX5 on iPhone, and at both sizes on iPad;
+      - `screenshots.sh` for en and ja;
+      - the free old-vs-new comparison.
+    - The Mac sweep waits for the owner's screen; the variant's windows opened on another Space.
+    - The hosted tests of the two new switches (HabitEntryCommitTests) compile only.
+  - **Owner, before any Release-variant launch:** the Mac test variant's container holds a
+    session for `demo@stride-review.com`, and its local store was replaced by demo data, twice,
+    without tombstones. The Debug variant talks only to localhost; the Release variant shares the
+    container and would sync it. Sign the variant out first. (The 11-11 reseed signed every device
+    out server-side, so the stored token is probably dead, but nothing has checked that.)
+  - StrideTests 830 run / 2 skipped / 0 failed in Tokyo and Los Angeles.
