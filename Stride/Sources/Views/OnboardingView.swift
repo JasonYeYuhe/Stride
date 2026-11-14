@@ -8,6 +8,8 @@ struct OnboardingView: View {
     /// Only on that tap; nothing opens on its own, and Get Started is unchanged.
     @State private var showingPro = false
     @Environment(\.colorScheme) private var colorScheme
+    /// Whether to offer "What's in Stride Pro" (`isPro`, observed).
+    private let store = StoreService.shared
 
     private let pages: [OnboardingPage] = [
         OnboardingPage(
@@ -144,6 +146,11 @@ struct OnboardingView: View {
                     .tint(.green)
 
                     // D12: a text button under the primary one; no full-page Pro screen (O8).
+                    // Not for a user who is Pro already (a reinstall): the paywall closes at once
+                    // when it opens for one (pre-freeze review B4), so the tap was a flash. Hidden
+                    // in place — invisible, disabled and out of VoiceOver — so the page keeps its
+                    // height at every text size and Get Started does not move.
+                    let offersPro = !store.isPro
                     Button("What's in Stride Pro") {
                         showingPro = true
                     }
@@ -154,6 +161,9 @@ struct OnboardingView: View {
                     .buttonStyle(.plain)
                     .frame(minHeight: 44)
                     .contentShape(Rectangle())
+                    .opacity(offersPro ? 1 : 0)
+                    .disabled(!offersPro)
+                    .accessibilityHidden(!offersPro)
                     .padding(.bottom, 16)
                 }
             } else {

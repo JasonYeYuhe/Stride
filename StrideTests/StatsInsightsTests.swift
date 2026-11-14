@@ -934,6 +934,52 @@ final class StatsInsightsTests: XCTestCase {
         }
     }
 
+    /// A4's follow-up: a times-per-week habit compares once its week has met its goal, whose rate
+    /// is then 100 % and final. 3 a week, 2 of 3 last week (66 %); this week Monday and Tuesday
+    /// done. Wednesday noon, 2 of 3: no momentum. After Wednesday's check-in, 3 of 3: "Up vs last
+    /// week (66% → 100%)", and the review compares it too (most improved, +34). A week that is
+    /// over is compared met or not: the review of that week on the next Monday, 2 of 3 against
+    /// 2 of 3. Built in Tokyo and Los Angeles, `today` a local noon.
+    func testATimesPerWeekHabitComparesOnceItsGoalIsMet() {
+        for zone in ["Asia/Tokyo", "America/Los_Angeles"] {
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(identifier: zone)!
+            func noon(_ m: Int, _ d: Int) -> Date {
+                calendar.date(from: DateComponents(year: 2026, month: m, day: d, hour: 12))!
+            }
+            func localStats(_ h: Habit, _ today: Date) -> HabitStats {
+                HabitStats(habit: h, liveRecordIDs: HabitStats.liveRecordIDs(of: [h], in: context),
+                           calendar: calendar, today: today)
+            }
+            let h = habit(.timesPerWeek, timesPerWeek: 3, created: day(5, 1))
+            checkIn(h, on: [day(6, 2), day(6, 4), day(6, 8), day(6, 9)])
+            let thisWeek = WeeklyReviewMath.WeekRange(containingDay: HabitStats.dayNumber(ofKey: day(6, 8)))
+
+            let twoOfThree = localStats(h, noon(6, 10))
+            XCTAssertEqual(twoOfThree.today, day(6, 10), zone)
+            XCTAssertNil(StatsInsights.momentum(for: twoOfThree), "\(zone): 2 of 3 on Wednesday")
+            XCTAssertFalse(WeeklyReviewMath.countsChange(twoOfThree, week: thisWeek), zone)
+
+            checkIn(h, on: [day(6, 10)])
+            let met = localStats(h, noon(6, 10))
+            XCTAssertEqual(StatsInsights.momentum(for: met), StatsInsights.Momentum(was: 66, now: 100), zone)
+            XCTAssertTrue(StatsInsights.insightLines(for: met).contains(.momentum(StatsInsights.Momentum(was: 66, now: 100))), zone)
+            let review = WeeklyReviewMath.review(of: [WeeklyReviewMath.HabitInput(stats: met)], week: thisWeek)
+            XCTAssertEqual(review.rows.map(\.changePoints), [34], zone)
+            XCTAssertEqual(review.changePoints, 34, zone)
+            XCTAssertEqual(review.mostImproved, 0, zone)
+
+            // Over, goal not met: 2 of 3 (66 %) after 2 of 3, compared on the next Monday.
+            let unmet = habit(.timesPerWeek, timesPerWeek: 3, created: day(5, 1))
+            checkIn(unmet, on: [day(6, 2), day(6, 4), day(6, 8), day(6, 9)])
+            let monday = localStats(unmet, noon(6, 15))
+            XCTAssertTrue(WeeklyReviewMath.countsChange(monday, week: thisWeek), "\(zone): the week is over")
+            XCTAssertEqual(WeeklyReviewMath.review(of: [WeeklyReviewMath.HabitInput(stats: monday)], week: thisWeek)
+                .changePoints, 0, zone)
+            XCTAssertNil(StatsInsights.momentum(for: localStats(unmet, noon(6, 14))), "\(zone): Sunday, still 2 of 3")
+        }
+    }
+
     /// A4's empty state: a user who never misses, past the first full week, with this week counted
     /// but not yet comparable (Tuesday after the check-in, 2 days), reads "Nothing to compare yet
     /// this week", never "Not enough recent check-ins"; from Thursday after the check-in, the level

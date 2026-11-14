@@ -40,8 +40,9 @@
 #   Anything else is passed to xcodebuild (the package-cache flags, typically).
 #
 # The Pro sweep (`--pro`, RELEASE-1.4.2.md W8 and gate 8; D14's DEBUG switches). `-demoPro` makes
-# the app Pro and, with `-demo`, seeds DemoData.Scenario.pro (two groups, a habit with Insights'
-# three lines, one started 10 days ago, last week with both highlights; DemoData.swift). Where a
+# the app Pro and, with `-demo`, seeds DemoData.Scenario.pro (two groups, Morning Run with Insights'
+# lines — 2 Monday to Wednesday, 3 from Thursday, when momentum has 4 counted days to compare —
+# one started 10 days ago, last week with both highlights; DemoData.swift). Where a
 # FREE user is drawn over the same data it passes `-demoScenario pro` without `-demoPro`. Wave A
 # only (RELEASE-1.4.2.md N1): no Wave B navigation.
 #   20_pro_today            Today, Pro, with the two groups (no card: `-inlineCard none`).

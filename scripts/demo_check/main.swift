@@ -121,13 +121,16 @@ func printLastWeek(_ inputs: [(habit: Habit, stats: HabitStats)], groups: [Habit
     let now = Date()
     let calendar = Calendar.current
     let week = WeeklyReviewMath.weekRange(containing: now, in: calendar).previous
-    let opening = WeeklyReviewMath.openingWeek(now: now, calendar: calendar)
-    let review = WeeklyReviewMath.review(of: inputs.map { WeeklyReviewMath.HabitInput(habit: $0.habit, stats: $0.stats) },
-                                         week: week, groupOrder: groups.map(\.id))
+    let reviewInputs = inputs.map { WeeklyReviewMath.HabitInput(habit: $0.habit, stats: $0.stats) }
+    // The week the app opens on, as WeeklyReviewView reads it: `openingReview`, with its fallback
+    // to the other of this week and last when the opening week has nothing to count.
+    let (opening, openingReview) = WeeklyReviewMath.openingReview(of: reviewInputs, now: now, calendar: calendar,
+                                                                  groupOrder: groups.map(\.id))
+    let review = WeeklyReviewMath.review(of: reviewInputs, week: week, groupOrder: groups.map(\.id))
     let day = HabitCalendar.dayStringFormatter
     func percent(_ rate: Double?) -> String { rate.map { String(format: "%3d%%", StatsInsights.percent($0)) } ?? "   -" }
     func signed(_ points: Int?) -> String { points.map { String(format: "%+d", $0) } ?? "-" }
-    print("last week \(day.string(from: week.monday))..\(day.string(from: week.sunday)) (finished: \(review.isFinished)); the review opens today on \(opening.relation) \(day.string(from: opening.week.monday))")
+    print("last week \(day.string(from: week.monday))..\(day.string(from: week.sunday)) (finished: \(review.isFinished)); the review opens today on \(opening.relation) \(day.string(from: opening.week.monday)) (overall \(percent(openingReview.overall)), change \(signed(openingReview.changePoints)))")
     for row in review.rows {
         let (habit, stats) = inputs[row.index]
         let tag = row.index == review.mostImproved ? " [most improved]" : row.index == review.slipped ? " [slipped]" : ""

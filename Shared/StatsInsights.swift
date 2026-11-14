@@ -162,9 +162,10 @@ enum StatsInsights {
 
     /// Whether this week so far may be compared with last week: Weekly Review's rule
     /// (`WeeklyReviewMath.countsChange`) — at least `WeeklyReviewMath.countedDaysForChange`
-    /// counted days, and never a times-per-week habit while its week is in progress (one check-in
-    /// on a Thursday reads 100 %: "Up vs last week (66% → 100%)"). Pre-freeze review, A4: W6
-    /// fixed this in the review, and Insights kept comparing a Tuesday with a whole week.
+    /// counted days, and a times-per-week habit only once its week has met its goal (then 100 %
+    /// and final) — before that, one check-in on a Thursday reads 100 % of what is owed so far:
+    /// "Up vs last week (66% → 100%)". Pre-freeze review, A4: W6 fixed this in the review, and
+    /// Insights kept comparing a Tuesday with a whole week.
     static func thisWeekIsComparable(_ stats: HabitStats) -> Bool {
         WeeklyReviewMath.countsChange(stats, week: WeeklyReviewMath.WeekRange(
             containingDay: HabitStats.dayNumber(ofKey: stats.today)))
@@ -248,7 +249,8 @@ enum StatsInsights {
         /// week. A user who never misses has no other line (no record to chase, no weak day), and
         /// was told "Not enough recent check-ins" there (W5 review). Also while this week is
         /// counted but not yet comparable (`thisWeekIsComparable`, pre-freeze review A4): fewer
-        /// than 4 counted days, or a times-per-week habit's week in progress.
+        /// than 4 counted days, or a times-per-week habit's week in progress with its goal not
+        /// yet met.
         case nothingToCompareYetThisWeek
         /// "Not enough recent check-ins to compare".
         case notEnoughRecentCheckIns

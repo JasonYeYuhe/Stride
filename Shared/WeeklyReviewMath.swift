@@ -184,8 +184,9 @@ enum WeeklyReviewMath {
         ///   on a Sunday and missed that day read "+85 points, Most improved" the next Monday);
         /// - and the week is over, or — for a daily or specific-days habit — at least
         ///   `countedDaysForChange` of its days are counted (`HabitStats.countedDayCount`). A
-        ///   times-per-week habit waits for its week to end: what it owes so far can be nothing,
-        ///   so one check-in on a Thursday read 100 %.
+        ///   times-per-week habit waits for its week to end, or to meet its goal
+        ///   (`metWeeklyGoal`, a final 100 %): what it owes so far can be nothing, so one check-in
+        ///   on a Thursday read 100 %.
         let countsChange: Bool
         /// The change against the previous week in whole points, as the two rates print
         /// (`StatsInsights.percent`): only when the week `countsChange` and both rates are known.
@@ -239,7 +240,7 @@ enum WeeklyReviewMath {
     ///   `startDay`, through the last counted day: today once it is done, else yesterday), per
     ///   habit: until then a Tuesday with 1 of 1 done (100 %) would read "+40" against last
     ///   week's 60 %. The previous week needs as many counted days, and a times-per-week habit's
-    ///   week must be over (`Row.countsChange`); a habit that fails either has no change, and is
+    ///   week must be over or have met its goal (`Row.countsChange`); a habit that fails either has no change, and is
     ///   left out of the mean change and of the highlights.
     /// - A tie for the largest rise or drop goes to the habit first in the caller's order.
     /// - `groupOrder`: the user's groups in their order; empty when the user has none (then one
@@ -294,12 +295,24 @@ enum WeeklyReviewMath {
     /// Whether `stats`' `week` may be compared with the week before it (D8; `Row.countsChange`):
     /// the previous week has at least `countedDaysForChange` counted days, and `week` is over, or,
     /// for a daily or specific-days habit, has that many counted days itself. A times-per-week
-    /// habit waits for its week to end. Insights' momentum reads the same rule for this week
-    /// (`StatsInsights.momentum(for:)`), so the two cards never disagree about what may be compared.
+    /// habit waits for its week to end, unless the week has already met its goal (`timesPerWeek`
+    /// check-ins): its rate is then 100 % and final — no later day can lower it — so comparing it
+    /// is true (follow-up to pre-freeze review A4: without it a 3-times-a-week habit never had
+    /// momentum). Before that, one check-in on a Thursday reads 100 % of what is owed so far.
+    /// Insights' momentum reads the same rule for this week (`StatsInsights.momentum(for:)`), so
+    /// the two cards never disagree about what may be compared.
     static func countsChange(_ stats: HabitStats, week: WeekRange) -> Bool {
-        let shownCounts = isOver(week, for: stats) || (stats.schedule != .timesPerWeek
-            && stats.countedDayCount(ofWeekStarting: week.monday) >= countedDaysForChange)
+        let shownCounts = isOver(week, for: stats) || metWeeklyGoal(stats, week: week)
+            || (stats.schedule != .timesPerWeek
+                && stats.countedDayCount(ofWeekStarting: week.monday) >= countedDaysForChange)
         return shownCounts && stats.countedDayCount(ofWeekStarting: week.previous.monday) >= countedDaysForChange
+    }
+
+    /// A times-per-week habit whose `week` already holds `timesPerWeek` check-ins (at least 1).
+    /// Its counted rate is then 100 % whatever the remaining days bring; a habit created mid-week
+    /// owes only a share of the goal, so the whole goal is more than enough.
+    static func metWeeklyGoal(_ stats: HabitStats, week: WeekRange) -> Bool {
+        stats.schedule == .timesPerWeek && stats.weeklyCompletions(weekStarting: week.monday) >= max(1, stats.timesPerWeek)
     }
 
     /// The rows by group (D9: "Sections by group, Ungrouped last"), as Today groups them: a habit
