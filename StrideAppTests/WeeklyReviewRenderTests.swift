@@ -71,8 +71,13 @@ final class WeeklyReviewRenderTests: XCTestCase {
     /// A yes/no daily habit created on the day-key `created`, checked in on each of `checkedIn`,
     /// saved; listed in the order made.
     @discardableResult
-    private func habit(_ name: String, created: (Int, Int) = (5, 1), checkedIn: [Date]) throws -> Habit {
+    private func habit(_ name: String, created: (Int, Int) = (5, 1), checkedIn: [Date],
+                       activeDays: Int? = nil) throws -> Habit {
         let habit = Habit(name: name)
+        if let activeDays {
+            habit.schedule = .specificDays
+            habit.activeDaysMask = activeDays
+        }
         habit.createdAt = Self.key(created.0, created.1)
         habit.sortOrder = order
         order += 1
@@ -275,6 +280,34 @@ final class WeeklyReviewRenderTests: XCTestCase {
             XCTAssertTrue(has(appLocalized("Highlights"), in: window), "\(labels(in: window))")
         }
         XCTAssertEqual(highlight("Most improved", in: window).map { $0.contains("Run") }, true)
+    }
+
+    /// Pre-freeze review A3: no change line unless every row the ring counts is compared. Monday
+    /// 06-01, last week: Up 3 of 7 (42) → 7 of 7, +58; New, begun Thursday 05-28 and never done,
+    /// 0 % with no previous week. The ring is 50 %; "+58 points" would leave New out. Up is still
+    /// "Most improved".
+    func testNoChangeLineWhenARowTheRingCountsIsNotCompared() async throws {
+        try habit("Up", checkedIn: Self.keys((5, 18), (5, 20)) + Self.keys((5, 25), (5, 31)))
+        try habit("New", created: (5, 28), checkedIn: [])
+
+        let window = try show(now: Self.local(6, 1, 9))
+        try await expectLastWeek(in: window, rows: ["Up": 100, "New": 0])
+        XCTAssertTrue(has(appLocalized("Last week: \(50)%"), in: window), "\(labels(in: window))")
+        XCTAssertFalse(hasChangeLine(in: window), "\(labels(in: window))")
+        XCTAssertEqual(highlight("Most improved", in: window).map { $0.contains("Up") }, true, "\(labels(in: window))")
+    }
+
+    /// Pre-freeze review A6: Monday 06-01 evening, a Mon/Wed/Fri habit created Saturday 05-30 and
+    /// done today. Last week had nothing due (no ring, a dash row), so the review opens on this
+    /// week, "so far", with the row at 100 %.
+    func testItOpensThisWeekWhenLastWeekHasNothingToCount() async throws {
+        try habit("Gym", created: (5, 30), checkedIn: [Self.key(6, 1)], activeDays: (1 << 1) | (1 << 3) | (1 << 5))
+
+        let window = try show(now: Self.local(6, 1, 20))
+        try await waitUntil("this week so far") { self.has(appLocalized("This week so far"), in: window) }
+        XCTAssertFalse(has(appLocalized("Last week"), in: window))
+        XCTAssertTrue(has(dates(of: Self.key(6, 1)), in: window), "\(labels(in: window))")
+        XCTAssertTrue(has(row("Gym", 100), in: window), "\(labels(in: window))")
     }
 
     /// The dates as written, not as the view's own helper writes them (W6 review, finding 7): a

@@ -12,8 +12,9 @@ struct WeeklyReviewView: View {
            sort: \Habit.sortOrder)
     private var habits: [Habit]
 
-    /// Any day of the week asked for (`ShellRequest.weeklyReview(week:)`: Today's card asks for
-    /// last week), or nil for the review's own choice (`WeeklyReviewMath.openingWeek`).
+    /// Any day of the week asked for, as a day-key (`ShellRequest.weeklyReview(week:)`: Today's
+    /// card asks for last week's Monday; `WeeklyReviewMath.openingWeek` says why it must be a
+    /// day-key), or nil for the review's own choice (`WeeklyReviewMath.openingReview`).
     private let requestedWeek: Date?
     #if DEBUG
     /// The hosted tests' clock (WeeklyReviewRenderTests): a fixed instant, so a test can stand on
@@ -68,12 +69,12 @@ struct WeeklyReviewView: View {
         // 16:00:00 PST) as Monday's day-key while the header said Sunday's "so far".
         let today = WeeklyReviewMath.today(now: now, calendar: calendar)
         let stats = cache.stats(for: habits, today: today, calendar: calendar)
-        let opening = WeeklyReviewMath.openingWeek(now: now, calendar: calendar, requested: requestedWeek,
-                                                   earliestStart: stats.map { $0.startDay }.min())
         let inputs = zip(habits, stats).map { WeeklyReviewMath.HabitInput(habit: $0, stats: $1) }
-        return Summary(opening: opening,
-                       review: WeeklyReviewMath.review(of: inputs, week: opening.week),
-                       today: today)
+        // The opening week, or the other of this week and last when it has nothing to count
+        // (pre-freeze review A6), with its review.
+        let opened = WeeklyReviewMath.openingReview(of: inputs, now: now, calendar: calendar,
+                                                    requested: requestedWeek)
+        return Summary(opening: opened.opening, review: opened.review, today: today)
     }
 
     var body: some View {

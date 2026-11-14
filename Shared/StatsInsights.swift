@@ -94,18 +94,30 @@ enum StatsInsights {
         }
     }
 
-    /// `extremes` kept only where the free By Weekday bars agree (W5 review): the strongest day
-    /// only if its all-time completion count (`HabitStats.completionsPerWeekday`, what By Weekday
-    /// draws) is at least tied for the highest among the scheduled weekdays, the toughest only if
-    /// it is at least tied for the lowest. Otherwise a habit whose Monday was weak before the
-    /// 12-week window and perfect inside it read "Strongest on Monday" over Monday's lowest bar.
+    /// `extremes` kept only where the free By Weekday bars agree (W5 review): the named day's
+    /// all-time completion count (`HabitStats.completionsPerWeekday`, what By Weekday draws) must
+    /// be alone at the top (strongest) or the bottom (toughest) of the bars the user sees, so the
+    /// line never names one of several equal bars, or a bar some other bar beats. Otherwise a habit
+    /// whose Monday was weak before the 12-week window and perfect inside it read "Strongest on
+    /// Monday" over Monday's lowest bar, and seven equal bars could read "Toughest on Monday"
+    /// (pre-freeze review, A1).
+    ///
+    /// The bars compared: every scheduled weekday (`weekdays`), and every other weekday with a
+    /// check-in — By Weekday draws all seven, so a rest day the user also checks in on is a bar
+    /// too. A rest day with no check-in is an empty grey stub, not a bar: comparing it would mean a
+    /// specific-days habit could never have a toughest day.
     static func agreeingWithAllTimeCounts(_ extremes: WeekdayExtremes, counts: [Int: Int],
                                           weekdays: [Int]) -> WeekdayExtremes {
-        let scheduled = weekdays.map { counts[$0] ?? 0 }
-        guard let highest = scheduled.max(), let lowest = scheduled.min() else { return WeekdayExtremes() }
+        let scheduled = Set(weekdays)
+        let bars = (1...7).filter { scheduled.contains($0) || (counts[$0] ?? 0) > 0 }
+        func count(_ weekday: Int) -> Int { counts[weekday] ?? 0 }
+        func alone(_ day: Int, _ beyond: (Int, Int) -> Bool) -> Bool {
+            bars.allSatisfy { $0 == day || beyond(count(day), count($0)) }
+        }
+        guard !scheduled.isEmpty else { return WeekdayExtremes() }
         return WeekdayExtremes(
-            strongest: extremes.strongest.flatMap { (counts[$0] ?? 0) >= highest ? $0 : nil },
-            toughest: extremes.toughest.flatMap { (counts[$0] ?? 0) <= lowest ? $0 : nil })
+            strongest: extremes.strongest.flatMap { alone($0, >) ? $0 : nil },
+            toughest: extremes.toughest.flatMap { alone($0, <) ? $0 : nil })
     }
 
     /// Insights' weekday line (D7): `weekdayExtremes` over the last 12 weeks
@@ -146,6 +158,23 @@ enum StatsInsights {
         let now = percent(thisWeek), was = percent(lastWeek)
         guard was > 0 || now > 0 else { return nil }
         return Momentum(was: was, now: now)
+    }
+
+    /// Whether this week so far may be compared with last week: Weekly Review's rule
+    /// (`WeeklyReviewMath.countsChange`) — at least `WeeklyReviewMath.countedDaysForChange`
+    /// counted days, and never a times-per-week habit while its week is in progress (one check-in
+    /// on a Thursday reads 100 %: "Up vs last week (66% → 100%)"). Pre-freeze review, A4: W6
+    /// fixed this in the review, and Insights kept comparing a Tuesday with a whole week.
+    static func thisWeekIsComparable(_ stats: HabitStats) -> Bool {
+        WeeklyReviewMath.countsChange(stats, week: WeeklyReviewMath.WeekRange(
+            containingDay: HabitStats.dayNumber(ofKey: stats.today)))
+    }
+
+    /// Insights' momentum for `stats`: `momentum(thisWeek:lastWeek:)` once this week is
+    /// comparable (`thisWeekIsComparable`), else nil.
+    static func momentum(for stats: HabitStats) -> Momentum? {
+        guard thisWeekIsComparable(stats) else { return nil }
+        return momentum(thisWeek: stats.thisWeekRate, lastWeek: stats.lastWeekRate)
     }
 
     // MARK: The record line (D7)
@@ -202,7 +231,7 @@ enum StatsInsights {
     static func insightLines(for stats: HabitStats) -> [InsightLine] {
         insightLines(record: recordGap(current: stats.currentStreak(), best: stats.bestStreak),
                      inWeeks: stats.schedule == .timesPerWeek,
-                     momentum: momentum(thisWeek: stats.thisWeekRate, lastWeek: stats.lastWeekRate),
+                     momentum: momentum(for: stats),
                      weekdays: recentWeekdayExtremes(of: stats))
     }
 
@@ -217,7 +246,9 @@ enum StatsInsights {
         /// counted yet (`HabitStats.thisWeekRate` nil), so there is no momentum — a daily habit on
         /// Monday before the check-in, a weekend habit Monday to Saturday, 3 a week early in the
         /// week. A user who never misses has no other line (no record to chase, no weak day), and
-        /// was told "Not enough recent check-ins" there (W5 review).
+        /// was told "Not enough recent check-ins" there (W5 review). Also while this week is
+        /// counted but not yet comparable (`thisWeekIsComparable`, pre-freeze review A4): fewer
+        /// than 4 counted days, or a times-per-week habit's week in progress.
         case nothingToCompareYetThisWeek
         /// "Not enough recent check-ins to compare".
         case notEnoughRecentCheckIns
@@ -239,18 +270,24 @@ enum StatsInsights {
     /// counted (`thisWeekRate` nil), else "not enough recent check-ins" (momentum is nil when both
     /// weeks are 0%, and the weekday minimums can leave nothing else). `startDay` is a day-key;
     /// `today` any instant, keyed in `calendar` as HabitStats keys it.
-    static func emptyState(startDay: Date, today: Date, calendar: Calendar, thisWeekRate: Double?) -> EmptyState {
+    ///
+    /// `thisWeekComparable`: whether this week may be compared yet (`thisWeekIsComparable`). A
+    /// week counted but not yet comparable — Monday to Wednesday, or a times-per-week habit's
+    /// week in progress — also has "nothing to compare yet this week": momentum waits for it
+    /// (pre-freeze review, A4), and a user who never misses must not hear "not enough check-ins".
+    static func emptyState(startDay: Date, today: Date, calendar: Calendar, thisWeekRate: Double?,
+                           thisWeekComparable: Bool = true) -> EmptyState {
         guard hasHadFullWeek(startDay: HabitStats.dayNumber(ofKey: startDay),
                              today: HabitStats.dayNumber(of: today, in: calendar))
         else { return .beforeFirstFullWeek }
-        return thisWeekRate == nil ? .nothingToCompareYetThisWeek : .notEnoughRecentCheckIns
+        return thisWeekRate == nil || !thisWeekComparable ? .nothingToCompareYetThisWeek : .notEnoughRecentCheckIns
     }
 
     /// The empty state for `stats`, whether or not it has lines: InsightsCard draws it only when
     /// `insightLines(for:)` is empty.
     static func emptyStateIgnoringLines(for stats: HabitStats) -> EmptyState {
         emptyState(startDay: stats.startDay, today: stats.today, calendar: stats.calendar,
-                   thisWeekRate: stats.thisWeekRate)
+                   thisWeekRate: stats.thisWeekRate, thisWeekComparable: thisWeekIsComparable(stats))
     }
 
     /// What InsightsCard draws instead of lines: nil when it has lines (`insightLines(for:)`).
@@ -288,8 +325,14 @@ enum StatsInsights {
     /// the window's first day — no check-in on the start day, a start on a rest day, a habit left
     /// unused at first. Then the 30-day change is everything gained since the start, and only
     /// "Since start" is shown (W5 review), so the card never shows two equal tiles.
-    static func strengthChanges(ageInDays: Int, thirtyDayChange: Int, sinceStartChange: Int) -> [StrengthChange] {
-        if ageInDays > 90 { return [.thirtyDays, .ninetyDays] }
+    ///
+    /// Past 90 days the same holds for the 30- and 90-day changes (pre-freeze review, A5): equal
+    /// whenever the score drawn 90 days ago and 30 days ago was the same (a habit used only lately,
+    /// both 0). Then only "30-Day Change" is shown: both numbers are true, and the 30-day one also
+    /// says the change all happened in the last 30 days.
+    static func strengthChanges(ageInDays: Int, thirtyDayChange: Int, sinceStartChange: Int,
+                                ninetyDayChange: Int) -> [StrengthChange] {
+        if ageInDays > 90 { return thirtyDayChange == ninetyDayChange ? [.thirtyDays] : [.thirtyDays, .ninetyDays] }
         if ageInDays > 30, thirtyDayChange != sinceStartChange { return [.thirtyDays, .sinceStart] }
         return [.sinceStart]
     }
@@ -298,7 +341,9 @@ enum StatsInsights {
         strengthChanges(ageInDays: ageInDays(startDay: stats.startDay, today: stats.today, calendar: stats.calendar),
                         thirtyDayChange: displayedChange(current: stats.strength,
                                                          baseline: stats.strength - stats.strengthDelta30),
-                        sinceStartChange: displayedChangeSinceStart(of: stats))
+                        sinceStartChange: displayedChangeSinceStart(of: stats),
+                        ninetyDayChange: displayedChange(current: stats.strength,
+                                                         baseline: stats.strength - stats.strengthDelta90))
     }
 
     /// The strength at the start: at the end of the day before `startDay`, where the strength

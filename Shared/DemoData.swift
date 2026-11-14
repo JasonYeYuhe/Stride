@@ -134,6 +134,7 @@ enum DemoData {
     /// (DemoDataProScenarioTests check all seven, in Tokyo and Los Angeles):
     /// - two groups, Health and Mind (Today's sections, the review's);
     /// - Morning Run, daily for 20 weeks (Statistics' habit, first in order): Insights' three lines
+    ///   from Thursday (two Monday to Wednesday, when momentum waits for 4 counted days)
     ///   — 1 to 7 days from its record of 14, "Up" against last week's 86 %, toughest on Sunday
     ///   (3 or 4 of 12 recent Sundays against 10 of 12 Mondays) — Strength's 30- and 90-day
     ///   changes, and the best streaks;
