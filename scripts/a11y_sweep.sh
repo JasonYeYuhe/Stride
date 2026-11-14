@@ -331,10 +331,15 @@ clear_recovery_log() {
 clear_recovery_log
 # -stride_onboarding_completed YES lands in UserDefaults' argument domain for this launch only,
 # so StrideApp skips the first-run onboarding cover without writing anything to the device.
+# -inlineCard none (RELEASE-1.4.2.md D14): no "Your week" card on Today, whatever the weekday, so a
+# run on a Monday or Tuesday draws the same Today as any other day, and the app writes none of the
+# card's state (the free cap's weeks) into the device's defaults. Every launch here is a FREE one.
+# W8's Pro sweep captures the card on purpose with `-inlineCard week` (and `-demoPro`); a later
+# `-inlineCard` in "$@" is not read (the app takes the first), so pass the card there, not here.
 capture() {
     local file="$1"; shift
     xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
-    xcrun simctl launch "$UDID" "$BUNDLE_ID" -demo -stride_onboarding_completed YES \
+    xcrun simctl launch "$UDID" "$BUNDLE_ID" -demo -stride_onboarding_completed YES -inlineCard none \
         "${LANG_ARGS[@]+"${LANG_ARGS[@]}"}" "$@" >/dev/null
     sleep "$SETTLE"
     xcrun simctl io "$UDID" screenshot --type=png "$OUT/$file" >/dev/null 2>&1
@@ -438,7 +443,7 @@ if [[ "$SET" == sync || "$SET" == all ]]; then
     # Put the store back to the plain demo set (the scenarios above seeded held rows into it),
     # then drop the seeded recovery log: the next screenshot run on this device starts clean.
     xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
-    xcrun simctl launch "$UDID" "$BUNDLE_ID" -demo -stride_onboarding_completed YES >/dev/null
+    xcrun simctl launch "$UDID" "$BUNDLE_ID" -demo -stride_onboarding_completed YES -inlineCard none >/dev/null
     sleep "$SETTLE"
     xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
     clear_recovery_log

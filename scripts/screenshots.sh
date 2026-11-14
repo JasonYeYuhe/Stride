@@ -21,7 +21,11 @@ echo "  Stride - Screenshot Generator"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-# Generate via Swift script
+# Generate via Swift script. It draws the frames itself and launches no app, so Today's "Your week"
+# card (RELEASE-1.4.2.md D12) never appears here. Any simulator launch added to this script for a
+# FREE frame must pass `-inlineCard none` (as scripts/a11y_sweep.sh's `capture` does), or a run on
+# a Monday or Tuesday draws the card and writes its free-cap state into the app's defaults. W8's
+# Pro frames capture the card on purpose with `-inlineCard week`.
 echo "Generating screenshots..."
 swift "$SCRIPT_DIR/generate_screenshots.swift"
 

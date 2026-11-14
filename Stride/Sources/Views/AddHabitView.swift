@@ -30,6 +30,10 @@ struct AddHabitView: View {
     @State private var showingNewGroup = false
     @State private var newGroupName = ""
     @State private var showingPaywall = false
+    /// Continue after buying from New Group (RELEASE-1.4.2.md D4, `onUnlock`): the New Group alert
+    /// opens once the paywall sheet is gone — from its `onDismiss`, because SwiftUI on iOS drops an
+    /// alert raised while a sheet is dismissing (G2-2).
+    @State private var continuesToNewGroup = false
     /// Notifications are off for Stride, so a reminder switched on here would never fire.
     @State private var notificationsDenied = false
     /// Save is awaiting the permission prompt; a second tap must not insert the habit twice.
@@ -315,8 +319,14 @@ struct AddHabitView: View {
         } message: {
             Text("Organize related habits together.")
         }
-        .sheet(isPresented: $showingPaywall) {
-            ProPaywallView(trigger: .groups)
+        .sheet(isPresented: $showingPaywall, onDismiss: {
+            guard continuesToNewGroup else { return }
+            continuesToNewGroup = false
+            newGroupName = ""
+            showingNewGroup = true
+        }) {
+            // Continue dismisses the paywall, then calls this: the alert follows the dismissal.
+            ProPaywallView(trigger: .groups, onUnlock: { continuesToNewGroup = true })
         }
     }
 
@@ -506,6 +516,7 @@ struct AddHabitView: View {
                     newGroupName = ""
                     showingNewGroup = true
                 } else {
+                    continuesToNewGroup = false
                     showingPaywall = true
                 }
             } label: {
