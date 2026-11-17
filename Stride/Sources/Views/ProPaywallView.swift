@@ -163,6 +163,13 @@ struct ProPaywallView: View {
     /// content: the plan cards keep the rest.
     static let barShareLimit: CGFloat = 0.45
 
+    /// The paywall's sheet on an iPad (`PaywallSheetSizing`): room for the header, the three
+    /// features, all three plan cards and the pinned bar (Ask to Buy's line included) on the
+    /// first screen at the default size, about 830 pt of it on iOS 27. The ideal size: on an iPad
+    /// Pro 13" with iOS 27 the sheet measured 704 x 1020 pt with it (2026-11-18). PaywallRenderTests
+    /// draws the iPad's paywall at this size.
+    static let padSheetSize = CGSize(width: 704, height: 1000)
+
     /// The anchor the inline bar's Restore answer scrolls to (accessibility sizes).
     static let restoreAnswerAnchor = "paywall.restoreAnswerAnchor"
 
@@ -273,6 +280,9 @@ struct ProPaywallView: View {
                 }
             }
         }
+        #if os(iOS)
+        .modifier(PaywallSheetSizing())
+        #endif
         #if os(macOS)
         // A ScrollView has no ideal height, and a Mac sheet sized to it is a sliver. Here, not at
         // the call sites: Stats, Weekly Review's menu item, New Habit's groups and Settings all
@@ -861,6 +871,28 @@ private struct ScrollAnchor: ViewModifier {
         if let name { content.id(name) } else { content }
     }
 }
+
+#if os(iOS)
+/// The paywall's sheet on an iPad (regular width): `ProPaywallView.padSheetSize`, where iOS 27
+/// gave the default sheet about 580 x 660 pt (iPad Pro 13"). There only Yearly was on the first
+/// screen, half under the bar; Monthly and Lifetime needed a scroll with nothing hinting they
+/// were there (gate 8, 2026-11-18). A `.form` sheet fitted to the content's ideal size, which is
+/// set here: `.page` alone filled almost the whole 13" screen, its cards stretched 900 pt wide
+/// over an empty half. A smaller iPad, or one in landscape, gets as much of it as its screen has.
+/// No effect at compact width, where a sheet takes the screen's width anyway. iOS 17 has no
+/// `presentationSizing`; it presents the sheet as it always did.
+private struct PaywallSheetSizing: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content
+                .frame(idealWidth: ProPaywallView.padSheetSize.width, idealHeight: ProPaywallView.padSheetSize.height)
+                .presentationSizing(.form.fitted(horizontal: true, vertical: true))
+        } else {
+            content
+        }
+    }
+}
+#endif
 
 // MARK: - Supporting Views
 

@@ -16,12 +16,15 @@ import SwiftUI
 ///   legal line, whose trial clause holds with or without one.
 /// - The bar: CTA, terms, Restore Purchases and the Terms and Privacy links pinned on the first
 ///   screen at the default size, on an iPhone and in an iPad's sheet; Restore's answer in the bar,
-///   on the first screen; the end of the scroll at AX5.
+///   on the first screen; the end of the scroll at AX5. In the iPad's sheet all three plan cards
+///   are whole above the bar.
 /// - Continue calls `onUnlock`; the subtitle and the first feature row follow the trigger.
 ///
-/// The phone is an iPhone 17 Pro's window (402 × 874 pt); the iPad is a page sheet on a 13"
-/// iPad (704 × 1000 pt, regular width). Each is a SwiftUI frame of that size at the window's top
-/// left, so the checks hold on whichever simulator runs the suite.
+/// The phone is an iPhone 17 Pro's window (402 × 874 pt); the iPad is the sheet the paywall asks
+/// for on an iPad (`ProPaywallView.padSheetSize`, 704 × 1000 pt, regular width; on an iPad Pro 13"
+/// with iOS 27 the sheet measured 704 × 1020 pt with it, 2026-11-18, where the default sheet had
+/// been about 580 × 660 pt and showed one plan card). Each is a SwiftUI frame of that size at the window's top left, so the
+/// checks hold on whichever simulator runs the suite.
 ///
 /// DEBUG-only, as `PaywallFixture` and the fixture initializer are (the hosted suite builds Debug).
 #if DEBUG
@@ -32,7 +35,7 @@ final class PaywallRenderTests: XCTestCase {
     private var automation: Bool?
 
     private static let phone = CGSize(width: 402, height: 874)
-    private static let padSheet = CGSize(width: 704, height: 1000)
+    private static let padSheet = ProPaywallView.padSheetSize
 
     override func setUp() async throws {
         try await super.setUp()
@@ -263,6 +266,26 @@ final class PaywallRenderTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(cta.minY, lastCard.maxY - 0.5, "\(what): the CTA after the cards")
             XCTAssertGreaterThanOrEqual(terms.minY, cta.maxY - 0.5, "\(what): the terms under the CTA")
             XCTAssertGreaterThanOrEqual(link.minY, terms.maxY - 0.5, "\(what): the links under the terms")
+        }
+    }
+
+    /// In the iPad's sheet, at the default size, all three plan cards are whole above the bar —
+    /// with Ask to Buy's line in it too, the tallest bar a plan state draws. At the form size iOS
+    /// 27 gave the sheet before W13 (about 580 × 660 pt) only Yearly was, half under the bar
+    /// (gate 8, 2026-11-18).
+    func testTheIPadSheetShowsEveryPlanAboveTheBar() async throws {
+        XCTAssertGreaterThanOrEqual(Self.padSheet.width, 700, "the sheet's width")
+        XCTAssertGreaterThanOrEqual(Self.padSheet.height, 1000, "the sheet's height")
+        for (fixture, top) in [(PaywallFixture.trial, "paywall.bar.cta"), (.pending, "paywall.bar.pending")] {
+            let window = try show(fixture, size: Self.padSheet)
+            try await waitUntil("\(fixture): three plans and the bar") {
+                self.planCards(in: window).count == 3 && self.element(top, in: window) != nil
+            }
+            let barTop = try XCTUnwrap(element(top, in: window)?.accessibilityFrame.minY)
+            for card in planCards(in: window) {
+                XCTAssertLessThanOrEqual(card.accessibilityFrame.maxY, barTop + 0.5,
+                                         "\(fixture): \(card.accessibilityLabel ?? "") above the bar")
+            }
         }
     }
 
