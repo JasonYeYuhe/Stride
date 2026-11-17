@@ -2,25 +2,23 @@ Los grandes cambios no ocurren de la noche a la mañana: se construyen día a d�
 
 CREA TUS HÁBITOS EN SEGUNDOS
 
-Empieza desde cero o elige una plantilla ya preparada, y marca cada hábito con un solo toque. Ponle a cada uno su emoji y su color, y ordena la lista a tu gusto.
+Empieza de cero o con una plantilla, y marca cada hábito con un solo toque. Dale a cada uno un emoji y un color, y ordena la lista a tu gusto.
 
 No todo se reduce a un sí o un no: con los hábitos medibles defines un objetivo diario y su unidad —«Beber agua, 8 vasos» o «Correr, 5 km»— y vas sumando durante el día.
 
-FRECUENCIAS FLEXIBLES
-
-Tampoco todos los hábitos son diarios. Elige entre todos los días, un número de veces por semana o solo ciertos días: lunes, miércoles y viernes.
+No todos los hábitos son diarios: elige todos los días, un número de veces por semana o solo ciertos días (lunes, miércoles y viernes).
 
 RACHAS QUE TE IMPULSAN
 
-Stride cuenta tus rachas automáticamente. Los días que un hábito no toca son de descanso y no rompen la racha, y si te has propuesto un número de veces por semana, esa racha cuenta semanas en lugar de días. Puedes compartir cualquier racha como imagen.
+Stride cuenta tus rachas automáticamente. Los días que un hábito no toca son de descanso y no rompen la racha, y en un hábito de veces por semana, la racha cuenta semanas, no días. Puedes compartir cualquier racha como imagen.
 
 ESTADÍSTICAS Y MAPA DE CALOR
 
 Sigue tu progreso con un mapa de calor de tus últimas 12 semanas. Consulta tu racha actual y la mejor, una puntuación de fuerza que se recupera si fallas un día, tu porcentaje de cumplimiento de los últimos 30 días y en qué días de la semana rindes más. En los hábitos de días concretos, ese porcentaje solo cuenta los días que tocaba. ¿Se te ha olvidado algún día? Corrige los días pasados en tu historial.
 
-WIDGETS PARA LA PANTALLA DE INICIO Y LA DE BLOQUEO (iPhone y iPad)
+WIDGETS (iPhone y iPad)
 
-Widgets pequeño, mediano y grande en la pantalla de inicio (extragrande en iPad), y circular, en línea y rectangular en la de bloqueo. Mira de un vistazo cuántos hábitos llevas hoy y, desde los widgets mediano y grande, márcalos sin abrir la app.
+Widgets pequeño, mediano y grande en la pantalla de inicio (extragrande en iPad), y circular, en línea y rectangular en la de bloqueo. Mira tu progreso de hoy sin abrir la app y marca tus hábitos desde los widgets mediano y grande.
 
 RECORDATORIOS PARA CADA HÁBITO
 
@@ -28,7 +26,7 @@ Cada hábito puede tener su propio recordatorio, a la hora que tú elijas: medit
 
 SINCRONIZACIÓN ENTRE DISPOSITIVOS
 
-Marca los hábitos de la mañana en el iPhone, revisa tus estadísticas en el iPad y cierra el día en el Mac. Con tu cuenta gratuita de Stride, tus datos te acompañan.
+Marca tus hábitos en el iPhone, revisa tus estadísticas en el iPad y cierra el día en el Mac. Con tu cuenta gratuita de Stride, tus datos te acompañan.
 
 CASI TODO ES GRATIS
 
@@ -44,19 +42,17 @@ Stride Pro añade tres cosas:
 
 TU PRIVACIDAD IMPORTA
 
-Stride guarda tus hábitos en tu dispositivo mientras no inicies sesión para sincronizar. Cuando lo haces, se envían al servidor propio de Stride, que los usa solo para mantener tus dispositivos al día: nunca se venden ni se comparten con fines publicitarios. Stride recopila informes anónimos de fallos y diagnóstico para corregir errores; no contienen ningún contenido de tus hábitos ni están vinculados a tu identidad.
+Stride guarda tus hábitos en tu dispositivo mientras no inicies sesión para sincronizar. Cuando lo haces, se envían al servidor propio de Stride, que los usa solo para mantener tus dispositivos al día: nunca se venden ni se comparten con fines publicitarios. Stride recopila informes anónimos de fallos y diagnóstico para corregir errores; no incluyen el contenido de tus hábitos ni se vinculan a tu identidad.
 
 EMPIEZA HOY
 
 No necesitas un lunes ni un año nuevo. Necesitas hoy. Descarga Stride y marca tu primer hábito.
 
-Disponible para iPhone, iPad y Mac.
-
 INFORMACIÓN DE COMPRA Y SUSCRIPCIÓN
 
 Stride Pro se ofrece como suscripción mensual o anual de renovación automática, o como compra única «De por vida», que se paga una sola vez y no se renueva.
 
-Para las suscripciones: el pago se cargará a tu cuenta de Apple al confirmar la compra. La suscripción se renueva automáticamente a menos que la renovación automática se desactive al menos 24 horas antes del final del periodo en curso, y el cobro se realiza en las 24 horas previas al final de ese periodo. Puedes gestionar o cancelar tu suscripción en los ajustes de tu cuenta de la App Store.
+Para las suscripciones: el pago se cargará a tu cuenta de Apple al confirmar la compra. La suscripción se renueva automáticamente a menos que la renovación automática se desactive al menos 24 horas antes del final del periodo en curso, y el cobro se realiza en las 24 horas previas al final de ese periodo. Si se ofrece una prueba gratuita, se te cobrará cuando termine, a menos que la canceles al menos 24 horas antes de que termine. La parte no utilizada de una prueba termina cuando te suscribes. Puedes gestionar o cancelar tu suscripción en los ajustes de tu cuenta de la App Store.
 
 Términos de uso: https://jasonyeyuhe.github.io/stride-site/terms
 Política de privacidad: https://jasonyeyuhe.github.io/stride-site/privacy
