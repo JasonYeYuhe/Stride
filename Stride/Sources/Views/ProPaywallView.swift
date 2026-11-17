@@ -181,7 +181,10 @@ struct ProPaywallView: View {
     /// label reads 4.62:1, in light and dark alike. The system green the button had read 2.22:1
     /// in light and 2.0:1 in dark (#30D158) under white (gate 8, 2026-11-18).
     static let ctaFill = StatsInsights.proChipFill
-    /// The CTA's label on `ctaFill`.
+    /// The CTA's label on `ctaFill`, as `.borderedProminent` draws it there. The label sets no
+    /// colour of its own, so the style's disabled look (a pale fill, a dimmed label) still shows
+    /// while a purchase or a restore runs; a white label set on it stayed white on the pale
+    /// disabled fill (W13 review).
     static let ctaText = ColorContrast.RGB.white
 
     /// Restore Purchases and the Terms and Privacy links, as text: the app's green where it
@@ -539,7 +542,8 @@ struct ProPaywallView: View {
     private func restoreButton(_ id: String) -> some View {
         Button("Restore Purchases", action: restorePurchases)
             .buttonStyle(.borderless)
-            .foregroundStyle(Self.linkColor(in: colorScheme))
+            // Secondary while it waits: an explicit green stays green when disabled (W13 review).
+            .foregroundStyle(isBusy ? AnyShapeStyle(.secondary) : AnyShapeStyle(Self.linkColor(in: colorScheme)))
             .disabled(isBusy)
             .accessibilityIdentifier("\(id).restore")
     }
@@ -648,7 +652,6 @@ struct ProPaywallView: View {
                 } label: {
                     Text("Continue")
                         .font(.headline)
-                        .foregroundStyle(Self.ctaText.color)
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
@@ -669,7 +672,6 @@ struct ProPaywallView: View {
                     Button(action: buySelectedPlan) {
                         ctaLabel(cta)
                             .font(.headline)
-                            .foregroundStyle(Self.ctaText.color)
                             .multilineTextAlignment(.center)
                             .frame(maxWidth: .infinity)
                     }
