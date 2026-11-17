@@ -361,19 +361,34 @@ struct ProPaywallView: View {
             // Restore's answer is in the bar. Pinned, it is on screen already; inline (accessibility
             // sizes) it is the end of the scroll, so the page goes to it. Before W13 it appeared
             // under the pinned bar, off screen, and a tap on Restore seemed to do nothing
-            // (gate 8, 2026-11-18).
+            // (gate 8, 2026-11-18). On a new answer (a repeat of the last one is new too: a
+            // restore clears the answer when it starts), and should the bar move into the scroll
+            // under one; the probe reserves the answer's line, so an answer never moves it itself.
             .onChange(of: shownRestoreOutcome) { _, outcome in
-                guard outcome != nil, barInline else { return }
-                withAnimation { proxy.scrollTo(Self.restoreAnswerAnchor, anchor: .bottom) }
+                if outcome != nil { revealRestoreAnswer(proxy) }
+            }
+            .onChange(of: barInline) { _, inline in
+                if inline, shownRestoreOutcome != nil { revealRestoreAnswer(proxy) }
             }
             #if DEBUG
             .task { await scrollToLaunchAnchor(proxy) }
             #endif
         }
-        // VoiceOver hears the answer once, when Restore gives it, wherever the bar is.
+        // VoiceOver hears each answer once, when Restore gives it, wherever the bar is: a restore
+        // clears the last answer when it starts, so the same answer twice is two changes.
         .onChange(of: action) { _, action in
             guard case .restore(let outcome) = action, let line = Self.restoreAnnouncement(outcome) else { return }
             AccessibilityNotification.Announcement(line).post()
+        }
+    }
+
+    /// Scrolls the inline bar's Restore answer into view, after the layout pass that draws it
+    /// (a `scrollTo` before the target has a frame does nothing). Pinned, it is on screen.
+    private func revealRestoreAnswer(_ proxy: ScrollViewProxy) {
+        Task { @MainActor in
+            await Task.yield()
+            guard barInline, shownRestoreOutcome != nil else { return }
+            withAnimation { proxy.scrollTo(Self.restoreAnswerAnchor, anchor: .bottom) }
         }
     }
 
@@ -529,6 +544,18 @@ struct ProPaywallView: View {
             .accessibilityIdentifier("\(id).restore")
     }
 
+    /// Room for Restore's longest answer in this language: the three, one over another (the probe).
+    private var restoreAnswerReserve: some View {
+        ZStack {
+            restoreAnswer(.restored)
+            restoreAnswer(.nothingFound)
+            restoreAnswer(.failed)
+        }
+        .font(.footnote)
+        .multilineTextAlignment(.center)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
     /// Restore's answer, inline (D6). A cancelled Apple Account sheet says nothing.
     @ViewBuilder
     private func restoreAnswer(_ outcome: RestoreOutcome) -> some View {
@@ -605,6 +632,9 @@ struct ProPaywallView: View {
 
     /// The CTA, the selected plan's terms right under it, and the Terms and Privacy links; while
     /// Ask to Buy waits, its line above the CTA. Unlocked, it holds Continue alone.
+    /// The space between the bar's top edge (its divider, pinned) and its first line.
+    static let barTopPadding: CGFloat = 12
+
     @ViewBuilder
     private func bar(_ placement: BarPlacement) -> some View {
         let model = self.model
@@ -659,7 +689,13 @@ struct ProPaywallView: View {
                         .paywallAnchor(placement == .inline ? "terms" : nil)
                 }
                 links(id, showsRestore: phase.showsPlans)
-                if let outcome = shownRestoreOutcome {
+                if placement == .probe {
+                    // Where Restore is offered, the probe always holds its tallest answer, so the
+                    // bar's place (pinned, or the end of the scroll) never depends on whether an
+                    // answer is showing: an answer that tipped it over `barShareLimit` moved the bar
+                    // into the scroll under the answer just revealed (W13 review).
+                    if phase.showsPlans { restoreAnswerReserve }
+                } else if let outcome = shownRestoreOutcome {
                     restoreAnswer(outcome)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -671,7 +707,7 @@ struct ProPaywallView: View {
             }
         }
         .padding(.horizontal, 24)
-        .padding(.top, 12)
+        .padding(.top, Self.barTopPadding)
         .padding(.bottom, placement == .pinned ? 8 : 0)
         .frame(maxWidth: .infinity)
         .background {
@@ -845,6 +881,9 @@ struct ProPaywallView: View {
     private func restorePurchases() {
         guard !isFixture, !isBusy else { return }
         let wasPro = store.isPro
+        // The last answer goes while this one is fetched, so an answer the same as the last is
+        // still seen, announced and (inline) scrolled to (W13 review).
+        if case .restore = action { action = nil }
         Task {
             let outcome = await store.restorePurchases()
             // A purchase owns the screen: Restore's answer never overwrites it (its button and

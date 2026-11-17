@@ -275,14 +275,13 @@ final class PaywallRenderTests: XCTestCase {
     /// 27 gave the sheet before W13 (about 580 × 660 pt) only Yearly was, half under the bar
     /// (gate 8, 2026-11-18).
     func testTheIPadSheetShowsEveryPlanAboveTheBar() async throws {
-        XCTAssertGreaterThanOrEqual(Self.padSheet.width, 700, "the sheet's width")
-        XCTAssertGreaterThanOrEqual(Self.padSheet.height, 1000, "the sheet's height")
         for (fixture, top) in [(PaywallFixture.trial, "paywall.bar.cta"), (.pending, "paywall.bar.pending")] {
             let window = try show(fixture, size: Self.padSheet)
             try await waitUntil("\(fixture): three plans and the bar") {
                 self.planCards(in: window).count == 3 && self.element(top, in: window) != nil
             }
-            let barTop = try XCTUnwrap(element(top, in: window)?.accessibilityFrame.minY)
+            // The bar's top edge (its divider): its first line less the bar's top padding.
+            let barTop = try XCTUnwrap(element(top, in: window)?.accessibilityFrame.minY) - ProPaywallView.barTopPadding
             for card in planCards(in: window) {
                 XCTAssertLessThanOrEqual(card.accessibilityFrame.maxY, barTop + 0.5,
                                          "\(fixture): \(card.accessibilityLabel ?? "") above the bar")
@@ -332,7 +331,8 @@ final class PaywallRenderTests: XCTestCase {
         let window = try show(.nothingFound, dynamicType: .accessibility5)
         try await waitUntil("AX5: Restore in the scroll") { self.element("paywall.scroll.restoreAnswer", in: window) != nil }
         XCTAssertNil(element("paywall.bar.restore", in: window), "AX5: nothing pinned")
-        let link = try XCTUnwrap(element("paywall.scroll.termsOfUse", in: window)?.accessibilityFrame)
+        // At AX5 the links stack, Privacy Policy last.
+        let link = try XCTUnwrap(element("paywall.scroll.privacyPolicy", in: window)?.accessibilityFrame)
         let answer = try XCTUnwrap(element("paywall.scroll.restoreAnswer", in: window)?.accessibilityFrame)
         XCTAssertNotNil(element("paywall.scroll.restore", in: window), "AX5: Restore")
         XCTAssertGreaterThanOrEqual(answer.minY, link.maxY - 0.5, "AX5: the answer after the links")
@@ -340,6 +340,33 @@ final class PaywallRenderTests: XCTestCase {
         let unlocked = try show(.unlocked)
         try await waitUntil("Continue") { self.element("paywall.bar.continue", in: unlocked) != nil }
         XCTAssertNil(element("paywall.bar.restore", in: unlocked), "unlocked: no Restore")
+    }
+
+    /// Where the bar goes (pinned, or the end of the scroll) does not depend on Restore's answer:
+    /// the probe reserves its line wherever Restore is offered, so an answer cannot tip the bar past
+    /// `barShareLimit` and move it into the scroll under the answer just revealed (W13 review). At
+    /// sizes near the limit: an iPhone 17 Pro in landscape, and a 375 × 667 pt phone, at the
+    /// largest sizes below the accessibility ones.
+    func testTheBarsPlaceDoesNotDependOnRestoresAnswer() async throws {
+        let cases: [(CGSize, DynamicTypeSize)] = [
+            (CGSize(width: 874, height: 402), .large), (CGSize(width: 874, height: 402), .xxxLarge),
+            (CGSize(width: 375, height: 667), .xxLarge), (CGSize(width: 375, height: 667), .xxxLarge),
+            (Self.phone, .xxxLarge),
+        ]
+        for (size, type) in cases {
+            var pinned: [Bool] = []
+            for fixture in [PaywallFixture.trial, .nothingFound, .restoreFailed] {
+                let window = try show(fixture, size: size, dynamicType: type)
+                let what = "\(fixture), \(Int(size.width)) × \(Int(size.height)) pt, \(type)"
+                try await waitUntil("\(what): the CTA") {
+                    self.element("paywall.bar.cta", in: window) != nil || self.element("paywall.scroll.cta", in: window) != nil
+                }
+                // Past the probe's first answer: let a second layout pass move the bar if it would.
+                try await Task.sleep(for: .milliseconds(300))
+                pinned.append(element("paywall.bar.cta", in: window) != nil)
+            }
+            XCTAssertEqual(Set(pinned).count, 1, "\(Int(size.width)) × \(Int(size.height)) pt, \(type): pinned \(pinned)")
+        }
     }
 
     /// Release gate 8's contrast (ColorExtension.swift: 4.5:1 for text, 3:1 for marks), as drawn,
