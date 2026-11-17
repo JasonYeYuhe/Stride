@@ -18,6 +18,7 @@ import SwiftUI
 ///   screen at the default size, on an iPhone and in an iPad's sheet; Restore's answer in the bar,
 ///   on the first screen; the end of the scroll at AX5. In the iPad's sheet all three plan cards
 ///   are whole above the bar.
+/// - The paywall's colours reach 4.5:1 for text and 3:1 for marks (release gate 8).
 /// - Continue calls `onUnlock`; the subtitle and the first feature row follow the trigger.
 ///
 /// The phone is an iPhone 17 Pro's window (402 × 874 pt); the iPad is the sheet the paywall asks
@@ -339,6 +340,34 @@ final class PaywallRenderTests: XCTestCase {
         let unlocked = try show(.unlocked)
         try await waitUntil("Continue") { self.element("paywall.bar.continue", in: unlocked) != nil }
         XCTAssertNil(element("paywall.bar.restore", in: unlocked), "unlocked: no Restore")
+    }
+
+    /// Release gate 8's contrast (ColorExtension.swift: 4.5:1 for text, 3:1 for marks), as drawn,
+    /// 8 bits per channel: the CTA's white label on its fill, the links (and Restore) on the light
+    /// and dark card (the pinned bar and the page are lighter, or darker, than the card), and the
+    /// selected plan's ring on the card. Before W13: 2.22:1, 1.99:1 and 1.99:1 in light.
+    func testThePaywallsColoursReadAtGateEightsContrast() {
+        func eightBit(_ c: ColorContrast.RGB) -> ColorContrast.RGB {
+            ColorContrast.RGB(red: (c.red * 255).rounded() / 255, green: (c.green * 255).rounded() / 255,
+                              blue: (c.blue * 255).rounded() / 255)
+        }
+        func rgb(_ color: Color) -> ColorContrast.RGB {
+            let resolved = color.resolve(in: EnvironmentValues())
+            return eightBit(ColorContrast.RGB(red: Double(resolved.red), green: Double(resolved.green),
+                                              blue: Double(resolved.blue)))
+        }
+        let green = ColorContrast.RGB(0x34C759)
+        XCTAssertLessThan(ColorContrast.ratio(.white, green), ColorContrast.textMinimum, "the control: white on the system green")
+        XCTAssertGreaterThanOrEqual(ColorContrast.ratio(eightBit(ProPaywallView.ctaText), eightBit(ProPaywallView.ctaFill)),
+                                    ColorContrast.textMinimum, "the CTA's label")
+        for (scheme, card) in [(ColorScheme.light, ColorContrast.lightCard), (.dark, ColorContrast.darkCard)] {
+            XCTAssertGreaterThanOrEqual(ColorContrast.ratio(rgb(ProPaywallView.linkColor(in: scheme)), card),
+                                        ColorContrast.textMinimum, "\(scheme): the links")
+            XCTAssertGreaterThanOrEqual(ColorContrast.ratio(eightBit(ProPaywallView.selectionMark(in: scheme)), card),
+                                        ColorContrast.markMinimum, "\(scheme): the selected plan's ring")
+        }
+        // The links on what they are drawn on: the light bar and page, lighter than the card.
+        XCTAssertGreaterThanOrEqual(ColorContrast.ratio(rgb(ProPaywallView.linkColor(in: .light)), .white), 4.9, "light page")
     }
 
     /// The Terms of Use and Privacy Policy links: links, by the catalog's names, to the site's

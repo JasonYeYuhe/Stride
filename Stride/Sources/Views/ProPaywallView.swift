@@ -24,6 +24,7 @@ import SwiftUI
 struct ProPaywallView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.colorScheme) private var colorScheme
     let store = StoreService.shared
 
     /// Why it was opened (D4): the header's subtitle and which feature row comes first.
@@ -169,6 +170,37 @@ struct ProPaywallView: View {
     /// Pro 13" with iOS 27 the sheet measured 704 x 1020 pt with it (2026-11-18). PaywallRenderTests
     /// draws the iPad's paywall at this size.
     static let padSheetSize = CGSize(width: 704, height: 1000)
+
+    // MARK: - Colours (release gate 8: 4.5:1 for text, 3:1 for marks)
+
+    /// The app's green: the AccentColor and the palette's Green.
+    static let greenHex = "#34C759"
+
+    /// The fill of the paywall's one prominent button (the CTA, Continue, Try Again): the PRO
+    /// chip's #23863C (`StatsInsights.proChipFill`), the app's green darkened until its white
+    /// label reads 4.62:1, in light and dark alike. The system green the button had read 2.22:1
+    /// in light and 2.0:1 in dark (#30D158) under white (gate 8, 2026-11-18).
+    static let ctaFill = StatsInsights.proChipFill
+    /// The CTA's label on `ctaFill`.
+    static let ctaText = ColorContrast.RGB.white
+
+    /// Restore Purchases and the Terms and Privacy links, as text: the app's green where it
+    /// reads at 4.5:1, darkened on the light card until it does (`Color.readableText`, as
+    /// TodayCards' link). #34C759 itself read 2.09:1 on the light bar.
+    static func linkColor(in scheme: ColorScheme) -> Color {
+        Color.readableText(hex: greenHex, in: scheme)
+    }
+
+    /// The selected plan's ring and check, a mark: the app's green where it reaches 3:1 on the
+    /// card, darkened on the light card until it does (#34C759 was 1.99:1 on #F2F2F7). Aimed at
+    /// 3.1 so that it still clears 3:1 once drawn in 8 bits per channel: #299E47, 3.10:1 on the
+    /// light card and 3.46:1 on the white page (aimed at 3.0 it rounded to 2.99, as the PRO chip
+    /// did, StatsInsights.proChipFill). Unchanged on the dark card (7.66:1).
+    static func selectionMark(in scheme: ColorScheme) -> ColorContrast.RGB {
+        ColorContrast.readable(ColorContrast.RGB(hex: greenHex) ?? .fallback,
+                               on: scheme == .dark ? ColorContrast.darkCard : ColorContrast.lightCard,
+                               minimum: ColorContrast.markMinimum + 0.1)
+    }
 
     /// The anchor the inline bar's Restore answer scrolls to (accessibility sizes).
     static let restoreAnswerAnchor = "paywall.restoreAnswerAnchor"
@@ -492,6 +524,7 @@ struct ProPaywallView: View {
     private func restoreButton(_ id: String) -> some View {
         Button("Restore Purchases", action: restorePurchases)
             .buttonStyle(.borderless)
+            .foregroundStyle(Self.linkColor(in: colorScheme))
             .disabled(isBusy)
             .accessibilityIdentifier("\(id).restore")
     }
@@ -525,7 +558,7 @@ struct ProPaywallView: View {
                 Task { await store.retryLoadProducts() }
             }
             .buttonStyle(.borderedProminent)
-            .tint(.green)
+            .tint(Self.ctaFill.color)
             // The state's one action, where `-paywallScrollTo cta` lands (AX5 sweeps).
             .paywallAnchor("cta")
         }
@@ -585,10 +618,11 @@ struct ProPaywallView: View {
                 } label: {
                     Text("Continue")
                         .font(.headline)
+                        .foregroundStyle(Self.ctaText.color)
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(.green)
+                .tint(Self.ctaFill.color)
                 .controlSize(.large)
                 .accessibilityIdentifier("\(id).continue")
                 .paywallAnchor(placement == .inline ? "cta" : nil)
@@ -605,11 +639,12 @@ struct ProPaywallView: View {
                     Button(action: buySelectedPlan) {
                         ctaLabel(cta)
                             .font(.headline)
+                            .foregroundStyle(Self.ctaText.color)
                             .multilineTextAlignment(.center)
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(.green)
+                    .tint(Self.ctaFill.color)
                     .controlSize(.large)
                     .disabled(isBusy)
                     .accessibilityIdentifier("\(id).cta")
@@ -700,11 +735,13 @@ struct ProPaywallView: View {
 
     private func termsLink(_ id: String) -> some View {
         Link("Terms of Use", destination: Self.termsOfUseURL)
+            .foregroundStyle(Self.linkColor(in: colorScheme))
             .accessibilityIdentifier("\(id).termsOfUse")
     }
 
     private func privacyLink(_ id: String) -> some View {
         Link("Privacy Policy", destination: Self.privacyPolicyURL)
+            .foregroundStyle(Self.linkColor(in: colorScheme))
             .accessibilityIdentifier("\(id).privacyPolicy")
     }
 
@@ -945,13 +982,15 @@ struct PricingCard: View {
     static let perMonthFont: Font = .caption
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        Button(action: action) {
+        let mark = ProPaywallView.selectionMark(in: colorScheme).color
+        return Button(action: action) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                     .font(.title3)
-                    .foregroundStyle(isSelected ? Color.green : Color.secondary)
+                    .foregroundStyle(isSelected ? mark : Color.secondary)
                     .accessibilityHidden(true)
                 Group {
                     // Title, badges and price side by side left each a third of the card at the
@@ -987,7 +1026,7 @@ struct PricingCard: View {
                     .fill(Color.appSecondaryBackground)
                     .overlay(
                         RoundedRectangle(cornerRadius: 14)
-                            .stroke(isSelected ? Color.green : Color.clear, lineWidth: 2)
+                            .stroke(isSelected ? mark : Color.clear, lineWidth: 2)
                     )
             )
             .accessibilityElement(children: .combine)
