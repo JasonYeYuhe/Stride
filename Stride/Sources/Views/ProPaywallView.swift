@@ -12,10 +12,10 @@ import SwiftUI
 ///   view owns every catalog key; only prices come from StoreKit.
 /// - **Selection.** Yearly is selected first; tapping a card selects it; the one CTA under the
 ///   cards buys the selection.
-/// - **The bar.** The CTA, the selected plan's terms and the Terms and Privacy links sit in a bar
-///   pinned to the bottom (`safeAreaInset`), so they are on the first screen. At accessibility
-///   sizes, or wherever the bar would take more than `barShareLimit` of the height (a probe
-///   `ViewThatFits` decides), the bar is the end of the scroll content instead.
+/// - **The bar.** The CTA, the selected plan's terms, Restore Purchases and the Terms and Privacy
+///   links sit in a bar pinned to the bottom (`safeAreaInset`), so they are on the first screen.
+///   At accessibility sizes, or wherever the bar would take more than `barShareLimit` of the
+///   height (a probe `ViewThatFits` decides), the bar is the end of the scroll content instead.
 /// - **States** (`PaywallPhase`): loading, load failed, ready, purchasing, pending, restore's
 ///   answer inline, a failed purchase through the alert, unlocked with Continue.
 /// - **Dismissal.** An entitlement that arrives while this paywall's own purchase or restore is
@@ -163,6 +163,27 @@ struct ProPaywallView: View {
     /// content: the plan cards keep the rest.
     static let barShareLimit: CGFloat = 0.45
 
+    /// The anchor the inline bar's Restore answer scrolls to (accessibility sizes).
+    static let restoreAnswerAnchor = "paywall.restoreAnswerAnchor"
+
+    /// Restore's answer while it is drawn beside the plans; nil otherwise, and for a cancel,
+    /// which says nothing.
+    private var shownRestoreOutcome: RestoreOutcome? {
+        guard case .restore(let outcome) = phase, outcome != .cancelled else { return nil }
+        return outcome
+    }
+
+    /// What VoiceOver hears when Restore answers: the line the bar shows. `Announcement` takes a
+    /// verbatim String, so each is localized here (as LoginView's).
+    static func restoreAnnouncement(_ outcome: RestoreOutcome) -> String? {
+        switch outcome {
+        case .restored: return appLocalized("Purchases restored")
+        case .nothingFound: return appLocalized("No purchases found for this Apple ID")
+        case .failed: return appLocalized("Couldn't reach the App Store")
+        case .cancelled: return nil
+        }
+    }
+
     // MARK: - Body
 
     var body: some View {
@@ -289,16 +310,28 @@ struct ProPaywallView: View {
                         unlocked
                     case .ready, .purchasing, .pending, .restore, .purchaseFailed:
                         plans
-                        restore
                     }
                     if barInline { bar(.inline) }
                     if phase != .unlocked { legal }
                 }
                 .padding(.bottom, 20)
             }
+            // Restore's answer is in the bar. Pinned, it is on screen already; inline (accessibility
+            // sizes) it is the end of the scroll, so the page goes to it. Before W13 it appeared
+            // under the pinned bar, off screen, and a tap on Restore seemed to do nothing
+            // (gate 8, 2026-11-18).
+            .onChange(of: shownRestoreOutcome) { _, outcome in
+                guard outcome != nil, barInline else { return }
+                withAnimation { proxy.scrollTo(Self.restoreAnswerAnchor, anchor: .bottom) }
+            }
             #if DEBUG
             .task { await scrollToLaunchAnchor(proxy) }
             #endif
+        }
+        // VoiceOver hears the answer once, when Restore gives it, wherever the bar is.
+        .onChange(of: action) { _, action in
+            guard case .restore(let outcome) = action, let line = Self.restoreAnnouncement(outcome) else { return }
+            AccessibilityNotification.Announcement(line).post()
         }
     }
 
@@ -443,21 +476,14 @@ struct ProPaywallView: View {
 
     // MARK: - Restore
 
-    private var restore: some View {
-        VStack(spacing: 6) {
-            Button("Restore Purchases", action: restorePurchases)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .disabled(isBusy)
-            if case .restore(let outcome) = phase {
-                restoreAnswer(outcome)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .accessibilityIdentifier("paywall.restoreAnswer")
-            }
-        }
-        .padding(.horizontal, 24)
+    /// Restore Purchases, beside the Terms and Privacy links in the bar (W13). In the scroll it sat
+    /// wherever the plans ended: half under the pinned bar on a 6.9" iPhone, its label cut in
+    /// Japanese and Korean, and its answer below the bar, off screen.
+    private func restoreButton(_ id: String) -> some View {
+        Button("Restore Purchases", action: restorePurchases)
+            .buttonStyle(.borderless)
+            .disabled(isBusy)
+            .accessibilityIdentifier("\(id).restore")
     }
 
     /// Restore's answer, inline (D6). A cancelled Apple Account sheet says nothing.
@@ -587,7 +613,16 @@ struct ProPaywallView: View {
                         .accessibilityIdentifier("\(id).terms")
                         .paywallAnchor(placement == .inline ? "terms" : nil)
                 }
-                links(id)
+                links(id, showsRestore: phase.showsPlans)
+                if let outcome = shownRestoreOutcome {
+                    restoreAnswer(outcome)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("\(id).restoreAnswer")
+                        .modifier(ScrollAnchor(name: placement == .inline ? Self.restoreAnswerAnchor : nil))
+                }
             }
         }
         .padding(.horizontal, 24)
@@ -631,11 +666,24 @@ struct ProPaywallView: View {
     static let termsOfUseURL = URL(string: "https://jasonyeyuhe.github.io/stride-site/terms")!
     static let privacyPolicyURL = URL(string: "https://jasonyeyuhe.github.io/stride-site/privacy")!
 
-    /// Terms of Use and Privacy Policy, side by side where they fit, else one above the other.
-    private func links(_ id: String) -> some View {
+    /// Restore Purchases (beside the plans), Terms of Use and Privacy Policy: on one line where
+    /// they fit, else Restore above the two links, else one above the other.
+    private func links(_ id: String, showsRestore: Bool) -> some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 16) { termsLink(id); privacyLink(id) }
-            VStack(spacing: 8) { termsLink(id); privacyLink(id) }
+            HStack(spacing: 16) {
+                if showsRestore { restoreButton(id) }
+                termsLink(id)
+                privacyLink(id)
+            }
+            VStack(spacing: 8) {
+                if showsRestore { restoreButton(id) }
+                HStack(spacing: 16) { termsLink(id); privacyLink(id) }
+            }
+            VStack(spacing: 8) {
+                if showsRestore { restoreButton(id) }
+                termsLink(id)
+                privacyLink(id)
+            }
         }
         .font(.caption)
     }
@@ -801,6 +849,16 @@ private extension View {
         #else
         self
         #endif
+    }
+}
+
+/// An `id` to scroll to, in every build (Restore's answer, W13); nil leaves the view's identity
+/// alone.
+private struct ScrollAnchor: ViewModifier {
+    let name: String?
+
+    func body(content: Content) -> some View {
+        if let name { content.id(name) } else { content }
     }
 }
 

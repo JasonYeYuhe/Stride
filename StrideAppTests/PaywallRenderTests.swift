@@ -14,8 +14,9 @@ import SwiftUI
 /// - The billed price is the largest price text; Yearly's per-month figure is smaller.
 /// - No trial word when the trial is not stated (ineligible, unknown, Pro, no offer), outside the
 ///   legal line, whose trial clause holds with or without one.
-/// - The bar: CTA, terms and the Terms and Privacy links pinned on the first screen at the
-///   default size, on an iPhone and in an iPad's sheet; the end of the scroll at AX5.
+/// - The bar: CTA, terms, Restore Purchases and the Terms and Privacy links pinned on the first
+///   screen at the default size, on an iPhone and in an iPad's sheet; Restore's answer in the bar,
+///   on the first screen; the end of the scroll at AX5.
 /// - Continue calls `onUnlock`; the subtitle and the first feature row follow the trigger.
 ///
 /// The phone is an iPhone 17 Pro's window (402 × 874 pt); the iPad is a page sheet on a 13"
@@ -263,6 +264,58 @@ final class PaywallRenderTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(terms.minY, cta.maxY - 0.5, "\(what): the terms under the CTA")
             XCTAssertGreaterThanOrEqual(link.minY, terms.maxY - 0.5, "\(what): the links under the terms")
         }
+    }
+
+    /// Restore Purchases is in the bar with the links, on the first screen at the default size, and
+    /// its answer appears there too: in the scroll the button sat half under the pinned bar on a
+    /// 6.9" iPhone and its answer below the bar, off screen (gate 8, 2026-11-18). At AX5 both are
+    /// the end of the scroll, after the links. A cancel says nothing; unlocked, nothing is restored
+    /// from here.
+    func testRestoreAndItsAnswerAreInTheBar() async throws {
+        let answers: [(PaywallFixture, String?)] = [
+            (.trial, nil),
+            (.nothingFound, appLocalized("No purchases found for this Apple ID")),
+            (.restoreFailed, appLocalized("Couldn't reach the App Store")),
+        ]
+        for size in [Self.phone, Self.padSheet] {
+            for (fixture, answer) in answers {
+                let window = try show(fixture, size: size)
+                let what = "\(fixture), \(Int(size.width)) × \(Int(size.height)) pt"
+                try await waitUntil("\(what): Restore in the bar") { self.element("paywall.bar.restore", in: window) != nil }
+                let restore = try XCTUnwrap(element("paywall.bar.restore", in: window))
+                XCTAssertEqual(restore.accessibilityLabel, appLocalized("Restore Purchases"), what)
+                XCTAssertTrue(container(of: window).insetBy(dx: -0.5, dy: -0.5).contains(restore.accessibilityFrame),
+                              "\(what): Restore on the first screen")
+                let cta = try XCTUnwrap(element("paywall.bar.cta", in: window)?.accessibilityFrame)
+                XCTAssertGreaterThanOrEqual(restore.accessibilityFrame.minY, cta.maxY - 0.5, "\(what): Restore under the CTA")
+                let shown = element("paywall.bar.restoreAnswer", in: window)
+                guard let answer else {
+                    XCTAssertNil(shown, "\(what): no answer before Restore")
+                    continue
+                }
+                let line = try XCTUnwrap(shown, "\(what): the answer")
+                XCTAssertEqual(line.accessibilityLabel, answer, what)
+                XCTAssertTrue(container(of: window).insetBy(dx: -0.5, dy: -0.5).contains(line.accessibilityFrame),
+                              "\(what): the answer on the first screen (\(line.accessibilityFrame))")
+                XCTAssertGreaterThanOrEqual(line.accessibilityFrame.minY, restore.accessibilityFrame.maxY - 0.5,
+                                            "\(what): the answer under Restore")
+                XCTAssertEqual(ProPaywallView.restoreAnnouncement(fixture == .nothingFound ? .nothingFound : .failed), answer,
+                               "\(what): VoiceOver hears the line it shows")
+            }
+        }
+        XCTAssertNil(ProPaywallView.restoreAnnouncement(.cancelled), "a cancel says nothing")
+
+        let window = try show(.nothingFound, dynamicType: .accessibility5)
+        try await waitUntil("AX5: Restore in the scroll") { self.element("paywall.scroll.restoreAnswer", in: window) != nil }
+        XCTAssertNil(element("paywall.bar.restore", in: window), "AX5: nothing pinned")
+        let link = try XCTUnwrap(element("paywall.scroll.termsOfUse", in: window)?.accessibilityFrame)
+        let answer = try XCTUnwrap(element("paywall.scroll.restoreAnswer", in: window)?.accessibilityFrame)
+        XCTAssertNotNil(element("paywall.scroll.restore", in: window), "AX5: Restore")
+        XCTAssertGreaterThanOrEqual(answer.minY, link.maxY - 0.5, "AX5: the answer after the links")
+
+        let unlocked = try show(.unlocked)
+        try await waitUntil("Continue") { self.element("paywall.bar.continue", in: unlocked) != nil }
+        XCTAssertNil(element("paywall.bar.restore", in: unlocked), "unlocked: no Restore")
     }
 
     /// The Terms of Use and Privacy Policy links: links, by the catalog's names, to the site's
