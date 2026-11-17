@@ -188,10 +188,33 @@ struct ProPaywallView: View {
     static let ctaText = ColorContrast.RGB.white
 
     /// Restore Purchases and the Terms and Privacy links, as text: the app's green where it
-    /// reads at 4.5:1, darkened on the light card until it does (`Color.readableText`, as
-    /// TodayCards' link). #34C759 itself read 2.09:1 on the light bar.
+    /// reads at 4.5:1, darkened until it does. #34C759 itself read 2.09:1 on the light bar.
+    /// - iOS: on the light card (`Color.readableText`, as TodayCards' link): #217F39, 4.52:1
+    ///   there and more on the lighter bar and page.
+    /// - macOS: on the Mac's own page (`macLinkRGB`), darker than the iOS card in light mode:
+    ///   #217F39 read 4.27:1 on macOS 14's window background (W13 review).
     static func linkColor(in scheme: ColorScheme) -> Color {
+        #if os(macOS)
+        macLinkRGB(in: scheme).color
+        #else
         Color.readableText(hex: greenHex, in: scheme)
+        #endif
+    }
+
+    /// The Mac page the links sit on, at its darkest in light mode and lightest in dark mode:
+    /// `NSColor.windowBackgroundColor` on macOS 14 and 15 (#ECECEC, #323232). macOS 26 and later
+    /// resolve it to #FFFFFF and #1E1E1E (measured 2026-11-18), which only raise the contrast;
+    /// the bar's material is drawn over the same page.
+    static let macLightPage = ColorContrast.RGB(0xECECEC)
+    static let macDarkPage = ColorContrast.RGB(0x323232)
+
+    /// The links' colour on the Mac: the app's green darkened on `macLightPage` to 4.6:1, a margin
+    /// for the bar's material and 8-bit rounding (#207936, 4.62:1 there, 5.46:1 on white);
+    /// unchanged on `macDarkPage` (5.78:1). Not `#if os(macOS)`, so the iOS-hosted tests check it.
+    static func macLinkRGB(in scheme: ColorScheme) -> ColorContrast.RGB {
+        ColorContrast.readable(ColorContrast.RGB(hex: greenHex) ?? .fallback,
+                               on: scheme == .dark ? macDarkPage : macLightPage,
+                               minimum: ColorContrast.textMinimum + 0.1)
     }
 
     /// The selected plan's ring and check, a mark: the app's green where it reaches 3:1 on the

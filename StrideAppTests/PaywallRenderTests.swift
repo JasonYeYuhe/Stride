@@ -370,9 +370,12 @@ final class PaywallRenderTests: XCTestCase {
     }
 
     /// Release gate 8's contrast (ColorExtension.swift: 4.5:1 for text, 3:1 for marks), as drawn,
-    /// 8 bits per channel: the CTA's white label on its fill, the links (and Restore) on the light
-    /// and dark card (the pinned bar and the page are lighter, or darker, than the card), and the
-    /// selected plan's ring on the card. Before W13: 2.22:1, 1.99:1 and 1.99:1 in light.
+    /// 8 bits per channel: the CTA's white label on its fill; the links (and Restore) on iOS's
+    /// light and dark card (the pinned bar and the page are lighter, or darker, than the card)
+    /// and on the Mac's light and dark page (`macLightPage`, `macDarkPage`: macOS 14's window
+    /// background, darker than iOS's card in light mode); and the selected plan's ring on iOS's
+    /// card. Before W13: 2.22:1, 1.99:1 and 1.99:1 in light. This suite runs on iOS, where
+    /// `linkColor` is iOS's colour; the Mac's is `macLinkRGB`, checked here as values.
     func testThePaywallsColoursReadAtGateEightsContrast() {
         func eightBit(_ c: ColorContrast.RGB) -> ColorContrast.RGB {
             ColorContrast.RGB(red: (c.red * 255).rounded() / 255, green: (c.green * 255).rounded() / 255,
@@ -393,8 +396,19 @@ final class PaywallRenderTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(ColorContrast.ratio(eightBit(ProPaywallView.selectionMark(in: scheme)), card),
                                         ColorContrast.markMinimum, "\(scheme): the selected plan's ring")
         }
-        // The links on what they are drawn on: the light bar and page, lighter than the card.
-        XCTAssertGreaterThanOrEqual(ColorContrast.ratio(rgb(ProPaywallView.linkColor(in: .light)), .white), 4.9, "light page")
+        // iOS: the links on what they are drawn on, the light bar and page, lighter than the card.
+        XCTAssertGreaterThanOrEqual(ColorContrast.ratio(rgb(ProPaywallView.linkColor(in: .light)), .white), 4.9, "iOS light page")
+        // macOS: on macOS 14's window background (and macOS 26's, white and #1E1E1E), where the
+        // iOS colour read 4.27:1 in light mode.
+        XCTAssertLessThan(ColorContrast.ratio(rgb(ProPaywallView.linkColor(in: .light)), ProPaywallView.macLightPage),
+                          ColorContrast.textMinimum, "the control: iOS's link colour on the Mac's light page")
+        for (scheme, pages) in [(ColorScheme.light, [ProPaywallView.macLightPage, .white]),
+                                (.dark, [ProPaywallView.macDarkPage, ColorContrast.RGB(0x1E1E1E)])] {
+            for page in pages {
+                XCTAssertGreaterThanOrEqual(ColorContrast.ratio(eightBit(ProPaywallView.macLinkRGB(in: scheme)), page),
+                                            ColorContrast.textMinimum, "macOS, \(scheme): the links on \(page)")
+            }
+        }
     }
 
     /// The Terms of Use and Privacy Policy links: links, by the catalog's names, to the site's
