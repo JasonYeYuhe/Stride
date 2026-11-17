@@ -1808,3 +1808,38 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
     - StrideMac builds.
   - **Pending captures (W8):** free disk 28.3 GB, after another session's UI tests and 7.9 GB of
     swap. The captures move to the release preparation (they are not code).
+- 2026-11-18, **W12 merged, both halves; code freeze tip** (code c784cac: 7929dc8, 61e414c; text 8a260a2:
+  48b6031, 215cdd7, 9d608f4, 8118bf6).
+  - **Code half:**
+    - 29 unused keys pruned from es, ja, ko, zh-Hans and zh-Hant: the W3 and W6 leftovers, the
+      1.2.x paywall and upsell rows, and others listed in 7929dc8. The stringsdicts are unchanged
+      (all used).
+    - "min", "steps" and "words" are kept for HabitTemplateTests' pinned units.
+    - `DemoData` is wholly `#if DEBUG`. Release symbols of the app and widget carry no DemoData.
+      The unsigned Release archive passed `verify_archive.sh`.
+    - PaywallRenderTests:154's `appLocalized("BEST VALUE")` now resolves to English; the badge
+      check still holds.
+  - **Text half** (no ASC writes):
+    - **O23:** the trial clause in all 6 descriptions. en-US is at 3,991 and es-ES at 3,981 of
+      4,000 after trims; the Pro block, the terms and the links are untouched. A new test pins its
+      place.
+    - **O25:** keywords ×6 lead with "unlimited" and "free" in each language, within 100 characters
+      and with no name or subtitle overlap. Pinned by a test.
+    - **What's New 1.4.2 ×6** in `WHATS_NEW_BY_VERSION`, with no trial (D5).
+    - `docs/review-notes-1.4.2.md`: the trial sentence says Yearly has no introductory offer at
+      submission (N2), plus N3's prompt.
+    - **DEV-PLAN:** M5 = 1.4.2 (24); 1.5.0 = X0 (Wave B), X2, X1, X3; M6 on its own; rule 4 amended
+      per N3 with W7's definitions.
+    - ja and ko back-translations of the trial and renewal terms are in
+      `docs/evidence/1.4.2-l10n-backtranslation.md`.
+  - **Owner:** the zh wording for review is listed in that evidence file: the trial clause, the
+    keywords (无限 vs 不限数量; whether to keep 習慣打卡) and What's New.
+  - **Tests:** StrideTests 843 (code) and 845 (text) run / 2 skipped / 0 failed, each in Tokyo and
+    Los Angeles. `test_release.py` 17/17.
+  - **Still open for the release sitting:**
+    - the W8 captures: the free comparison, the Pro AX5 sets on iPhone, the iPad sets, the store
+      sets (Thursday–Sunday) and the Mac sweep. Free disk swung under 30 GB while another session's
+      tests ran;
+    - CI's first run of the changed hosted tests;
+    - the owner's zh review;
+    - gates 1–13.
