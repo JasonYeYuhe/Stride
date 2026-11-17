@@ -1,17 +1,24 @@
 import SwiftData
 import Foundation
 
+// The whole type is DEBUG-only (RELEASE-1.4.2.md W12): `populate` erases the store
+// (`DataBackup.eraseLocalData`) and seeds a demo set, and its only caller, `-demo` in
+// StrideApp.prepareStore, is already inside `#if DEBUG`. Until 1.4.2 `populate` and the standard
+// set still compiled into Release (pre-freeze review, low), so a store binary carried code that
+// could erase and seed a store although nothing could reach it. Now no target compiling Shared/
+// (the app, StrideMac, the widget) carries any of it in Release; StrideTests and StrideAppTests
+// build Debug.
+#if DEBUG
 enum DemoData {
     /// What `-demo` fills the store with. `standard` is the five-habit set the store screenshots and
     /// scripts/a11y_sweep.sh use; the others exist to put one exact number on screen for the 1.3.0
     /// plural acceptance checks (DEV-PLAN-1.3.md M1 acceptance (1) and (2)), which the standard set
     /// can never show — no habit in it has 1 check-in or a streak in weeks.
     ///
-    /// The extra scenarios are DEBUG-only, like every other launch argument that changes what the
-    /// app draws (`-paywall`, `-statsScrollTo`): a store build has no way to reach them.
+    /// Every scenario is DEBUG-only, like every other launch argument that changes what the app
+    /// draws (`-paywall`, `-statsScrollTo`): a store build has no way to reach them.
     enum Scenario: String {
         case standard
-        #if DEBUG
         /// One habit with exactly one check-in, today: Settings "1 check-in", Today and Stats
         /// "1 day streak" / "1 day", Spanish "Racha de 1 día". (The widget says "All done! 🎉",
         /// not "1 remaining" — that needs the habit NOT done today, which would break the rest.)
@@ -30,19 +37,16 @@ enum DemoData {
         /// show on whatever weekday it is launched (`insertProSet`). The free `.standard` set is
         /// untouched, so the free sweep's baselines hold.
         case pro
-        #endif
 
         /// `-demoScenario <name>`; else `-demoPro`'s `.pro`; anything else (or nothing) is the
         /// standard set. An explicit `-demoScenario` wins: `-demoPro -demoScenario details` is the
         /// details set with Pro on.
         static func fromLaunchArguments(_ arguments: [String] = CommandLine.arguments) -> Scenario {
-            #if DEBUG
             if let idx = arguments.firstIndex(of: "-demoScenario"), idx + 1 < arguments.count,
                let scenario = Scenario(rawValue: arguments[idx + 1]) {
                 return scenario
             }
             if arguments.contains("-demoPro") { return .pro }
-            #endif
             return .standard
         }
     }
@@ -63,7 +67,6 @@ enum DemoData {
         switch scenario {
         case .standard:
             insertStandardSet(into: context)
-        #if DEBUG
         case .plurals:
             insertPluralsSet(into: context)
         case .weekly:
@@ -72,7 +75,6 @@ enum DemoData {
             insertDetailsSet(into: context)
         case .pro:
             insertProSet(into: context, now: now)
-        #endif
         }
 
         try? context.save()
@@ -128,7 +130,6 @@ enum DemoData {
         return inserted
     }
 
-    #if DEBUG
     /// D14's Pro scenario (`-demo -demoPro`), laid out by Monday-anchored week and weekday around
     /// `now`'s local day, so each surface reads the same whatever weekday the sweep runs on
     /// (DemoDataProScenarioTests check all seven, in Tokyo and Los Angeles):
@@ -295,5 +296,5 @@ enum DemoData {
         // And today, so this week reads "1/3 this week" rather than "0/3".
         habit.records.append(HabitRecord(date: today))
     }
-    #endif
 }
+#endif
