@@ -39,7 +39,6 @@
 "30d Avg" = "30日平均";
 "Current Streak" = "現在の記録";
 "30-Day Rate" = "30日達成率";
-"Total" = "合計";
 "By Weekday" = "曜日別";
 "Activity" = "アクティビティ";
 "Less" = "少";
@@ -48,7 +47,6 @@
 /* Settings */
 "Habit Tracker" = "習慣トラッカー";
 "Upgrade to Pro" = "Proにアップグレード";
-"Unlimited habits, widgets, smart reminders & more" = "無制限の習慣、ウィジェット、スマートリマインダーなど";
 "Stride Pro" = "Stride Pro";
 "All features unlocked" = "すべての機能がアンロック済み";
 "Signed in" = "ログイン済み";
@@ -93,27 +91,10 @@
 "Send me a login link instead" = "代わりにログインリンクを送信";
 
 /* Pro Paywall */
-"Unlock the full experience" = "フル体験をアンロック";
-"Unlimited Habits" = "無制限の習慣";
-"Track as many habits as you want" = "好きなだけ習慣を追跡";
-"Advanced Statistics" = "高度な統計";
-"Deep insights into your progress" = "進捗の詳細な分析";
-"Home Screen Widgets" = "ホーム画面ウィジェット";
-"Quick access from your home screen" = "ホーム画面からすばやくアクセス";
-"Smart Reminders" = "スマートリマインダー";
-"Never miss a habit again" = "もう習慣を見逃さない";
-"Cloud Sync" = "クラウド同期";
-"Seamless across all your devices" = "すべてのデバイスでシームレスに";
-"Unable to load subscription options." = "サブスクリプションを読み込めません。";
-"Please check your internet connection and try again." = "インターネット接続を確認して再試行してください。";
 "Try Again" = "再試行";
 "Yearly" = "年額";
 "Monthly" = "月額";
-"BEST VALUE" = "おすすめ";
 "Restore Purchases" = "購入を復元";
-"Payment will be charged to your Apple ID account. Subscription automatically renews unless cancelled at least 24 hours before the end of the current period." = "お支払いはApple IDアカウントに請求されます。現在の期間終了の24時間前までにキャンセルしない限り、自動的に更新されます。";
-"Terms" = "利用規約";
-"Privacy" = "プライバシー";
 "Purchase Error" = "購入エラー";
 "OK" = "OK";
 "Processing..." = "処理中...";
@@ -163,8 +144,6 @@
 "Add one to %@" = "%@に1つ追加";
 "Mark %@ complete" = "%@を完了にする";
 "Mark %@ incomplete" = "%@を未完了にする";
-"%@ %@, completed" = "%@ %@、完了";
-"%@ %@, not completed" = "%@ %@、未完了";
 "%@ %@, selected" = "%@ %@、選択中";
 "%@, completed" = "%@、完了";
 "%@, not completed" = "%@、未完了";
@@ -253,12 +232,8 @@
 "8-Week Trend" = "8週間の推移";
 "Insights" = "インサイト";
 "Weekly Review" = "週間レビュー";
-"This Week" = "今週";
-"%lld%% vs last week" = "先週比 %lld%%";
 "Habit Breakdown" = "習慣ごとの内訳";
 "Highlights" = "ハイライト";
-"Best: %@ %@" = "ベスト：%@ %@";
-"Needs work: %@ %@" = "要改善：%@ %@";
 "Done" = "完了";
 "best streak" = "最長記録";
 "30-day rate" = "30日達成率";
@@ -279,7 +254,6 @@
 "Delete Account?" = "アカウントを削除しますか？";
 "This will permanently delete your account and all synced data. This action cannot be undone." = "アカウントと同期されたすべてのデータが完全に削除されます。この操作は取り消せません。";
 "Continue" = "続ける";
-"Are you sure?" = "本当によろしいですか？";
 "All your habits, records, and account information will be permanently removed from our servers." = "すべての習慣、記録、アカウント情報がサーバーから完全に削除されます。";
 "Delete My Account" = "アカウントを削除する";
 "Unable to Delete Account" = "アカウントを削除できません";
@@ -292,7 +266,6 @@
 "Export Data" = "データを書き出す";
 "Export as CSV" = "CSV で書き出す";
 "Export as JSON" = "JSON で書き出す";
-"Stride Habits Export" = "Stride 習慣データ";
 "Legal" = "法的情報";
 "%lldd" = "%lld日";
 "Complete a Habit" = "習慣を完了";
@@ -334,8 +307,6 @@
 "Down vs last week (%@ → %@)" = "先週より低下（%@ → %@）";
 "This week, %lld percent complete" = "今週は%lldパーセント達成";
 "%@ %@, %lld percent" = "%@ %@、%lldパーセント";
-"Up %lld percent vs last week" = "先週より%lldパーセント上昇";
-"Down %lld percent vs last week" = "先週より%lldパーセント低下";
 
 /* ------------------------------------------------------------
    Added in 1.3.0. Plural keys (streaks, check-ins, habit counts, the Stats

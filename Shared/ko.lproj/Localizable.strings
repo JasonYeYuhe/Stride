@@ -39,7 +39,6 @@
 "30d Avg" = "30일 평균";
 "Current Streak" = "현재 연속";
 "30-Day Rate" = "30일 달성률";
-"Total" = "합계";
 "By Weekday" = "요일별";
 "Activity" = "활동";
 "Less" = "적음";
@@ -48,7 +47,6 @@
 /* Settings */
 "Habit Tracker" = "습관 트래커";
 "Upgrade to Pro" = "Pro로 업그레이드";
-"Unlimited habits, widgets, smart reminders & more" = "무제한 습관, 위젯, 스마트 알림 등";
 "Stride Pro" = "Stride Pro";
 "All features unlocked" = "모든 기능 잠금 해제됨";
 "Signed in" = "로그인됨";
@@ -93,27 +91,10 @@
 "Send me a login link instead" = "대신 로그인 링크 보내기";
 
 /* Pro Paywall */
-"Unlock the full experience" = "전체 경험 잠금 해제";
-"Unlimited Habits" = "무제한 습관";
-"Track as many habits as you want" = "원하는 만큼 습관 추적";
-"Advanced Statistics" = "고급 통계";
-"Deep insights into your progress" = "진행 상황에 대한 심층 분석";
-"Home Screen Widgets" = "홈 화면 위젯";
-"Quick access from your home screen" = "홈 화면에서 빠른 접근";
-"Smart Reminders" = "스마트 알림";
-"Never miss a habit again" = "습관을 놓치지 마세요";
-"Cloud Sync" = "클라우드 동기화";
-"Seamless across all your devices" = "모든 기기에서 원활하게";
-"Unable to load subscription options." = "구독 옵션을 불러올 수 없습니다.";
-"Please check your internet connection and try again." = "인터넷 연결을 확인하고 다시 시도하세요.";
 "Try Again" = "다시 시도";
 "Yearly" = "연간";
 "Monthly" = "월간";
-"BEST VALUE" = "최고 가치";
 "Restore Purchases" = "구매 복원";
-"Payment will be charged to your Apple ID account. Subscription automatically renews unless cancelled at least 24 hours before the end of the current period." = "결제는 Apple ID 계정으로 청구됩니다. 현재 기간 종료 최소 24시간 전에 취소하지 않으면 구독이 자동 갱신됩니다.";
-"Terms" = "약관";
-"Privacy" = "개인정보";
 "Purchase Error" = "구매 오류";
 "OK" = "확인";
 "Processing..." = "처리 중...";
@@ -163,8 +144,6 @@
 "Add one to %@" = "%@에 1 추가";
 "Mark %@ complete" = "%@ 완료로 표시";
 "Mark %@ incomplete" = "%@ 미완료로 표시";
-"%@ %@, completed" = "%@ %@, 완료";
-"%@ %@, not completed" = "%@ %@, 미완료";
 "%@ %@, selected" = "%@ %@, 선택됨";
 "%@, completed" = "%@, 완료";
 "%@, not completed" = "%@, 미완료";
@@ -253,12 +232,8 @@
 "8-Week Trend" = "8주 추세";
 "Insights" = "인사이트";
 "Weekly Review" = "주간 리뷰";
-"This Week" = "이번 주";
-"%lld%% vs last week" = "지난주 대비 %lld%%";
 "Habit Breakdown" = "습관별 분석";
 "Highlights" = "하이라이트";
-"Best: %@ %@" = "최고: %@ %@";
-"Needs work: %@ %@" = "개선 필요: %@ %@";
 "Done" = "완료";
 "best streak" = "최고 연속";
 "30-day rate" = "30일 달성률";
@@ -279,7 +254,6 @@
 "Delete Account?" = "계정을 삭제할까요?";
 "This will permanently delete your account and all synced data. This action cannot be undone." = "계정과 동기화된 모든 데이터가 영구적으로 삭제됩니다. 이 작업은 되돌릴 수 없습니다.";
 "Continue" = "계속";
-"Are you sure?" = "정말 삭제할까요?";
 "All your habits, records, and account information will be permanently removed from our servers." = "모든 습관, 기록 및 계정 정보가 서버에서 영구적으로 삭제됩니다.";
 "Delete My Account" = "내 계정 삭제";
 "Unable to Delete Account" = "계정을 삭제할 수 없음";
@@ -292,7 +266,6 @@
 "Export Data" = "데이터 내보내기";
 "Export as CSV" = "CSV로 내보내기";
 "Export as JSON" = "JSON으로 내보내기";
-"Stride Habits Export" = "Stride 습관 내보내기";
 "Legal" = "법적 고지";
 "%lldd" = "%lld일";
 "Complete a Habit" = "습관 완료하기";
@@ -334,8 +307,6 @@
 "Down vs last week (%@ → %@)" = "지난주보다 하락 (%@ → %@)";
 "This week, %lld percent complete" = "이번 주 %lld퍼센트 완료";
 "%@ %@, %lld percent" = "%@ %@, %lld퍼센트";
-"Up %lld percent vs last week" = "지난주보다 %lld퍼센트 상승";
-"Down %lld percent vs last week" = "지난주보다 %lld퍼센트 하락";
 
 /* ------------------------------------------------------------
    Added in 1.3.0. Plural keys (streaks, check-ins, habit counts, the Stats
