@@ -1843,3 +1843,53 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
       tests ran;
     - CI's first run of the changed hosted tests;
     - gates 1–13.
+- 2026-11-18, **Release gates 1–13 at 2000d25** (evidence: `~/Library/Caches/Stride-build/gates-1.4.2/`,
+  outside the repo; built from a clean clone where a build was needed, because the main checkout's
+  iCloud duplicates break xcodegen and the build). CI on 2000d25 green.
+  - **Gate 1, PASS.** StrideTests 845 / 2 skipped / 0 failed in Tokyo and Los Angeles; server tests
+    651/651; `sync_rehearsal.sh` 116 pass / 1 skip; kit selftest 114/0; xcodegen drift clean;
+    perf bounds 76/0. Hosted on iPhone 17 under load average 300–670: Tokyo 417/1 failed/2 skipped,
+    LA 414/2/4. The failures (`HabitHistoryTests.testAChangedNoteOverTheCapIsNeverDroppedWithoutAsking`,
+    unchanged since its last local pass at 6a0555a; LA `StoreKitStatusTests.testTheTrialRenewsOnceItsWeekIsOver`)
+    pass alone once the load dropped (History at load 5; the renewal in Tokyo and in LA, the LA run
+    at load 314).
+  - **Gate 2, PASS.** 15 fixtures × 6 locales, iPhone 17 Pro Max at default and AX5
+    (`-paywallScrollTo cta`), iPad Pro 13" at default: 285 + 90 frames, Vision OCR plus every bar
+    read by eye. Trial states carry length, price after, auto-renewal and cancel clause under the
+    CTA on the first screen; no trial word in ineligible / unknown / no-offer / Pro; Terms and
+    Privacy everywhere; the billed price is the largest price text.
+  - **Gate 3, PASS.** StoreKitStatusTests and StoreKitConfigurationLoadTests on Soundpost-iOS18
+    (iOS 18.5) with `STRIDE_HOSTED_NO_SKIPS`: 20 of 20 (the expired-subscription case, skipped
+    twice under load, passed alone).
+  - **Gate 4, PASS.** WR1/WR3 by launch flags and hosted tests; `check_demo_account.sh` prints last
+    week (76%) in both zones.
+  - **Gate 5, PASS.** D11 wording in the 6 blocks, paywall, upsell, ProLockedCard and review notes;
+    `iap_copy.py` dry run (after ASC's 500s cleared): the three live IAP review notes already carry
+    D11's three things, nothing to change.
+  - **Gate 6, PASS.** No new interruptive UI; no `requestReview`.
+  - **Gate 7, iOS PASS.** `upgrade.sh promax … --server e2e --relaunch --reminders` with a Stride
+    widget placed, from 1.4.1 (23), 1.4.0 (22) and 1.3.1 (21) to 1.4.2 (24): exit 0 each; model
+    checksum unchanged; no 134110/fallback/default.store; no recovered edits; reminders converted
+    (M/W/F `.2 .4 .6`, daily bare id). The widget was let in at schema 1, which every old build had
+    already marked (a NOTE, not the turned-away path). **Mac leg open:** it overwrites the variant's
+    container, which holds the owner's demo session; it goes with gate 10.
+  - **Gate 8, FAIL → W13.** 262 sweep PNGs (Pro Max and iPad, free and Pro, default and AX5), 0
+    blank. Defects: (1) the Strength title breaks mid-word at AX5 on iPhone; (2) Restore's answer
+    lands under the pinned bar, so a tap shows no change (the button itself half under it; ja/ko
+    label cut); (3) the iPad sheet is ~580×660 pt on iOS 27, only Yearly on the first screen,
+    which PaywallRenderTests' 704×1000 assumption cannot see; (4) the paywall CTA (white on
+    #34C759, 2.22:1) and Terms/Privacy links (2.09:1). Low, not taken: AX5 week-strip partial day
+    on iPad, the es trial badge wraps, the count stepper does not scale. W8's free comparison vs
+    1.4.1: no regressions (crown, locked preview, Settings "4d" 5.03:1, the paywall and trend frames
+    that were blank in 1.4.1). iPad es AX5 sidebar: "Estadísticas" on one line (W4 carry-over closed).
+  - **Gate 9, PASS.** `build-appstore.sh all` (no upload); `verify_archive.sh` on both archives and
+    both exports: no DEBUG sentinel, widget probe fine.
+  - **Gate 10:** owner sitting, open.
+  - **Gate 11, PARTIAL.** The Release build launched, ran 85 s without a crash and fetched the
+    sandbox products; the paywall itself (no trial) still needs one tap (owner, or the simulator
+    access grant).
+  - **Gate 12, PASS.** Capture sites equal to v1.4.1's; docs/privacy.html unchanged.
+  - **Gate 13.** `metrics_snapshot.py --weeks 4`: 15 first downloads / 2 re / 31 updates, no Pro
+    units, 0 subscribers, no subscription events; Sentry 100% crash-free; 1 written review (latest
+    2026-04-04). Ratings count: owner (not in the API).
+  - ASC: no 1.4.2 version record yet; 1.4.1 READY_FOR_SALE on both platforms.
