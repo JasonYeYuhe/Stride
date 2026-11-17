@@ -43,6 +43,17 @@ final class StoreKitConfigurationLoadTests: XCTestCase {
                 simulators, FB22774836), so this cannot show that the file loads.
                 """)
         }
+        // On those runtimes an empty answer is ambiguous too: the session loads nothing there,
+        // and when the sandbox App Store is unreachable it answers nothing as well (CI on
+        // 09ffe80, 2026-11-18). The file's format is pinned on every runtime by StoreServiceTests,
+        // and gate 4 runs this on iOS 18.5 with STRIDE_HOSTED_NO_SKIPS, where empty still fails.
+        if products.isEmpty, Self.sessionCannotLoadConfigurations {
+            throw XCTSkip("""
+                Neither the session nor the App Store answered on \
+                \(ProcessInfo.processInfo.operatingSystemVersionString): SKTestSession cannot load \
+                a configuration on iOS 26.3+ simulators (FB22774836) and the sandbox gave nothing.
+                """)
+        }
         XCTAssertEqual(Set(products.map(\.id)), ids,
                        "every id StoreService asks for is in the session (none: the session read nothing from the file)")
 
@@ -59,4 +70,11 @@ final class StoreKitConfigurationLoadTests: XCTestCase {
 
     /// Configuration.storekit's subscription group id; the App Store's is a number.
     private static let configurationGroupID = "stride_pro"
+
+    /// iOS 26.3 and later simulators, where SKTestSession cannot load a configuration
+    /// (FB22774836; StoreKitStatusTests' class doc).
+    private static var sessionCannotLoadConfigurations: Bool {
+        ProcessInfo.processInfo.isOperatingSystemAtLeast(
+            OperatingSystemVersion(majorVersion: 26, minorVersion: 3, patchVersion: 0))
+    }
 }
