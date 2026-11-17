@@ -1834,6 +1834,7 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
       `docs/evidence/1.4.2-l10n-backtranslation.md`.
   - **Owner:** the zh wording for review is listed in that evidence file: the trial clause, the
     keywords (无限 vs 不限数量; whether to keep 習慣打卡) and What's New.
+  - **Owner, 2026-11-18:** the zh wording is approved as written ("中文措辞都没问题").
   - **Tests:** StrideTests 843 (code) and 845 (text) run / 2 skipped / 0 failed, each in Tokyo and
     Los Angeles. `test_release.py` 17/17.
   - **Still open for the release sitting:**
@@ -1841,5 +1842,4 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
       sets (Thursday–Sunday) and the Mac sweep. Free disk swung under 30 GB while another session's
       tests ran;
     - CI's first run of the changed hosted tests;
-    - the owner's zh review;
     - gates 1–13.
