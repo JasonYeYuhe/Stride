@@ -286,9 +286,12 @@ struct BestStreaksCard: View {
                 }
                 Spacer(minLength: 0)
                 if range.isCurrent {
+                    // Small text on the habit's colour: white or black, whichever reads at 4.5:1
+                    // there (black on every palette colour). White read 2.2:1 on Green, 1.5:1 on
+                    // Yellow and 4.0:1 on Blue (gate 8, W13 review).
                     Text("Current")
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Color.content(onFillHex: habit.colorHex, minimum: ColorContrast.textMinimum))
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(Capsule().fill(habit.color))
