@@ -12,10 +12,10 @@ import SwiftUI
 ///   view owns every catalog key; only prices come from StoreKit.
 /// - **Selection.** Yearly is selected first; tapping a card selects it; the one CTA under the
 ///   cards buys the selection.
-/// - **The bar.** The CTA, the selected plan's terms and the Terms and Privacy links sit in a bar
-///   pinned to the bottom (`safeAreaInset`), so they are on the first screen. At accessibility
-///   sizes, or wherever the bar would take more than `barShareLimit` of the height (a probe
-///   `ViewThatFits` decides), the bar is the end of the scroll content instead.
+/// - **The bar.** The CTA, the selected plan's terms, Restore Purchases and the Terms and Privacy
+///   links sit in a bar pinned to the bottom (`safeAreaInset`), so they are on the first screen.
+///   At accessibility sizes, or wherever the bar would take more than `barShareLimit` of the
+///   height (a probe `ViewThatFits` decides), the bar is the end of the scroll content instead.
 /// - **States** (`PaywallPhase`): loading, load failed, ready, purchasing, pending, restore's
 ///   answer inline, a failed purchase through the alert, unlocked with Continue.
 /// - **Dismissal.** An entitlement that arrives while this paywall's own purchase or restore is
@@ -24,6 +24,7 @@ import SwiftUI
 struct ProPaywallView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.colorScheme) private var colorScheme
     let store = StoreService.shared
 
     /// Why it was opened (D4): the header's subtitle and which feature row comes first.
@@ -163,6 +164,91 @@ struct ProPaywallView: View {
     /// content: the plan cards keep the rest.
     static let barShareLimit: CGFloat = 0.45
 
+    /// The paywall's sheet on an iPad (`PaywallSheetSizing`): room for the header, the three
+    /// features, all three plan cards and the pinned bar (Ask to Buy's line included) on the
+    /// first screen at the default size, about 830 pt of it on iOS 27. The ideal size: on an iPad
+    /// Pro 13" with iOS 27 the sheet measured 704 x 1020 pt with it (2026-11-18). PaywallRenderTests
+    /// draws the iPad's paywall at this size.
+    static let padSheetSize = CGSize(width: 704, height: 1000)
+
+    // MARK: - Colours (release gate 8: 4.5:1 for text, 3:1 for marks)
+
+    /// The app's green: the AccentColor and the palette's Green.
+    static let greenHex = "#34C759"
+
+    /// The fill of the paywall's one prominent button (the CTA, Continue, Try Again): the PRO
+    /// chip's #23863C (`StatsInsights.proChipFill`), the app's green darkened until its white
+    /// label reads 4.62:1, in light and dark alike. The system green the button had read 2.22:1
+    /// in light and 2.0:1 in dark (#30D158) under white (gate 8, 2026-11-18).
+    static let ctaFill = StatsInsights.proChipFill
+    /// The CTA's label on `ctaFill`, as `.borderedProminent` draws it there. The label sets no
+    /// colour of its own, so the style's disabled look (a pale fill, a dimmed label) still shows
+    /// while a purchase or a restore runs; a white label set on it stayed white on the pale
+    /// disabled fill (W13 review).
+    static let ctaText = ColorContrast.RGB.white
+
+    /// Restore Purchases and the Terms and Privacy links, as text: the app's green where it
+    /// reads at 4.5:1, darkened until it does. #34C759 itself read 2.09:1 on the light bar.
+    /// - iOS: on the light card (`Color.readableText`, as TodayCards' link): #217F39, 4.52:1
+    ///   there and more on the lighter bar and page.
+    /// - macOS: on the Mac's own page (`macLinkRGB`), darker than the iOS card in light mode:
+    ///   #217F39 read 4.27:1 on macOS 14's window background (W13 review).
+    static func linkColor(in scheme: ColorScheme) -> Color {
+        #if os(macOS)
+        macLinkRGB(in: scheme).color
+        #else
+        Color.readableText(hex: greenHex, in: scheme)
+        #endif
+    }
+
+    /// The Mac page the links sit on, at its darkest in light mode and lightest in dark mode:
+    /// `NSColor.windowBackgroundColor` on macOS 14 and 15 (#ECECEC, #323232). macOS 26 and later
+    /// resolve it to #FFFFFF and #1E1E1E (measured 2026-11-18), which only raise the contrast;
+    /// the bar's material is drawn over the same page.
+    static let macLightPage = ColorContrast.RGB(0xECECEC)
+    static let macDarkPage = ColorContrast.RGB(0x323232)
+
+    /// The links' colour on the Mac: the app's green darkened on `macLightPage` to 4.6:1, a margin
+    /// for the bar's material and 8-bit rounding (#207936, 4.62:1 there, 5.46:1 on white);
+    /// unchanged on `macDarkPage` (5.78:1). Not `#if os(macOS)`, so the iOS-hosted tests check it.
+    static func macLinkRGB(in scheme: ColorScheme) -> ColorContrast.RGB {
+        ColorContrast.readable(ColorContrast.RGB(hex: greenHex) ?? .fallback,
+                               on: scheme == .dark ? macDarkPage : macLightPage,
+                               minimum: ColorContrast.textMinimum + 0.1)
+    }
+
+    /// The selected plan's ring and check, a mark: the app's green where it reaches 3:1 on the
+    /// card, darkened on the light card until it does (#34C759 was 1.99:1 on #F2F2F7). Aimed at
+    /// 3.1 so that it still clears 3:1 once drawn in 8 bits per channel: #299E47, 3.10:1 on the
+    /// light card and 3.46:1 on the white page (aimed at 3.0 it rounded to 2.99, as the PRO chip
+    /// did, StatsInsights.proChipFill). Unchanged on the dark card (7.66:1).
+    static func selectionMark(in scheme: ColorScheme) -> ColorContrast.RGB {
+        ColorContrast.readable(ColorContrast.RGB(hex: greenHex) ?? .fallback,
+                               on: scheme == .dark ? ColorContrast.darkCard : ColorContrast.lightCard,
+                               minimum: ColorContrast.markMinimum + 0.1)
+    }
+
+    /// The anchor the inline bar's Restore answer scrolls to (accessibility sizes).
+    static let restoreAnswerAnchor = "paywall.restoreAnswerAnchor"
+
+    /// Restore's answer while it is drawn beside the plans; nil otherwise, and for a cancel,
+    /// which says nothing.
+    private var shownRestoreOutcome: RestoreOutcome? {
+        guard case .restore(let outcome) = phase, outcome != .cancelled else { return nil }
+        return outcome
+    }
+
+    /// What VoiceOver hears when Restore answers: the line the bar shows. `Announcement` takes a
+    /// verbatim String, so each is localized here (as LoginView's).
+    static func restoreAnnouncement(_ outcome: RestoreOutcome) -> String? {
+        switch outcome {
+        case .restored: return appLocalized("Purchases restored")
+        case .nothingFound: return appLocalized("No purchases found for this Apple ID")
+        case .failed: return appLocalized("Couldn't reach the App Store")
+        case .cancelled: return nil
+        }
+    }
+
     // MARK: - Body
 
     var body: some View {
@@ -252,6 +338,9 @@ struct ProPaywallView: View {
                 }
             }
         }
+        #if os(iOS)
+        .modifier(PaywallSheetSizing())
+        #endif
         #if os(macOS)
         // A ScrollView has no ideal height, and a Mac sheet sized to it is a sliver. Here, not at
         // the call sites: Stats, Weekly Review's menu item, New Habit's groups and Settings all
@@ -289,16 +378,43 @@ struct ProPaywallView: View {
                         unlocked
                     case .ready, .purchasing, .pending, .restore, .purchaseFailed:
                         plans
-                        restore
                     }
                     if barInline { bar(.inline) }
                     if phase != .unlocked { legal }
                 }
                 .padding(.bottom, 20)
             }
+            // Restore's answer is in the bar. Pinned, it is on screen already; inline (accessibility
+            // sizes) it is the end of the scroll, so the page goes to it. Before W13 it appeared
+            // under the pinned bar, off screen, and a tap on Restore seemed to do nothing
+            // (gate 8, 2026-11-18). On a new answer (a repeat of the last one is new too: a
+            // restore clears the answer when it starts), and should the bar move into the scroll
+            // under one; the probe reserves the answer's line, so an answer never moves it itself.
+            .onChange(of: shownRestoreOutcome) { _, outcome in
+                if outcome != nil { revealRestoreAnswer(proxy) }
+            }
+            .onChange(of: barInline) { _, inline in
+                if inline, shownRestoreOutcome != nil { revealRestoreAnswer(proxy) }
+            }
             #if DEBUG
             .task { await scrollToLaunchAnchor(proxy) }
             #endif
+        }
+        // VoiceOver hears each answer once, when Restore gives it, wherever the bar is: a restore
+        // clears the last answer when it starts, so the same answer twice is two changes.
+        .onChange(of: action) { _, action in
+            guard case .restore(let outcome) = action, let line = Self.restoreAnnouncement(outcome) else { return }
+            AccessibilityNotification.Announcement(line).post()
+        }
+    }
+
+    /// Scrolls the inline bar's Restore answer into view, after the layout pass that draws it
+    /// (a `scrollTo` before the target has a frame does nothing). Pinned, it is on screen.
+    private func revealRestoreAnswer(_ proxy: ScrollViewProxy) {
+        Task { @MainActor in
+            await Task.yield()
+            guard barInline, shownRestoreOutcome != nil else { return }
+            withAnimation { proxy.scrollTo(Self.restoreAnswerAnchor, anchor: .bottom) }
         }
     }
 
@@ -443,21 +559,28 @@ struct ProPaywallView: View {
 
     // MARK: - Restore
 
-    private var restore: some View {
-        VStack(spacing: 6) {
-            Button("Restore Purchases", action: restorePurchases)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .disabled(isBusy)
-            if case .restore(let outcome) = phase {
-                restoreAnswer(outcome)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .accessibilityIdentifier("paywall.restoreAnswer")
-            }
+    /// Restore Purchases, beside the Terms and Privacy links in the bar (W13). In the scroll it sat
+    /// wherever the plans ended: half under the pinned bar on a 6.9" iPhone, its label cut in
+    /// Japanese and Korean, and its answer below the bar, off screen.
+    private func restoreButton(_ id: String) -> some View {
+        Button("Restore Purchases", action: restorePurchases)
+            .buttonStyle(.borderless)
+            // Secondary while it waits: an explicit green stays green when disabled (W13 review).
+            .foregroundStyle(isBusy ? AnyShapeStyle(.secondary) : AnyShapeStyle(Self.linkColor(in: colorScheme)))
+            .disabled(isBusy)
+            .accessibilityIdentifier("\(id).restore")
+    }
+
+    /// Room for Restore's longest answer in this language: the three, one over another (the probe).
+    private var restoreAnswerReserve: some View {
+        ZStack {
+            restoreAnswer(.restored)
+            restoreAnswer(.nothingFound)
+            restoreAnswer(.failed)
         }
-        .padding(.horizontal, 24)
+        .font(.footnote)
+        .multilineTextAlignment(.center)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     /// Restore's answer, inline (D6). A cancelled Apple Account sheet says nothing.
@@ -489,7 +612,7 @@ struct ProPaywallView: View {
                 Task { await store.retryLoadProducts() }
             }
             .buttonStyle(.borderedProminent)
-            .tint(.green)
+            .tint(Self.ctaFill.color)
             // The state's one action, where `-paywallScrollTo cta` lands (AX5 sweeps).
             .paywallAnchor("cta")
         }
@@ -536,6 +659,9 @@ struct ProPaywallView: View {
 
     /// The CTA, the selected plan's terms right under it, and the Terms and Privacy links; while
     /// Ask to Buy waits, its line above the CTA. Unlocked, it holds Continue alone.
+    /// The space between the bar's top edge (its divider, pinned) and its first line.
+    static let barTopPadding: CGFloat = 12
+
     @ViewBuilder
     private func bar(_ placement: BarPlacement) -> some View {
         let model = self.model
@@ -552,7 +678,7 @@ struct ProPaywallView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(.green)
+                .tint(Self.ctaFill.color)
                 .controlSize(.large)
                 .accessibilityIdentifier("\(id).continue")
                 .paywallAnchor(placement == .inline ? "cta" : nil)
@@ -573,7 +699,7 @@ struct ProPaywallView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(.green)
+                    .tint(Self.ctaFill.color)
                     .controlSize(.large)
                     .disabled(isBusy)
                     .accessibilityIdentifier("\(id).cta")
@@ -587,11 +713,26 @@ struct ProPaywallView: View {
                         .accessibilityIdentifier("\(id).terms")
                         .paywallAnchor(placement == .inline ? "terms" : nil)
                 }
-                links(id)
+                links(id, showsRestore: phase.showsPlans)
+                if placement == .probe {
+                    // Where Restore is offered, the probe always holds its tallest answer, so the
+                    // bar's place (pinned, or the end of the scroll) never depends on whether an
+                    // answer is showing: an answer that tipped it over `barShareLimit` moved the bar
+                    // into the scroll under the answer just revealed (W13 review).
+                    if phase.showsPlans { restoreAnswerReserve }
+                } else if let outcome = shownRestoreOutcome {
+                    restoreAnswer(outcome)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("\(id).restoreAnswer")
+                        .modifier(ScrollAnchor(name: placement == .inline ? Self.restoreAnswerAnchor : nil))
+                }
             }
         }
         .padding(.horizontal, 24)
-        .padding(.top, 12)
+        .padding(.top, Self.barTopPadding)
         .padding(.bottom, placement == .pinned ? 8 : 0)
         .frame(maxWidth: .infinity)
         .background {
@@ -631,22 +772,37 @@ struct ProPaywallView: View {
     static let termsOfUseURL = URL(string: "https://jasonyeyuhe.github.io/stride-site/terms")!
     static let privacyPolicyURL = URL(string: "https://jasonyeyuhe.github.io/stride-site/privacy")!
 
-    /// Terms of Use and Privacy Policy, side by side where they fit, else one above the other.
-    private func links(_ id: String) -> some View {
+    /// Restore Purchases (beside the plans), Terms of Use and Privacy Policy: on one line where
+    /// they fit, else Restore above the two links, else one above the other.
+    private func links(_ id: String, showsRestore: Bool) -> some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 16) { termsLink(id); privacyLink(id) }
-            VStack(spacing: 8) { termsLink(id); privacyLink(id) }
+            HStack(spacing: 16) {
+                if showsRestore { restoreButton(id) }
+                termsLink(id)
+                privacyLink(id)
+            }
+            VStack(spacing: 8) {
+                if showsRestore { restoreButton(id) }
+                HStack(spacing: 16) { termsLink(id); privacyLink(id) }
+            }
+            VStack(spacing: 8) {
+                if showsRestore { restoreButton(id) }
+                termsLink(id)
+                privacyLink(id)
+            }
         }
         .font(.caption)
     }
 
     private func termsLink(_ id: String) -> some View {
         Link("Terms of Use", destination: Self.termsOfUseURL)
+            .foregroundStyle(Self.linkColor(in: colorScheme))
             .accessibilityIdentifier("\(id).termsOfUse")
     }
 
     private func privacyLink(_ id: String) -> some View {
         Link("Privacy Policy", destination: Self.privacyPolicyURL)
+            .foregroundStyle(Self.linkColor(in: colorScheme))
             .accessibilityIdentifier("\(id).privacyPolicy")
     }
 
@@ -750,6 +906,9 @@ struct ProPaywallView: View {
     private func restorePurchases() {
         guard !isFixture, !isBusy else { return }
         let wasPro = store.isPro
+        // The last answer goes while this one is fetched, so an answer the same as the last is
+        // still seen, announced and (inline) scrolled to (W13 review).
+        if case .restore = action { action = nil }
         Task {
             let outcome = await store.restorePurchases()
             // A purchase owns the screen: Restore's answer never overwrites it (its button and
@@ -804,6 +963,38 @@ private extension View {
     }
 }
 
+/// An `id` to scroll to, in every build (Restore's answer, W13); nil leaves the view's identity
+/// alone.
+private struct ScrollAnchor: ViewModifier {
+    let name: String?
+
+    func body(content: Content) -> some View {
+        if let name { content.id(name) } else { content }
+    }
+}
+
+#if os(iOS)
+/// The paywall's sheet on an iPad (regular width): `ProPaywallView.padSheetSize`, where iOS 27
+/// gave the default sheet about 580 x 660 pt (iPad Pro 13"). There only Yearly was on the first
+/// screen, half under the bar; Monthly and Lifetime needed a scroll with nothing hinting they
+/// were there (gate 8, 2026-11-18). A `.form` sheet fitted to the content's ideal size, which is
+/// set here: `.page` alone filled almost the whole 13" screen, its cards stretched 900 pt wide
+/// over an empty half. A smaller iPad, or one in landscape, gets as much of it as its screen has.
+/// No effect at compact width, where a sheet takes the screen's width anyway. iOS 17 has no
+/// `presentationSizing`; it presents the sheet as it always did.
+private struct PaywallSheetSizing: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content
+                .frame(idealWidth: ProPaywallView.padSheetSize.width, idealHeight: ProPaywallView.padSheetSize.height)
+                .presentationSizing(.form.fitted(horizontal: true, vertical: true))
+        } else {
+            content
+        }
+    }
+}
+#endif
+
 // MARK: - Supporting Views
 
 struct ProFeatureRow: View {
@@ -855,13 +1046,15 @@ struct PricingCard: View {
     static let perMonthFont: Font = .caption
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        Button(action: action) {
+        let mark = ProPaywallView.selectionMark(in: colorScheme).color
+        return Button(action: action) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                     .font(.title3)
-                    .foregroundStyle(isSelected ? Color.green : Color.secondary)
+                    .foregroundStyle(isSelected ? mark : Color.secondary)
                     .accessibilityHidden(true)
                 Group {
                     // Title, badges and price side by side left each a third of the card at the
@@ -897,7 +1090,7 @@ struct PricingCard: View {
                     .fill(Color.appSecondaryBackground)
                     .overlay(
                         RoundedRectangle(cornerRadius: 14)
-                            .stroke(isSelected ? Color.green : Color.clear, lineWidth: 2)
+                            .stroke(isSelected ? mark : Color.clear, lineWidth: 2)
                     )
             )
             .accessibilityElement(children: .combine)

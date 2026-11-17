@@ -76,14 +76,26 @@ struct StrengthCard: View {
         let explanation: LocalizedStringKey = habit.schedule == .timesPerWeek ? "Strength grows with every check-in and recovers after a miss; it counts a rolling 7 days, the streak counts calendar weeks." : "Strength grows with every check-in and recovers after a miss."
         VStack(alignment: .leading, spacing: 12) {
             // The title and the score are one heading: "Strength, 74". The chip is hidden, so
-            // it adds nothing to it.
-            HStack(alignment: .firstTextBaseline) {
-                Text("Strength")
-                    .font(.headline)
-                ProChip()
-                Spacer()
-                Text(score, format: .number)
-                    .font(.title.bold())
+            // it adds nothing to it. At accessibility sizes the score goes under the title: side
+            // by side, the title, the chip and the score left "Strength" ~170 pt on a 440-pt
+            // iPhone at AX5, and it broke as "Strengt" / "h" (release gate 8, 2026-11-18).
+            Group {
+                if typeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 4) {
+                        strengthTitle
+                        Text(score, format: .number)
+                            .font(.title.bold())
+                    }
+                } else {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("Strength")
+                            .font(.headline)
+                        ProChip()
+                        Spacer()
+                        Text(score, format: .number)
+                            .font(.title.bold())
+                    }
+                }
             }
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.isHeader)
@@ -120,6 +132,26 @@ struct StrengthCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
         .background(RoundedRectangle(cornerRadius: 16).fill(Color.appSecondaryBackground))
+    }
+
+    /// The title and the chip at accessibility sizes: on one line where the title fits whole
+    /// beside the chip, else the chip under it. The title never shares its line with something
+    /// that could squeeze it below one word's width, so it breaks only between words ("습관 강도").
+    private var strengthTitle: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("Strength")
+                    .font(.headline)
+                    .fixedSize()
+                ProChip()
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Strength")
+                    .font(.headline)
+                    .fixedSize(horizontal: false, vertical: true)
+                ProChip()
+            }
+        }
     }
 
     /// "+5", "−3" or "0", signed in the locale's own way.
@@ -254,9 +286,12 @@ struct BestStreaksCard: View {
                 }
                 Spacer(minLength: 0)
                 if range.isCurrent {
+                    // Small text on the habit's colour: white or black, whichever reads at 4.5:1
+                    // there (black on every palette colour). White read 2.2:1 on Green, 1.5:1 on
+                    // Yellow and 4.0:1 on Blue (gate 8, W13 review).
                     Text("Current")
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Color.content(onFillHex: habit.colorHex, minimum: ColorContrast.textMinimum))
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(Capsule().fill(habit.color))

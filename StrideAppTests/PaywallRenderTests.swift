@@ -14,13 +14,18 @@ import SwiftUI
 /// - The billed price is the largest price text; Yearly's per-month figure is smaller.
 /// - No trial word when the trial is not stated (ineligible, unknown, Pro, no offer), outside the
 ///   legal line, whose trial clause holds with or without one.
-/// - The bar: CTA, terms and the Terms and Privacy links pinned on the first screen at the
-///   default size, on an iPhone and in an iPad's sheet; the end of the scroll at AX5.
+/// - The bar: CTA, terms, Restore Purchases and the Terms and Privacy links pinned on the first
+///   screen at the default size, on an iPhone and in an iPad's sheet; Restore's answer in the bar,
+///   on the first screen; the end of the scroll at AX5. In the iPad's sheet all three plan cards
+///   are whole above the bar.
+/// - The paywall's colours reach 4.5:1 for text and 3:1 for marks (release gate 8).
 /// - Continue calls `onUnlock`; the subtitle and the first feature row follow the trigger.
 ///
-/// The phone is an iPhone 17 Pro's window (402 × 874 pt); the iPad is a page sheet on a 13"
-/// iPad (704 × 1000 pt, regular width). Each is a SwiftUI frame of that size at the window's top
-/// left, so the checks hold on whichever simulator runs the suite.
+/// The phone is an iPhone 17 Pro's window (402 × 874 pt); the iPad is the sheet the paywall asks
+/// for on an iPad (`ProPaywallView.padSheetSize`, 704 × 1000 pt, regular width; on an iPad Pro 13"
+/// with iOS 27 the sheet measured 704 × 1020 pt with it, 2026-11-18, where the default sheet had
+/// been about 580 × 660 pt and showed one plan card). Each is a SwiftUI frame of that size at the window's top left, so the
+/// checks hold on whichever simulator runs the suite.
 ///
 /// DEBUG-only, as `PaywallFixture` and the fixture initializer are (the hosted suite builds Debug).
 #if DEBUG
@@ -31,7 +36,7 @@ final class PaywallRenderTests: XCTestCase {
     private var automation: Bool?
 
     private static let phone = CGSize(width: 402, height: 874)
-    private static let padSheet = CGSize(width: 704, height: 1000)
+    private static let padSheet = ProPaywallView.padSheetSize
 
     override func setUp() async throws {
         try await super.setUp()
@@ -262,6 +267,147 @@ final class PaywallRenderTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(cta.minY, lastCard.maxY - 0.5, "\(what): the CTA after the cards")
             XCTAssertGreaterThanOrEqual(terms.minY, cta.maxY - 0.5, "\(what): the terms under the CTA")
             XCTAssertGreaterThanOrEqual(link.minY, terms.maxY - 0.5, "\(what): the links under the terms")
+        }
+    }
+
+    /// In the iPad's sheet, at the default size, all three plan cards are whole above the bar —
+    /// with Ask to Buy's line in it too, the tallest bar a plan state draws. At the form size iOS
+    /// 27 gave the sheet before W13 (about 580 × 660 pt) only Yearly was, half under the bar
+    /// (gate 8, 2026-11-18).
+    func testTheIPadSheetShowsEveryPlanAboveTheBar() async throws {
+        for (fixture, top) in [(PaywallFixture.trial, "paywall.bar.cta"), (.pending, "paywall.bar.pending")] {
+            let window = try show(fixture, size: Self.padSheet)
+            try await waitUntil("\(fixture): three plans and the bar") {
+                self.planCards(in: window).count == 3 && self.element(top, in: window) != nil
+            }
+            // The bar's top edge (its divider): its first line less the bar's top padding.
+            let barTop = try XCTUnwrap(element(top, in: window)?.accessibilityFrame.minY) - ProPaywallView.barTopPadding
+            for card in planCards(in: window) {
+                XCTAssertLessThanOrEqual(card.accessibilityFrame.maxY, barTop + 0.5,
+                                         "\(fixture): \(card.accessibilityLabel ?? "") above the bar")
+            }
+        }
+    }
+
+    /// Restore Purchases is in the bar with the links, on the first screen at the default size, and
+    /// its answer appears there too: in the scroll the button sat half under the pinned bar on a
+    /// 6.9" iPhone and its answer below the bar, off screen (gate 8, 2026-11-18). At AX5 both are
+    /// the end of the scroll, after the links. A cancel says nothing; unlocked, nothing is restored
+    /// from here.
+    func testRestoreAndItsAnswerAreInTheBar() async throws {
+        let answers: [(PaywallFixture, String?)] = [
+            (.trial, nil),
+            (.nothingFound, appLocalized("No purchases found for this Apple ID")),
+            (.restoreFailed, appLocalized("Couldn't reach the App Store")),
+        ]
+        for size in [Self.phone, Self.padSheet] {
+            for (fixture, answer) in answers {
+                let window = try show(fixture, size: size)
+                let what = "\(fixture), \(Int(size.width)) × \(Int(size.height)) pt"
+                try await waitUntil("\(what): Restore in the bar") { self.element("paywall.bar.restore", in: window) != nil }
+                let restore = try XCTUnwrap(element("paywall.bar.restore", in: window))
+                XCTAssertEqual(restore.accessibilityLabel, appLocalized("Restore Purchases"), what)
+                XCTAssertTrue(container(of: window).insetBy(dx: -0.5, dy: -0.5).contains(restore.accessibilityFrame),
+                              "\(what): Restore on the first screen")
+                let cta = try XCTUnwrap(element("paywall.bar.cta", in: window)?.accessibilityFrame)
+                XCTAssertGreaterThanOrEqual(restore.accessibilityFrame.minY, cta.maxY - 0.5, "\(what): Restore under the CTA")
+                let shown = element("paywall.bar.restoreAnswer", in: window)
+                guard let answer else {
+                    XCTAssertNil(shown, "\(what): no answer before Restore")
+                    continue
+                }
+                let line = try XCTUnwrap(shown, "\(what): the answer")
+                XCTAssertEqual(line.accessibilityLabel, answer, what)
+                XCTAssertTrue(container(of: window).insetBy(dx: -0.5, dy: -0.5).contains(line.accessibilityFrame),
+                              "\(what): the answer on the first screen (\(line.accessibilityFrame))")
+                XCTAssertGreaterThanOrEqual(line.accessibilityFrame.minY, restore.accessibilityFrame.maxY - 0.5,
+                                            "\(what): the answer under Restore")
+                XCTAssertEqual(ProPaywallView.restoreAnnouncement(fixture == .nothingFound ? .nothingFound : .failed), answer,
+                               "\(what): VoiceOver hears the line it shows")
+            }
+        }
+        XCTAssertNil(ProPaywallView.restoreAnnouncement(.cancelled), "a cancel says nothing")
+
+        let window = try show(.nothingFound, dynamicType: .accessibility5)
+        try await waitUntil("AX5: Restore in the scroll") { self.element("paywall.scroll.restoreAnswer", in: window) != nil }
+        XCTAssertNil(element("paywall.bar.restore", in: window), "AX5: nothing pinned")
+        // At AX5 the links stack, Privacy Policy last.
+        let link = try XCTUnwrap(element("paywall.scroll.privacyPolicy", in: window)?.accessibilityFrame)
+        let answer = try XCTUnwrap(element("paywall.scroll.restoreAnswer", in: window)?.accessibilityFrame)
+        XCTAssertNotNil(element("paywall.scroll.restore", in: window), "AX5: Restore")
+        XCTAssertGreaterThanOrEqual(answer.minY, link.maxY - 0.5, "AX5: the answer after the links")
+
+        let unlocked = try show(.unlocked)
+        try await waitUntil("Continue") { self.element("paywall.bar.continue", in: unlocked) != nil }
+        XCTAssertNil(element("paywall.bar.restore", in: unlocked), "unlocked: no Restore")
+    }
+
+    /// Where the bar goes (pinned, or the end of the scroll) does not depend on Restore's answer:
+    /// the probe reserves its line wherever Restore is offered, so an answer cannot tip the bar past
+    /// `barShareLimit` and move it into the scroll under the answer just revealed (W13 review). At
+    /// sizes near the limit: an iPhone 17 Pro in landscape, and a 375 × 667 pt phone, at the
+    /// largest sizes below the accessibility ones.
+    func testTheBarsPlaceDoesNotDependOnRestoresAnswer() async throws {
+        let cases: [(CGSize, DynamicTypeSize)] = [
+            (CGSize(width: 874, height: 402), .large), (CGSize(width: 874, height: 402), .xxxLarge),
+            (CGSize(width: 375, height: 667), .xxLarge), (CGSize(width: 375, height: 667), .xxxLarge),
+            (Self.phone, .xxxLarge),
+        ]
+        for (size, type) in cases {
+            var pinned: [Bool] = []
+            for fixture in [PaywallFixture.trial, .nothingFound, .restoreFailed] {
+                let window = try show(fixture, size: size, dynamicType: type)
+                let what = "\(fixture), \(Int(size.width)) × \(Int(size.height)) pt, \(type)"
+                try await waitUntil("\(what): the CTA") {
+                    self.element("paywall.bar.cta", in: window) != nil || self.element("paywall.scroll.cta", in: window) != nil
+                }
+                // Past the probe's first answer: let a second layout pass move the bar if it would.
+                try await Task.sleep(for: .milliseconds(300))
+                pinned.append(element("paywall.bar.cta", in: window) != nil)
+            }
+            XCTAssertEqual(Set(pinned).count, 1, "\(Int(size.width)) × \(Int(size.height)) pt, \(type): pinned \(pinned)")
+        }
+    }
+
+    /// Release gate 8's contrast (ColorExtension.swift: 4.5:1 for text, 3:1 for marks), as drawn,
+    /// 8 bits per channel: the CTA's white label on its fill; the links (and Restore) on iOS's
+    /// light and dark card (the pinned bar and the page are lighter, or darker, than the card)
+    /// and on the Mac's light and dark page (`macLightPage`, `macDarkPage`: macOS 14's window
+    /// background, darker than iOS's card in light mode); and the selected plan's ring on iOS's
+    /// card. Before W13: 2.22:1, 1.99:1 and 1.99:1 in light. This suite runs on iOS, where
+    /// `linkColor` is iOS's colour; the Mac's is `macLinkRGB`, checked here as values.
+    func testThePaywallsColoursReadAtGateEightsContrast() {
+        func eightBit(_ c: ColorContrast.RGB) -> ColorContrast.RGB {
+            ColorContrast.RGB(red: (c.red * 255).rounded() / 255, green: (c.green * 255).rounded() / 255,
+                              blue: (c.blue * 255).rounded() / 255)
+        }
+        func rgb(_ color: Color) -> ColorContrast.RGB {
+            let resolved = color.resolve(in: EnvironmentValues())
+            return eightBit(ColorContrast.RGB(red: Double(resolved.red), green: Double(resolved.green),
+                                              blue: Double(resolved.blue)))
+        }
+        let green = ColorContrast.RGB(0x34C759)
+        XCTAssertLessThan(ColorContrast.ratio(.white, green), ColorContrast.textMinimum, "the control: white on the system green")
+        XCTAssertGreaterThanOrEqual(ColorContrast.ratio(eightBit(ProPaywallView.ctaText), eightBit(ProPaywallView.ctaFill)),
+                                    ColorContrast.textMinimum, "the CTA's label")
+        for (scheme, card) in [(ColorScheme.light, ColorContrast.lightCard), (.dark, ColorContrast.darkCard)] {
+            XCTAssertGreaterThanOrEqual(ColorContrast.ratio(rgb(ProPaywallView.linkColor(in: scheme)), card),
+                                        ColorContrast.textMinimum, "\(scheme): the links")
+            XCTAssertGreaterThanOrEqual(ColorContrast.ratio(eightBit(ProPaywallView.selectionMark(in: scheme)), card),
+                                        ColorContrast.markMinimum, "\(scheme): the selected plan's ring")
+        }
+        // iOS: the links on what they are drawn on, the light bar and page, lighter than the card.
+        XCTAssertGreaterThanOrEqual(ColorContrast.ratio(rgb(ProPaywallView.linkColor(in: .light)), .white), 4.9, "iOS light page")
+        // macOS: on macOS 14's window background (and macOS 26's, white and #1E1E1E), where the
+        // iOS colour read 4.27:1 in light mode.
+        XCTAssertLessThan(ColorContrast.ratio(rgb(ProPaywallView.linkColor(in: .light)), ProPaywallView.macLightPage),
+                          ColorContrast.textMinimum, "the control: iOS's link colour on the Mac's light page")
+        for (scheme, pages) in [(ColorScheme.light, [ProPaywallView.macLightPage, .white]),
+                                (.dark, [ProPaywallView.macDarkPage, ColorContrast.RGB(0x1E1E1E)])] {
+            for page in pages {
+                XCTAssertGreaterThanOrEqual(ColorContrast.ratio(eightBit(ProPaywallView.macLinkRGB(in: scheme)), page),
+                                            ColorContrast.textMinimum, "macOS, \(scheme): the links on \(page)")
+            }
         }
     }
 
