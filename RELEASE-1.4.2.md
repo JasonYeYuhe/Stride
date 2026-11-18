@@ -1893,3 +1893,70 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
     units, 0 subscribers, no subscription events; Sentry 100% crash-free; 1 written review (latest
     2026-04-04). Ratings count: owner (not in the API).
   - ASC: no 1.4.2 version record yet; 1.4.1 READY_FOR_SALE on both platforms.
+- 2026-11-18, **W13: gate 8's four defects fixed, merged as a902883** (`--no-ff`; CI on a902883
+  green, run 44197998486).
+  - **Commits:**
+    - 8fabe8e: at AX sizes the Strength title stays whole; the score moves under it and the PRO chip
+      drops before the word breaks. It is still one combined header element.
+    - 566fd36: Restore Purchases and its answer move into the pinned bar (`paywall.bar.restoreAnswer`,
+      `paywall.scroll.restoreAnswer`), VoiceOver announces the answer, and at AX sizes the sheet
+      scrolls to it.
+    - 367d594: on iOS 18+ the iPad sheet uses `.presentationSizing(.form.fitted(…))` at
+      `ProPaywallView.padSheetSize` (704×1000), and PaywallRenderTests draw at that size.
+    - 8045660: CTA fill #23863C (4.62:1), links `Color.readableText` #217F39 (4.52:1 on the card),
+      selected ring #299E47 (3.10:1).
+  - **Adversarial review, fixed in four follow-ups:**
+    - 82616f2: the bar reserves room for the tallest answer, so the bar never moves, and a repeated
+      answer is cleared first so the user sees it again. Adds a placement test (landscape,
+      375×667, 402×874).
+    - df3facd: the disabled CTA and a busy Restore look disabled.
+    - 5824999: Mac links #207936 (4.62:1 against the Mac page's #ECECEC).
+    - be913c5: Top 5 Streaks' "Current" chip uses `Color.content(onFillHex:minimum: 4.5)`, which
+      gives black text on every palette colour. The `minimum` parameter defaults to 3:1.
+  - **No new strings**, and the Mac sheet frame is unchanged.
+  - **Tests:** StrideTests 846 / 2 skipped / 0 failed in Tokyo and LA. Hosted 50/50
+    (PaywallRenderTests 18, StatsRenderTests 18, WeeklyReviewRenderTests 14). iOS and StrideMac
+    builds pass.
+  - **Not taken (low, for 1.5.0):**
+    - White on system green, outside gate 8's scope and older than 1.4.2:
+      - StatsView.swift:761-766 "Unlock with Pro"
+      - TodayView.swift:1004-1007 "Add First Habit"
+      - LoginView.swift:164/209/253
+      - OnboardingView.swift:146/211
+      - HabitHistoryView.swift:530 Save
+      - AccountSwitchView.swift:246
+    - Gate 8's low items: on iPad at AX5 the week strip shows a partial day; the es trial badge
+      wraps; the count stepper does not scale; at AX5 the zh-Hans Top 5 Streaks header wraps
+      between 前 and 5.
+- 2026-11-18, **Re-gate at a902883: gates 2, 8 and 9 PASS** (evidence:
+  `~/Library/Caches/Stride-build/gates-1.4.2/regate-a902883/`, `gate9-verify_archive-a902883.txt`).
+  - **Gate 2, PASS.** 15 fixtures × 6 locales on three surfaces: iPhone 17 Pro Max at default and
+    at AX5 (`_at_cta`, plus `_at_terms` frames for the 5 non-en locales), and iPad Pro 13" at
+    default. Every frame was OCR'd (two passes: with and without language correction) and every bar
+    was read by eye.
+    - Restore Purchases is in the bar in every plan state.
+    - nothingFound and restoreFailed answers are on the first screen at default size on both
+      devices. At AX5 they are reachable on iPhone.
+    - The iPad sheet measures 704×1020 pt, and all three plans plus the bar are on one screen in
+      all 90 iPad frames.
+    - The conditional legal clause is now visible on the iPad's first screen in states without a
+      trial. It shows in every state by design, so it is excluded from the "no trial word" check;
+      the plan cards and the bar are still checked.
+  - **Gate 8, PASS.** 561 PNGs, 0 blank: Pro sets on both devices at default and AX5, core
+    `04_paywall`, Strength frames at AX5 in every locale, and the paywall sets in the other
+    locales.
+    - The Strength title is whole in all 6 iPhone locales and in es, ja and ko on iPad.
+    - The "Current" chip is black on the habit colour in every locale.
+    - The iPad paywall shows the plans and the bar at once.
+    - 11 frames were retaken under load average 400–970; all were harness misses.
+    - On iPad, the ko purchaseFailed alert never appeared in 4 retries. The iPhone ko frames show
+      it; this is the DEBUG fixture's timing (it sets the alert while the sheet is presenting).
+  - **Gate 9, PASS.** From the clean clone at a902883: `build-appstore.sh all` (no upload) rc=0.
+    `verify_archive.sh` on both archives and both exports rc=0, with no DEBUG sentinel in the app
+    or the widget.
+  - **Gate 1** at a902883 is covered by CI and W13's own runs above.
+  - **Still open:**
+    - Gate 10 and gate 7's Mac leg: owner sitting.
+    - Gate 11: one tap on the Release paywall.
+    - Gate 13: the ratings count.
+    - The store screenshot sets, from a902883 or later, Thursday–Sunday.
