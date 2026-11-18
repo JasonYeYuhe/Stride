@@ -1960,3 +1960,41 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
     - Gate 11: one tap on the Release paywall.
     - Gate 13: the ratings count.
     - The store screenshot sets, from a902883 or later, Thursday–Sunday.
+- 2026-11-18, **Owner hands over the rest of 1.4.2** ("你直接全部做掉吧 你全权负责"). The agent
+  runs the remaining gates and the submission sitting. Two steps stay the owner's: the demo token
+  goes into ASC's Sign-In Password (agents never handle production tokens), and Mac gate 10 item 5
+  (pressing a banner's buttons, which agents cannot reach).
+  - **Gate 11, PASS at a902883.**
+    - **Build:** a Release iphonesimulator build from the clean clone, installed on iPhone 17 and
+      driven by a throwaway UI-test bundle in the scratchpad, using `XCUIApplication(bundleIdentifier:)`
+      against the installed Release app. Nothing was added to the repo.
+    - **Path:** Settings → Upgrade to Pro → paywall.
+    - **What the sandbox answered:**
+      - Subscribe;
+      - Yearly $19.99 "SAVE 44%", Monthly $2.99, Lifetime $39.99;
+      - the bar's auto-renew terms;
+      - Restore, Terms and Privacy;
+      - no trial wording, apart from the conditional legal clause that shows in every state by
+        design.
+    - **No crash:** still in the foreground 60 s later.
+    - **ASC check:** read-only, 0 introductory offers on Monthly and Yearly.
+    - **Evidence:** `gates-1.4.2/ios-gate11-release-smoke-a902883/`.
+    - **Trap:** the first run showed "Start 7-day free trial". storekitd was answering Stride from
+      `XcodeTest` (the simulator's StoreKit Testing state, which the hosted SKTestSession runs had
+      left on iPhone 17), so it served Configuration.storekit's P1W offer. Moving
+      `…/Shared/AppGroup/<id>/Documents/Persistence/Octane/yyh.stride.habittracker` aside (kept in
+      the evidence dir) and restarting storekitd gave the sandbox. 2000d25's gate 11 on the same
+      device most likely saw the test store too. **A Release smoke never runs on a simulator that
+      has run hosted StoreKit tests until that Octane dir is gone.**
+  - **Gate 13, done.** iTunes lookup across 155 storefronts finds 2 ratings: de 1 (4★) and jp 1
+    (5★). Together with the 4-week `metrics_snapshot.py` above, that is the baseline.
+  - **ASC (no submission):**
+    - `release.py prepare 1.4.2` created both records (PREPARE_FOR_SUBMISSION, MANUAL) with What's
+      New ×6.
+    - `push_metadata.py 1.4.2` wrote the descriptions with the trial clause (O23) and the keywords
+      (O25) to both. The promotional text is unchanged and has no trial in it.
+    - `review_notes.py 1.4.2 --yes` set the notes on both and read them back, after 881f4f1 added
+      Restore Purchases to the bar sentence.
+    - IAP review notes (O22) needed nothing, as gate 5 showed.
+  - **stride-site e3accef:** docs/terms.html (Lifetime, and when a trial is charged) is live at
+    `/stride-site/terms`. The privacy and support pages already matched.
