@@ -1998,3 +1998,62 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
     - IAP review notes (O22) needed nothing, as gate 5 showed.
   - **stride-site e3accef:** docs/terms.html (Lifetime, and when a trial is charged) is live at
     `/stride-site/terms`. The privacy and support pages already matched.
+- 2026-11-18, **Gate 7 Mac leg PASS; gate 10's agent part mostly PASS; build 24 uploading.** The
+  console was locked for the whole Mac run, which decided what could be measured.
+  - **Gate 7, Mac leg, PASS.**
+    - **Setup:** v1.4.1 (c9c3d8e, build 23) Debug variant seeded with `-demo` and given two
+      reminders, then a902883 (24) launched over the same container.
+    - **Store:** opened outside the App Group; `upgrade.sh check-log` finds no 134110/134100,
+      fallback or failed open, and `check-dir` finds no `default.store`.
+    - **Data:** habits=5, records=63, groups=0 before and after, with the same model checksum,
+      habit ids, reminder fields and a hash over every record.
+    - **Reminders:** the same three requests were rescheduled.
+    - **Evidence:** `gates-1.4.2/gate10-mac/gate7-mac/`.
+  - **Gate 10, agent part:**
+    - **Captures:** `capture.sh --sweep` refuses a locked console, so a copy of its sweep
+      (`gate10-mac/tools/sweep.sh`, same flags plus a `reopen` event) captured each window with
+      `screencapture -l`. The frames are 1x.
+    - **Paywall: 180/180 frames PASS.** 15 fixtures × 6 locales × minimum (600×700) and full
+      (1440×900), 0 blank, every sheet inside the window.
+    - **3.1.2 lens: PASS** (every bar read by eye, plus Vision OCR):
+      - Trial wording appears only in the trial-eligible fixtures.
+      - The clause next to the CTA gives the length, the price after, auto-renewal and the
+        24-hour cancel terms; the yen fixture shows ¥3,000.
+      - Restore, Terms and Privacy are in the bar in every plan state.
+      - The billed price is the largest price text, and Restore's answer is visible.
+    - **Weekly Review: 24/24 PASS.** Last and this week, 6 locales, both widths.
+    - **History's Done at a 700-pt window: PASS.**
+    - **⇧⌘R:** shown in the View menu.
+    - **Dock badge (item 12): PASS.** The Dock reads "3" with 2 of 5 habits done; 1.4.1 never
+      showed one.
+    - **Evidence:** `gates-1.4.2/gate10-mac/`.
+  - **Not run, because the console was locked (no key window, AX reads nothing):**
+    - ⇧⌘R opening the review, including before Stats was opened;
+    - the toolbar tooltip (`.help` is at StatsView.swift:210);
+    - Tab focus reaching the CTA;
+    - the CTA's active colour;
+    - the `axdump` re-check of item 12's VoiceOver names;
+    - the badge with Badges off (code: NotificationService.swift:758-772);
+    - item 5 (owner).
+    These need an unlocked session before the Mac is finished (O19).
+  - **Observations, not defects (1.5.0):**
+    - At the minimum window, pending, nothingFound and restoreFailed add a line to the pinned bar,
+      which then covers the lower half of the Yearly card's price on the first screen
+      (`sweep/min-en/30_paywall_nothingFound_sheet.png`). The price stays in the CTA clause and
+      the card scrolls. The reserve is computed only when deciding whether to pin
+      (ProPaywallView.swift:575-583, 718-722).
+    - The Mac sheet's empty ~48-pt top band and its bottom toolbar with only a close button are
+      unchanged since W13.
+  - **The Mac afterwards:**
+    - The variant's container was restored from the backup; a hash over every non-cache file
+      matches it.
+    - The real App Group listing is unchanged.
+    - The only pending notification is `stride.daily.evening`.
+    - No process is left running.
+  - **CI on 609c2c8 (scripts and docs only):** one hosted case failed
+    (`HabitHistoryTests.testAChangedNoteOverTheCapIsNeverDroppedWithoutAsking`, alert timeout).
+    This is the same flake family as earlier runs; the failed job was re-run.
+  - **Signing preflight under the locked console:** the login keychain reports `no-timeout` and a
+    test `codesign` with Apple Distribution succeeds.
+  - **Upload:** `build-appstore.sh all --upload` from the clean clone at a902883 (build 24) was
+    started, without the gate shim this time, so dSYMs go to Sentry.
