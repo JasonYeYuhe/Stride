@@ -40,7 +40,7 @@ Where to find them:
 - Weekly Review: the calendar button at the top of Statistics, or, on Monday and Tuesday, the card under the progress card on Today.
 - Habit Groups: New Group in the Group section of New Habit or Edit Habit.
 
-New in 1.4.2: the paywall puts the selected plan's price and terms, the purchase button and the Terms of Use and Privacy Policy links in one bar at the bottom. Yearly is selected first; Monthly and Lifetime are one tap away.
+New in 1.4.2: the paywall puts the selected plan's price and terms, the purchase button, Restore Purchases (with its result) and the Terms of Use and Privacy Policy links in one bar at the bottom. Yearly is selected first; Monthly and Lifetime are one tap away.
 
 Free trial: the paywall states a free trial only when the App Store returns an introductory offer on Yearly and the account is eligible for it. At the time of this submission Yearly has no introductory offer, so the paywall shows none. We plan to add a 7-day free trial on Yearly after approval.
 
@@ -67,7 +67,7 @@ Where to find them:
 - Weekly Review: View > Weekly Review (Shift-Command-R), the calendar button at the top of Statistics, or, on Monday and Tuesday, the card under the progress card on Today.
 - Habit Groups: New Group in the Group section of New Habit or Edit Habit.
 
-New in 1.4.2: the paywall puts the selected plan's price and terms, the purchase button and the Terms of Use and Privacy Policy links in one bar at the bottom. Yearly is selected first; Monthly and Lifetime are one click away.
+New in 1.4.2: the paywall puts the selected plan's price and terms, the purchase button, Restore Purchases (with its result) and the Terms of Use and Privacy Policy links in one bar at the bottom. Yearly is selected first; Monthly and Lifetime are one click away.
 
 Free trial: the paywall states a free trial only when the App Store returns an introductory offer on Yearly and the account is eligible for it. At the time of this submission Yearly has no introductory offer, so the paywall shows none. We plan to add a 7-day free trial on Yearly after approval.
 
