@@ -39,7 +39,6 @@
 "30d Avg" = "30日均值";
 "Current Streak" = "目前連續";
 "30-Day Rate" = "30日完成率";
-"Total" = "總計";
 "By Weekday" = "按星期";
 "Activity" = "活動";
 "Less" = "少";
@@ -48,7 +47,6 @@
 /* Settings */
 "Habit Tracker" = "習慣追蹤";
 "Upgrade to Pro" = "升級到 Pro";
-"Unlimited habits, widgets, smart reminders & more" = "無限習慣、小工具、智慧提醒等";
 "Stride Pro" = "Stride Pro";
 "All features unlocked" = "所有功能已解鎖";
 "Signed in" = "已登入";
@@ -93,27 +91,10 @@
 "Send me a login link instead" = "改為傳送登入連結";
 
 /* Pro Paywall */
-"Unlock the full experience" = "解鎖完整體驗";
-"Unlimited Habits" = "無限習慣";
-"Track as many habits as you want" = "追蹤任意數量的習慣";
-"Advanced Statistics" = "進階統計";
-"Deep insights into your progress" = "深入了解你的進展";
-"Home Screen Widgets" = "主畫面小工具";
-"Quick access from your home screen" = "從主畫面快速存取";
-"Smart Reminders" = "智慧提醒";
-"Never miss a habit again" = "再也不會錯過習慣";
-"Cloud Sync" = "雲端同步";
-"Seamless across all your devices" = "所有裝置無縫同步";
-"Unable to load subscription options." = "無法載入訂閱選項。";
-"Please check your internet connection and try again." = "請檢查網路連線後重試。";
 "Try Again" = "重試";
 "Yearly" = "年付";
 "Monthly" = "月付";
-"BEST VALUE" = "最超值";
 "Restore Purchases" = "恢復購買";
-"Payment will be charged to your Apple ID account. Subscription automatically renews unless cancelled at least 24 hours before the end of the current period." = "付款將從你的 Apple ID 帳戶扣除。訂閱將自動續訂，除非在目前週期結束前至少 24 小時取消。";
-"Terms" = "條款";
-"Privacy" = "隱私";
 "Purchase Error" = "購買錯誤";
 "OK" = "好";
 "Processing..." = "處理中...";
@@ -163,8 +144,6 @@
 "Add one to %@" = "為%@加 1";
 "Mark %@ complete" = "將%@標記為完成";
 "Mark %@ incomplete" = "將%@標記為未完成";
-"%@ %@, completed" = "%@ %@，已完成";
-"%@ %@, not completed" = "%@ %@，未完成";
 "%@ %@, selected" = "%@ %@，已選取";
 "%@, completed" = "%@，已完成";
 "%@, not completed" = "%@，未完成";
@@ -253,12 +232,8 @@
 "8-Week Trend" = "8 週趨勢";
 "Insights" = "洞察";
 "Weekly Review" = "每週回顧";
-"This Week" = "本週";
-"%lld%% vs last week" = "較上週 %lld%%";
 "Habit Breakdown" = "各習慣詳情";
 "Highlights" = "亮點";
-"Best: %@ %@" = "最佳：%@ %@";
-"Needs work: %@ %@" = "待加強：%@ %@";
 "Done" = "完成";
 "best streak" = "最佳連續";
 "30-day rate" = "30日完成率";
@@ -279,7 +254,6 @@
 "Delete Account?" = "刪除帳號？";
 "This will permanently delete your account and all synced data. This action cannot be undone." = "這將永久刪除你的帳號和所有已同步的資料。此操作無法復原。";
 "Continue" = "繼續";
-"Are you sure?" = "確定嗎？";
 "All your habits, records, and account information will be permanently removed from our servers." = "你的所有習慣、紀錄和帳號資訊都將從我們的伺服器中永久刪除。";
 "Delete My Account" = "刪除我的帳號";
 "Unable to Delete Account" = "無法刪除帳號";
@@ -292,7 +266,6 @@
 "Export Data" = "匯出資料";
 "Export as CSV" = "匯出為 CSV";
 "Export as JSON" = "匯出為 JSON";
-"Stride Habits Export" = "Stride 習慣匯出";
 "Legal" = "法律資訊";
 "%lldd" = "%lld天";
 "Complete a Habit" = "完成一個習慣";
@@ -334,8 +307,6 @@
 "Down vs last week (%@ → %@)" = "較上週下降（%@ → %@）";
 "This week, %lld percent complete" = "本週完成百分之 %lld";
 "%@ %@, %lld percent" = "%@ %@，百分之 %lld";
-"Up %lld percent vs last week" = "較上週上升百分之 %lld";
-"Down %lld percent vs last week" = "較上週下降百分之 %lld";
 
 /* ------------------------------------------------------------
    Added in 1.3.0. Plural keys (streaks, check-ins, habit counts, the Stats
@@ -606,3 +577,95 @@
 /* Statistics' 8-week Trend: what VoiceOver reads, after the week, for a week that ended before the
    habit existed. Nothing is drawn for it, and it must not sound like 0% or a missed week. */
 "Not started" = "尚未開始";
+
+/* 1.4.2 W0 */
+
+/* 1.4.2 (W0): the Wave A copy deck (RELEASE-1.4.2.md). Every key below is added before the code
+   that uses it, so the parallel workstreams never touch these files.
+
+   The paywall's subtitle under "Stride Pro", by why it was opened (D4): Statistics' locked card;
+   the Weekly Review button and Today's week card; New Group; Settings and onboarding; the
+   "Pro ended" row. "Pro adds three things" are the three feature rows under it. */
+"See what's changing, not just where you are" = "不只看現在的位置，更看清正在發生的變化";
+"See how your week went" = "看看你這一週過得怎麼樣";
+"Organize your habits into groups" = "把你的習慣整理成分組";
+"Almost everything is free. Pro adds three things." = "幾乎所有功能都免費。Pro 額外提供三項功能。";
+"Welcome back" = "歡迎回來";
+
+/* The paywall's one buy button (D4), for the selected plan: Monthly or Yearly without a trial,
+   and Lifetime. The trial's button is "Start %lld-day free trial" in Localizable.stringsdict. */
+"Subscribe" = "訂閱";
+"Buy Lifetime" = "購買終身版";
+
+/* The selected plan's terms, beside the buy button (D4). Each %@ is a price as the App Store
+   formats it ("$19.99", "¥3,000"). "/year" and "/month" are this catalog's words, never the App
+   Store's: the in-app language can differ from the device's. These are legal terms: say exactly
+   when a subscription renews and how to stop it, as the line below them does. "%@/month" alone is
+   the small per-month figure on the Yearly plan (its price divided by 12). The trial's terms are
+   in Localizable.stringsdict. */
+"%@/year. Renews automatically unless cancelled at least 24 hours before the end of the period." = "%@/年。除非在目前週期結束前至少 24 小時取消，否則將自動續訂。";
+"%@/month. Renews automatically unless cancelled at least 24 hours before the end of the period." = "%@/月。除非在目前週期結束前至少 24 小時取消，否則將自動續訂。";
+"One payment of %@. No subscription." = "一次性支付 %@，無需訂閱。";
+"%@/month" = "%@/月";
+
+/* The trial clause the paywall's legal line gains (D4), the same words as the App Store
+   description's (D16). It must stay true whether or not a trial is offered. "Any unused part of a
+   trial ends when you subscribe": buying a plan during a free trial ends what is left of it. */
+"If a free trial is offered, you are charged when it ends unless you cancel at least 24 hours before it ends. Any unused part of a trial ends when you subscribe." = "如提供免費試用，除非在試用結束前至少 24 小時取消，否則將在試用結束時扣款。如果你在試用期間購買訂閱，試用期的剩餘部分將失效。";
+
+/* The paywall's states (D4, D6): the plans could not load (with Try Again); a purchase waiting
+   for approval (Ask to Buy); the three answers of Restore Purchases, shown inline; and a purchase
+   that went through, with Continue. */
+"Stride Pro options couldn't load. Check your connection and try again." = "無法載入 Stride Pro 選項。請檢查網路連線後再試一次。";
+"Waiting for approval. Stride Pro unlocks when it's approved." = "正在等待核准。核准後將解鎖 Stride Pro。";
+"Purchases restored" = "已恢復購買";
+"No purchases found for this Apple ID" = "找不到此 Apple ID 的購買紀錄";
+"Couldn't reach the App Store" = "無法連線至 App Store";
+"Stride Pro is unlocked" = "Stride Pro 已解鎖";
+
+/* Settings' Stride Pro rows during a free trial (D6). In "first charge of %@ on %@" the first %@
+   is the price, the second the date; without a loaded price the row drops it ("first charge on
+   %@"); "Trial ends on %@" is a trial whose auto-renew is off; "Free trial" alone when the
+   renewal date cannot be verified. "Rate Stride" is a row in Settings > About that opens the App
+   Store's review page (D13). */
+"Free trial · first charge of %@ on %@" = "免費試用 · 將於 %2$@ 首次扣款 %1$@";
+"Free trial · first charge on %@" = "免費試用 · 將於 %@ 首次扣款";
+"Trial ends on %@" = "試用將於 %@ 結束";
+"Free trial" = "免費試用";
+"Rate Stride" = "為 Stride 評分";
+
+/* Statistics' Pro cards in a habit's first weeks (D7). Insights explains itself instead of
+   hiding: before the habit's first full Monday-to-Sunday week; when this week has nothing counted
+   yet to compare with last week ("Nothing to compare yet this week": before today's check-in on a
+   Monday, or before a weekly or specific-days habit's first due day of the week); and when recent
+   weeks hold too few check-ins to compare. "Level with last week": momentum with no change. "Since start" is
+   the Strength card's change since the habit began, for a habit younger than 30 days. "PRO" is
+   the small chip on each Pro card's header; VoiceOver does not read it. */
+"Insights appear after your first full week" = "完成第一個完整週後會顯示洞察";
+"Not enough recent check-ins to compare" = "近期打卡不足，無法比較";
+"Nothing to compare yet this week" = "本週還沒有可比較的紀錄";
+"Level with last week" = "與上週持平";
+"Since start" = "自開始以來";
+"PRO" = "PRO";
+
+/* Weekly Review (D8): the title of an unfinished week once 4 of its days have passed, or of
+   last week; the change against the previous week when nothing moved (a change in points is in
+   Localizable.stringsdict); and the highlights: the habit that rose most, the habit that dropped
+   most ("Slipped"), and their heading while the week is unfinished. */
+"This week so far" = "本週至今";
+"Last week" = "上週";
+"Level with the previous week" = "與前一週持平";
+"Most improved" = "進步最大";
+"Slipped" = "有所下滑";
+"Highlights so far" = "目前亮點";
+
+/* Today's "Your week" card (D12), on Monday and Tuesday: for Pro, last week's overall rate
+   and a button to the review; for a free user, no number, and the same button opens the paywall.
+   Its close button hides it until next week (Pro), or for good (free).
+   "What's in Stride Pro" is a text button on onboarding's last page that opens the paywall. */
+"Last week: %lld%%" = "上週：%lld%%";
+"Your Weekly Review is ready" = "你的每週回顧已準備好";
+"See your Weekly Review" = "查看每週回顧";
+"Hide until next week" = "隱藏至下週";
+"Don't show again" = "不再顯示";
+"What's in Stride Pro" = "Stride Pro 包含什麼";

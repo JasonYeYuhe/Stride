@@ -4,6 +4,12 @@ struct OnboardingView: View {
     @State private var currentPage = 0
     @AccessibilityFocusState private var focusedPage: Int?
     @Binding var isPresented: Bool
+    /// "What's in Stride Pro" on the last page (RELEASE-1.4.2.md D12): the paywall, `.onboarding`.
+    /// Only on that tap; nothing opens on its own, and Get Started is unchanged.
+    @State private var showingPro = false
+    @Environment(\.colorScheme) private var colorScheme
+    /// Whether to offer "What's in Stride Pro" (`isPro`, observed).
+    private let store = StoreService.shared
 
     private let pages: [OnboardingPage] = [
         OnboardingPage(
@@ -85,6 +91,9 @@ struct OnboardingView: View {
         #else
         .frame(minWidth: 500, minHeight: 450)
         #endif
+        .sheet(isPresented: $showingPro) {
+            ProPaywallView(trigger: .onboarding)
+        }
     }
 
     // MARK: - Page Content
@@ -124,15 +133,39 @@ struct OnboardingView: View {
             Spacer()
 
             if isLast {
-                Button(action: completeOnboarding) {
-                    Text("Get Started")
-                        .font(.headline)
-                        .frame(maxWidth: 280)
-                        .padding(.vertical, 14)
+                // One block, so the page's 24-pt spacing does not open between the two buttons:
+                // Get Started where it was, and the 60 pt under it is now the Pro link (44 + 16).
+                VStack(spacing: 0) {
+                    Button(action: completeOnboarding) {
+                        Text("Get Started")
+                            .font(.headline)
+                            .frame(maxWidth: 280)
+                            .padding(.vertical, 14)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.green)
+
+                    // D12: a text button under the primary one; no full-page Pro screen (O8).
+                    // Not for a user who is Pro already (a reinstall): the paywall closes at once
+                    // when it opens for one (pre-freeze review B4), so the tap was a flash. Hidden
+                    // in place — invisible, disabled and out of VoiceOver — so the page keeps its
+                    // height at every text size and Get Started does not move.
+                    let offersPro = !store.isPro
+                    Button("What's in Stride Pro") {
+                        showingPro = true
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    // The palette's Green as readable text: the system green and the secondary
+                    // grey are both under 4.5:1 on the light background.
+                    .foregroundStyle(Color.readableText(hex: "#34C759", in: colorScheme))
+                    .buttonStyle(.plain)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                    .opacity(offersPro ? 1 : 0)
+                    .disabled(!offersPro)
+                    .accessibilityHidden(!offersPro)
+                    .padding(.bottom, 16)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.green)
-                .padding(.bottom, 60)
             } else {
                 // Reserve space so layout stays stable
                 Color.clear

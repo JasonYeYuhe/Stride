@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import StoreKit
 
 struct TodayView: View {
     @Environment(\.modelContext) private var modelContext
@@ -35,6 +36,16 @@ struct TodayView: View {
     @State private var signInAgain = SignInAgainFlow()
     private var auth = AuthService.shared
     private var sync = SyncService.shared
+    /// The week card's copy and its tap (RELEASE-1.4.2.md D12, D8): read at the render and at the tap.
+    private var store = StoreService.shared
+    /// Bumped by each write of the week card's dismissal state, which lives in
+    /// `UserDefaults.standard` (`InlinePromptStore`) and is read at every render.
+    @State private var weekCardRevision = 0
+    /// The card's state for this view only, in an automated run, where `InlinePromptStore.live` is
+    /// read-only: × still hides the card on screen, and nothing reaches the app's defaults.
+    @State private var unsavedWeekCardState: InlinePrompts.DismissalState?
+    /// The system's rating prompt (N3), asked only through `ReviewPrompter`.
+    @Environment(\.requestReview) private var requestReview
     #if DEBUG
     /// Counts this view's creations for the hosted shell tests (`ShellTabLifetime`).
     @StateObject private var lifetime: ShellTabLifetime
@@ -115,6 +126,13 @@ struct TodayView: View {
                         }
                     }
                     .padding(.horizontal)
+
+                    // D12: at most one inline card, under the progress card: "Your week", Monday
+                    // and Tuesday.
+                    if case .week(let card)? = inlineCard(now: now, calendar: calendar) {
+                        weekCard(card)
+                            .padding(.horizontal)
+                    }
                 } else if let syncStatus, !habits.isEmpty || syncStatus == .signInAgain {
                     // A past day before any habit started: the line is about the store, not the day.
                     SyncStatusRow(line: syncStatus, signInAgain: signInAgain)
@@ -212,6 +230,69 @@ struct TodayView: View {
             if !syncing { refreshSyncCounts() }
         }
         .onChange(of: auth.isLoggedIn) { _, _ in refreshSyncCounts() }
+        // N3: the install date `ReviewPromptRule` counts its 3 days from, recorded once (never in
+        // an automated run: `recordInstallDateIfNeeded`).
+        .task { ReviewPrompter.live.recordInstallDateIfNeeded() }
+        // N3: the rows ask, after a write, through this hook; it knows what is presented.
+        .environment(\.reviewPromptHook, reviewPromptHook)
+    }
+
+    // MARK: - The week card (D12)
+
+    /// Today's one inline card, from `InlinePrompts` (TodayCards.card). The dismissal state is read
+    /// here at every render (`weekCardRevision` redraws after a write).
+    private func inlineCard(now: Date, calendar: Calendar) -> InlinePrompts.Card? {
+        _ = weekCardRevision
+        return TodayCards.card(habits: habits, cache: cache, now: now, calendar: calendar, isPro: store.isPro,
+                               state: unsavedWeekCardState ?? InlinePromptStore.live.state,
+                               override: TodayCards.launchOverride)
+    }
+
+    private func weekCard(_ card: InlinePrompts.WeekCard) -> some View {
+        TodayWeekCard(card: card) {
+            // Decided at the tap (D8): the review on last week for Pro, the paywall resuming it.
+            shell.issue(card.issuer, isPro: store.isPro)
+        } onDismiss: {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                updateWeekCardState { InlinePrompts.dismissed(card, in: $0) }
+            }
+        }
+        // A free card counts its week once it is on screen: not while the shell keeps Today
+        // hidden (regular width, the Mac).
+        .task(id: isActive ? card.shownWeek.mondayNumber : nil) {
+            guard isActive else { return }
+            updateWeekCardState { InlinePrompts.shown(card, in: $0) }
+        }
+    }
+
+    /// Writes the card's state, unless DEBUG's `-inlineCard` fixes the card. In an automated run
+    /// (a sweep, the E2E kit, a hosted test) the store is read-only: the change stays in this view.
+    private func updateWeekCardState(_ change: (InlinePrompts.DismissalState) -> InlinePrompts.DismissalState) {
+        guard TodayCards.launchOverride == nil else { return }
+        let store = InlinePromptStore.live
+        let current = unsavedWeekCardState ?? store.state
+        let next = change(current)
+        guard next != current else { return }
+        if store.readOnly {
+            unsavedWeekCardState = next
+        } else {
+            store.save(next)
+        }
+        weekCardRevision += 1
+    }
+
+    // MARK: - The review prompt (N3)
+
+    /// What the rows call after a write: `ReviewPrompter` decides, and asks the system only when
+    /// nothing is presented — the shell's sheet, anything the window presents, Today's own sheets.
+    private var reviewPromptHook: ReviewPromptHook {
+        let shell = self.shell
+        let requestReview = self.requestReview
+        let todaySheet = showingAddHabit || signInAgain.showingLogin
+        return ReviewPromptHook { checkIn in
+            let presenting = todaySheet || shell.sheetOnScreen != nil || shell.presentation.isPresenting
+            ReviewPrompter.live.afterCheckIn(checkIn, sheetShowing: presenting) { requestReview() }
+        }
     }
 
     /// Reads the store only while signed in: signed out, Today shows no sync line, and a store of
@@ -468,6 +549,8 @@ struct HabitRowView: View {
     @State private var noteText = ""
     /// A write waiting for the user's go (D7): asked, and only then committed again, unchanged.
     @State private var confirming: PendingConfirmation?
+    /// Today's N3 hook: called after a write, it may ask the system for a rating. Nil elsewhere.
+    @Environment(\.reviewPromptHook) private var reviewPromptHook
     private var cache = StatsCache.shared
     @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.colorScheme) private var colorScheme
@@ -802,6 +885,8 @@ struct HabitRowView: View {
         let habit = self.habit
         let date = self.date
         let context = modelContext
+        // N3: the streak and the week before the write, to tell a milestone afterwards.
+        let before = reviewPromptHook == nil ? nil : stats
         let outcome = HabitEntryCommit.commit(habitID: habit.id, day: date, in: context,
                                               environment: injectedCommit ?? .live) { undo in
             switch write {
@@ -824,6 +909,12 @@ struct HabitRowView: View {
             // A yes/no check-in, or any unit added — as before 1.4.1.
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             #endif
+            // N3: a check-in that completes a 7-day streak or meets a week may ask for a rating
+            // (`ReviewPromptRule`); the commit has bumped the cache, so this read is fresh.
+            if let reviewPromptHook, let before {
+                reviewPromptHook.afterCheckIn(ReviewPromptRule.CheckIn(
+                    habit: habit, day: date, before: before, after: cache.stats(for: habit), written: written))
+            }
         case .needsConfirmation(let about):
             confirming = PendingConfirmation(write: write, about: about)
         case .saveFailed:

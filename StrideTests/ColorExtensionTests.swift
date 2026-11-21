@@ -110,4 +110,22 @@ final class ColorExtensionTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(ColorContrast.ratio(content, fill), 3.5, habitColor.name)
         }
     }
+
+    /// Small text on a habit-colour fill (Top 5 Streaks' "Current" chip) asks for 4.5:1: white
+    /// read 2.2:1 on Green and 1.5:1 on Yellow, and even Blue, Purple, Red and Pink, which keep
+    /// white at 3:1, fall short of 4.5 with it (4.0 to 3.6). The fill is the habit's colour in
+    /// light and dark mode alike, so one check covers both. Any fill gets one of the two at
+    /// 4.58:1 or more.
+    func testSmallTextOnAHabitColourFillReadsAtFourAndAHalfToOne() throws {
+        for habitColor in HabitColor.all {
+            let fill = try XCTUnwrap(ColorContrast.RGB(hex: habitColor.hex))
+            let text = ColorContrast.content(on: fill, minimum: ColorContrast.textMinimum)
+            XCTAssertGreaterThanOrEqual(ColorContrast.ratio(text, fill), ColorContrast.textMinimum, habitColor.name)
+            XCTAssertLessThan(ColorContrast.ratio(.white, fill), ColorContrast.textMinimum, "\(habitColor.name): white did not")
+        }
+        XCTAssertEqual(ColorContrast.content(on: ColorContrast.RGB(0x1C1C1E), minimum: ColorContrast.textMinimum), .white,
+                       "a dark fill keeps white")
+        // The default stays the 3:1 mark rule: History's digits keep white on Blue.
+        XCTAssertEqual(ColorContrast.content(on: ColorContrast.RGB(0x007AFF)), .white)
+    }
 }

@@ -428,6 +428,60 @@ WHATS_NEW_BY_VERSION = {
              "• Stride Pro añade un gráfico de fuerza y tus 5 rachas más largas.\n"
              "• En un dispositivo con un calendario no gregoriano, como el japonés o el budista, los registros se guardaban con una fecha equivocada. Ahora se guardan con la correcta, y los que ya estaban guardados pasan a su día real.",
   },
+  # RELEASE-1.4.2.md W12, from the progress log (Wave A only, N1). D5: no trial here, since the
+  # offer is created only at release and not every user is eligible. Pro surfaces say "Stride Pro".
+  # Facts: W5 (Strength draws no bar before the start; Insights always draw, with an empty state),
+  # W6 and the pre-freeze review (opens on last week until this week has 4 days; change in points;
+  # "Most improved"/"Slipped" at 10 points or more), W7 (Today's card Monday 00:00 to Tuesday 23:59;
+  # "Rate Stride" in Settings' About), W3 (one button, the selected plan's terms in the bar), N5 and
+  # W8 (VoiceOver labels, readable colours), W9 (the Mac Dock label, set only while the app runs and
+  # badges are on; History's sheet fits 700 pt) and N5 (New Habit's sheet). Each locale uses its
+  # catalog's words (Advanced Analytics, Strength, Insights, Weekly Review, Today, Settings,
+  # Rate Stride, History, New Habit). ensure_localizations sends this to the Mac record too.
+  "1.4.2": {
+    "en-US": "• Advanced Analytics (Stride Pro) are now right from a habit’s first week: the Strength chart draws no weeks from before the habit started, and Insights say when there isn’t enough to compare yet instead of disappearing.\n"
+             "• Weekly Review (Stride Pro) opens on last week until this week has four days to show. It gives the change in points, and when a habit moved by 10 points or more, it can name your most improved habit and one that slipped.\n"
+             "• On Monday and Tuesday, a card on Today can lead you to last week’s Weekly Review.\n"
+             "• A clearer Stride Pro screen: choose a plan, and its price and terms are right beside the button.\n"
+             "• Rate Stride from Settings.\n"
+             "• Accessibility: VoiceOver no longer reads the emoji in Settings’ habit list or in the New Habit preview, change figures use higher-contrast colors, and on Mac more fields have clear labels.\n"
+             "• On Mac, the Dock icon now shows how many habits are left today while Stride is open (if badges are allowed for Stride), and History and New Habit fit in smaller windows.",
+    "zh-Hans": "• 高级分析（Stride Pro）从习惯的第一周起就准确了：习惯强度图表不再画出习惯开始之前的周；还没有足够的记录可以比较时，洞察会直接说明，而不是消失不见。\n"
+               "• 每周回顾（Stride Pro）在本周满 4 天之前会打开上周。它会显示较前一周变化了多少分；如果某个习惯变化达到 10 分或以上，还会列出进步最大和有所下滑的习惯。\n"
+               "• 每逢周一和周二，「今天」上会出现一张卡片，带你查看上周的每周回顾。\n"
+               "• 更清晰的 Stride Pro 页面：选好方案，它的价格和条款就显示在按钮旁边。\n"
+               "• 「设置」中新增「为 Stride 评分」。\n"
+               "• 辅助功能：VoiceOver 不再朗读「设置」习惯列表和「新习惯」预览中的表情符号；变化数值改用对比度更高的颜色；在 Mac 上，更多输入框有了清楚的标签。\n"
+               "• 在 Mac 上，Stride 打开期间，程序坞图标现在会显示今天还剩几个习惯（需允许 Stride 显示标记）；「历史记录」和「新习惯」在较小的窗口里也能完整显示。",
+    "zh-Hant": "• 進階分析（Stride Pro）從習慣的第一週起就正確了：習慣強度圖表不再畫出習慣開始之前的週；還沒有足夠的紀錄可以比較時，洞察會直接說明，而不是消失不見。\n"
+               "• 每週回顧（Stride Pro）在本週滿 4 天之前會開啟上週。它會顯示較前一週變化了多少分；如果某個習慣變化達到 10 分或以上，還會列出進步最大和有所下滑的習慣。\n"
+               "• 每逢週一和週二，「今天」上會出現一張卡片，帶你查看上週的每週回顧。\n"
+               "• 更清楚的 Stride Pro 頁面：選好方案，它的價格和條款就顯示在按鈕旁邊。\n"
+               "• 「設定」中新增「為 Stride 評分」。\n"
+               "• 輔助使用：VoiceOver 不再朗讀「設定」習慣列表和「新習慣」預覽中的表情符號；變化數值改用對比更高的顏色；在 Mac 上，更多輸入欄位有了清楚的標籤。\n"
+               "• 在 Mac 上，Stride 開啟期間，Dock 圖像現在會顯示今天還剩幾個習慣（需允許 Stride 顯示標記）；「歷史紀錄」和「新習慣」在較小的視窗中也能完整顯示。",
+    "ja": "• 高度な分析（Stride Pro）が、習慣の最初の週から正しく表示されるようになりました。定着度のグラフには習慣を始める前の週が描かれず、比べられるだけの記録がまだないときは、インサイトが消えずにそのことを伝えます。\n"
+          "• 週間レビュー（Stride Pro）は、今週が4日たつまでは先週を開きます。前の週からの変化をポイントで示し、10ポイント以上変わった習慣があれば、最も伸びた習慣と下がった習慣を表示します。\n"
+          "• 月曜日と火曜日には、「今日」に先週の週間レビューへのカードが表示されます。\n"
+          "• Stride Pro の画面がわかりやすくなりました。プランを選ぶと、その価格と条件がボタンのすぐそばに表示されます。\n"
+          "• 「設定」に「Stride を評価」が加わりました。\n"
+          "• アクセシビリティ：VoiceOver が「設定」の習慣リストと「新しい習慣」のプレビューで絵文字を読み上げなくなりました。変化を示す数値はコントラストの高い色になり、Mac ではより多くの入力欄にわかりやすいラベルが付きました。\n"
+          "• Mac では、Stride を開いている間、今日の残りの習慣の数が Dock アイコンに表示されるようになりました（Stride のバッジを許可している場合）。「履歴」と「新しい習慣」は小さなウインドウにも収まります。",
+    "ko": "• 고급 분석(Stride Pro)이 이제 습관의 첫 주부터 정확합니다. 습관 강도 차트는 습관을 시작하기 전의 주를 그리지 않고, 아직 비교할 기록이 부족하면 인사이트가 사라지는 대신 그렇다고 알려 줍니다.\n"
+          "• 주간 리뷰(Stride Pro)는 이번 주가 4일 지나기 전까지 지난주를 엽니다. 전주 대비 변화를 점수로 보여 주고, 10점 이상 달라진 습관이 있으면 가장 많이 향상된 습관과 하락한 습관을 알려 줍니다.\n"
+          "• 월요일과 화요일에는 ‘오늘’에 지난주 주간 리뷰로 가는 카드가 나타납니다.\n"
+          "• 더 알기 쉬워진 Stride Pro 화면: 플랜을 고르면 그 가격과 조건이 버튼 바로 옆에 표시됩니다.\n"
+          "• ‘설정’에 ‘Stride 평가하기’가 추가되었습니다.\n"
+          "• 손쉬운 사용: VoiceOver가 ‘설정’의 습관 목록과 ‘새로운 습관’ 미리보기에서 이모지를 읽지 않습니다. 변화 수치는 대비가 더 높은 색으로 표시되고, Mac에서는 더 많은 입력란에 명확한 레이블이 붙었습니다.\n"
+          "• Mac에서는 Stride가 열려 있는 동안 Dock 아이콘에 오늘 남은 습관 수가 표시됩니다(Stride의 배지를 허용한 경우). ‘기록’과 ‘새로운 습관’은 작은 창에도 맞게 표시됩니다.",
+    "es-ES": "• El Análisis avanzado (Stride Pro) es correcto desde la primera semana de un hábito: el gráfico de fuerza ya no dibuja semanas anteriores a su inicio, y la tarjeta de Análisis indica cuándo aún no hay suficiente para comparar, en lugar de desaparecer.\n"
+             "• El Resumen semanal (Stride Pro) abre la semana pasada hasta que esta semana lleva cuatro días. Muestra el cambio en puntos y, cuando un hábito cambia 10 puntos o más, señala el de mayor mejora y el que bajó.\n"
+             "• Los lunes y martes, una tarjeta en Hoy te lleva al Resumen semanal de la semana pasada.\n"
+             "• Una pantalla de Stride Pro más clara: elige un plan y verás su precio y sus condiciones justo al lado del botón.\n"
+             "• Ya puedes valorar Stride desde Ajustes.\n"
+             "• Accesibilidad: VoiceOver ya no lee los emojis de la lista de hábitos de Ajustes ni de la vista previa de Nuevo hábito, las cifras de cambio usan colores de mayor contraste y, en el Mac, más campos tienen etiquetas claras.\n"
+             "• En el Mac, el icono del Dock muestra ahora cuántos hábitos te quedan hoy mientras Stride está abierto (si las notificaciones de Stride pueden mostrarlo), e Historial y Nuevo hábito caben en ventanas más pequeñas.",
+  },
 }
 
 
