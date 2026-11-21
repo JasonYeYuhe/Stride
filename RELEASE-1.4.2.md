@@ -2089,3 +2089,37 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
       out) or Always Allow once.
     - **Then:** `gate10-mac/tools/unlocked_pass.sh` runs all five items (~3 min).
     - Container restored and hash-checked; the real App Group store is unchanged.
+- 2026-11-21, **Mac gate 10 remainder PASS on an unlocked console; only the owner's two hands-on
+  checks are left.**
+  - **Unblock:** the owner deleted the variant's stale `yyh.stride.habittracker.mactest` Keychain
+    item. Launches then came up signed out with no prompt, and no new item was written.
+  - **Run:** `unlocked_pass.sh`, plus a rerun of items 2 (free) and 3/4 via `one.sh`. Evidence is
+    in `gate10-mac/unlocked-2026-11-21/` and its `rerun/`; the earlier blocked run is in
+    `prev-blocked/`.
+  - **⇧⌘R before Stats was opened:** PASS.
+    - **Pro:** a fresh launch on Today opens the Weekly Review sheet ("This week so far", 72%).
+    - **Free:** it opens the paywall at the Weekly Review headline.
+    - The View menu lists Weekly Review on ⇧⌘R, separate from Sync Now on ⌘R.
+  - **Stats toolbar tooltip:** PASS on Pro and free, both with `help="Weekly Review"`.
+  - **Active CTA colour (trial fixture):** PASS. The CTA is solid green with white text in the
+    key window.
+  - **Tab to the CTA:** PASS, by eye, on the third Tab. The ring there is the system green-on-green
+    ring, faint but visible. `axq focus` reports only the hosting view for SwiftUI buttons on macOS
+    (Full Keyboard Access is on), so this check is read from screenshots
+    (`rerun/tabsteps/montage.png`).
+  - **Item 12 VoiceOver names:** PASS.
+    - Settings' Language pop-up is titled "Language".
+    - Habit rows read "Morning Run, 121 check-ins, 12 day streak", with no emoji.
+    - Add Habit's fields are "Habit Name" and "Description".
+    - The remaining unnamed AXButtons are system parts: stepper arrows, scroll-bar parts and the
+      window controls.
+    - The colour swatches sit below the fold of the lazy Form, so AX does not list them
+      unscrolled. They are labelled in code (AddHabitView.swift:184).
+  - **Harness note:** some launches with `-tab 1` or `-paywall` came up with no window until
+    reopened. This is the variant being stopped by pid with state left over; `one.sh` (which
+    reopens) launches it cleanly. No product change.
+  - **Cleanup:** the container's store and prefs (via `defaults import`) were restored and
+    hash-matched to the pre-run state; the leftover savedState was moved into the evidence. The
+    real App Group is unchanged, and no variant is running.
+  - **Still the owner's, by hand:** the Badges-off check (the Dock number clears) and banner item 5
+    (Done with the app open and with it quit).
