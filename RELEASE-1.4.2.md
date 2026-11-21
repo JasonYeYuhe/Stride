@@ -2057,3 +2057,35 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
     test `codesign` with Apple Distribution succeeds.
   - **Upload:** `build-appstore.sh all --upload` from the clean clone at a902883 (build 24) was
     started, without the gate shim this time, so dSYMs go to Sentry.
+- 2026-11-21, **Store screenshots live on the 1.4.2 record; build 24 VALID on both platforms; demo
+  token in; Mac gate 10 remainder blocked by a Keychain prompt.**
+  - **Status:**
+    - **Demo token:** the owner ran `demo_token_to_asc.py 1.4.2`. Both records read back
+      `demoAccountRequired` with the password set.
+    - **Build 24:** processed as VALID on IOS and MAC_OS, `usesNonExemptEncryption` false. CI
+      re-run on 609c2c8 is green.
+  - **Screenshots (O9):**
+    - The 11-19 cron never fired (the session was not running), so `screenshots.sh --all-langs
+      --device both` ran on Saturday 11-21 (inside the Thursday–Sunday window) from the clean
+      clone at a902883.
+    - **Trap:** under load average 700+, the default 8-s settle captured iPhone `03_history`
+      before the sheet presented, in every locale (Stats instead of History). A retake of the
+      iPhone sets with `STRIDE_A11Y_SETTLE=20` fixed those but missed en `05_weekly_review`. The
+      blank-frame check passes both misses, so **every store frame is read by eye**.
+    - **Final set:** iPad from run 1, iPhone from run 2, en iPhone 05 from run 1. 144 PNGs, sizes
+      checked per display type, no two frames identical, every frame read by eye.
+    - **Kept in:** `gates-1.4.2/store-final-1.4.2/`.
+    - **Upload:** `store_screenshots.py upload --yes` for en-US, es-ES, ja, ko, zh-Hans and zh-Hant,
+      each with APP_IPHONE_67/65 and APP_IPAD_PRO_3GEN_129/129. Read back: 6 per set, 147
+      COMPLETE (the 3 en-US Watch frames untouched).
+    - Mac screenshots stay 1.5.0 (O9).
+  - **Mac gate 10 remainder** (⇧⌘R, tooltip, Tab to CTA, active CTA colour, item 12 names): on an
+    unlocked console, every variant launch stops at a SecurityAgent prompt for the login keychain.
+    - **Cause:** the first Keychain read (KeychainHelper.swift:38 from AuthService.swift:121) hits
+      the variant's stale demo session item, whose ACL does not list the current ad-hoc build.
+      Locked on 11-18, the same read failed silently. This is not a product defect.
+    - **Owner, to unblock:** either `security delete-generic-password -s
+      yyh.stride.habittracker.mactest` (the localhost demo session; the variant then starts signed
+      out) or Always Allow once.
+    - **Then:** `gate10-mac/tools/unlocked_pass.sh` runs all five items (~3 min).
+    - Container restored and hash-checked; the real App Group store is unchanged.
