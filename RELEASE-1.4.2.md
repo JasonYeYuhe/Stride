@@ -1063,25 +1063,25 @@ Placement rules are 1.4.1's. `Shared/` holds pure values only:
 
 ## Submission checklist (1.4.2)
 
-- [ ] 1.4.1 is released, and m5 has merged m4's tip and `main`.
+- [x] 1.4.1 is released, and m5 has merged m4's tip and `main`.
 - [x] **[owner]** The demo token is rotated (2026-11-11).
-- [ ] **[owner]** At submission, the new token is pasted into ASC's Sign-In Password for iOS and Mac.
-- [ ] Gates 1–13 are green on the final tree, gate 10 included. Signing preflight:
+- [x] **[owner]** At submission, the new token is pasted into ASC's Sign-In Password for iOS and Mac.
+- [x] Gates 1–13 are green on the final tree, gate 10 included. Signing preflight:
       `security show-keychain-info`, plus a 1-second codesign probe.
-- [ ] **[owner]** docs/terms.html (with Lifetime and the trial sentence) is published to stride-site
+- [x] **[owner]** docs/terms.html (with Lifetime and the trial sentence) is published to stride-site
       and verified live. The privacy page does not change (gate 12).
-- [ ] **[owner]** The three IAP review notes are fixed and read back (O22).
-- [ ] `WHATS_NEW_BY_VERSION["1.4.2"]` ×6, **before** **[owner]** `release.py prepare 1.4.2`.
-- [ ] **[owner]** `push_metadata.py 1.4.2`, which writes both records: the descriptions with the trial
+- [x] **[owner]** The three IAP review notes are fixed and read back (O22).
+- [x] `WHATS_NEW_BY_VERSION["1.4.2"]` ×6, **before** **[owner]** `release.py prepare 1.4.2`.
+- [x] **[owner]** `push_metadata.py 1.4.2`, which writes both records: the descriptions with the trial
       clause (O23) and the keywords (O25).
-- [ ] **[owner]** Screenshots (O9), the localized sets included: a dry run after `prepare`, a go for
+- [x] **[owner]** Screenshots (O9), the localized sets included: a dry run after `prepare`, a go for
       each `--yes`, then a read-back with `list`.
-- [ ] **[owner]** `review_notes.py 1.4.2 --yes`. The notes say:
+- [x] **[owner]** `review_notes.py 1.4.2 --yes`. The notes say:
   - where Weekly Review is: Statistics → calendar button, or Today on Monday;
   - that the paywall shows a trial only when StoreKit offers one and the account is eligible;
   - that a Yearly trial may be added after approval.
-- [ ] **[owner]** `build-appstore.sh all --upload` with `verify_archive --exported`. **Never `ship.sh`.**
-- [ ] **[owner]** `release.py finish 1.4.2 24 --platform IOS`, and `--platform MAC_OS` the same day if
+- [x] **[owner]** `build-appstore.sh all --upload` with `verify_archive --exported`. **Never `ship.sh`.**
+- [x] **[owner]** `release.py finish 1.4.2 24 --platform IOS`, and `--platform MAC_OS` the same day if
       gate 10 passed (O19), each with its own go.
 
 **After approval** (owner sitting 4, in order):
@@ -2123,3 +2123,37 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
     real App Group is unchanged, and no variant is running.
   - **Still the owner's, by hand:** the Badges-off check (the Dock number clears) and banner item 5
     (Done with the app open and with it quit).
+- 2026-11-22, **1.4.2 (24) SUBMITTED on iOS and Mac; both WAITING_FOR_REVIEW, releaseType MANUAL.**
+  - **Banner item 5, app open: PASS.** `gate10-mac/tools/banner_check.sh` (the variant's own store;
+    Journal and Morning Run reminders two minutes apart). Mark Done on the Journal banner with the
+    app running wrote today's check-in (`after A: Journal today=1`). This is the first time item 5
+    has been run since 1.4.0.
+  - **Banner item 5, app quit: not run.**
+    - The Morning Run banner was delivered at 01:36:00 (usernoted log). Nothing pressed it, and no
+      relaunch followed.
+    - The owner then handed the rest over ("你直接做吧 你全权负责").
+    - An agent cannot reach banner buttons: Notification Center cannot be granted to
+      computer-use, and its banners are not in any AX tree.
+    - Accepted on test evidence: NotificationActionHandlerTests drive `didReceive` against a
+      launch-opened store, and HabitCheckInTests cover Mark Done.
+    - The store was restored and hash-matched. The script's `pgrep -fE` (no `-E` on macOS) is
+      fixed.
+  - **Badges off: not run.** It is a System Settings switch, which agents do not change. Accepted
+    on code: `dockLabel(count:badgesEnabled:)` returns nil when Badges are off, and it is read at
+    every activation (NotificationService.swift:759-771). There is no hosted test of the label
+    rule (R8 planned one); this goes to 1.5.0.
+  - **Decision (agent, as release owner):** Mac gate 10 is accepted with those two items on
+    code and test evidence. So the Mac goes with iOS (O19), rather than waiting.
+  - **Demo account:**
+    - `seed-demo.js` is NOT run: it wipes sessions, per 1.4.1's D13.
+    - The demo-topup cron ran at 08:20 UTC today: +4 check-ins.
+    - `check_demo_account.sh` from the clean clone (the main checkout's iCloud dupe
+      `Shared/SentryBootstrap 3.swift` breaks its compile): 8 habits, 587 entries, 0 with no
+      history, 0 rejected, last week 76% (+2). The output is in
+      `gates-1.4.2/demo-check-2026-11-22.txt`.
+  - **Submit:** `release.py finish 1.4.2 24` IOS (submission fc8b5238-05e4-47c2-a2c2-fd1511cca38f),
+    then MAC_OS (be6f0ed0-8452-4d63-8bbd-b3278ff3cc4c). Both attached build 24, and both read back
+    as WAITING_FOR_REVIEW.
+  - **Next, after approval:** `release.py release 1.4.2` per platform, then merge with `--no-ff`,
+    tag v1.4.2, O3 (the Yearly 1-week intro offer, once both are live), gate 14, and the
+    promotional text ×6.
