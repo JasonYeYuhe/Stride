@@ -2166,3 +2166,18 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
     - Gate 14 against the real offer.
     - Promotional text ×6.
     - 1.5.0 carries a hosted test of `dockLabel` (R8) and the quit-app banner check.
+- 2026-11-26, **O3 done: the Yearly 1-week free trial is live in all 175 territories.** It was
+  created by the new `scripts/iap_intro_offer.py`, which is a dry run by default and does
+  `--yes`, then a read-back.
+  - **Read-back:** 175 offers, every one FREE_TRIAL / ONE_WEEK / 1 period with no end date.
+  - **Order:** N2 said create the offer before releasing. Here it came 25 minutes after both
+    releases, so for that window the paywall showed no trial, exactly as on 1.4.1.
+  - **Gate 14 (in progress):** `ios-gate14-real-offer/`. The installed Release build (1.4.2/24,
+    the same binary as gate 11's) on iPhone 17, with no Octane test state. A throwaway UI test in
+    the scratchpad drives Settings → Upgrade to Pro in en, ja and zh-Hans.
+    - **Run 2, 10 minutes after creation:** products loaded in all three languages, with no trial
+      wording.
+    - **Why:** storekitd logs "Missing account … using on-device calculation", so eligibility is
+      local (no transactions, so eligible). The likely cause is that the sandbox has not
+      propagated the new offer yet.
+    - **Next:** run 3 about an hour after creation.
