@@ -2157,3 +2157,12 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
   - **Next, after approval:** `release.py release 1.4.2` per platform, then merge with `--no-ff`,
     tag v1.4.2, O3 (the Yearly 1-week intro offer, once both are live), gate 14, and the
     promotional text ×6.
+- 2026-11-26, **1.4.2 (24) approved and LIVE on iOS and Mac.** Both read
+  PENDING_DEVELOPER_RELEASE. `release.py release 1.4.2` requested both, and both read back
+  READY_FOR_SALE. PR #12 is merged into `main` with a merge commit, and v1.4.2 is tagged on this
+  branch's tip (code = a902883), as v1.4.1 was.
+  - **Next:**
+    - O3: the Yearly introductory offer (free, 1 week, all territories), then a GET read-back.
+    - Gate 14 against the real offer.
+    - Promotional text ×6.
+    - 1.5.0 carries a hosted test of `dockLabel` (R8) and the quit-app banner check.
