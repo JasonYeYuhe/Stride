@@ -93,6 +93,58 @@ final class ShellTabTests: XCTestCase {
         XCTAssertEqual(MenuCommandRules.weeklyReviewDestination(isPro: false), .paywall)
     }
 
+    // MARK: - D8: decided when the request is issued (1.4.2)
+
+    /// A Monday, as Today's card passes last week's: the rule only carries it, so any fixed
+    /// instant does (2026-11-16 00:00 UTC).
+    private static let lastMonday = Date(timeIntervalSince1970: 1_794_787_200)
+
+    /// Each issuer's request for Pro: the review (on last week for Today's card), and nothing for
+    /// the locked card, which Pro never sees.
+    func testProIssuersAskForTheReview() {
+        typealias D = MenuCommandRules.ProDestination
+        XCTAssertNil(MenuCommandRules.destination(for: .lockedAnalyticsCard, isPro: true))
+        XCTAssertEqual(MenuCommandRules.destination(for: .weeklyReviewButton, isPro: true), D.review(week: nil))
+        XCTAssertEqual(MenuCommandRules.destination(for: .todayWeekCard(lastWeek: Self.lastMonday), isPro: true),
+                       D.review(week: Self.lastMonday))
+    }
+
+    /// Each issuer's request for a free user: the paywall with the issuer's own trigger, and the
+    /// review it was asked for as Continue's resume — none for the locked card.
+    func testFreeIssuersAskForThePaywallResumingTheReview() {
+        typealias D = MenuCommandRules.ProDestination
+        XCTAssertEqual(MenuCommandRules.destination(for: .lockedAnalyticsCard, isPro: false),
+                       D.paywall(trigger: .analytics, resume: nil))
+        XCTAssertEqual(MenuCommandRules.destination(for: .weeklyReviewButton, isPro: false),
+                       D.paywall(trigger: .weeklyReview, resume: .review(week: nil)))
+        XCTAssertEqual(MenuCommandRules.destination(for: .todayWeekCard(lastWeek: Self.lastMonday), isPro: false),
+                       D.paywall(trigger: .today, resume: .review(week: Self.lastMonday)))
+    }
+
+    /// What a free user's paywall resumes is exactly what Pro would have opened at the same press:
+    /// buying changes only whether the paywall comes first.
+    func testThePaywallResumesExactlyWhatProWouldHaveOpened() {
+        let issuers: [MenuCommandRules.ProIssuer] = [.weeklyReviewButton, .todayWeekCard(lastWeek: Self.lastMonday)]
+        for issuer in issuers {
+            guard case .paywall(_, let resume)? = MenuCommandRules.destination(for: issuer, isPro: false) else {
+                return XCTFail("\(issuer): no paywall for a free user")
+            }
+            XCTAssertEqual(resume, MenuCommandRules.destination(for: issuer, isPro: true), "\(issuer)")
+        }
+    }
+
+    /// The issue rule's three cases: one of the shell's sheets on screen → dropped; the window
+    /// presenting anything else (a view's sheet, the account screen, an alert) → refused; nothing
+    /// presented → taken, which replaces a request still set but never shown — the input that
+    /// used to block every issuer ("asked for" counted as "up"), and is no input at all now.
+    func testAnIssuedRequestIsTakenOnlyWithNothingPresented() {
+        let take = MenuCommandRules.takesIssuedRequest
+        XCTAssertFalse(take(true, true), "a shell sheet on screen (the window presents it): dropped")
+        XCTAssertFalse(take(true, false), "a shell sheet on screen, whatever the window reports: dropped")
+        XCTAssertFalse(take(false, true), "another presentation (Share, the account screen, an alert): refused")
+        XCTAssertTrue(take(false, false), "nothing on screen: taken, a pending request replaced")
+    }
+
     /// With no main window focused (Settings in front, or no window), only Window → Stride — the
     /// way back — and Sync Now, which acts on no window, are enabled. With one, every command
     /// follows its own rule.

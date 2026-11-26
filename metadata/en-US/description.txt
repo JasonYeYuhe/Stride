@@ -1,10 +1,10 @@
 Nothing worth building happens in a day. Stride is the habit tracker that helps you show up, see your progress, and keep the streak alive — one day at a time.
 
-Whether it’s a morning routine, the gym, or drinking more water, Stride makes it simple to stay on track on your iPhone, iPad, and Mac.
+A morning routine, the gym, or drinking more water: Stride keeps you on track on iPhone, iPad, and Mac.
 
 TRACK YOUR HABITS, YOUR WAY
 
-Create habits in seconds — from scratch or from a ready-made template — and check off a yes-or-no habit with a single tap. Pick an emoji and a color for each one, and arrange your list to match how your day runs.
+Create habits in seconds — from scratch or from a ready-made template — and check off a yes-or-no habit with a single tap. Pick an emoji and a color for each one, and order your list your way.
 
 Not every habit is a simple yes or no. Measurable habits let you set a daily target and a unit, so “Drink Water — 8 glasses” or “Run — 5 km” tracks the amount, not just the checkmark.
 
@@ -20,11 +20,11 @@ The Activity Heatmap is a color-coded grid of your last 12 weeks. You also get y
 
 WIDGETS ON IPHONE AND IPAD
 
-Widgets in every size: small, medium, and large on the Home Screen (and extra large on iPad), plus circular, inline, and rectangular on the Lock Screen. See today’s progress without opening the app — and from the medium and large widgets, tap a habit to check it off right there.
+Small, medium, and large widgets on the Home Screen (extra large on iPad), plus circular, inline, and rectangular ones on the Lock Screen. See today’s progress without opening the app, and check off a habit right from the medium and large widgets.
 
 REMINDERS FOR EVERY HABIT
 
-Give every habit its own reminder, at exactly the time you want it. Morning meditation at 7 AM, evening journal at 9 PM — Stride nudges you at the right moment, so the habit sticks. Mark it done or snooze it from the notification.
+Give every habit its own reminder, at the time you choose: meditation at 7 AM, a journal at 9 PM. Mark it done or snooze it right from the notification.
 
 SYNC ACROSS YOUR DEVICES
 
@@ -52,7 +52,7 @@ PURCHASE & SUBSCRIPTION INFORMATION
 
 Stride Pro is available as a monthly or yearly auto-renewable subscription, or as a one-time Lifetime purchase. The Lifetime purchase is paid once and does not renew.
 
-For subscriptions: payment is charged to your Apple ID account on confirmation of purchase. The subscription renews automatically unless auto-renew is turned off at least 24 hours before the end of the current period, and your account is charged for renewal within 24 hours before that period ends. You can manage or cancel your subscription in your App Store account settings.
+For subscriptions: payment is charged to your Apple ID account on confirmation of purchase. The subscription renews automatically unless auto-renew is turned off at least 24 hours before the end of the current period, and your account is charged for renewal within 24 hours before that period ends. If a free trial is offered, you are charged when it ends unless you cancel at least 24 hours before it ends. Any unused part of a trial ends when you subscribe. You can manage or cancel your subscription in your App Store account settings.
 
 Terms of Use: https://jasonyeyuhe.github.io/stride-site/terms
 Privacy Policy: https://jasonyeyuhe.github.io/stride-site/privacy

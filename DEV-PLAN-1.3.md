@@ -36,6 +36,25 @@ What it optimises for, in order:
    the moment the user enables a reminder. Inline status rows (sync state, sign-in needed,
    subscription lapsed) are allowed; a notification the user opted into is not a nag. This is
    an acceptance criterion on every milestone.
+   *(Amended 2026-11-08 by the owner, RELEASE-1.4.2.md N3; ships in 1.4.2 (24), W7.)* A second
+   exception, and only this one: StoreKit's own rating request, `requestReview` (the system caps
+   it at 3 a year), under every one of these conditions:
+   - **at most once per app version** (`CFBundleShortVersionString`), recorded in
+     `UserDefaults.standard` before the call, never synced and never in a backup;
+   - **only right after a check-in on today** that either lifts the habit's current streak to a
+     multiple of 7 days (a 7-day streak milestone) or takes a times-per-week habit's count across
+     its weekly goal (a met week);
+   - **never in the first 3 days after the install date.** The install date is the first Today
+     appearance or check-in on 1.4.2 or later, so an upgrader's clock starts at the upgrade;
+   - **never during onboarding**, and never while any sheet, alert or cover is showing;
+   - **never in an automated run**: any launch argument, or an XCTest host;
+   - **the system `requestReview` only.** No home-made rating card, "Enjoying Stride?" prompt or
+     sentiment gate (Guideline 5.6.1). The Settings → About "Rate Stride" row stays.
+
+   It is pinned by the pure `Shared/ReviewPromptRule.swift` with its unit tests, and by a source
+   scan that keeps `requestReview` to Today's hook and the prompter. Anything beyond this (a
+   second call per version, another trigger, a custom prompt) needs the owner to amend this rule
+   again.
 
 Non-negotiable constraints: deployment targets stay iOS 17 / macOS 14 (nothing below needs a
 bump); the existing server stays (paying users sync through it; the demo account lives
@@ -51,8 +70,9 @@ nothing free today moves behind Pro.
 | M2 | **1.3.1** (build 19) | 5.5 (provisional) | Incremental push, cursor expiry, account isolation, sessions that stay signed in |
 | M3 | **1.4.0** (build 20) | 3.5 | iPad and Mac as real shells, notification actions, background sync |
 | M4 | **1.4.1** (build 21) | 5.5 | Habit strength score, editable history, best streaks, notes, stats that scale, subscription status |
-| M5 | **1.4.2** (build 22) | 2 | A Weekly Review worth opening |
-| M6 | **1.5.0** | 4 | Skip days / vacation — gated on a 426 floor ≥ 1.3.1 retiring the ≤1.3.0 cohort (M0's counters say when) |
+| M5 | **1.4.2** (build 24) | 2.5 | Pro you can see, trust and try (RELEASE-1.4.2.md Wave A): a trial-ready paywall, Advanced Analytics right from the first week, Weekly Review step 1, Today's Monday card. The rest of M5 (Wave B) moved to 1.5.0 as X0 (N1) |
+| — | **1.5.0** (build 25) | ≈ 4 + Wave B | In this order: X0 = Wave B of 1.4.2 (any week, at risk, "N more this week", notes, groups, share); X2 = the free daily loop, one pure `DailyProgress` rule (D17), perfect days included; X1 = Groups worth paying for; X3 = the opt-in review notification (RELEASE-1.4.2.md "1.5.0") |
+| M6 | **its own release** (1.6.0 if the gate is met at 1.5.0's cut) | 4 | Skip days / vacation — gated on a 426 floor ≥ 1.3.1 retiring the ≤1.3.0 cohort (M0's counters say when). Never in the same release as Pro work (RELEASE-1.4.2.md D18) |
 
 ≈ 27.5 developer-weeks + ~3 weeks of release mechanics. **M0 + M1 + M2 (~12.5 weeks) is the
 committed phase.** M3–M6 are planned to the same level of detail so the next session can
@@ -1252,30 +1272,50 @@ only cards that exist in this build. (6) No new interruptive UI.
 
 ## M5 — 1.4.2: a Weekly Review worth opening (2 w)
 
+*(Amended 2026-11-18, RELEASE-1.4.2.md W12.)* M5 ships as **1.4.2 (build 24)**, and only its
+first step does (Wave A, N1): the review opens on the requested week, else this week from
+Thursday ("This week so far"), else last week; the change in points; "Most improved" and
+"Slipped" by change, only for a week with 4 counted days; one presenter; Today's Monday card.
+Everything else below (any-week navigation, at risk, strips and chips, group sections, notes,
+share, Today's badge) is 1.5.0's X0, first in that release, specified by RELEASE-1.4.2.md W10 and
+W11. Two corrections hold wherever it ships:
+- the Today badge reads **"N more this week"**, not "2 more by Sun": week math is Monday-based
+  while heatmap rows follow the region, so no copy names a weekday (RELEASE-1.4.2.md D10);
+- the **perfect-day count waits for 1.5.0's X2**, which gives Today, the badge, the Dock, the
+  widget and the review one `DailyProgress` rule; today "Perfect day!" counts rest days
+  (RELEASE-1.4.2.md D17).
+The evening time for `atRisk` is the habit's reminder time, then the Daily Reminder's, then
+18:00 (D10).
+
 - `Shared/WeeklyReviewMath.swift` (pure): `weekRange(containing:)` for any past
   Monday-anchored week; per-habit rate and strength delta vs the prior week; highlights by
   delta instead of raw rate; `atRisk(habit, now)` — times-per-week: `remaining ≥ days left
   to Sunday`; daily/specificDays: scheduled today, not done, **after the user's evening
-  reminder time (18:00 if none)**; `notesOfWeek`; perfect-day count. Tests on Sunday/Monday
-  boundaries, DST changeover and UTC−9 (the TimezoneTests pattern).
+  reminder time (18:00 if none)**; `notesOfWeek`; perfect-day count (1.5.0, X2). Tests on
+  Sunday/Monday boundaries, DST changeover and UTC−9 (the TimezoneTests pattern).
 - `WeeklyReviewView` rebuild: ‹ › week navigation, summary ring + delta, "At risk this week"
   (tap → Today via `TodaySelection`), per-habit rows with a 7-cell strip + delta chip,
   highlights, notes. Share as an image rendered once.
-- **Free, on Today:** a "2 more by Sun" badge on times-per-week rows, at-risk rows sorted first
-  within their section.
+- **Free, on Today:** an "N more this week" badge on times-per-week rows, at-risk rows sorted
+  first within their section.
 - No Sunday nudge in this milestone; if ever, opt-in and Pro only.
 - Extend `demo_check/main.swift` with a "last week" block; metadata Pro block: "Weekly Review
   — any week, what improved, what is at risk, your notes".
 
 **Acceptance.** (1) `WeeklyReviewMathTests` green. (2) Demo account on a simulator with local
 Pro: tap ‹ once — the per-habit percentages and highlights equal the script's "last week"
-block; the at-risk list names the demo times-per-week habit with the correct "N more by
-Sunday". (3) Signed out of Pro: the Today badge still shows, the review is locked, nothing
+block; the at-risk list names the demo times-per-week habit with the correct "N more this
+week". (3) Signed out of Pro: the Today badge still shows, the review is locked, nothing
 else appears.
 
 ---
 
-## M6 — 1.5.0: skip days and vacation (4 w) — gated
+## M6 — its own release: skip days and vacation (4 w) — gated
+
+*(Amended 2026-11-18, RELEASE-1.4.2.md D18.)* M6 is no longer 1.5.0: 1.5.0 (25) is Wave B (X0),
+the daily loop (X2), Groups (X1) and the review notification (X3), in that order. The gate below
+is checked on 1.5.0's cut day; if it is met, M6 becomes a minor release of its own (1.6.0). A
+schema and wire change on entries never ships in the same release as Pro work.
 
 The most-requested tracker feature across every comparator (Beaver, Habo, harsh, streak,
 RoutineTracker) and the reviewers' top product ask. It is the first milestone with a schema
@@ -1344,7 +1384,10 @@ email change; a watch data path; macOS desktop widgets.
 - Before submitting: `scripts/check_demo_account.sh`, `scripts/sync_rehearsal.sh` (M2+),
   `scripts/a11y_sweep.sh`, `StrideAppTests` on a simulator, `verify_archive.sh` via
   `ship.sh`, the six-locale What's New in `release.py`, and `push_metadata.py` in the same
-  submission as any description change.
+  submission as any description change. *(Amended 2026-11-18, RELEASE-1.4.2.md spec
+  corrections: `ship.sh` is retired and refuses to run (RELEASE-1.4.1.md W7;
+  scripts/ship.sh:2-3). Archives are built and uploaded with `build-appstore.sh all --upload`,
+  and `verify_archive.sh --exported` checks the exported archive. Never `ship.sh`.)*
 - Server changes are rehearsed on a copy of production on the host before deploying.
 - Every new user-facing string goes into all five catalogs in the same commit; the
   source-scan test (M1) is the gate.

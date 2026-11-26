@@ -141,6 +141,13 @@ enum ColorContrast {
         let white = ratio(.white, fill)
         return white < minimum && ratio(.black, fill) > white
     }
+
+    /// White or black on `fill`, by `prefersDarkContent(on:minimum:)`. One of the two always
+    /// reaches 4.58:1 on any fill (their ratios multiply to 21), so `textMinimum` is always met
+    /// when asked for.
+    static func content(on fill: RGB, minimum: Double = markMinimum) -> RGB {
+        prefersDarkContent(on: fill, minimum: minimum) ? .black : .white
+    }
 }
 
 extension Color {
@@ -154,9 +161,10 @@ extension Color {
     }
 
     /// Text and marks on a fill of the habit colour `hex`: white, or black where white would not
-    /// be read (`ColorContrast.prefersDarkContent`).
-    static func content(onFillHex hex: String) -> Color {
-        ColorContrast.prefersDarkContent(on: ColorContrast.RGB(hex: hex) ?? .fallback) ? .black : .white
+    /// be read at `minimum` (`ColorContrast.prefersDarkContent`). The default, 3:1, is for marks
+    /// and large digits (History's days); small text asks for `ColorContrast.textMinimum`.
+    static func content(onFillHex hex: String, minimum: Double = ColorContrast.markMinimum) -> Color {
+        ColorContrast.content(on: ColorContrast.RGB(hex: hex) ?? .fallback, minimum: minimum).color
     }
 }
 

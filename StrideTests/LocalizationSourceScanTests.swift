@@ -86,6 +86,8 @@ final class LocalizationSourceScanTests: XCTestCase {
             "preview.groups", "habit.weeklyCompletions(containing: date)",
             "currentPage + 1", "targetValue", "todayCount",
             "failure.code",   // StoreOpenFailure.code: the store error screen's number
+            "days",           // the paywall's trial length (PaywallModel.trialDays), 1.4.2 D4
+            "points",         // Weekly Review's change against the previous week, 1.4.2 D8
         ]
         let strings = [
             "error", "newError", "email", "habitName", "habit.emoji", "habit.name", "unit",
@@ -94,6 +96,7 @@ final class LocalizationSourceScanTests: XCTestCase {
             "template.displayName",
             "Self.amount(result.loggedValue)", "Self.amount(habit.targetValue)", "status",
             "failure.domain", // StoreOpenFailure.domain, e.g. NSCocoaErrorDomain
+            "price", "perMonth", // the paywall's prices, formatted by StoreKit (1.4.2 D4)
         ]
         var table: [String: String] = [:]
         for e in ints { table[e] = "%lld" }
@@ -221,6 +224,37 @@ final class LocalizationSourceScanTests: XCTestCase {
         XCTAssertFalse(try Self.japaneseKeys().contains(retired), "the retired Pro subtitle is back in the catalogs")
     }
 
+    /// The paywall's header subtitle by trigger (RELEASE-1.4.2.md D4) joins D11's pin: it is the
+    /// line right above the three rows, so W12's D11 commit changes it with them or not at all.
+    /// Each trigger has exactly one, in the switch `ProPaywallView.triggerSubtitle`, and every
+    /// subtitle is in all five catalogs. The rows' order by trigger is a runtime permutation of
+    /// the literals `testProClaimsNameExactlyD11sSet` pins (PaywallRenderTests checks it).
+    func testThePaywallsTriggerSubtitlesAreD11s() throws {
+        let paywall = Self.repositoryRoot.appendingPathComponent("Stride/Sources/Views/ProPaywallView.swift")
+        let body = try XCTUnwrap(
+            Self.captures(#"var triggerSubtitle: some View \{\s*switch trigger \{([^}]*)\}"#, in: [paywall]).first?.first,
+            "ProPaywallView.triggerSubtitle's switch")
+        let regex = try NSRegularExpression(pattern: #"case ([.A-Za-z, ]+): Text\("([^"]*)"\)"#)
+        let ns = body as NSString
+        let cases = regex.matches(in: body, range: NSRange(location: 0, length: ns.length)).map {
+            [ns.substring(with: $0.range(at: 1)), ns.substring(with: $0.range(at: 2))]
+        }
+        XCTAssertEqual(cases, [
+            [".analytics", "See what's changing, not just where you are"],
+            [".weeklyReview, .today", "See how your week went"],
+            [".groups", "Organize your habits into groups"],
+            [".settings, .onboarding", "Almost everything is free. Pro adds three things."],
+            [".lapsed", "Welcome back"],
+        ], "the paywall's trigger subtitles (D4, D11)")
+
+        for language in ["es", "ja", "ko", "zh-Hans", "zh-Hant"] {
+            let catalog = try Self.catalog(language)
+            for subtitle in cases.map({ $0[1] }) {
+                XCTAssertNotNil(catalog[subtitle], "\(language) has no \"\(subtitle)\"")
+            }
+        }
+    }
+
     /// The App Store descriptions (metadata/<locale>/description.txt, which push_metadata.py sends
     /// stripped): each fits App Store Connect's 4,000 characters, and each STRIDE PRO block lists
     /// D11's three things under the paywall's own titles. Every bullet opens with the catalog's
@@ -294,6 +328,74 @@ final class LocalizationSourceScanTests: XCTestCase {
         XCTAssertTrue(en.contains("a strength score that recovers from a missed day"), "en-US statistics paragraph")
         XCTAssertTrue(en.contains("Fix past days in your history"), "en-US statistics paragraph")
         XCTAssertFalse(en.lowercased().contains("best streaks"), "en-US sells \"best streaks\"; the Best Streak tile is free")
+    }
+
+    /// RELEASE-1.4.2.md O23 / D16: each description's purchase section states the free trial's
+    /// terms in a clause that is true with or without a live offer (the description changes only
+    /// with a version; the offer is created at release, N2). The clause sits after the purchase
+    /// heading and before the Terms link, and D1 never cuts it. The ja and ko back-translations are
+    /// in docs/evidence/1.4.2-l10n-backtranslation.md.
+    func testStoreDescriptionsStateTheConditionalTrialClause() throws {
+        let clauses: [(String, String, String)] = [
+            ("en-US", "PURCHASE & SUBSCRIPTION INFORMATION",
+             "If a free trial is offered, you are charged when it ends unless you cancel at least 24 hours before it ends. Any unused part of a trial ends when you subscribe."),
+            ("es-ES", "INFORMACIÓN DE COMPRA Y SUSCRIPCIÓN",
+             "Si se ofrece una prueba gratuita, se te cobrará cuando termine, a menos que la canceles al menos 24 horas antes de que termine. La parte no utilizada de una prueba termina cuando te suscribes."),
+            ("ja", "購入・サブスクリプションについて",
+             "無料トライアルが提供される場合、トライアル終了の24時間前までに解約しない限り、トライアル終了時に料金が請求されます。サブスクリプションを購入すると、無料トライアルの未使用期間はその時点で終了します。"),
+            ("ko", "구매 및 구독 정보",
+             "무료 체험이 제공되는 경우, 체험이 끝나기 최소 24시간 전에 취소하지 않으면 체험이 끝날 때 요금이 청구됩니다. 구독을 구매하면 무료 체험 중 사용하지 않은 기간은 그 즉시 종료됩니다."),
+            ("zh-Hans", "购买信息",
+             "如提供免费试用，除非你在试用结束前至少 24 小时取消，否则将在试用结束时扣款。购买订阅后，免费试用中尚未使用的部分随即终止。"),
+            ("zh-Hant", "訂閱與購買資訊",
+             "如提供免費試用，除非你在試用結束前至少 24 小時取消，否則將於試用結束時收費。購買訂閱後，免費試用中尚未使用的部分隨即終止。"),
+        ]
+        for (locale, heading, clause) in clauses {
+            let url = Self.repositoryRoot.appendingPathComponent("metadata/\(locale)/description.txt")
+            let text = try String(contentsOf: url, encoding: .utf8)
+            let headingAt = try XCTUnwrap(text.range(of: heading), "\(locale): no purchase heading \"\(heading)\"")
+            let clauseAt = try XCTUnwrap(text.range(of: clause), "\(locale): the purchase section lacks O23's trial clause")
+            let termsAt = try XCTUnwrap(text.range(of: "https://jasonyeyuhe.github.io/stride-site/terms"), "\(locale): no Terms link")
+            XCTAssertTrue(headingAt.upperBound <= clauseAt.lowerBound && clauseAt.upperBound <= termsAt.lowerBound,
+                          "\(locale): the trial clause belongs in the purchase section, before the Terms link")
+        }
+    }
+
+    /// RELEASE-1.4.2.md O25 / D19: each locale's keywords (metadata/<locale>/keywords.txt, which
+    /// push_metadata.py sends stripped and truncates past 100) fit App Store Connect's 100
+    /// characters, are comma-separated with no space after a comma and no empty or repeated term,
+    /// lead with the locale's "unlimited" and "free" (the name supplies "habit"), and repeat no word
+    /// of the app's name or subtitle, which the store already indexes. Latin words count with or
+    /// without a plural "s"; CJK terms are compared whole.
+    func testStoreKeywordsFitAndLeadWithUnlimitedAndFree() throws {
+        let leads: [String: [String]] = [
+            "en-US": ["unlimited", "free"], "es-ES": ["ilimitados", "gratis"], "ja": ["無制限", "無料"],
+            "ko": ["무제한", "무료"], "zh-Hans": ["无限", "免费"], "zh-Hant": ["無限", "免費"],
+        ]
+        func read(_ locale: String, _ file: String) throws -> String {
+            try String(contentsOf: Self.repositoryRoot.appendingPathComponent("metadata/\(locale)/\(file).txt"), encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        for (locale, lead) in leads.sorted(by: { $0.key < $1.key }) {
+            let keywords = try read(locale, "keywords")
+            XCTAssertLessThanOrEqual(keywords.utf16.count, 100, "\(locale): App Store Connect keeps only 100 characters of keywords")
+            XCTAssertFalse(keywords.contains(", "), "\(locale): a space after a comma spends a character")
+            let terms = keywords.components(separatedBy: ",")
+            XCTAssertFalse(terms.contains { $0.trimmingCharacters(in: .whitespaces).isEmpty }, "\(locale): an empty keyword")
+            XCTAssertEqual(Set(terms.map { $0.lowercased() }).count, terms.count, "\(locale): a repeated keyword")
+            XCTAssertEqual(Array(terms.prefix(2)), lead, "\(locale): O25 leads with unlimited and free")
+
+            let indexed = Set(try (read(locale, "name") + " " + read(locale, "subtitle")).lowercased()
+                .components(separatedBy: CharacterSet.whitespaces.union(.punctuationCharacters))
+                .filter { !$0.isEmpty })
+            for term in terms {
+                let words = term.lowercased().components(separatedBy: " ")
+                for word in words + (words.count > 1 ? [term.lowercased()] : []) {
+                    let forms = [word, word + "s", word.hasSuffix("s") ? String(word.dropLast()) : word]
+                    XCTAssertTrue(indexed.isDisjoint(with: forms), "\(locale): \"\(word)\" is already in the name or subtitle")
+                }
+            }
+        }
     }
 
     /// The Swift files under a directory of the repository, sorted by path.

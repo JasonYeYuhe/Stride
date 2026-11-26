@@ -15,8 +15,8 @@ final class StoreServiceTests: XCTestCase {
     /// Connect). A one-character mismatch loads no product for that plan — the paywall shows
     /// two cards, or none — and nothing else fails.
     ///
-    /// The paywall also labels products by substring (`contains("lifetime")`,
-    /// `contains("yearly")`), so each marker must match exactly one id.
+    /// Each marker (`lifetime`, `yearly`) still names exactly one id. The paywall labelled
+    /// products by these substrings until 1.4.2; it now reads the kind from `StrideProduct`.
     func testProductIdsMatchTheStoreKitConfigurationAndThePaywallLabels() throws {
         let config = try storeKitConfiguration()
 
@@ -48,6 +48,40 @@ final class StoreServiceTests: XCTestCase {
                                     "\"version\" must be {\"major\", \"minor\"}, not \(config["version"] ?? "missing")")
         XCTAssertNotNil(version["major"] as? Int, "version.major")
         XCTAssertNotNil(version["minor"] as? Int, "version.minor")
+    }
+
+    /// RELEASE-1.4.2.md D16: the local file prices Lifetime at 39.99 (it tied Yearly at 19.99
+    /// until 1.4.2, which is why the paywall orders by kind, never price), describes Yearly
+    /// without a savings figure the paywall computes itself, and gives Yearly the one intro offer
+    /// Stride makes: a 7-day free trial (P1W). Monthly has none, and no other offer kind exists.
+    /// The SKTestSession cases (StoreKitStatusTests) buy this trial.
+    func testTheConfigurationHasD16sPricesAndYearlysFreeTrial() throws {
+        let config = try storeKitConfiguration()
+        let products = config["products"] as? [[String: Any]] ?? []
+        let lifetime = try XCTUnwrap(products.first { $0["productID"] as? String == StrideProduct.lifetimePro.rawValue })
+        XCTAssertEqual(lifetime["displayPrice"] as? String, "39.99")
+
+        let groups = config["subscriptionGroups"] as? [[String: Any]] ?? []
+        let subscriptions = groups.flatMap { $0["subscriptions"] as? [[String: Any]] ?? [] }
+        func subscription(_ product: StrideProduct) throws -> [String: Any] {
+            try XCTUnwrap(subscriptions.first { $0["productID"] as? String == product.rawValue }, product.rawValue)
+        }
+        let monthly = try subscription(.monthlyPro)
+        let yearly = try subscription(.yearlyPro)
+        XCTAssertEqual(monthly["displayPrice"] as? String, "2.99")
+        XCTAssertEqual(yearly["displayPrice"] as? String, "19.99")
+
+        let offer = try XCTUnwrap(yearly["introductoryOffer"] as? [String: Any], "Yearly's intro offer")
+        XCTAssertEqual(offer["paymentMode"] as? String, "free")
+        XCTAssertEqual(offer["subscriptionPeriod"] as? String, "P1W")
+        XCTAssertTrue(monthly["introductoryOffer"] is NSNull || monthly["introductoryOffer"] == nil, "Monthly has no intro offer")
+        for sub in [monthly, yearly] {
+            XCTAssertEqual((sub["adHocOffers"] as? [Any])?.count ?? 0, 0, "no promotional offers (D16)")
+            XCTAssertEqual((sub["codeOffers"] as? [Any])?.count ?? 0, 0, "no offer codes (D16)")
+        }
+
+        let descriptions = (yearly["localizations"] as? [[String: Any]] ?? []).compactMap { $0["description"] as? String }
+        XCTAssertEqual(descriptions, ["Full access billed yearly"])
     }
 
     /// The hosted test runs in the simulator, which reads the Mac's filesystem, so the
