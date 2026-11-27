@@ -420,8 +420,9 @@ final class TodayRenderTests: XCTestCase {
         let ahead = try habit("Ahead")
         ahead.createdAt = HabitStats.key(ofDay: todayNumber + 1)
         try context.save()
-        // Today was anchored a minute before, on the same local day.
-        let window = try show(now: clock, shell: ShellState(launchArguments: [], now: clock.addingTimeInterval(-60)))
+        // Today anchored at that instant. (Not "a minute before": in UTC, CI's zone, 23:59Z is the
+        // previous local day, so Today would show a past day and the premise would not hold.)
+        let window = try show(now: clock, shell: ShellState(launchArguments: [], now: clock))
         try await waitUntil("the card") { self.cardLabel(in: window) == self.cardWords(DailyProgress(done: 1, due: 1)) }
         XCTAssertEqual(card(in: window)?.accessibilityValue, appLocalized("All done! Perfect day!"))
         XCTAssertNotNil(elements(in: window) { $0.accessibilityLabel == self.rowLabel("Run", done: true) }.first,
