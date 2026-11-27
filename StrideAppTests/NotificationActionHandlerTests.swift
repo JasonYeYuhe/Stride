@@ -328,6 +328,46 @@ final class NotificationActionHandlerTests: XCTestCase {
         XCTAssertEqual(try records(of: read).map(\.date), [key(2026, 10, 12)])
     }
 
+    /// 1.5.0 (RELEASE-1.5.0.md D4, gate 3): a lock-screen Mark Done runs in a background launch with
+    /// no window, so no save observer re-plans for it. The app's effects do
+    /// (`CheckInEffects.live`'s `updateBadge` → `replanAndUpdateBadgeAndWait`), awaited before the
+    /// action returns: the habit's overlay is pending and its bare request is gone, then the badge
+    /// is set. Driven here through the same service call over a recording center, with the clock
+    /// pinned to a Wednesday at 19:00 in Los Angeles, two hours before the reminder.
+    func testAMarkDoneQuietsTheHabitBeforeTheActionReturns() async throws {
+        let read = try habit("Read")
+        read.reminderHour = 21
+        read.reminderMinute = 0
+        try context.save()
+        let la = calendar(losAngeles)
+        let now = at(losAngeles, 2026, 7, 15, 19)                  // Wednesday
+        let center = RecordingCenter()
+        let scratch = ScratchDefaults("action-replan")
+        defer { scratch.remove() }
+        let service = NotificationService(center: center, defaults: scratch.defaults)
+        let bare = ReminderPlan.legacyIdentifier(for: read.id)
+        service.scheduleAllHabitReminders(modelContainer: container, now: now, calendar: la)
+        XCTAssertEqual(Set(center.pending.keys), [bare])
+
+        let container = self.container!
+        let effects = CheckInEffects(
+            reloadWidgets: {},
+            updateBadge: { await service.replanAndUpdateBadgeAndWait(modelContainer: $0, now: now, calendar: la) },
+            cancelSnooze: { _ in }, withdrawDelivered: { _ in }, submitRefresh: {})
+        let handler = NotificationActionHandler(environment: .init(
+            container: { container }, effects: effects, sync: { _ in },
+            scheduleSnooze: { _, _ in }, now: { now }, calendar: { la }))
+
+        let outcome = await handler.perform(route: .checkIn(habitID: read.id, day: nil), delivered: now, responded: now)
+
+        XCTAssertEqual(outcome, .checkedIn(day: key(2026, 7, 15)))
+        XCTAssertEqual(Set(center.pending.keys), Set([1, 2, 3, 5, 6, 7].map { "\(bare).\($0)" } + ["\(bare).n4"]))
+        let shot = try XCTUnwrap(center.pending["\(bare).n4"]?.trigger as? UNCalendarNotificationTrigger)
+        XCTAssertEqual(shot.dateComponents, DateComponents(year: 2026, month: 7, day: 22, hour: 21, minute: 0))
+        XCTAssertFalse(shot.repeats)
+        XCTAssertEqual(center.badgeCounts, [0], "the badge after the plan, nothing left")
+    }
+
     /// Snooze hands the scheduler the day the banner was for: the delivered day for an original
     /// reminder, the carried one for a snooze of a snooze (still creditable shortly after
     /// midnight), and today for a stale one — what `ReminderDay.resolve` gives, so the snooze's

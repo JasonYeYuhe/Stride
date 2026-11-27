@@ -77,8 +77,14 @@
 #          removes; STRIDE_E2E_REMINDER_TRIES × STRIDE_E2E_REMINDER_PAUSE s, default 10 × 3):
 #          the Mon/Wed/Fri habit has exactly .2, .4 and .6 and no bare id; the daily habit keeps
 #          exactly its bare id; both categories, stride.habit.binary and stride.habit.count, are
-#          registered; and when the archive's records show categories at all, those four requests
-#          carry one of the two.
+#          registered; and when the archive's records show categories at all, the two habits'
+#          requests carry one of the two;
+#        - 1.5.0 (RELEASE-1.5.0.md D4, Data safety 3): a habit done today before its reminder time
+#          (or a times-per-week goal met) is QUIET: its requests are the overlay, one per weekday it
+#          fires on, as .<w> (weekly) or .n<w> (a one-shot next week), at least one .n<w>, and no
+#          bare id. The run is told which habits are quiet, never guesses:
+#          STRIDE_E2E_REMINDER_QUIET=daily, mwf or daily,mwf (default: none — a non-quiet day,
+#          where the ids are exactly 1.4.2's above).
 #      Without the flag nothing about reminders is read, so runs on devices with no reminder
 #      habits (every gate run before 1.4.0) work as they did. Why the system's store and not an
 #      app log line: design review upgrade-gate-blind-to-reminders; README, "Reminder habits",
@@ -354,7 +360,8 @@ waiting_marks() {
 # Read from an `app.sh reminders` listing: "request<TAB><id><TAB><category>…" lines (the header of
 # notifications.py). The ids are NotificationService's: stride.habit.reminder.<habit id> for a
 # daily trigger (1.3.x and 1.4.0 alike), stride.habit.reminder.<habit id>.<w> (w = 1 Sun … 7 Sat)
-# for 1.4.0's weekday triggers (D4).
+# for 1.4.0's weekday triggers (D4), and from 1.5.0 stride.habit.reminder.<habit id>.n<w> for the
+# one-shot that silences a quiet day (RELEASE-1.5.0.md D4).
 REMINDER_PREFIX="stride.habit.reminder."
 REMINDER_CATEGORIES="stride.habit.binary stride.habit.count"
 UUID_RE='^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$'
@@ -369,9 +376,41 @@ parse_reminders_arg() {
   [[ "$daily" != "$mwf" ]] || die "--reminders: the daily and the Mon/Wed/Fri habit must be two habits"
   REM_DAILY="$daily"
   REM_MWF="$mwf"
+  # Which of the two are quiet today (1.5.0, D4): the operator says so, from what they checked in.
+  REM_QUIET=" "
+  local q
+  for q in $(tr ',' ' ' <<<"${STRIDE_E2E_REMINDER_QUIET:-}"); do
+    case "$q" in
+      daily|mwf) REM_QUIET="$REM_QUIET$q " ;;
+      none) ;;
+      *) die "STRIDE_E2E_REMINDER_QUIET: daily, mwf, daily,mwf or none (got '$STRIDE_E2E_REMINDER_QUIET')" ;;
+    esac
+  done
 }
 
-# The request ids of one habit in a listing, bare and .<w>, sorted, space-separated.
+# Whether the habit ("daily" or "mwf") is declared quiet today (STRIDE_E2E_REMINDER_QUIET).
+rem_quiet() { [[ "${REM_QUIET:- }" == *" $1 "* ]]; }
+
+# Whether "<ids>" (space-separated) is the 1.5.0 overlay of the habit whose bare id is <base> and
+# which fires on the weekdays given: each of them exactly once, as <base>.<w> (weekly) or
+# <base>.n<w> (next week's one-shot); at least one .n<w>; nothing else — no bare id.
+is_overlay() {
+  local got="$1" base="$2" id w seen=" " n=0 shots=0
+  shift 2
+  for id in $got; do
+    case "$id" in
+      "$base".n[1-7]) w="${id#"$base".n}"; shots=$((shots + 1)) ;;
+      "$base".[1-7]) w="${id#"$base".}" ;;
+      *) return 1 ;;
+    esac
+    [[ " $* " == *" $w "* && "$seen" != *" $w "* ]] || return 1
+    seen="$seen$w "
+    n=$((n + 1))
+  done
+  [[ $n -eq $# && $shots -ge 1 ]]
+}
+
+# The request ids of one habit in a listing, bare, .<w> and .n<w>, sorted, space-separated.
 habit_requests() {
   awk -F'\t' -v p="$REMINDER_PREFIX$2" '$1 == "request" && ($2 == p || index($2, p ".") == 1) { print $2 }' "$1" \
     | sort -u | tr '\n' ' ' | sed 's/ $//'
@@ -424,14 +463,22 @@ check_reminders_before() {
   return $rc
 }
 
-# After the first launch: D4's conversion. Prints each finding; returns 3 on any failure.
+# After the first launch: D4's conversion (1.4.0), and on a quiet day 1.5.0's overlay. Prints
+# each finding; returns 3 on any failure.
 check_reminders() {
   local listing="$1" got want rc=0 mode id cat cats_seen c cat_bad=0
   mode="$(awk -F'\t' '$1 == "decoded-requests" { print $2; exit }' "$listing")"
   [[ "$mode" != none && -n "$mode" ]] || { echo "reminders: NO PendingNotifications.plist after the launch (every request removed?)"; return 3; }
   got="$(habit_requests "$listing" "$REM_DAILY")"
   want="$REMINDER_PREFIX$REM_DAILY"
-  if [[ "$got" == "$want" ]]; then
+  if rem_quiet daily; then
+    if is_overlay "$got" "$want" 1 2 3 4 5 6 7; then
+      echo "reminders: the daily habit is quiet today: its overlay [$got], and no bare id"
+    else
+      echo "reminders: DAILY HABIT $REM_DAILY (declared quiet) has [${got:-nothing pending}], want its overlay: each of .1–.7 once as .<w> or .n<w>, at least one .n<w>, no bare id"
+      rc=3
+    fi
+  elif [[ "$got" == "$want" ]]; then
     echo "reminders: the daily habit keeps exactly its bare id ($want)"
   else
     echo "reminders: DAILY HABIT $REM_DAILY has [${got:-nothing pending}], want exactly [$want]"
@@ -439,7 +486,14 @@ check_reminders() {
   fi
   got="$(habit_requests "$listing" "$REM_MWF")"
   want="$REMINDER_PREFIX$REM_MWF.2 $REMINDER_PREFIX$REM_MWF.4 $REMINDER_PREFIX$REM_MWF.6"
-  if [[ "$got" == "$want" ]]; then
+  if rem_quiet mwf; then
+    if is_overlay "$got" "$REMINDER_PREFIX$REM_MWF" 2 4 6; then
+      echo "reminders: the Mon/Wed/Fri habit is quiet today: its overlay [$got], and no bare id"
+    else
+      echo "reminders: MON/WED/FRI HABIT $REM_MWF (declared quiet) has [${got:-nothing pending}], want its overlay: each of .2 .4 .6 once as .<w> or .n<w>, at least one .n<w>, no bare id"
+      rc=3
+    fi
+  elif [[ "$got" == "$want" ]]; then
     echo "reminders: the Mon/Wed/Fri habit has exactly .2 .4 .6 and no bare id"
   else
     echo "reminders: MON/WED/FRI HABIT $REM_MWF has [${got:-nothing pending}], want exactly [$want]"
@@ -455,11 +509,12 @@ check_reminders() {
     if [[ -z "$cats_seen" ]]; then
       echo "NOTE: no Stride request in the store shows a category: either none was set (a D4 bug) or the record keeps it under a key notifications.py does not know — read reminders-after/PendingNotifications.plist with plutil -p"
     else
-      for id in "$REM_DAILY" "$REM_MWF.2" "$REM_MWF.4" "$REM_MWF.6"; do
-        cat="$(awk -F'\t' -v i="$REMINDER_PREFIX$id" '$1 == "request" && $2 == i { print $3; exit }' "$listing")"
+      # Every request the two habits have: the base shape's four, or a quiet habit's overlay.
+      for id in $(habit_requests "$listing" "$REM_DAILY") $(habit_requests "$listing" "$REM_MWF"); do
+        cat="$(awk -F'\t' -v i="$id" '$1 == "request" && $2 == i { print $3; exit }' "$listing")"
         case " $REMINDER_CATEGORIES " in
           *" $cat "*) ;;
-          *) [[ -z "$cat" ]] || { echo "reminders: $REMINDER_PREFIX$id carries category '$cat', not stride.habit.binary or stride.habit.count"; cat_bad=1; } ;;
+          *) [[ -z "$cat" ]] || { echo "reminders: $id carries category '$cat', not stride.habit.binary or stride.habit.count"; cat_bad=1; } ;;
         esac
       done
       if [[ $cat_bad -eq 0 ]]; then echo "reminders: the requests carry ${cats_seen% }"; else rc=3; fi
@@ -788,6 +843,7 @@ run() {
     section "reminders after the first launch (reminders-before.txt, reminders-after.txt, reminders-check.txt)"
     # Retried: usernotificationsd applies the app's removes and adds asynchronously and writes the
     # plist after them, so the first read can still show the old build's state.
+    echo "declared quiet today (STRIDE_E2E_REMINDER_QUIET): ${STRIDE_E2E_REMINDER_QUIET:-none}"
     rem_ok=0
     try=1
     while :; do

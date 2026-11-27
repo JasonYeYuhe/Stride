@@ -211,7 +211,18 @@ system's own store, not an app log line:
   - the Mon/Wed/Fri habit has exactly `.2`, `.4` and `.6`, and no bare id;
   - the daily habit keeps exactly its bare id;
   - both categories are registered in `Categories.plist`;
-  - when the records show categories at all, those four requests carry one of the two.
+  - when the records show categories at all, the two habits' requests carry one of the two.
+- **A quiet day (from 1.5.0, RELEASE-1.5.0.md D4, Data safety 3).** A habit done today before its
+  reminder time (or a times-per-week habit whose week is met) is quiet: its requests are the
+  overlay, one per weekday it fires on, each as `.<w>` (weekly) or `.n<w>` (a one-shot on that
+  weekday next week), with at least one `.n<w>` and no bare id. For the daily habit done on a
+  Wednesday morning that is `.1 .2 .3 .n4 .5 .6 .7`; for the Mon/Wed/Fri habit, `.2 .n4 .6`. The
+  run never guesses which day it is: say which habits are quiet with
+  `STRIDE_E2E_REMINDER_QUIET=daily`, `mwf` or `daily,mwf` (default `none`). A declared habit must
+  show its overlay; an undeclared one must show exactly the ids above, so **a non-quiet day sees
+  the same ids as 1.4.2** and a quiet day sees the overlay. A habit checked in after its reminder
+  time is NOT quiet (today's request already fired; the plan is the base). The 1.4.2 starting
+  point is the same either way: 1.4.2 knows no overlay. `check-reminders` reads the same variable.
 - **The record format was inferred, not observed.** No simulator here had ever held a pending
   request when this was written: the request records' keys (`AppNotificationIdentifier`,
   `SBSPushStoreNotificationCategoryKey`) come from the iOS 26.5 runtime's UserNotificationsCore
@@ -235,6 +246,8 @@ removes the notification permission with the app):
 4. `app.sh reminders <dev>` shows the daily habit's bare id and, for the Mon/Wed/Fri habit, the
    bare id from 1.3.x or `.2`, `.4` and `.6` from 1.4.0. Then run
    `upgrade.sh <dev> <old> <new> --server <name> --relaunch --reminders <daily id>,<M/W/F id>`.
+   To 1.5.0 or later: if either habit is checked in today and its reminder time is still ahead,
+   prefix the run with `STRIDE_E2E_REMINDER_QUIET=daily` (or `mwf`, `daily,mwf`), as above.
 
 A run without `--reminders` reads no notification store, so devices without reminder habits (every
 gate run before 1.4.0) work as before.
