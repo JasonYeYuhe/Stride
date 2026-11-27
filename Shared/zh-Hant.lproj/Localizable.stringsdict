@@ -709,5 +709,33 @@
 			<string>%lld 則</string>
 		</dict>
 	</dict>
+	<key>%lld perfect days</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>完美的一天：%#@days@</string>
+		<key>days</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld 天</string>
+		</dict>
+	</dict>
+	<key>%lld of %lld done, %lld rest days</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%2$lld 天中完成 %1$lld 天，休息日 %3$#@rest@</string>
+		<key>rest</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld 天</string>
+		</dict>
+	</dict>
 </dict>
 </plist>

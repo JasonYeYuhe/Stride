@@ -669,3 +669,15 @@
 "Hide until next week" = "다음 주까지 숨기기";
 "Don't show again" = "다시 표시 안 함";
 "What's in Stride Pro" = "Stride Pro에 포함된 기능";
+
+/* 1.5.0 Weekly Review step 2 (RELEASE-1.5.0.md D6) */
+"Previous week" = "이전 주";
+"Next week" = "다음 주";
+"At risk this week" = "이번 주 달성이 위태로운 습관";
+"Show on Today" = "오늘에서 보기";
+"%@, %lld percent" = "%1$@, %2$lld퍼센트";
+"%lld of %lld done" = "%2$lld일 중 %1$lld일 완료";
+"Strength +%lld" = "습관 강도 +%lld";
+"Strength −%lld" = "습관 강도 −%lld";
+"Strength ±0" = "습관 강도 ±0";
+"Strength unchanged" = "습관 강도 변화 없음";

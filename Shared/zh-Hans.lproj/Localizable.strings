@@ -669,3 +669,15 @@
 "Hide until next week" = "隐藏至下周";
 "Don't show again" = "不再显示";
 "What's in Stride Pro" = "Stride Pro 包含什么";
+
+/* 1.5.0 Weekly Review step 2 (RELEASE-1.5.0.md D6) */
+"Previous week" = "上一周";
+"Next week" = "下一周";
+"At risk this week" = "本周可能完不成";
+"Show on Today" = "在“今天”中显示";
+"%@, %lld percent" = "%1$@，百分之%2$lld";
+"%lld of %lld done" = "%2$lld 天中完成 %1$lld 天";
+"Strength +%lld" = "习惯强度 +%lld";
+"Strength −%lld" = "习惯强度 −%lld";
+"Strength ±0" = "习惯强度 ±0";
+"Strength unchanged" = "习惯强度无变化";

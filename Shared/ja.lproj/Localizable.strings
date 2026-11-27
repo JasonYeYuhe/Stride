@@ -669,3 +669,15 @@
 "Hide until next week" = "来週まで非表示";
 "Don't show again" = "今後表示しない";
 "What's in Stride Pro" = "Stride Pro の内容";
+
+/* 1.5.0 Weekly Review step 2 (RELEASE-1.5.0.md D6) */
+"Previous week" = "前の週";
+"Next week" = "次の週";
+"At risk this week" = "今週、達成が危うい習慣";
+"Show on Today" = "「今日」で表示";
+"%@, %lld percent" = "%1$@、%2$lldパーセント";
+"%lld of %lld done" = "%2$lld日中%1$lld日完了";
+"Strength +%lld" = "定着度 +%lld";
+"Strength −%lld" = "定着度 −%lld";
+"Strength ±0" = "定着度 ±0";
+"Strength unchanged" = "定着度は変化なし";

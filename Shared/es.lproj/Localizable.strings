@@ -669,3 +669,15 @@
 "Hide until next week" = "Ocultar hasta la próxima semana";
 "Don't show again" = "No volver a mostrar";
 "What's in Stride Pro" = "Qué incluye Stride Pro";
+
+/* 1.5.0 Weekly Review step 2 (RELEASE-1.5.0.md D6) */
+"Previous week" = "Semana anterior";
+"Next week" = "Semana siguiente";
+"At risk this week" = "En riesgo esta semana";
+"Show on Today" = "Mostrar en Hoy";
+"%@, %lld percent" = "%1$@, %2$lld por ciento";
+"%lld of %lld done" = "%1$lld de %2$lld días hechos";
+"Strength +%lld" = "Fuerza +%lld";
+"Strength −%lld" = "Fuerza −%lld";
+"Strength ±0" = "Fuerza ±0";
+"Strength unchanged" = "Fuerza sin cambios";
