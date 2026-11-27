@@ -1,0 +1,399 @@
+# Stride 1.5.0 — the daily loop, and any week at a glance
+
+App ID `6761262334`, bundle `yyh.stride.habittracker`. **Plan dated 2026-11-27.** Every code
+citation is at `b206186`, the `m5/1.4.2` tip after 1.4.2 (24) went live on iOS and Mac (11-26).
+The spec it builds on is RELEASE-1.4.2.md: D9 and D10 (Wave B), D17 (the daily loop), the 1.5.0
+section (`:1215-1245`), W10 and W11. Where this file and that one disagree, this file wins.
+
+- **Branch:** `release/1.5.0`, cut from `m5/1.4.2` at `b206186` on 2026-11-27. It carries 1.4.2's two
+  post-merge commits (22d9446 O3 script, b206186 gate 14 and O14), which `main` does not have yet.
+- **Version:** **1.5.0 (25)**. project.yml:19-20 still says 1.4.2 (24); V0 bumps it.
+- **The split (owner, P1, 2026-11-27).** The 1.5.0 of RELEASE-1.4.2.md is now two releases:
+  - **1.5.0 (25)**: X0 (Weekly Review step 2, and Today's at-risk words) and X2 (the free daily
+    loop), plus the X4 carry-overs. Frozen **12-11**, both platforms submitted by **12-15**, so it
+    is live before New Year: January is when people install habit trackers, and Apple slows down
+    in late December.
+  - **1.5.1 (26)**: X1 (Groups worth paying for) and X3 (the opt-in review notification), with O18.
+    Cut at 1.5.0's submission, submitted by **2027-02-12** (the old 1.5.0 date). Sketched at the end.
+- **M6 (skip days)** keeps its gate (D18): checked on this cut day and **not met**. There is no 426
+  floor at ≥ 1.3.1 on the server (only payload-shape refusals, server/routes/sync.js:459), and the
+  gate needs both the floor and eight quiet weeks. Checked again at 1.5.1's cut.
+- **No `@Model` change, no wire change, no server deploy** in 1.5.0.
+- **Process (unchanged):** no TestFlight and no owner device checks (the agent tests: hosted,
+  `scripts/sim_e2e`, the a11y sweep, `scripts/mac_variant`); MANUAL releases; six locales for
+  every string; worktree implementers, then review lenses, then an adversarial verify; Gemini only
+  through agy on a throwaway `git archive` copy.
+
+## Where things stand on 2026-11-27
+
+- **1.4.2 (24)** is live on iOS and Mac (released 11-26). PR #12 merged (434c6c8), tag `v1.4.2`.
+  The Yearly 7-day free trial is live in 175 territories; gate 14 passed on the real offer; the
+  promotional text ×6 says so.
+- **Weekly snapshot, 2026-11-26** (`metrics_snapshot.py`, kept in
+  `~/Library/Caches/Stride-build/plan-1.5.0/snapshot-2026-11-27.txt`): 8 weeks, 93 devices,
+  720 sessions, 100 % crash-free. First downloads 30, re-downloads 3, updates 50. No Pro unit, no
+  subscription event, 0 active subscriptions or trials. 1.4.2+24: 3 devices so far. Written
+  reviews: 1. Per D15, none of this decides anything but breakage and existence.
+- **The X2 spike ran (2026-11-27). Answer: yes.** See D3.
+
+## Scope
+
+| X | 1.5.0 scope | Free or Pro |
+|---|---|---|
+| **X0** | Weekly Review step 2 (D9 as corrected in D6 here): any week with ‹ ›, a 7-cell strip per habit, the strength chip, group sections with their rates, "At risk this week", the week's notes, share as an image, and the week's perfect days. Today's rows: "N more", at-risk words, "Due today", at-risk first in their section (D7) | Review: Pro. Today's words and order: free |
+| **X2** | One pure `DailyProgress` for Today's card, the badge, the Dock and the widget (D1, D2). Reminders quiet once a habit is done, from the app and from the widget (D3, D4). The Daily Reminder skips a perfect day. A reminder offer that asks for permission on the tap (D5). A "missed yesterday?" card that shows yesterday on Today (D5) | Free |
+| **X4** | Carried from 1.4.2: the hosted `dockLabel` test (in V2), the Mac paywall at minimum width and its top band (V6), the white-on-green contrast list (V5), the variant harness launching through `one.sh` (V5), and the owner's two Mac checks (gate 9) | — |
+
+Out of 1.5.0: X1, X3, O18 (1.5.1); X5 (owner, later); everything in RELEASE-1.4.2.md's "Out of
+scope", which still holds.
+
+## Spec corrections (RELEASE-1.4.2.md against `b206186`)
+
+| Spec says | Now |
+|---|---|
+| W4 adds `shell.todayFocusHabitID` | Not done (N1). ShellState.swift:16-206 has none; V4 adds it |
+| W1's `weekRange`, `atRisk`, remaining, daysLeft, group section rates | **All exist** in Shared/WeeklyReviewMath.swift (`weekRange(containing:in:)` :50-52, `sections` :196-204 and :320-341, `weekGoal` :404-422, `isAtRisk` :430-449, `eveningTime` :376-378). No view calls them yet |
+| `ShellRequest.history`, ShellState.swift:145 | :229 (enum :210-265) |
+| `HabitRecord.outranks`, HabitCheckIn.swift:29-36 | Shared/Habit.swift:327-334. Ghost-safe kept records: `HabitCheckIn.liveRecords(of:onDays:)` :379-388 |
+| `strengthSeries` HabitStats.swift:746-752; `score(on:)` HabitScore.swift:52-54 | HabitStats.swift:784-787 (and `strengthWeekEnds` :808); HabitScore.swift:53-55. The chip is `WeeklyReviewMath.strengthChangePoints` :347-351 |
+| ⇧⌘R on iPad goes on the Stats toolbar button (W4) | Already done: StatsView.swift:195-218 |
+| Today's row "1/3 this week", TodayView.swift:706-710; orange :720-724; label :652-660 | Text :787-794; readable orange :807; label :694, value `spokenDetail` :731-753 (the at-risk words go in the value, since the label is completion only) |
+| D10 calls "1/3 this week · 2 more" a two-number string | It has three numbers. D7 keys it as one three-argument string |
+| D10's at-risk rule "remaining ≥ daysLeft" | The code uses the creation week's share (`owed`, WeeklyReviewMath.swift:414-421), stricter on purpose; but `remaining` is still the whole goal, so a 3×/week habit made on Friday would read "3 more · 2 days left" on Saturday. D7 prints `owed` |
+| D10: Daily Reminder NotificationService.swift:116-131 | :119-149; `reminderHour` defaults to 20 when unset (:131-135); not observable, so Today reads it per render |
+| D17: "remaining" counts rest days on five surfaces (TodayView.swift:109-111; NotificationService.swift:648) | Card TodayView.swift:104-123, "Perfect day!" :504; badge NotificationService.swift:645-649 and :718-721; Dock `dockLabel` :768-771; widget StrideWidget.swift:30-55 and :605-648; group headers TodayView.swift:330-376 (a member count only). None reads a schedule |
+| D17: the badge and Today agree | They use two code paths: the badge `Habit.isCompletedOn` (record scan), Today and the widget `HabitStats`. D1 puts all of them on `HabitStats` |
+| D17: `.timeSensitive` at NotificationService.swift:274 | Gone (O24 shipped in 1.4.2) |
+| D11: StoreService.swift:531; LocalizationSourceScanTests.swift:196, :232 | Subtitles ProPaywallView.swift:449-457 (`.weeklyReview` :453), rows :484-497 (Weekly Review :495); pins :199-227, :232-258 (:244), :266-334 (en-US Weekly Review line :325) |
+| W10 file list | Also ShellState.swift, ContentView.swift, Shared/*.lproj, StatsPerformanceTests.swift, StrideApp.swift and a11y_sweep.sh (an any-week sweep flag) |
+| W11 "Hosted TodayRenderTests" | No such file, and TodayView has no clock or cache seam (`Date()` :101, `StatsCache.shared` :29 and :554). V3 adds the seam, as WeeklyReviewView has it (:9, :32-38) |
+| X3's budget "64 − 3 − 4" | 1.5.1. In 1.5.0 the budget stays `64 - 2 - 4` = 58 (ReminderPlan.swift:35); D4 spends it differently |
+
+## Design decisions
+
+**D1 — `DailyProgress`: one rule for every daily surface (Shared, pure).**
+- **Input:** a habit's `HabitStats`, a day-key, `now`, the calendar. Day-keys only: "today" comes from
+  `HabitCalendar.dayKey(forInstant:)` / `WidgetTimelinePlan.dayKey(of:in:)`, never `dayKey(for:)` on a
+  live instant (20:00 EDT is 00:00Z). NotificationService's `startOfDay` → `isCompletedOn`
+  (:647-648) moves to it.
+- **State per habit and day:** `.done`; `.due` (scheduled and open); `.rest` (a specific-days
+  off-day); `.metForWeek` (times-per-week, the Monday week's goal reached, `weekGoal.remaining == 0`,
+  not done that day); `.notStarted` (`startDay` after the day). Archived habits are never passed in.
+- **Counts:** `due = done + open`, where `done` counts only habits that were due or done (a done rest
+  day is `.done` and counts in both, so the ratio never passes 1); `remaining = open`;
+  `isPerfect = due > 0 && open == 0`.
+- **A day with nothing due** is not a perfect day. Today's card reads **"Rest day"** (existing key) and
+  draws an empty ring; the badge and the Dock show nothing; the widget reads "Rest day".
+- **Count habits:** "done" is "target reached", as both paths agree today; a target of 0 is never done,
+  and the widget no longer draws a full ring for it.
+- **`WeeklyReviewMath.isAtRisk`** and the review's perfect-day count call `DailyProgress`, so the rule
+  is written once. `isAtRisk`'s existing tests stay unchanged.
+
+**D2 — The surfaces.**
+- **Today's card** (TodayView.swift:104-123, :455-510): `done/due` for the selected day; "All done!
+  Perfect day!" only when `isPerfect`. Past days still filter by `startDay` (:79-89); today now does
+  too, through `.notStarted`.
+- **Badge and Dock:** `remaining` for today. `dockLabel` keeps its rule (nil at 0 or with Badges off),
+  and finally gets its hosted test (X4).
+- **Widget:** each timeline entry asks `DailyProgress` for **its own** day-key, so the midnight entry
+  shows tomorrow's rest days and a week reset on Monday. `WidgetTimelinePlan.Status` gains the state;
+  "N remaining" / "All done! 🎉" / the lock-screen line follow `remaining` and `isPerfect`.
+- **Group headers** stay a member count in 1.5.0. "2/3" is X1 (1.5.1) and will read `DailyProgress`.
+- **Parity test:** one fixture (a daily, a Mon/Wed/Fri on a Tuesday, a 3×/week met on Thursday, a count
+  habit at target 0, a habit created today) yields the same remaining on the card, the badge, the Dock
+  and both widget entries.
+
+**D3 — The spike (2026-11-27): the widget can change the app's pending reminders.**
+- **Setup:** a throwaway app (`yyh.spike.notifwidget`) and its widget extension, iOS 27.0 simulator
+  (iPhone 17 Pro), notifications allowed. The app scheduled two repeating daily requests and one
+  one-shot; the widget's `Button(intent:)` ran `removePendingNotificationRequests` for two of them and
+  `add` for a new one, in the extension process.
+- **Result:**
+  - the extension's `pendingNotificationRequests()` lists the app's three requests (it reads the
+    app's store), and reports authorization `.authorized`;
+  - after the tap, the extension, the app (relaunched) and the system's own store on disk
+    (`PendingNotifications.plist` under the app's bundle id, read with `notifications.py`) all agree:
+    the two were removed, the extension's request was added under the app, the third was untouched.
+- **Evidence:** `~/Library/Caches/Stride-build/plan-1.5.0/spike-widget-notifications/` (log, the
+  plist, the source). The spike app was uninstalled.
+- **What it does not show:** a real device (Apple documents the shared center for extensions, and
+  there is no TestFlight here); an extension that is suspended mid-write. D4 guards both: every
+  write is followed by a read-back before `perform` returns, and the app re-plans from scratch on its
+  next run, so a lost widget write only over-fires.
+
+**D4 — Quiet when done: an overlay on the done day (owner, P2).**
+- **The problem:** a repeating trigger cannot skip one day. Removing it and adding it back fires it
+  again today if the time is still ahead.
+- **Base plan (unchanged):** a daily or times-per-week reminder is one repeating daily request (bare
+  id); a specific-days reminder is one weekly request per scheduled weekday (`.<w>`, 1 = Sunday); the
+  Daily Reminder is `stride.daily.evening`; over budget, every specific-days habit falls back to one
+  daily request (ReminderPlan.swift:152-160).
+- **The overlay**, only for a habit whose **today** is quiet (`.done`, or `.metForWeek`; `.rest` is
+  already quiet), and only while today's reminder time is still ahead:
+  - a daily-shaped habit's bare request becomes six weekly requests for the other weekdays
+    (`.<w>`, repeating) and one one-shot for the same weekday next week (`.n<w>`, full date, floating
+    time zone);
+  - a specific-days habit's request for today's weekday becomes that one-shot;
+  - **times-per-week met:** every remaining day of this Monday week is quiet, so each of those
+    weekdays gets its one-shot for next week, and the others stay weekly;
+  - the Daily Reminder gets the same overlay on a perfect day (`stride.daily.evening.<w>` and
+    `.n<w>`). The morning reminder is unchanged.
+- **Restore:** every plan is computed from scratch from the habits and today's day-key. The next plan
+  on a later day (launch, foreground, Mac activation, day change, a save, a notification action,
+  background refresh) has no overlay, so the bare request comes back and the one-shot goes. An
+  un-check today removes the overlay at once.
+- **Never under-fires** (the test's definition): for every reminder habit and every due day from
+  tomorrow to today+7, some kept request fires that day. The one residual: if the app does not run at
+  all for 8 or more days after a quiet day, that weekday is silent from the second week until the
+  next run. Recorded as risk 1.
+- **Budget:** the base plan is placed first, exactly as today. Overlays are added in order of today's
+  reminder time while the total stays ≤ 58; a habit whose overlay does not fit keeps its base request
+  (it over-fires today). **Over budget, the plan is unchanged.**
+- **Ids:** every new id is in `ReminderPlan.Result.keep`, or the launch prune removes it. The prune
+  stays limited to Stride's prefixes.
+- **The late-night grace:** a reminder credit for yesterday before 03:00 (`ReminderDay.lateNightGrace`,
+  ReminderPlan.swift:199) quiets yesterday, never today.
+- **`refreshAfterDataChange`'s contract changes:** it now re-plans the habit it is told about. Its
+  comment (:643-644) and `testRefreshAfterADataChangeSetsTheBadgeAndClearsWhatIsDone`
+  (NotificationServiceTests.swift:573-594) change with it.
+- **The sheet-save race** during a prune (NotificationService.swift:506-511) applies to the new pass
+  too; the overlay is applied per habit, never by a global remove-all.
+
+**D5 — From the widget, and the two Today cards.**
+- **Widget check-in** (`ToggleHabitIntent.perform`, StrideWidget.swift:95-149): after the save, it
+  applies D4 for that one habit and reads the result back before returning. It never builds
+  notification text: it copies the content (title, body, category, userInfo) of the habit's existing
+  pending request, so the widget process never needs the app's language. If no pending request
+  exists, it does nothing. The planning function moves into Shared (`ReminderPlan` is already
+  there); the content builders stay in the app.
+- **Inline cards** (one at a time, `InlinePrompts`, TodayCards.swift:19-31), in priority order:
+  1. **Missed yesterday** (owner, P3): when today is selected and yesterday had at least one `.due`
+     habit left open (not rest, not met, not started), on any day after the first check-in ever.
+     "%lld habits not checked yesterday" with a "Show yesterday" button that re-anchors Today to
+     yesterday (`shell.todayDate`), where each can be checked in place. Nothing is written until the
+     user checks something. "Not now" hides it for the day. The late-night grace does not change it.
+  2. **The week card** (Monday–Tuesday), unchanged.
+  3. **Reminder offer:** when the system permission is not determined, no reminder is on, and the
+     user has checked in on at least two different days. "Get a reminder each evening" with "Turn
+     on": the tap calls `ensureReminderPermission` (the system prompt appears on the tap, which is
+     rule 4's own exception) and turns on the Daily Reminder at its time (default 20:00). Declined
+     or "Not now": never shown again on this device. On `.denied`, it is not shown.
+- Dismissals stay in `UserDefaults.standard` and are read-only in automated runs (TodayView.swift:270-283).
+
+**D6 — Weekly Review, step 2 (D9 of 1.4.2, corrected).**
+- **Navigation:** ‹ and › from the week containing the earliest habit's `startDay` to this week. The
+  selected week is `@State`; stats are read once from the cache for today and every week is read from
+  that one entry (no rebuild per page). ‹ and › have `.help`, keyboard reach on Mac, and a11y labels
+  "Previous week" / "Next week". A sweep flag `-openReview <yyyy-mm-dd>` opens any week.
+- **The strip** (pure, `WeeklyReviewMath.dayStates`): done, missed, rest, before the start, future,
+  today not yet done. Times-per-week: a day without a check-in is neutral, never missed. A count
+  habit's partial day is missed in the past and open today. The strip agrees with the row's counted
+  rate, or a user can disprove it (a test). It is **one accessibility element** with a summary value
+  ("5 of 7 done, 1 rest day"). Labels format day-keys with `HabitCalendar.utc` as `dates(of:)` does.
+- **The strength chip:** `strengthChangePoints`, in `Color.readableText`.
+- **Sections by group**, Ungrouped last, headers with the members' mean counted rate (the view passes
+  `groupOrder`, which it does not today: WeeklyReviewView.swift:75-76).
+- **At risk this week** (this week only): a tap dismisses the review, selects Today, re-anchors it to
+  today, expands a collapsed group if the habit is in one (a UI preference write, allowed), and sets
+  `shell.todayFocusHabitID`; Today consumes it with `.task(id:)` (it may be created after the value is
+  set), scrolls, moves VoiceOver focus, then clears it. It writes nothing to the store.
+- **Notes of the week:** day, habit, first two lines; a tap replaces the review with History on that
+  day by setting `shell.request = .history(...)` directly (the `continueAfterUnlock` path), since
+  `issue` refuses while a shell sheet is up. History's Done returns to where the review was opened.
+  - **The read:** HabitStats keeps only which days have a note. V4 adds one notes read to the cache
+    entry: `HabitStats`' single pass keeps the **kept record's** note per noted day (value, then stamp,
+    then id, as `outranks`), so the review shows the note every device keeps and the heatmap dot and
+    the review cannot disagree (the dot changes to "the kept record has a note"). This touches
+    HabitStats, so HabitStatsParityTests must stay green, and StatsPerformanceTests' any-week bound
+    (:209, which excludes notes today, :205-206) gains notes at 50 habits × 3 years.
+- **Perfect days:** "N perfect days" for the week, from `DailyProgress` per day.
+- **Share as an image:** rendered once in `.task`, as ShareStreakView does (:211-237); notes are left
+  out unless the user turns them on; nothing is uploaded. **Cut first.**
+- **Mac:** the sheet's 420-pt minimum width holds the strip, the rate and the chip at the default
+  size; at AX sizes the row wraps (a capture proves it).
+
+**D7 — Today's at-risk words and order (D10 of 1.4.2, corrected).**
+- **When at risk:** `WeeklyReviewMath.isAtRisk`, unchanged (times-per-week by the creation week's
+  share; daily and specific days: due, not done, past the evening time: the habit's reminder, else the
+  Daily Reminder's, else 18:00).
+- **Row words** (TodayView.swift:787-809 and `spokenDetail` :731-753), only when the selected day is
+  today:
+  - a times-per-week row not yet met: "1/3 this week · 2 more" (one key, `%1$lld/%2$lld this week ·
+    %3$#@more@`);
+  - at risk: "2 more · 2 days left" in `Color.readableText(hex: "#FF9500", …)`; "more" prints `owed`
+    in the creation week; on the last day it reads "2 more · today", never "0 days left";
+  - a daily or specific-days habit at risk: "Due today";
+  - no copy names a weekday. The same words go in the row's accessibility value.
+- **Order:** at-risk rows first within their section, latched in `@State` and recomputed only when Today
+  becomes the active tab (`shellTabIsActive`, since iPad and Mac keep Today alive), the day changes,
+  or the scene becomes active: the triggers ContentView already funnels into `shell.reanchor`
+  (ContentView.swift:82-99). A check-in never moves a row in the same pass; new and deleted habits
+  still appear and disappear.
+- **Pro off:** identical (these words are free).
+
+**D8 — Pro claims (D11′).**
+- The Weekly Review sentence becomes "Weekly Review — any week at a glance: what improved, what is at
+  risk, and your notes." on the paywall row (ProPaywallView.swift:495), the `.weeklyReview` subtitle
+  "Look back at any week" (:453), the six STRIDE PRO blocks, the review notes and the IAP review notes
+  (iap_copy.py, owner's go), with the test pins (:203-207, :244, :325) extended to the body in all 6
+  locales.
+- **If notes are cut,** the sentence drops "and your notes" in the same commit.
+- Habit Groups and Advanced Analytics stay word for word until 1.5.1.
+
+**D9 — DEBUG seams.** TodayView gets the WeeklyReviewView pattern: `@Environment(\.statsCache)` and a
+DEBUG `now`. NotificationService is injected (it is not `@Observable`). No DEBUG switch reaches a
+Release build (`verify_archive.sh` already probes the sentinel).
+
+## Data safety (each has a test)
+
+1. The review, its taps, the cards and the at-risk order write nothing to the store: row counts and
+   every `updatedAt` unchanged after each tap (hosted; no such test exists yet).
+2. A widget check-in that loses its notification write leaves the store right; the app's next plan
+   repairs the requests.
+3. The upgrade from 1.4.2 keeps every reminder: `upgrade.sh --reminders` from 1.4.2 (24) on a
+   non-quiet day sees the same ids as before; on a quiet day it sees the overlay and no bare id.
+4. A lapsed or free user's Today is identical with Pro off (X0's words are free).
+
+## Workstreams (exclusive files while running; `Shared/*.lproj` belongs to the integrator)
+
+| V | Scope | Files | Tests | Size |
+|---|---|---|---|---|
+| **V0** scaffold | 1.5.0 (25) in project.yml; baselines on Xcode 27.1 (StrideTests in both zones, hosted, a11y); this file; the draft PR into `main` | project.yml, RELEASE-1.5.0.md | baselines recorded | S |
+| **V1** pure rules | D1 `DailyProgress`; `isAtRisk` and perfect days through it; `WeekGoal` prints `owed`; the strip `dayStates` and its summary; navigation bounds; `notesOfWeek` ordering and truncation | Shared/DailyProgress.swift (new), Shared/WeeklyReviewMath.swift, StrideTests/DailyProgressTests.swift (new), StrideTests/WeeklyReviewMathTests.swift | every state × binary/count × zones; tpw met Fri–Mon; created today; exact-UTC-midnight key; strip = counted rate | M, first |
+| **V2** reminders and badge | D2's badge, Dock and widget; D4; D5's widget write; the `dockLabel` test; `upgrade.sh --reminders` and its README learn the overlay | Shared/ReminderPlan.swift, NotificationService.swift, StrideWidget/Sources/StrideWidget.swift, Shared/WidgetTimelinePlan.swift, scripts/sim_e2e/upgrade.sh, scripts/sim_e2e/README.md, their tests | ReminderPlanTests (overlay per state, `keep`, over budget unchanged, never-under-fires, zones and DST, the grace); WidgetTimelinePlanTests (entry day-keys, Monday reset); NotificationServiceTests (badge, check-in re-plan, perfect-day evening, `dockLabel`); NotificationActionHandlerTests | L, after V1 |
+| **V3** Today | D2's card and "Rest day"; D5's two cards; D7's words, order and focus target; D9's seam | TodayView.swift, Views/TodayCards.swift, Shared/InlinePrompts.swift, StrideAppTests/TodayRenderTests.swift (new), TodayWeekCardTests | card = DailyProgress; card priority; no writes; words and readable orange; order latched across a check-in; focus scrolls and moves VoiceOver; Pro off identical | M–L, after V1 |
+| **V4** Weekly Review | D6; `todayFocusHabitID`; the notes read in HabitStats; the share view | WeeklyReviewView.swift, Views/WeeklyReviewShare.swift (new), ShellState.swift, ContentView.swift, Shared/HabitStats.swift, StrideApp.swift (`-openReview <date>`), WeeklyReviewRenderTests, ShellTests, StatsPerformanceTests, HabitStatsParityTests | ‹ › bounds; rows = WeeklyReviewMath; strip one element; sections; at-risk tap and note tap write nothing; kept note shown, ghosts excluded; share renders once; performance with notes | L, after V1 |
+| **V5** verification | D14-style `-demoPro` scenario additions (a missed yesterday, a met 3×/week, a perfect day); a11y sweep frames for any week, the cards and the at-risk rows; `mac_variant` captures in 6 locales; the contrast list; every variant tool through `one.sh` | Shared/DemoData.swift, scripts/a11y_sweep.sh, scripts/mac_variant/*, scripts/demo_check | free baselines unchanged; new frames; blank-frame check | M, after V3 and V4 |
+| **V6** release | D8 lockstep; strings ×6 (integrator); What's New ×6; metadata; review notes; the Mac paywall at minimum width and its top band; DEV-PLAN and RELEASE-1.4.2 pointers; progress log | ProPaywallView.swift, metadata/, scripts/release.py, docs/review-notes-1.5.0.md, LocalizationSourceScanTests, this file | gates | M |
+
+- **Critical path:** V0 → V1 → V2 → gate 3 (upgrade) → V6. V3 and V4 run beside V2 (no shared file).
+- **Cut order at the 12-11 freeze:** the share image; then the reminder offer card; then the notes; then
+  any-week navigation (this week and last week stay). X2's D1–D4 and the missed-yesterday card are not
+  cut: they are the point of 1.5.0. If V2's overlay is not green, 1.5.0 ships D1–D2 and the cards, and
+  D4 moves to 1.5.1 (reminders unchanged: they over-fire, as they do now).
+- **Reviews:** a whole-branch review at the freeze: Gemini 4 Argon High and Gemini 3.8 Flash High via
+  agy on a throwaway copy; Claude lenses: "a sentence a user can disprove" (strips, words, perfect
+  days, Rest day), week and day boundaries in both zones, reminders never under-firing, rule 4, D11
+  drift, l10n.
+- **Builds and simulators:** one derived-data root per session; the persistent roots in
+  `~/Library/Caches/Stride-build/` stay; devices by UDID from the global table with their locks; below
+  30 GB free no device is booted (the owner empties the Trash).
+
+## Release gates (1.5.0)
+
+1. **Tests:** StrideTests in Tokyo and `TEST_RUNNER_TZ=America/Los_Angeles`; hosted; the server suite
+   and `sync_rehearsal.sh` unchanged and green; kit selftest; CI green; xcodegen drift clean; the
+   performance bounds hold (with notes).
+2. **Parity (D2):** the fixture's remaining is equal on the card, the badge, the Dock label and both
+   widget entries, in both zones.
+3. **Reminders end to end** (iOS simulator, `notifications.py` on the pending store):
+   - `upgrade.sh --reminders` from 1.4.2 (24), with the widget placed;
+   - after a Today check-in, a widget check-in and a Mark Done: that habit's overlay is present and
+     no other request changed;
+   - after a day change: the bare request is back;
+   - a perfect day: the evening overlay; the next day: the bare evening request.
+4. **Review (WR2/WR3 of 1.4.2, plus):** with `-demoPro`, ‹ once from this week: each habit's rate,
+   strip and chip equal demo_check's last-week block; Yoga's strip shows no miss in a met week; the
+   at-risk tap lands on Yoga on Today with VoiceOver focus; a note tap opens History on its day.
+   Without `-demoPro`: the review opens the paywall and Today's words still show.
+5. **Captures:** a11y sweep (default and AX5) on iPhone 17 Pro Max and iPad Pro 13" for the review on
+   three weeks, the cards and the at-risk rows; `mac_variant` in 6 locales at full and minimum width,
+   the paywall included (the X4 fix). A review lens reads the PNGs.
+6. **Rule 4:** no prompt or card appears unasked; the permission prompt appears only on the offer's tap
+   or a reminder toggle; no `requestReview` change.
+7. **D8:** the pins in 6 locales; ProLockedCard count unchanged.
+8. **l10n:** every new key ×6 with plurals; a back-translation lens on the at-risk and card strings in
+   ja and ko.
+9. **[owner] Mac, carried (X4):** Badges off by hand once; `gate10-mac/tools/banner_check.sh`'s
+   app-quit half (Mark Done on a banner with the app quit). Neither blocks submission; both are
+   logged.
+10. **Release mechanics:** signing preflight (`security show-keychain-info` and the 1-second codesign
+    probe); `verify_archive --exported`; demo account check.
+
+## Submission checklist (1.5.0)
+
+- [ ] Gates 1–8 and 10 green on the final tree.
+- [ ] `WHATS_NEW_BY_VERSION["1.5.0"]` ×6, then `release.py prepare 1.5.0`.
+- [ ] `push_metadata.py 1.5.0` (D8's description blocks; the trial clause and keywords unchanged).
+- [ ] Screenshots: only if a frame changed (the review's any-week frame is new; the others keep).
+- [ ] `review_notes.py 1.5.0 --yes`: where the review is; that reminders stay quiet once a habit is done.
+- [ ] IAP review notes, D8's sentence (`iap_copy.py`, owner's go).
+- [ ] `build-appstore.sh all --upload`. **Never `ship.sh`.**
+- [ ] `release.py finish 1.5.0 25 --platform IOS` and `--platform MAC_OS`.
+- [ ] After approval: `release.py release 1.5.0`, merge to `main` with `--no-ff`, tag `v1.5.0`
+      (annotated, on the tip), cut `release/1.5.1`.
+
+## Calendar
+
+| Date | Step |
+|---|---|
+| 11-27 | Cut, spike, plan (this file), owner P1–P3 |
+| 11-28 to 12-02 | V0, V1; V2/V3/V4 start as V1 merges |
+| 12-03 to 12-10 | V2, V3, V4; V5 captures as they land; V6 strings |
+| **12-11** | Freeze; whole-branch review |
+| 12-12 to 12-14 | Fixes; gates 1–10 |
+| **12-15** | Submit iOS and Mac (fallback 12-17) |
+| Approval | Release, merge, tag; 1.5.1 cut |
+| 2027-01-11 | Readout 1 (D15 of 1.4.2: breakage and existence only) |
+| **2027-02-12** | 1.5.1 submitted |
+
+## Risks
+
+1. **A weekday silent after 8+ days without the app** (D4's residual). It needs a quiet day followed by
+   eight days without a launch, a foreground or a background refresh; the reminder returns at the next
+   run. Accepted: the alternative (always seven requests) caps reminders at about 8 habits.
+2. **Widget writes on a real device.** The spike ran on the simulator only. D5 reads back, and the app
+   re-plans from scratch, so the failure mode is over-firing.
+3. **iOS drops requests past 64 silently.** The budget test and the over-budget-unchanged test guard it.
+4. **TodayView.swift is the hot file** (V3 alone in 1.5.0; X1 edits it in 1.5.1).
+5. **HabitStats changes for notes** (V4). HabitStatsParityTests and the performance bound guard it; if
+   either fails, notes are cut (cut order 3) rather than HabitStats being bent.
+6. **The freeze is two weeks out.** 1.4.2's estimates ran 35–50 % low; the cut order protects 12-15.
+7. **Apple's late-December slowdown.** Submitting on 12-15 leaves a week; if review stalls, 1.5.0 goes
+   live in early January, still in season.
+
+## Owner decisions
+
+| # | Question | Answer |
+|---|---|---|
+| P1 | Split the old 1.5.0 so the daily loop is live before New Year? | **Yes (2026-11-27):** 1.5.0 = X0 + X2; 1.5.1 = X1 + X3 by 02-12 |
+| P2 | Quiet when done: an overlay on the done day, always seven weekday requests, or not in 1.5.0? | **Overlay on the done day (2026-11-27)** (D4) |
+| P3 | "Missed yesterday?": show yesterday on Today, or History per habit? | **Show yesterday on Today (2026-11-27)** (D5) |
+| P4 | X5 (often together, two-column Pro cards, alternate icons, O17's group widget, offer codes) | Not in 1.5.0 or 1.5.1 by default |
+
+Every ASC write and production step keeps its rule (the owner's standing delegation covers release
+mechanics; credentials stay the owner's).
+
+## 1.5.1 (26): Groups worth paying for, and the review notification (sketch)
+
+Planned in full at its cut. From the code survey of 11-27:
+- **X1 needs no `@Model` and no wire change.** `HabitGroup` has `colorHex`, `sortOrder` and `touch()`
+  (Shared/Habit.swift:338-380), and the push, pull, server upsert and schema carry both
+  (SyncPushPlanner.swift:500-509; SyncReconciler.swift:477-484; server/routes/sync.js:778-792;
+  server/db.js:76-85). Recolour and reorder are field writes plus `touch()`, as `reorderHabits` does
+  (SettingsView.swift:1274-1286).
+- Stats selection is a habit UUID (ShellState.swift:51); "All / groups / habits" chips widen it (view
+  state only). Stats already reads the cache twice per render (OverallStatsCard :265 and the detail
+  :137): "one cache read per render" becomes "one read feeds the summary and the Overview".
+- A second ProLockedCard breaks the "exactly one" pin (LocalizationSourceScanTests.swift:210-211)
+  unless it changes in the D11 commit.
+- The rehearsal digest compares groups as `name|sortOrder` only (scripts/sync_rehearsal/Harness.swift:
+  363-364, :378-379): `colorHex` joins it before the recolour scenario, or a failed recolour passes.
+- Today's "2/3" reads `DailyProgress` (D1).
+- **X3:** no notification tap reaches the shell today (Shared/NotificationRouter.swift:64-82 routes
+  global ids to `.none`); it needs a route, a Pro issuer and a bridge to the window. The review
+  request is removed only after a StoreKit refresh, never from the cold `isPro == false`. The budget
+  becomes 57 (ReminderPlanTests.swift:132-133 pin 58).
+- **O18:** `server/ops/demo-add-habits.js` creates no `habit_groups` row; the demo group is an ops
+  script change, add-only, while no review is open.
+
+## Progress log
+
+- 2026-11-27, **cut and Phase 0.**
+  - `release/1.5.0` cut from `m5/1.4.2` at `b206186`.
+  - M6's gate checked: not met (no 426 floor ≥ 1.3.1).
+  - Weekly snapshot run (see "Where things stand").
+  - Three read-only code surveys (X0, X2, X1/X3) against `b206186`; their corrections are folded into
+    "Spec corrections" and the 1.5.1 sketch.
+  - **The X2 spike: yes** (D3).
+  - Owner P1–P3 answered as recommended.
