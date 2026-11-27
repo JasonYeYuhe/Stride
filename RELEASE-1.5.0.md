@@ -475,3 +475,15 @@ was checked against the code by Claude before it was folded in.
   - **Left for V5/V6:** `-inlineCard missed|reminder` sweep flags, the `-demoPro` scenario
     additions, captures (need a simulator: the disk must be back above 30 GB), D8's lockstep, the
     Mac paywall at minimum width, What's New, metadata, review notes.
+- 2026-11-27, **V6 copy** (no ASC write, nothing pushed). StrideTests 895 / 2 skipped / 0 in Tokyo
+  and Los Angeles; StrideMac builds; `test_release.py` 18 OK.
+  - **D8 lockstep** 6cc0f0f: the paywall row, the `.weeklyReview`/`.today` subtitle "Look back at
+    any week", the catalogs ×5 (the two retired keys replaced in place), the six STRIDE PRO
+    bullets, `iap_copy.py`'s note text, and the pins (the Weekly Review body word for word ×6).
+    en-US and es-ES were at 3,991 and 3,981 characters, so each lost a few words elsewhere (en:
+    "or a fresh start"; es: four small cuts) and is at 3,997 and 3,996.
+  - **What's New** 4b0f424: five lines ×6, free first, no trial.
+  - **Review notes** `docs/review-notes-1.5.0.md`: the trial sentence now says Yearly has the
+    7-day trial (live since 11-26), still conditional on StoreKit and eligibility.
+  - **Left:** the Mac paywall at minimum width (needs a capture), the ja/ko back-translation lens
+    on the new copy (gate 8), `iap_copy.py` and `review_notes.py` sends (owner's go, at submission).
