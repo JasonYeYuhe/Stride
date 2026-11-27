@@ -528,3 +528,11 @@ was checked against the code by Claude before it was folded in.
   a target > 0), now pinned by a parity test. Rejected: "100 % beside At risk" (the header says "so
   far"). StrideTests 900 / 2 skipped / 0 in both zones; TodayRenderTests and WeeklyReviewRenderTests
   33 / 0 on the iPhone 17 Pro.
+- 2026-11-27, **hosted suite 460 / 0 on the iPhone 17 Pro** (514e3f0). CI after V6 had failed 3:
+  the paywall subtitle pins still read "See how your week went" (V6 missed two hosted tests); the
+  review's at-risk tap test kept a fixture the 80908f7 rule made unreachable (Swim now owes exactly
+  the days left); `HabitHistoryTests`' over-cap note test was a timing race, not a regression: after
+  "Discard Changes" UIKit refocuses the note field and the page scrolls, so the lazy month grid
+  drops yesterday's cell from the tree (failed 1 in 25 under load; 40/40 after waiting for the
+  page to settle). Noted, not fixed: that refocus makes the keyboard flash after Discard Changes
+  (cosmetic, no data lost).
