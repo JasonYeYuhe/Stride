@@ -536,6 +536,36 @@ final class ReminderPlanOverlayTests: XCTestCase {
         XCTAssertEqual(over.evening.map(\.identifier), ["stride.daily.evening"])
     }
 
+    /// Snoozes beyond the budget's room of four come out of the overlays' budget (v2 review,
+    /// finding 5): `scheduleSnooze` has no cap. The base plan is unchanged — its fallback is
+    /// decided against the budget alone — and up to four snoozes change nothing.
+    func testSnoozesBeyondFourShrinkTheOverlaysBudgetOnly() {
+        let wednesday = key(2026, 6, 3)
+        let now = today(tokyo, 2026, 6, 3, 10)
+        let plain = (0..<51).map { _ in habit() }
+        let read = habit(quiet: [wednesday])   // 52 base, +6 = 58: fits exactly
+        let habits = plain + [read]
+
+        for snoozes in [0, 4] {
+            XCTAssertEqual(ReminderPlan.plan(habits, today: now, pendingSnoozes: snoozes).overlaid, [read.habitID],
+                           "\(snoozes) snoozes")
+        }
+        let five = ReminderPlan.plan(habits, today: now, pendingSnoozes: 5)
+        XCTAssertTrue(five.overlaid.isEmpty, "57 left for the overlays: +6 on 52 does not fit")
+        XCTAssertFalse(five.fellBackToDaily)
+        XCTAssertEqual(five.requests, ReminderPlan.plan(habits).requests, "the base plan, unchanged")
+
+        // A free overlay still fits, even with less room left than the base takes (55 > 53): a
+        // Mon/Wed/Fri habit's Wednesday request becomes its one-shot, one for one.
+        let gym = habit(.specificDays, mask: mwf, quiet: [wednesday])
+        let withGym = ReminderPlan.plan(plain + [read, gym], today: now, pendingSnoozes: 9)
+        XCTAssertEqual(withGym.overlaid, [gym.habitID])
+
+        // Snoozes never move the base plan's fallback: 58 base requests fit with any number.
+        let fiftyEight = (0..<58).map { _ in habit() }
+        XCTAssertFalse(ReminderPlan.plan(fiftyEight, today: now, pendingSnoozes: 20).fellBackToDaily)
+    }
+
     /// When the base plan alone is over the budget, nothing is overlaid: the plan is exactly the one
     /// made without any quiet day — 1.4.2's, every specific-days habit on its daily trigger.
     func testOverTheBudgetThePlanIsExactlyTodays() {

@@ -43,11 +43,16 @@ enum ReminderPlan {
     /// are this + `.<w>` and `.n<w>` (`allEveningIdentifiers`).
     static let eveningIdentifier = "stride.daily.evening"
 
+    /// How many snoozes the budget leaves room for. `scheduleSnooze` has no cap of its own, so a
+    /// plan made while more are pending takes the extra out of the overlays' budget (`plan`'s
+    /// `pendingSnoozes`).
+    static let snoozeRoom = 4
+
     /// How many per-habit reminder requests may be pending: iOS keeps 64 per app, minus the two
     /// global reminders (`stride.daily.evening`, `stride.daily.morning`) and room for four snoozes.
     /// The Daily Reminder's base request is one of the two; its overlay's six more count inside
     /// this budget (D4, Gemini A0).
-    static let requestBudget = 64 - 2 - 4
+    static let requestBudget = 64 - 2 - snoozeRoom
 
     /// One habit's reminder as the planner reads it: a value, so the planner runs without a store.
     struct Settings: Equatable, Sendable {
@@ -314,6 +319,11 @@ enum ReminderPlan {
     static func overlayDays(quiet: Set<Date>, hour: Int, minute: Int, today: Today) -> [Int] {
         let todayNumber = HabitStats.dayNumber(ofKey: today.dayKey)
         let sunday = HabitStats.monday(ofWeekContaining: todayNumber) + 6
+        // Decided once, when the plan is made, not when its writes reach the center. Accepted
+        // (v2 review, finding 6): an un-check at 19:59:59 for a 20:00 reminder plans the base back,
+        // but if that write lands after 20:00 the repeating trigger's next fire is tomorrow, so
+        // today's reminder is lost. The window is the time a pass takes (milliseconds), the user
+        // has just acted on the habit in the app or the widget, and the next day fires as planned.
         let todayAhead = isAhead(hour: hour, minute: minute, now: today.now, calendar: today.calendar)
         return Set(quiet.map(HabitStats.dayNumber(ofKey:)))
             .filter { $0 > todayNumber && $0 <= sunday || ($0 == todayNumber && todayAhead) }
@@ -375,8 +385,13 @@ enum ReminderPlan {
     ///    `64 - 2 - 4`), its overlay's extra six are inside (Gemini A0). An overlay that does not
     ///    fit is skipped — its reminder keeps its base request and over-fires today — and a later,
     ///    cheaper one may still fit.
+    ///
+    /// `pendingSnoozes`: the snoozes pending when the plan is made. The budget leaves room for
+    /// `snoozeRoom`; each one beyond that is taken out of what the overlays may add (never out of
+    /// the base plan, whose fallback is decided against `budget` alone), so a run of snoozes
+    /// cannot push the pending total past iOS's 64 through an overlay (v2 review, finding 5).
     static func plan(_ habits: [Settings], evening: Evening? = nil, today: Today? = nil,
-                     budget: Int = requestBudget) -> Result {
+                     budget: Int = requestBudget, pendingSnoozes: Int = 0) -> Result {
         var perHabit = habits.map { requests(for: $0) }
         let baseCount = perHabit.reduce(0) { $0 + $1.count }
         let fellBack = baseCount > budget
@@ -421,11 +436,14 @@ enum ReminderPlan {
             }
             candidates.sort { ($0.minuteOfDay, $0.order) < ($1.minuteOfDay, $1.order) }
 
+            let overlayBudget = budget - max(0, pendingSnoozes - snoozeRoom)
             var total = baseCount
             for candidate in candidates {
                 let current = candidate.index.map { perHabit[$0].count } ?? 1
                 let cost = candidate.requests.count - current
-                guard total + cost <= budget else { continue }
+                // A free overlay (a specific-days habit's quiet weekday) always fits: it adds nothing,
+                // even when snoozes left the overlays less room than the base plan already takes.
+                guard cost <= 0 || total + cost <= overlayBudget else { continue }
                 total += cost
                 if let index = candidate.index {
                     perHabit[index] = candidate.requests

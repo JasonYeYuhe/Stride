@@ -188,8 +188,17 @@ struct ToggleHabitIntent: AppIntent {
 ///   over-fires or waits, never deletes.
 /// - **When the habit becomes done**, its snooze is cancelled and its delivered banners are
 ///   withdrawn, as `CheckInEffects.afterCheckIn` does in the app.
+/// - **Added before removed** (v2 review, finding 2): each group's planned requests are added
+///   first (an add under a pending id replaces it), then only its ids the plan does not name are
+///   removed. A write cut off in between leaves the habit over-firing, never with nothing pending.
+/// - **The switches, read again before each group's write** (finding 4): a habit whose reminder
+///   was switched off (or that was archived) since this tap read the store, or a Daily Reminder
+///   switched off, is skipped, so this write cannot add back what the user just turned off.
 /// - **Read back** before `perform` returns: each add is awaited, then the pending list is read
-///   again, so the writes have reached the system before the extension can be suspended (D3).
+///   again, so the writes have reached the system before the extension can be suspended (D3). A
+///   planned request missing from the read-back is added once more (finding 2).
+/// - **The snoozes** pending beyond the budget's room come out of the overlays' budget, as in the
+///   app (finding 5).
 @MainActor
 enum WidgetReminderWrite {
     private static let logger = Logger(subsystem: "yyh.stride.habittracker.widget", category: "Notifications")
@@ -211,8 +220,6 @@ enum WidgetReminderWrite {
             stats[habit.id].flatMap { ReminderPlan.settings(for: habit, stats: $0, today: today.dayKey) }
         }
         let progress = DailyProgress(of: ordered.compactMap { stats[$0.id] }, on: today.dayKey)
-        let plan = ReminderPlan.plan(settings, evening: .storedInAppGroup(isPerfectToday: progress.isPerfect),
-                                     today: today)
 
         if becameDone {
             center.removePendingNotificationRequests(withIdentifiers: [ReminderPlan.snoozeIdentifier(for: tapped.id)])
@@ -220,37 +227,77 @@ enum WidgetReminderWrite {
         }
 
         let pending = await center.pendingNotificationRequests()
+        let snoozes = pending.filter { $0.identifier.hasPrefix(ReminderPlan.snoozePrefix) }.count
+        let plan = ReminderPlan.plan(settings, evening: .storedInAppGroup(isPerfectToday: progress.isPerfect),
+                                     today: today, pendingSnoozes: snoozes)
         let byID = Dictionary(pending.map { ($0.identifier, $0) }, uniquingKeysWith: { first, _ in first })
-        var writes: [(identifiers: [String], requests: [UNNotificationRequest])] = []
+        var writes: [Write] = []
         for habit in settings {
             let ids = ReminderPlan.reminderIdentifiers(for: habit.habitID)
             if let requests = replacement(of: ids, with: plan.requests(for: habit.habitID), pending: byID) {
-                writes.append((ids, requests))
+                writes.append(Write(habitID: habit.habitID, identifiers: ids, requests: requests))
             }
         }
         if !plan.evening.isEmpty,
            let requests = replacement(of: ReminderPlan.allEveningIdentifiers, with: plan.evening, pending: byID) {
-            writes.append((ReminderPlan.allEveningIdentifiers, requests))
+            writes.append(Write(habitID: nil, identifiers: ReminderPlan.allEveningIdentifiers, requests: requests))
         }
         guard !writes.isEmpty else { return }
 
-        var added: [String] = []
+        var added: [String: (habitID: UUID?, request: UNNotificationRequest)] = [:]
+        var written = 0
         for write in writes {
-            center.removePendingNotificationRequests(withIdentifiers: write.identifiers)
+            guard isStillOn(write.habitID, in: context.container) else { continue }
+            written += 1
             for request in write.requests {
-                do {
-                    try await center.add(request)
-                    added.append(request.identifier)
-                } catch {
-                    logger.error("widget reminder write: the center refused a request")
-                }
+                if await add(request, to: center) { added[request.identifier] = (write.habitID, request) }
             }
+            let planned = Set(write.requests.map(\.identifier))
+            center.removePendingNotificationRequests(withIdentifiers: write.identifiers.filter { !planned.contains($0) })
         }
         // The read-back (D3): the writes are in the system's store before the extension returns.
+        // One that is not is added once more (its switch read again first); the app's next plan
+        // repairs anything still missing.
         let after = Set(await center.pendingNotificationRequests().map(\.identifier))
-        let missing = added.filter { !after.contains($0) }.count
+        let missing = added.values.filter { !after.contains($0.request.identifier) }
+        var readded = 0
+        for (habitID, request) in missing where isStillOn(habitID, in: context.container) {
+            if await add(request, to: center) { readded += 1 }
+        }
         // Counts only, no habit ids in a production log line (D4).
-        logger.notice("widget reminder write: \(writes.count, privacy: .public) replaced, \(missing, privacy: .public) missing on read-back")
+        logger.notice("widget reminder write: \(written, privacy: .public) replaced, \(missing.count, privacy: .public) missing on read-back, \(readded, privacy: .public) added again")
+    }
+
+    /// One group's write: a habit's reminder ids (`habitID`), or the Daily Reminder's (nil).
+    private struct Write {
+        let habitID: UUID?
+        let identifiers: [String]
+        let requests: [UNNotificationRequest]
+    }
+
+    private static func add(_ request: UNNotificationRequest, to center: UNUserNotificationCenter) async -> Bool {
+        do {
+            try await center.add(request)
+            return true
+        } catch {
+            logger.error("widget reminder write: the center refused a request")
+            return false
+        }
+    }
+
+    /// Whether the group may still be written, read again right before its write (finding 4): the
+    /// habit's reminder on and the habit not archived, from a fresh context (the app may have saved
+    /// since this tap fetched); the Daily Reminder's switch from the App Group. Unreadable: no, so
+    /// the group is left as it is and the app's next plan decides.
+    private static func isStillOn(_ habitID: UUID?, in container: ModelContainer) -> Bool {
+        guard let habitID else {
+            // On is a stored evening; off, or the App Group unreadable, is nil.
+            return ReminderPlan.Evening.storedInAppGroup(isPerfectToday: false) != nil
+        }
+        var descriptor = FetchDescriptor<Habit>(predicate: #Predicate<Habit> { $0.id == habitID })
+        descriptor.fetchLimit = 1
+        guard let habit = try? ModelContext(container).fetch(descriptor).first else { return false }
+        return habit.reminderEnabled && !habit.isArchived
     }
 
     /// The requests that replace one group (a habit's reminder ids, or the evening's), or nil to

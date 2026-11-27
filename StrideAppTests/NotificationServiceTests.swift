@@ -18,6 +18,11 @@ final class RecordingCenter: NotificationScheduling, @unchecked Sendable {
     /// the status was still `.notDetermined`, with no request before it.
     private(set) var events: [Event] = []
 
+    /// Every add and removal of pending requests, in order (v2 review, finding 2: a replace adds
+    /// before it removes).
+    enum Write: Equatable { case add(String), remove([String]) }
+    private(set) var writes: [Write] = []
+
     /// Banners in Notification Center, by identifier (a delivery replaces one with the same id,
     /// as the real center's does).
     private(set) var delivered: [String: DeliveredNotification] = [:]
@@ -44,6 +49,7 @@ final class RecordingCenter: NotificationScheduling, @unchecked Sendable {
 
     func add(_ request: UNNotificationRequest, withCompletionHandler completionHandler: (@Sendable (Error?) -> Void)?) {
         events.append(.add(request.identifier))
+        writes.append(.add(request.identifier))
         pending[request.identifier] = request
         if holdsAddCompletions, let completionHandler {
             heldAddCompletions.append(completionHandler)
@@ -70,6 +76,7 @@ final class RecordingCenter: NotificationScheduling, @unchecked Sendable {
 
     func removePendingNotificationRequests(withIdentifiers identifiers: [String]) {
         removed.append(contentsOf: identifiers)
+        writes.append(.remove(identifiers))
         for id in identifiers { pending.removeValue(forKey: id) }
     }
 
@@ -141,6 +148,17 @@ final class RecordingCenter: NotificationScheduling, @unchecked Sendable {
             try? await Task.sleep(for: .milliseconds(10))
         }
         return badgeCounts.count > count ? badgeCounts.last : nil
+    }
+
+    /// Some writes come from a Task (the Daily Reminder's restore, finding 1): wait until `done`
+    /// holds, or the timeout. Polled on the main actor, where that Task writes.
+    @MainActor
+    func wait(timeout: Duration = .seconds(2), until done: () -> Bool) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while !done(), ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return done()
     }
 }
 
@@ -355,6 +373,8 @@ final class NotificationServiceTests: XCTestCase {
         center.seed(deletedElsewhere)
         center.seed(reminderID(archivedElsewhere))
         center.seed("stride.daily.evening")
+        // On: a pass removes the evening's ids only while the Daily Reminder is off (finding 4).
+        scratch.defaults.set(true, forKey: "reminderEnabled")
 
         service.rescheduleAllHabitReminders(modelContainer: container)
 
@@ -394,6 +414,8 @@ final class NotificationServiceTests: XCTestCase {
         center.seed(snoozeID(quiet))
         center.seed("stride.habit.snooze." + UUID().uuidString)
         center.seed("stride.daily.evening")
+        // On: a pass removes the evening's ids only while the Daily Reminder is off (finding 4).
+        scratch.defaults.set(true, forKey: "reminderEnabled")
 
         service.rescheduleAllHabitReminders(modelContainer: container)
 
@@ -572,6 +594,8 @@ final class NotificationServiceTests: XCTestCase {
         center.seed(snoozeID(read), habitID: read.id, category: "stride.habit.binary")
         center.seed("stride.habit.snooze." + gone.uuidString, habitID: gone, category: "stride.habit.binary")
         center.seed("stride.daily.evening")
+        // On: a pass removes the evening's ids only while the Daily Reminder is off (finding 4).
+        scratch.defaults.set(true, forKey: "reminderEnabled")
 
         service.refreshAfterDataChange(modelContainer: container)
 
@@ -813,13 +837,163 @@ final class NotificationServiceTests: XCTestCase {
         XCTAssertTrue(center.pending.isEmpty)
     }
 
-    /// A pass never adds the Daily Reminder behind the launch's back: it re-shapes it only while
-    /// one of its requests is pending (the launch adds it only when notifications are authorized).
-    func testAPassDoesNotAddAMissingDailyReminder() throws {
+    /// The Daily Reminder on with nothing of it pending (v2 review, finding 1: a restore to a new
+    /// phone whose permission came later, a widget write cut off after its removal): a pass adds it
+    /// back while notifications are authorized, and only then — under an undecided or denied
+    /// status the launch's rule holds, and nothing is added.
+    func testAPassRestoresAMissingDailyReminderOnlyWhenAuthorized() async throws {
         scratch.defaults.set(true, forKey: "reminderEnabled")
         try insert(habit("Open", reminder: false))
+
+        for status in [UNAuthorizationStatus.notDetermined, .denied] {
+            center.status = status
+            service.refreshAfterDataChange(modelContainer: container, now: noon)
+            let added = await center.wait(timeout: .milliseconds(300)) { !self.center.pending.isEmpty }
+            XCTAssertFalse(added, "\(status.rawValue)")
+        }
+
+        center.status = .authorized
         service.refreshAfterDataChange(modelContainer: container, now: noon)
-        XCTAssertTrue(center.pending.isEmpty)
+        let restored = await center.wait { self.center.pending["stride.daily.evening"] != nil }
+        XCTAssertTrue(restored)
+        XCTAssertEqual(Set(center.pending.keys), ["stride.daily.evening"])
+        XCTAssertEqual(center.trigger("stride.daily.evening")?.dateComponents, DateComponents(hour: 20, minute: 0))
+        XCTAssertEqual(center.pending["stride.daily.evening"]?.content.title, appLocalized("Stride Reminder 🏃"))
+
+        // Off: nothing is added back.
+        service.isReminderEnabled = false
+        service.refreshAfterDataChange(modelContainer: container, now: noon)
+        let again = await center.wait(timeout: .milliseconds(300)) { !self.center.pending.isEmpty }
+        XCTAssertFalse(again)
+    }
+
+    /// The restore case through the habit sheet (finding 1): the Daily Reminder came back on with a
+    /// restore while the permission was undecided, so the launch skipped it; "Allow" at the sheet's
+    /// prompt adds it at once, with the store's reminders.
+    func testPermissionGrantedSchedulesTheDailyReminderWhenItIsOn() async throws {
+        scratch.defaults.set(true, forKey: "reminderEnabled")
+        let open = habit("Open", hour: 6, minute: 0)
+        try insert(open)
+        center.status = .notDetermined
+        center.userAllows = true
+
+        let permission = await service.ensureReminderPermission(schedulingExistingIn: container)
+
+        XCTAssertEqual(permission, .allowed)
+        XCTAssertEqual(Set(center.pending.keys), [reminderID(open), "stride.daily.evening"])
+        XCTAssertEqual(center.events.first, .request, "nothing is added before the answer")
+    }
+
+    /// The Daily Reminder off, an evening id still pending (a widget write that raced the switch,
+    /// finding 4; the prune never touches evening ids): the pass removes every one of them, and the
+    /// morning reminder's id is not the pass's.
+    func testAPassRemovesEveningIdsWhileTheDailyReminderIsOff() throws {
+        center.seed("stride.daily.evening")
+        center.seed("stride.daily.evening.3")
+        center.seed("stride.daily.evening.n4")
+        center.seed("stride.daily.morning")
+        try insert(habit("Open", reminder: false))
+
+        service.refreshAfterDataChange(modelContainer: container, now: noon)
+
+        XCTAssertEqual(Set(center.pending.keys), ["stride.daily.morning"])
+    }
+
+    /// The switch is read again right before the pass writes (finding 4): a pass planned while the
+    /// Daily Reminder was on, answered after the user switched it off, does not add it back.
+    func testAPassPlannedBeforeTheSwitchWentOffDoesNotAddTheEveningBack() async throws {
+        let now = noon
+        service.isReminderEnabled = true
+        let read = habit("Read", reminder: false)
+        read.records = [HabitRecord(date: now)]
+        try insert(read)                               // a perfect day: the evening's overlay
+        center.answersPendingLater = true
+
+        service.refreshAfterDataChange(modelContainer: container, now: now)
+        service.isReminderEnabled = false              // before the center answers
+
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertTrue(center.pending.isEmpty, "\(center.pending.keys.sorted())")
+    }
+
+    /// A replace adds before it removes (finding 2), so a write cut off in between leaves the habit
+    /// over-firing, never with nothing pending: every planned request is added before any of the
+    /// group's other ids goes, and no planned id is ever removed. Both directions: the overlay in,
+    /// and (an undo) the bare request back.
+    func testAReplaceAddsThePlannedRequestsBeforeItRemovesTheRest() throws {
+        let now = noon
+        let read = habit("Read", hour: 20, minute: 0)
+        try insert(read)
+        service.scheduleAllHabitReminders(modelContainer: container, now: now)
+
+        let ids = allIDs(read)
+        let replace = { (step: String) throws in
+            let mark = self.center.writes.count
+            self.service.refreshAfterDataChange(modelContainer: self.container, now: now)
+            let planned = Set(self.center.pending.keys).intersection(ids)
+            // The group's writes: its adds, and its removals (the done habit's snooze cancel aside).
+            let writes = Array(self.center.writes[mark...]).filter { write in
+                switch write {
+                case .add(let id): return ids.contains(id)
+                case .remove(let removed): return !Set(removed).isDisjoint(with: ids.subtracting([self.snoozeID(read)]))
+                }
+            }
+            let lastAdd = try XCTUnwrap(writes.lastIndex { if case .add = $0 { return true } else { return false } }, step)
+            let firstRemove = try XCTUnwrap(writes.firstIndex { if case .remove = $0 { return true } else { return false } }, step)
+            XCTAssertLessThan(lastAdd, firstRemove, step)
+            for case .remove(let removed) in writes {
+                XCTAssertTrue(planned.isDisjoint(with: removed), "\(step): a planned id was removed")
+            }
+        }
+
+        let record = HabitRecord(date: now)
+        read.records.append(record)
+        try context.save()
+        try replace("overlay")
+        XCTAssertEqual(Set(center.pending.keys), overlayIDs(read, quietOn: now))
+        context.delete(record)
+        try context.save()
+        try replace("undo")
+        XCTAssertEqual(Set(center.pending.keys), [reminderID(read)])
+    }
+
+    /// An archived habit's requests still pending (archived on another device, by sync) are
+    /// removed by the next pass, not only by the launch's prune (finding 5): they eat into iOS's
+    /// 64. A live habit's snooze stays.
+    func testAPassRemovesAnArchivedHabitsPendingRequests() throws {
+        let gone = habit("Gone", archived: true)
+        let open = habit("Open")
+        try insert(gone, open)
+        center.seed(reminderID(gone))
+        center.seed(weekdayID(gone, 3))
+        center.seed(snoozeID(gone))
+        center.seed(snoozeID(open))
+
+        service.refreshAfterDataChange(modelContainer: container, now: noon)
+
+        XCTAssertEqual(Set(center.pending.keys), [reminderID(open), snoozeID(open)])
+    }
+
+    /// Snoozes beyond the budget's room of four come out of the overlays' budget in the pass
+    /// (finding 5), counted from what is pending when the center answers. 51 reminders that fired
+    /// at 06:00 and one at 20:00 done today: its overlay (+6) takes the total to 58, which fits
+    /// with four snoozes and not with five; the base plan is the same either way.
+    func testTheOverlaysBudgetLosesTheSnoozesBeyondFour() throws {
+        let now = noon
+        let plain = (0..<51).map { habit("Plain \($0)", hour: 6, minute: 0) }
+        let read = habit("Read", hour: 20, minute: 0)
+        read.records = [HabitRecord(date: now)]
+        for habit in plain { context.insert(habit) }
+        try insert(read)
+        for habit in plain.prefix(4) { center.seed(snoozeID(habit), habitID: habit.id, category: "stride.habit.binary") }
+
+        service.refreshAfterDataChange(modelContainer: container, now: now)
+        XCTAssertEqual(Set(center.pending.keys).intersection(allIDs(read)), overlayIDs(read, quietOn: now))
+
+        center.seed(snoozeID(plain[4]), habitID: plain[4].id, category: "stride.habit.binary")
+        service.refreshAfterDataChange(modelContainer: container, now: now)
+        XCTAssertEqual(Set(center.pending.keys).intersection(allIDs(read)), [reminderID(read)])
+        XCTAssertEqual(center.pending.keys.filter { $0.hasPrefix("stride.habit.reminder.") }.count, 52)
     }
 
     /// The habit sheet's save plans the whole store (A2): a habit saved as done today before its
