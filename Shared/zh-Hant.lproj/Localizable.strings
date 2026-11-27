@@ -673,9 +673,9 @@
 /* 1.5.0 Weekly Review step 2 (RELEASE-1.5.0.md D6) */
 "Previous week" = "上一週";
 "Next week" = "下一週";
-"At risk this week" = "本週可能完不成";
+"At risk this week" = "本週可能完不成的習慣";
 "Show on Today" = "在「今天」中顯示";
-"%@, %lld percent" = "%1$@，百分之%2$lld";
+"%@, %lld percent" = "%1$@，百分之 %2$lld";
 "%lld of %lld done" = "%2$lld 天中完成 %1$lld 天";
 "Strength +%lld" = "習慣強度 +%lld";
 "Strength −%lld" = "習慣強度 −%lld";

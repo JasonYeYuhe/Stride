@@ -842,7 +842,7 @@
 	<key>%lld more · %lld days left</key>
 	<dict>
 		<key>NSStringLocalizedFormatKey</key>
-		<string>Faltan %1$lld · %2$#@days@</string>
+		<string>%1$lld más · %2$#@days@</string>
 		<key>days</key>
 		<dict>
 			<key>NSStringFormatSpecTypeKey</key>

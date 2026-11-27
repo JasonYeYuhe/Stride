@@ -712,7 +712,7 @@
 	<key>%lld perfect days</key>
 	<dict>
 		<key>NSStringLocalizedFormatKey</key>
-		<string>完璧な一日：%#@days@</string>
+		<string>完璧な日が%#@days@</string>
 		<key>days</key>
 		<dict>
 			<key>NSStringFormatSpecTypeKey</key>

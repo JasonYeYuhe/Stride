@@ -674,7 +674,7 @@
 "Previous week" = "이전 주";
 "Next week" = "다음 주";
 "At risk this week" = "이번 주 달성이 위태로운 습관";
-"Show on Today" = "오늘에서 보기";
+"Show on Today" = "오늘 화면에서 보기";
 "%@, %lld percent" = "%1$@, %2$lld퍼센트";
 "%lld of %lld done" = "%2$lld일 중 %1$lld일 완료";
 "Strength +%lld" = "습관 강도 +%lld";
@@ -685,7 +685,7 @@
 /* 1.5.0 Today: the daily loop and at-risk words (RELEASE-1.5.0.md D5, D7) */
 "%lld/%lld this week · %lld more" = "이번 주 %1$lld/%2$lld · %3$lld회 남음";
 "%lld more · today" = "%lld회 남음 · 오늘까지";
-"Due today" = "오늘 할 차례";
+"Due today" = "오늘 해야 함";
 "Show yesterday" = "어제 보기";
 "Not now" = "나중에";
 "Get a reminder each evening" = "매일 저녁 알림 받기";

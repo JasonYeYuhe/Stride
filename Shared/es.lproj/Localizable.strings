@@ -683,8 +683,8 @@
 "Strength unchanged" = "Fuerza sin cambios";
 
 /* 1.5.0 Today: the daily loop and at-risk words (RELEASE-1.5.0.md D5, D7) */
-"%lld/%lld this week · %lld more" = "%1$lld/%2$lld esta semana · faltan %3$lld";
-"%lld more · today" = "Faltan %lld · hoy";
+"%lld/%lld this week · %lld more" = "%1$lld/%2$lld esta semana · %3$lld más";
+"%lld more · today" = "%lld más · vence hoy";
 "Due today" = "Toca hoy";
 "Show yesterday" = "Ver ayer";
 "Not now" = "Ahora no";
