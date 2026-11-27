@@ -487,3 +487,28 @@ was checked against the code by Claude before it was folded in.
     7-day trial (live since 11-26), still conditional on StoreKit and eligibility.
   - **Left:** the Mac paywall at minimum width (needs a capture), the ja/ko back-translation lens
     on the new copy (gate 8), `iap_copy.py` and `review_notes.py` sends (owner's go, at submission).
+- 2026-11-27, **CI green on the hosted suite** (aac3cd0: 439 passed, 0 failed, 20 skipped — the known
+  StoreKit ones). The first CI run of V2–V4's hosted tests had failed 6:
+  - BackgroundSyncTests: an after-sync pass in `.active`/`.inactive` returned before the full plan
+    had written (since 1.5.0 `apply` writes from the center's callback); it now awaits
+    `scheduleAllHabitRemindersAndWait`, still without a prune. A real fix: an `.inactive` run (Mark
+    Done over a frontmost Stride) can be suspended right after it returns.
+  - NotificationActionHandlerTests: expected the bare id after a Mark Done; it now expects D4's
+    overlay while the reminder time is ahead (test updated).
+  - TodayRenderTests ×4: the cards are accessibility containers, which the test's lookup never
+    matched (the cards were on screen). Lookup fixed; both D5 cards appear, act and dismiss.
+  - The fixer ran the hosted suite on the already-booted iPhone 17 Pro under its lock (no boot);
+    that device now holds an unsigned Debug 1.5.0 host instead of the kit's 1.4.1 ad-hoc build:
+    `app.sh reset` and rebuild before the next upgrade gate on it.
+- 2026-11-27, **gate 8 (back-translation, Claude lens)**: no meaning errors in ja, ko, zh. Fixed
+  (1ecc892): es "Faltan 1" (verb agreement) → "N más" / "vence hoy"; ja and ko "Due today" lost the
+  urgency (今日中に, 오늘 해야 함); zh "At risk this week" as a list header (…的习惯); ja What's New
+  line 2 names "that habit's" reminders; minor wording (ko, zh spacing, ja/ko perfect days).
+- 2026-11-27, **X4 Mac paywall** (dee9348): no NavigationStack on the Mac (it drew a blank ~48 pt
+  title band), the close button in the top-right corner instead of a 63-pt bottom bar, ideal height
+  570 → 634. At 600×700 the Yearly card ends ~430 pt and the bar starts ~497 in every state.
+  Captures (en, ja; min and full; six fixtures) in `~/Library/Caches/Stride-build/plan-1.5.0/
+  mac-paywall/`; the variant's container restored and hash-checked. iOS unchanged.
+- **Still open for 1.5.0:** V5 and gates 3, 4, 5 need simulators (iPhone 17 Pro Max, iPad Pro 13",
+  the kit's iPhone 17 Pro for `upgrade.sh --reminders`), blocked while the disk is under 30 GB free
+  (16–17 GB on 11-27); the whole-branch review; gate 9 (owner, Mac); gate 10 and submission.
