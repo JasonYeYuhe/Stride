@@ -6,6 +6,10 @@ import Foundation
 /// `HabitStats` (StatsCache, read once per render, Data safety 4); this decides what may be said
 /// about them.
 ///
+/// 1.5.0 (RELEASE-1.5.0.md D1, D6, D7): "due and not done" is `DailyProgress`'s rule (`isAtRisk`,
+/// the perfect days); any week's bounds (`weekBounds`); the 7-cell strip (`dayStates`) and its
+/// summary; and what a times-per-week row prints (`WeekGoal.owed`, `WeekGoal.isLastDay`).
+///
 /// Shared/ rules (Design decisions, "Placement rules"): pure values only — no `appLocalized`, no
 /// user-facing literals, no UIKit or StoreKit; the `Calendar` is passed in and is used only to
 /// key an instant (its Gregorian Y/M/D in its time zone, `HabitCalendar.dayKey`) and to read the
@@ -383,15 +387,36 @@ enum WeeklyReviewMath {
         let done: Int
         /// The weekly goal (`timesPerWeek`, at least 1).
         let goal: Int
-        /// goal − done, never below 0: "N more this week".
+        /// goal − done, never below 0. 0: the week is met (`DailyProgress.State.metForWeek` on a
+        /// day without a check-in), whichever week it is.
         let remaining: Int
         /// The days still open for a check-in: today if it is not done yet, through Sunday.
         let daysLeft: Int
-        /// The check-ins still owed cannot fit the days left: remaining > 0 and
-        /// remaining ≥ daysLeft. In the week the habit started, if that was after its Monday, the
-        /// week owes only its share of the goal (goal × days from the start ÷ 7, rounded up), as
-        /// its rate does: a 3-times-a-week habit created on Saturday is not at risk at once.
+        /// The check-ins still owed cannot fit the days left: owed > 0 and owed ≥ daysLeft. In the
+        /// week the habit started, if that was after its Monday, the week owes only its share of
+        /// the goal (goal × days from the start ÷ 7, rounded up), as its rate does: a
+        /// 3-times-a-week habit created on Saturday is not at risk at once.
         let isAtRisk: Bool
+        /// What the row prints as "N more" (RELEASE-1.5.0.md D7): the creation week's share less
+        /// `done` (never below 0) in the week the habit started after its Monday, else
+        /// `remaining`. A 3-times-a-week habit made on Friday reads "1 more", not "3 more · 2 days
+        /// left", on Saturday (Spec corrections, D10's at-risk rule): the number is the one
+        /// `isAtRisk` weighs. It can be 0 while `remaining` is not (the share met, the whole goal
+        /// not): the week is not met (`remaining`), and nothing is owed.
+        let owed: Int
+        /// Today is the week's last day (Sunday): the row reads "N more · today", never "0 days
+        /// left" (D7). `daysLeft` is then 1, or 0 once today is done.
+        let isLastDay: Bool
+
+        init(done: Int, goal: Int, remaining: Int, daysLeft: Int, isAtRisk: Bool, owed: Int, isLastDay: Bool) {
+            self.done = done
+            self.goal = goal
+            self.remaining = remaining
+            self.daysLeft = daysLeft
+            self.isAtRisk = isAtRisk
+            self.owed = owed
+            self.isLastDay = isLastDay
+        }
     }
 
     /// `now`'s day number, keyed as an instant.
@@ -402,8 +427,17 @@ enum WeeklyReviewMath {
     /// A times-per-week habit's week so far; nil for any other schedule. `stats` must have been
     /// built for `now`'s day (StatsCache's `today`), or later.
     static func weekGoal(of stats: HabitStats, now: Date, calendar: Calendar) -> WeekGoal? {
+        weekGoal(of: stats, on: HabitStats.key(ofDay: todayNumber(now, calendar)))
+    }
+
+    /// `weekGoal(of:now:calendar:)` as of the day-key `dayKey` (UTC midnight, never re-read as an
+    /// instant): its Monday week's check-ins from the Monday through `dayKey`, the days left from
+    /// `dayKey` through Sunday. `DailyProgress` reads `.remaining` for any day (a past day of the
+    /// review, a widget entry's next day). `stats` must have been built for `dayKey`, or later:
+    /// check-ins after the day `stats` was built for are not there.
+    static func weekGoal(of stats: HabitStats, on dayKey: Date) -> WeekGoal? {
         guard stats.schedule == .timesPerWeek else { return nil }
-        let today = todayNumber(now, calendar)
+        let today = HabitStats.dayNumber(ofKey: dayKey)
         let todayKey = HabitStats.key(ofDay: today)
         let week = WeekRange(containingDay: today)
         let goal = max(1, stats.timesPerWeek)
@@ -418,13 +452,16 @@ enum WeeklyReviewMath {
             : goal
         let owed = max(0, owedGoal - done)
         return WeekGoal(done: done, goal: goal, remaining: remaining, daysLeft: daysLeft,
-                        isAtRisk: owed > 0 && owed >= daysLeft)
+                        isAtRisk: owed > 0 && owed >= daysLeft, owed: owed,
+                        isLastDay: today == week.sundayNumber)
     }
 
     /// Whether a habit is at risk at `now` (D10). Never an archived habit.
     /// - times-per-week: `weekGoal`'s `isAtRisk`, whatever the hour;
-    /// - daily and specific days: scheduled today, not done (a count habit: its target not
-    ///   reached), and the local clock at or past `eveningTime`.
+    /// - daily and specific days: `.due` today by `DailyProgress` (scheduled, not done — a count
+    ///   habit: its target not reached — and started), and the local clock at or past
+    ///   `eveningTime`. The "due and not done" rule is DailyProgress's (RELEASE-1.5.0.md D1), so
+    ///   Today's words, the badge and the review never disagree about it.
     ///
     /// `stats` must have been built for `now`'s day (StatsCache's `today`), or later.
     static func isAtRisk(_ stats: HabitStats, isArchived: Bool, now: Date, calendar: Calendar,
@@ -434,7 +471,7 @@ enum WeeklyReviewMath {
             return weekGoal(of: stats, now: now, calendar: calendar)?.isAtRisk ?? false
         }
         let todayKey = HabitStats.key(ofDay: todayNumber(now, calendar))
-        guard stats.isScheduled(on: todayKey), !stats.isCompleted(on: todayKey) else { return false }
+        guard DailyProgress.state(of: stats, on: todayKey) == .due else { return false }
         let clock = calendar.dateComponents([.hour, .minute], from: now)
         return TimeOfDay(hour: clock.hour ?? 0, minute: clock.minute ?? 0) >= eveningTime
     }
@@ -446,6 +483,138 @@ enum WeeklyReviewMath {
         let own = habit.reminderEnabled ? TimeOfDay(hour: habit.reminderHour, minute: habit.reminderMinute) : nil
         return isAtRisk(stats, isArchived: habit.isArchived, now: now, calendar: calendar,
                         eveningTime: eveningTime(habitReminder: own, dailyReminder: dailyReminder))
+    }
+
+    // MARK: Any week: navigation bounds (RELEASE-1.5.0.md D6)
+
+    /// The weeks ‹ and › can reach (D6): from the week containing the earliest `startDay` to this
+    /// week (`now`'s local date in `calendar`, keyed as an instant). `earliestStart` is a day-key
+    /// (a `HabitStats.startDay`); nil (no habit), or a start after this week (a creation stamp
+    /// from a device whose clock is ahead), gives this week alone.
+    static func weekBounds(earliestStart: Date?, now: Date, calendar: Calendar) -> ClosedRange<WeekRange> {
+        let thisWeek = WeekRange(containingDay: todayNumber(now, calendar))
+        guard let earliestStart else { return thisWeek...thisWeek }
+        let first = WeekRange(containingDay: HabitStats.dayNumber(ofKey: earliestStart))
+        return min(first, thisWeek)...thisWeek
+    }
+
+    /// `weekBounds(earliestStart:now:calendar:)` over the habits the review shows (archived ones
+    /// left out, as `openingReview` reads `earliestStart`).
+    static func weekBounds(of habits: [HabitInput], now: Date, calendar: Calendar) -> ClosedRange<WeekRange> {
+        weekBounds(earliestStart: habits.filter { !$0.isArchived }.map(\.stats.startDay).min(),
+                   now: now, calendar: calendar)
+    }
+
+    // MARK: The strip (D6)
+
+    /// One cell of a habit's 7-day strip (D6).
+    enum DayState: Equatable, Hashable, CaseIterable {
+        /// A check-in (a count habit: its target reached), on any day, a rest day included.
+        case done
+        /// A past day that was due and was not done: a daily day, a specific-days scheduled day,
+        /// or a count habit's partial day (never a times-per-week day).
+        case missed
+        /// A specific-days off-day without a check-in.
+        case rest
+        /// Times-per-week, a day without a check-in that is not today: neutral, never `missed` —
+        /// the goal belongs to the week, not to a day.
+        case neutral
+        /// Before the habit's `startDay`: it did not exist yet.
+        case beforeStart
+        /// After today.
+        case future
+        /// Today, due and not done yet (a count habit's partial today included): still open,
+        /// never a miss.
+        case todayOpen
+    }
+
+    /// The 7 cells of `week`, Monday through Sunday, for the habit `stats` describes, relative to
+    /// the day `stats` was built for (`stats.today`).
+    ///
+    /// Each day reads `DailyProgress.state`, then: before the start → `.beforeStart`; after today
+    /// → `.future`; `.done` → `.done`; `.rest` → `.rest`; times-per-week not done (open, or the
+    /// week met) → `.todayOpen` today while open, else `.neutral`; any other open day →
+    /// `.todayOpen` today, `.missed` before it.
+    ///
+    /// It agrees with the row's counted rate (`HabitStats.countedRate(ofWeekStarting:)`), so the
+    /// strip never disproves the number beside it: for a daily or specific-days habit the rate is
+    /// the `.done` cells on scheduled days over those plus the `.missed` cells (today counts once
+    /// it is done, as the rate's last counted day; `.todayOpen` is in neither); for times-per-week
+    /// the `.done` cells are the week's check-ins the rate credits (StrideTests,
+    /// `testTheStripAgreesWithTheCountedRate`).
+    static func dayStates(of stats: HabitStats, week: WeekRange) -> [DayState] {
+        let today = HabitStats.dayNumber(ofKey: stats.today)
+        return (week.mondayNumber...week.sundayNumber).map { day in
+            let key = HabitStats.key(ofDay: day)
+            let state = DailyProgress.state(of: stats, on: key)
+            if state == .notStarted { return .beforeStart }
+            if day > today { return .future }
+            switch state {
+            case .done: return .done
+            case .rest: return .rest
+            case .notStarted: return .beforeStart
+            case .metForWeek: return .neutral
+            case .due:
+                if day == today { return .todayOpen }
+                return stats.schedule == .timesPerWeek ? .neutral : .missed
+            }
+        }
+    }
+
+    /// What the strip says as one accessibility element ("5 of 7 done, 1 rest day", D6), counted
+    /// from its cells.
+    struct StripSummary: Equatable {
+        /// `.done` cells (a check-in on a rest day included).
+        let done: Int
+        /// `.rest` cells.
+        let rest: Int
+        /// `.missed` cells.
+        let missed: Int
+        /// The cells the habit existed for and that have begun: neither `.beforeStart` nor
+        /// `.future` (today included). 7 for a whole past week the habit existed in.
+        let days: Int
+
+        init(done: Int, rest: Int, missed: Int, days: Int) {
+            self.done = done
+            self.rest = rest
+            self.missed = missed
+            self.days = days
+        }
+
+        init(_ states: [DayState]) {
+            self.init(done: states.filter { $0 == .done }.count,
+                      rest: states.filter { $0 == .rest }.count,
+                      missed: states.filter { $0 == .missed }.count,
+                      days: states.filter { $0 != .beforeStart && $0 != .future }.count)
+        }
+    }
+
+    /// `dayStates(of:week:)`'s summary.
+    static func stripSummary(of stats: HabitStats, week: WeekRange) -> StripSummary {
+        StripSummary(dayStates(of: stats, week: week))
+    }
+
+    // MARK: Perfect days (D6)
+
+    /// The days of `week`, through today, that were perfect (`DailyProgress.isPerfect`: something
+    /// was due and every habit due was done) over `habits` (archived ones left out), oldest first.
+    /// Each day is read as of its own end: a times-per-week habit counts in it as due until its
+    /// week's goal was met by that day, as Today's card showed it then. A day with nothing due is
+    /// never perfect. Today is "today" of the stats (`HabitStats.today`; the earliest, should
+    /// they differ).
+    static func perfectDays(of habits: [HabitInput], week: WeekRange) -> [Date] {
+        let live = habits.filter { !$0.isArchived }.map(\.stats)
+        guard let today = live.map({ HabitStats.dayNumber(ofKey: $0.today) }).min() else { return [] }
+        let last = min(week.sundayNumber, today)
+        guard week.mondayNumber <= last else { return [] }
+        return (week.mondayNumber...last).map(HabitStats.key(ofDay:)).filter {
+            DailyProgress(of: live, on: $0).isPerfect
+        }
+    }
+
+    /// "N perfect days" for `week` (D6): `perfectDays(of:week:)`'s count.
+    static func perfectDayCount(of habits: [HabitInput], week: WeekRange) -> Int {
+        perfectDays(of: habits, week: week).count
     }
 
     // MARK: Helpers
