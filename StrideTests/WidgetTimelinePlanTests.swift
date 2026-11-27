@@ -233,7 +233,11 @@ final class WidgetTimelinePlanTests: XCTestCase {
         XCTAssertEqual(atNow.rows.map(\.streak), [2, 2, 0, 2])
         XCTAssertEqual(atNow.rows.map(\.progress), [1, 0, 0.75, 0])
         XCTAssertEqual(atNow.completedCount, 1)
-        XCTAssertEqual(atNow.totalCount, 4)
+        // 1.5.0 (D1, D2): "Run" met its 1×/week goal on the 24th, so on Sunday it is not due and
+        // not counted; the other three are.
+        XCTAssertEqual(atNow.rows.map(\.state), [.done, .due, .due, .metForWeek])
+        XCTAssertEqual(atNow.totalCount, 3)
+        XCTAssertEqual(atNow.day.remaining, 2)
 
         // Monday 9/28: nothing logged yet. "Meditate" keeps its 2 (today was done — the streak's
         // grace day); "Read" missed the 27th and drops to 0; the count habit starts over at 0/8;
@@ -242,6 +246,9 @@ final class WidgetTimelinePlanTests: XCTestCase {
         XCTAssertEqual(atMidnight.rows.map(\.streak), [2, 0, 0, 2])
         XCTAssertEqual(atMidnight.rows.map(\.progress), [0, 0, 0, 0])
         XCTAssertEqual(atMidnight.completedCount, 0)
+        // Monday: a new week, so "Run" is due again (the Monday reset).
+        XCTAssertEqual(atMidnight.rows.map(\.state), [.due, .due, .due, .due])
+        XCTAssertEqual(atMidnight.totalCount, 4)
 
         XCTAssertEqual(atNow.rows.map(\.isCount), [false, false, true, false])
         XCTAssertEqual(atNow.rows.map(\.streakInWeeks), [false, false, false, true])
@@ -289,6 +296,92 @@ final class WidgetTimelinePlanTests: XCTestCase {
         for r in results.dropFirst() { XCTAssertEqual(r, results[0]) }
         XCTAssertEqual(results[0].map { $0.rows[0].isCompleted }, [true, false])
         XCTAssertEqual(results[0].map { $0.rows[0].streak }, [2, 2])
+    }
+
+    // MARK: - DailyProgress per entry (RELEASE-1.5.0.md D1, D2)
+
+    /// Each entry asks `DailyProgress` for its OWN day-key: Tuesday night in Los Angeles (already
+    /// Wednesday in UTC), a Mon/Wed/Fri habit rests today and is due at the midnight entry; a
+    /// habit made today is not started before; and with nothing due the day is a rest day, never
+    /// "0 of 0" (D1).
+    func testEachEntryCountsItsOwnDayKey() throws {
+        let la = calendar("America/Los_Angeles")
+        let now = local(la, 2026, 6, 2, 21, 30)                    // Tue 21:30 PDT = Wed 04:30Z
+        let gym = try binaryHabit("Gym", doneOn: [])
+        gym.scheduleKind = HabitSchedule.specificDays.rawValue
+        gym.activeDaysMask = (1 << 1) | (1 << 3) | (1 << 5)
+        gym.createdAt = local(la, 2026, 5, 1)
+        try context.save()
+
+        let restOnly = plan(now, la, [.init(gym)])
+        XCTAssertEqual(restOnly.entries.map(\.dayKey), [key(2026, 6, 2), key(2026, 6, 3)])
+        XCTAssertEqual(restOnly.entries[0].rows.map(\.state), [.rest])
+        XCTAssertTrue(restOnly.entries[0].day.isRestDay, "Tuesday: nothing due")
+        XCTAssertEqual(restOnly.entries[0].totalCount, 0)
+        XCTAssertFalse(restOnly.entries[0].day.isPerfect, "a rest day is not a perfect day")
+        XCTAssertEqual(restOnly.entries[1].rows.map(\.state), [.due], "Wednesday: due")
+        XCTAssertEqual(restOnly.entries[1].day, DailyProgress(done: 0, due: 1))
+
+        let read = try binaryHabit("Read", doneOn: [key(2026, 6, 2)])
+        read.createdAt = local(la, 2026, 5, 1)
+        try context.save()
+        let both = plan(now, la, [.init(gym), .init(read)])
+        XCTAssertEqual(both.entries[0].day, DailyProgress(done: 1, due: 1))
+        XCTAssertTrue(both.entries[0].day.isPerfect)
+        XCTAssertEqual(both.entries[1].day, DailyProgress(done: 0, due: 2))
+    }
+
+    /// The Monday reset, at Sunday's midnight in New York: a 2×/week habit met on Friday is
+    /// `.metForWeek` on Sunday (not counted) and due on Monday (counted); one checked on Sunday
+    /// itself is done Sunday and due Monday.
+    func testTheMidnightEntryResetsTheWeekOnMonday() throws {
+        let ny = calendar("America/New_York")
+        let now = local(ny, 2026, 6, 7, 22)                        // Sunday 22:00 EDT
+        let run = try binaryHabit("Run", doneOn: [key(2026, 6, 3), key(2026, 6, 5)])
+        run.scheduleKind = HabitSchedule.timesPerWeek.rawValue
+        run.timesPerWeek = 2
+        run.createdAt = local(ny, 2026, 5, 1)
+        let swim = try binaryHabit("Swim", doneOn: [key(2026, 6, 7)])
+        swim.scheduleKind = HabitSchedule.timesPerWeek.rawValue
+        swim.timesPerWeek = 3
+        swim.createdAt = local(ny, 2026, 5, 1)
+        try context.save()
+
+        let p = plan(now, ny, [.init(run), .init(swim)])
+        XCTAssertEqual(p.entries.map(\.dayKey), [key(2026, 6, 7), key(2026, 6, 8)])
+        XCTAssertEqual(p.entries[0].rows.map(\.state), [.metForWeek, .done])
+        XCTAssertEqual(p.entries[0].day, DailyProgress(done: 1, due: 1))
+        XCTAssertEqual(p.entries[1].rows.map(\.state), [.due, .due])
+        XCTAssertEqual(p.entries[1].day, DailyProgress(done: 0, due: 2))
+    }
+
+    /// A count habit with a target of 0 is never done (D1): its row is due, not a full ring.
+    func testACountHabitWithATargetOfZeroIsNeverDone() throws {
+        let tokyo = calendar("Asia/Tokyo")
+        let now = local(tokyo, 2026, 6, 3, 12)
+        let water = Habit(name: "Water")
+        water.kind = HabitKind.count.rawValue
+        water.targetValue = 0
+        water.createdAt = local(tokyo, 2026, 5, 1)
+        context.insert(water)
+        water.records.append(HabitRecord(date: key(2026, 6, 3), value: 3))
+        try context.save()
+
+        let entry = plan(now, tokyo, [.init(water)]).entries[0]
+        XCTAssertEqual(entry.rows.map(\.state), [.due])
+        XCTAssertEqual(entry.day, DailyProgress(done: 0, due: 1))
+        XCTAssertEqual(entry.day.fraction, 0)
+    }
+
+    /// A row made by hand (the gallery's placeholder) has no state: it counts as done or due by
+    /// `isCompleted`, as every row did before 1.5.0.
+    func testARowWithoutAStateCountsByItsCheckMark() {
+        let rows = [true, false, true].enumerated().map { i, done in
+            WidgetTimelinePlan.Row(habitId: "\(i)", name: "n", emoji: "e", colorHex: "#000000", isCount: false,
+                                   isCompleted: done, progress: done ? 1 : 0, streak: 0, streakInWeeks: false)
+        }
+        let entry = WidgetTimelinePlan.Entry(date: Date(), dayKey: key(2026, 6, 3), rows: rows)
+        XCTAssertEqual(entry.day, DailyProgress(done: 2, due: 3))
     }
 
     // MARK: - "+N more"

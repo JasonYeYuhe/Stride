@@ -2,6 +2,8 @@ import WidgetKit
 import SwiftUI
 import SwiftData
 import AppIntents
+import UserNotifications
+import os.log
 
 // MARK: - Timeline Entry
 
@@ -27,13 +29,23 @@ struct HabitEntry: TimelineEntry {
     /// yet", which would say the user's habits are gone.
     var isWaitingForApp = false
 
-    var completedCount: Int { habits.filter(\.isCompleted).count }
-    var totalCount: Int { habits.count }
+    /// The entry's day by `DailyProgress` (RELEASE-1.5.0.md D1, D2, Gemini A7): the same rule as
+    /// Today's card, the badge and the Dock, for this entry's own day-key. Every count, ring and
+    /// VoiceOver label below reads it, never the rows directly: until 1.5.0 a rest day and a met
+    /// times-per-week week counted as remaining, and a count habit with a target of 0 drew full.
+    var day: DailyProgress { DailyProgress(states: habits.map(\.dayState)) }
 
-    var progress: Double {
-        guard totalCount > 0 else { return 0 }
-        return Double(completedCount) / Double(totalCount)
-    }
+    /// Habits done on the entry's day.
+    var completedCount: Int { day.done }
+    /// Habits due on the entry's day: rest days, met weeks and habits not started are not counted.
+    var totalCount: Int { day.due }
+
+    /// done ÷ due, 0 when nothing is due (an empty ring, never a full one).
+    var progress: Double { day.fraction }
+
+    /// Habits are listed and none is due on the entry's day: every view reads "Rest day", never
+    /// "0 of 0".
+    var isRestDay: Bool { !isWaitingForApp && !habits.isEmpty && day.isRestDay }
 
     init(date: Date, dayKey: Date? = nil, habits: [HabitSnapshot], isWaitingForApp: Bool = false) {
         self.date = date
@@ -49,8 +61,9 @@ struct HabitEntry: TimelineEntry {
     /// The one line under the ring: small and large widgets. Each phrase is its own key.
     var statusText: LocalizedStringKey {
         if isWaitingForApp { return "Open Stride to see your habits" }
-        if totalCount == 0 { return "No habits yet" }
-        if completedCount == totalCount { return "All done! 🎉" }
+        if habits.isEmpty { return "No habits yet" }
+        if isRestDay { return "Rest day" }
+        if day.isPerfect { return "All done! 🎉" }
         return "\(totalCount - completedCount) remaining"
     }
 
@@ -84,9 +97,12 @@ struct HabitEntry: TimelineEntry {
         HabitEntry(date: .now, habits: [], isWaitingForApp: true)
     }
 
-    /// The VoiceOver summary of a ring or an accessory with no rows to count.
+    /// The VoiceOver summary of a ring or an accessory with nothing due to count: no rows yet, or
+    /// a rest day.
     var emptySummary: LocalizedStringKey {
-        isWaitingForApp ? "Open Stride to see your habits" : "No habits yet"
+        if isWaitingForApp { return "Open Stride to see your habits" }
+        if habits.isEmpty { return "No habits yet" }
+        return "Rest day"
     }
 }
 
@@ -145,7 +161,126 @@ struct ToggleHabitIntent: AppIntent {
             SyncDeletionQueue.live.trackSharedEntry(deletedID)
         }
         WidgetCenter.shared.reloadAllTimelines()
+        // The reminders follow the day (RELEASE-1.5.0.md D4, D5): quiet once done, back on an
+        // un-check, the evening on a perfect day. After the save, so a lost write here only leaves
+        // the requests as they were — the store is right, and the app's next plan repairs them.
+        await WidgetReminderWrite.afterTap(of: habit, becameDone: result.isCompleted, habits: habits, in: context)
         return .result()
+    }
+}
+
+// MARK: - Reminders after a widget check-in (1.5.0)
+
+/// The widget's half of "quiet when done" (RELEASE-1.5.0.md D4, D5; Gemini A6). A check-in from
+/// the widget runs in this process, where the app's save observer never hears it, so the reminder
+/// it makes quiet would still fire tonight. The spike (D3) showed the extension reads and writes
+/// the app's pending requests.
+///
+/// - **The same full plan as the app** (`ReminderPlan.plan` over every reminder-on habit and the
+///   Daily Reminder, with each habit's quiet days and today's perfect day), so a tap that makes or
+///   breaks a perfect day moves the evening's overlay too, and an un-check brings the bare request
+///   back. Only the habits (and the evening) whose pending ids or triggers differ are replaced.
+/// - **It never builds notification text.** Each replaced habit's requests copy the content of
+///   any of its pending reminder requests (bare, `.<w>` or `.n<w>`; never the snooze) with
+///   `userInfo["day"]` removed; the evening's copy any pending `stride.daily.evening*`. So this
+///   process never needs the app's language or its message list. A habit (or the evening) with
+///   nothing pending to copy from is left alone: the app's next plan rebuilds it. That only
+///   over-fires or waits, never deletes.
+/// - **When the habit becomes done**, its snooze is cancelled and its delivered banners are
+///   withdrawn, as `CheckInEffects.afterCheckIn` does in the app.
+/// - **Read back** before `perform` returns: each add is awaited, then the pending list is read
+///   again, so the writes have reached the system before the extension can be suspended (D3).
+@MainActor
+enum WidgetReminderWrite {
+    private static let logger = Logger(subsystem: "yyh.stride.habittracker.widget", category: "Notifications")
+
+    static func afterTap(of tapped: Habit, becameDone: Bool, habits: [Habit], in context: ModelContext) async {
+        let center = UNUserNotificationCenter.current()
+        let calendar = Calendar.current
+        let today = ReminderPlan.Today(now: Date(), calendar: calendar)
+        // The app's order (`NotificationService.makePlan`), so a tie in the budget's overlay order
+        // resolves the same way in both processes.
+        let ordered = habits.filter { !$0.isArchived }
+            .sorted { ($0.sortOrder, $0.id.uuidString) < ($1.sortOrder, $1.id.uuidString) }
+        let live = HabitStats.liveRecordIDs(of: ordered, in: context)
+        var stats: [UUID: HabitStats] = [:]
+        for habit in ordered {
+            stats[habit.id] = HabitStats(habit: habit, liveRecordIDs: live, calendar: calendar, today: today.dayKey)
+        }
+        let settings = ordered.compactMap { habit in
+            stats[habit.id].flatMap { ReminderPlan.settings(for: habit, stats: $0, today: today.dayKey) }
+        }
+        let progress = DailyProgress(of: ordered.compactMap { stats[$0.id] }, on: today.dayKey)
+        let plan = ReminderPlan.plan(settings, evening: .storedInAppGroup(isPerfectToday: progress.isPerfect),
+                                     today: today)
+
+        if becameDone {
+            center.removePendingNotificationRequests(withIdentifiers: [ReminderPlan.snoozeIdentifier(for: tapped.id)])
+            center.removeDeliveredNotifications(withIdentifiers: ReminderPlan.allIdentifiers(for: tapped.id))
+        }
+
+        let pending = await center.pendingNotificationRequests()
+        let byID = Dictionary(pending.map { ($0.identifier, $0) }, uniquingKeysWith: { first, _ in first })
+        var writes: [(identifiers: [String], requests: [UNNotificationRequest])] = []
+        for habit in settings {
+            let ids = ReminderPlan.reminderIdentifiers(for: habit.habitID)
+            if let requests = replacement(of: ids, with: plan.requests(for: habit.habitID), pending: byID) {
+                writes.append((ids, requests))
+            }
+        }
+        if !plan.evening.isEmpty,
+           let requests = replacement(of: ReminderPlan.allEveningIdentifiers, with: plan.evening, pending: byID) {
+            writes.append((ReminderPlan.allEveningIdentifiers, requests))
+        }
+        guard !writes.isEmpty else { return }
+
+        var added: [String] = []
+        for write in writes {
+            center.removePendingNotificationRequests(withIdentifiers: write.identifiers)
+            for request in write.requests {
+                do {
+                    try await center.add(request)
+                    added.append(request.identifier)
+                } catch {
+                    logger.error("widget reminder write: the center refused a request")
+                }
+            }
+        }
+        // The read-back (D3): the writes are in the system's store before the extension returns.
+        let after = Set(await center.pendingNotificationRequests().map(\.identifier))
+        let missing = added.filter { !after.contains($0) }.count
+        // Counts only, no habit ids in a production log line (D4).
+        logger.notice("widget reminder write: \(writes.count, privacy: .public) replaced, \(missing, privacy: .public) missing on read-back")
+    }
+
+    /// The requests that replace one group (a habit's reminder ids, or the evening's), or nil to
+    /// leave it: nothing pending to copy the content from, or the pending ids and triggers are
+    /// already the plan's.
+    private static func replacement(of identifiers: [String], with planned: [ReminderPlan.Request],
+                                    pending: [String: UNNotificationRequest]) -> [UNNotificationRequest]? {
+        let current = identifiers.compactMap { pending[$0] }
+        guard let template = current.first else { return nil }
+        let pendingShape = Set(current.map { request in
+            Shape(identifier: request.identifier,
+                  fire: (request.trigger as? UNCalendarNotificationTrigger)
+                    .map { ReminderPlan.Fire($0.dateComponents, repeats: $0.repeats) })
+        })
+        let plannedShape = Set(planned.map { Shape(identifier: $0.identifier, fire: $0.fire) })
+        guard pendingShape != plannedShape else { return nil }
+        guard let content = template.content.mutableCopy() as? UNMutableNotificationContent else { return nil }
+        // A snooze's day must never ride along: a copied day would make a later Mark Done credit
+        // that day. (The snooze is never a template; this holds whatever the template.)
+        content.userInfo.removeValue(forKey: NotificationRouter.UserInfoKey.day)
+        return planned.map { request in
+            UNNotificationRequest(identifier: request.identifier, content: content,
+                                  trigger: UNCalendarNotificationTrigger(dateMatching: request.dateComponents,
+                                                                         repeats: request.repeats))
+        }
+    }
+
+    private struct Shape: Hashable {
+        let identifier: String
+        let fire: ReminderPlan.Fire?
     }
 }
 
@@ -235,8 +370,9 @@ struct SmallWidgetView: View {
                     .stroke(Color.green, style: StrokeStyle(lineWidth: 8, lineCap: .round))
                     .rotationEffect(.degrees(-90))
 
-                // "0 of 0" would read as a count while nothing has been read.
-                if !entry.isWaitingForApp {
+                // "0 of 0" would read as a count while nothing has been read, or on a rest day
+                // (the status line says "Rest day").
+                if !entry.isWaitingForApp && entry.totalCount > 0 {
                     VStack(spacing: 0) {
                         Text("\(entry.completedCount)")
                             .font(.title.bold())
@@ -250,7 +386,8 @@ struct SmallWidgetView: View {
             .frame(width: 70, height: 70)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(entry.completedCount) of \(entry.totalCount) habits completed")
-            // "0 of 0 habits completed" is nonsense; the status line below already says it.
+            // "0 of 0 habits completed" is nonsense; the status line below already says it ("No
+            // habits yet", "Rest day").
             .accessibilityHidden(entry.totalCount == 0)
 
             Text(entry.statusText)
@@ -280,14 +417,19 @@ struct MediumWidgetView: View {
                         .stroke(Color.green, style: StrokeStyle(lineWidth: 6, lineCap: .round))
                         .rotationEffect(.degrees(-90))
 
-                    Text("\(Int(entry.progress * 100))%")
-                        .font(.callout.bold())
+                    // No percent of nothing due: the ring stays empty on a rest day.
+                    if entry.totalCount > 0 {
+                        Text("\(Int(entry.progress * 100))%")
+                            .font(.callout.bold())
+                    }
                 }
                 .frame(width: 56, height: 56)
 
-                Text("Today")
+                Text(entry.isRestDay ? "Rest day" : "Today")
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
             }
             .frame(width: 72)
             .accessibilityElement(children: .ignore)
@@ -379,7 +521,7 @@ struct LargeWidgetView: View {
                 // A formatted percent, not a "\(n)%" key: no catalog has one, and the
                 // formatter puts the sign where each language wants it.
                 // Past accessibility3 it truncated to "5…"; the ring alone still says it.
-                if !isHuge {
+                if !isHuge && entry.totalCount > 0 {
                     Text(entry.progress, format: .percent.precision(.fractionLength(0)))
                         .font(.caption2.bold())
                         .minimumScaleFactor(0.6)
@@ -604,8 +746,13 @@ struct LockScreenCircularView: View {
         Gauge(value: entry.progress) {
             Image(systemName: "flame.fill")
         } currentValueLabel: {
-            Text("\(entry.completedCount)")
-                .font(.system(.body, design: .rounded).bold())
+            if entry.isRestDay {
+                // Nothing due: no count to show. The label says "Rest day".
+                Image(systemName: "moon.zzz.fill")
+            } else {
+                Text("\(entry.completedCount)")
+                    .font(.system(.body, design: .rounded).bold())
+            }
         }
         .gaugeStyle(.accessoryCircular)
         .accessibilityLabel(entry.totalCount == 0 ? entry.emptySummary : "\(entry.completedCount) of \(entry.totalCount) habits completed")
@@ -620,9 +767,11 @@ struct LockScreenInlineView: View {
     var body: some View {
         if entry.isWaitingForApp {
             Text("Open Stride to see your habits")
-        } else if entry.totalCount == 0 {
+        } else if entry.habits.isEmpty {
             Text("Stride: No habits yet")
-        } else if entry.completedCount == entry.totalCount {
+        } else if entry.isRestDay {
+            Text("Rest day")
+        } else if entry.day.isPerfect {
             // Spoken form only: the leading emoji reads as its symbol name and "2/3" as
             // "2 slash 3", both noise on an accessory whose whole point is one short phrase.
             Text("🔥 All \(entry.totalCount) habits done!")
@@ -644,7 +793,10 @@ struct LockScreenRectangularView: View {
                 Text("Stride")
                     .font(.caption.bold())
                 Spacer()
-                if !entry.isWaitingForApp {
+                if entry.isRestDay {
+                    Text("Rest day")
+                        .font(.caption.bold())
+                } else if !entry.isWaitingForApp && entry.totalCount > 0 {
                     Text("\(entry.completedCount)/\(entry.totalCount)")
                         .font(.caption.bold())
                 }

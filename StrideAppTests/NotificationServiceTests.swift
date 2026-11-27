@@ -198,9 +198,37 @@ final class NotificationServiceTests: XCTestCase {
     private func reminderID(_ habit: Habit) -> String { "stride.habit.reminder." + habit.id.uuidString }
     private func weekdayID(_ habit: Habit, _ weekday: Int) -> String { reminderID(habit) + ".\(weekday)" }
     private func snoozeID(_ habit: Habit) -> String { "stride.habit.snooze." + habit.id.uuidString }
-    /// Every id a habit can have: the legacy daily one, seven weekday ones, the snooze.
+    /// The overlay's one-shot on weekday `w` next week (1.5.0, D4).
+    private func oneShotID(_ habit: Habit, _ weekday: Int) -> String { reminderID(habit) + ".n\(weekday)" }
+    /// Every id a habit can have: the legacy daily one, seven weekday ones, seven one-shots, the
+    /// snooze.
     private func allIDs(_ habit: Habit) -> Set<String> {
-        Set([reminderID(habit)] + (1...7).map { weekdayID(habit, $0) } + [snoozeID(habit)])
+        Set([reminderID(habit)] + (1...7).map { weekdayID(habit, $0) } + (1...7).map { oneShotID(habit, $0) }
+            + [snoozeID(habit)])
+    }
+
+    /// Noon today on this machine's clock and calendar: every reminder at 20:00 is still ahead,
+    /// every one at 07:30 has fired.
+    private var noon: Date { Calendar.current.date(bySettingHour: 12, minute: 0, second: 0, of: Date())! }
+
+    private func weekday(_ date: Date) -> Int { Calendar.current.component(.weekday, from: date) }
+
+    /// The overlay's one-shot components for `date`'s weekday: the same weekday next week.
+    private func nextWeek(_ date: Date, hour: Int, minute: Int) -> DateComponents {
+        let next = Calendar.current.date(byAdding: .day, value: 7, to: date)!
+        let c = Calendar.current.dateComponents([.year, .month, .day], from: next)
+        return DateComponents(year: c.year, month: c.month, day: c.day, hour: hour, minute: minute)
+    }
+
+    /// A daily-shaped habit's overlay with `date`'s weekday quiet.
+    private func overlayIDs(_ habit: Habit, quietOn date: Date) -> Set<String> {
+        let w = weekday(date)
+        return Set((1...7).filter { $0 != w }.map { weekdayID(habit, $0) } + [oneShotID(habit, w)])
+    }
+
+    private func eveningOverlayIDs(quietOn date: Date) -> Set<String> {
+        let w = weekday(date)
+        return Set((1...7).filter { $0 != w }.map { "stride.daily.evening.\($0)" } + ["stride.daily.evening.n\(w)"])
     }
 
     private func insert(_ habits: Habit...) throws {
@@ -310,7 +338,7 @@ final class NotificationServiceTests: XCTestCase {
         XCTAssertEqual(Set(center.delivered.keys), allIDs(kept))
         XCTAssertEqual(Set(center.removed), allIDs(deleted))
         XCTAssertEqual(Set(center.removedDelivered), allIDs(deleted))
-        XCTAssertEqual(allIDs(deleted).count, 9)
+        XCTAssertEqual(allIDs(deleted).count, 16)
     }
 
     /// The launch-time prune: a habit deleted or archived on another device arrives through
@@ -531,8 +559,9 @@ final class NotificationServiceTests: XCTestCase {
 
     /// A kind pulled from another device: the pass after the sync's save cancels a pending snooze
     /// whose button is the other kind's, as it withdraws such a banner, and the snooze of a habit
-    /// that is gone. A snooze matching its habit stays. Pending reminders stay whatever their
-    /// category: they are the schedule's, which replaces them after the sync.
+    /// that is gone. A snooze matching its habit stays. Since 1.5.0 the pass also runs the full
+    /// plan (D4), so the reminder of the other kind's category is replaced with its kind now, and
+    /// a reminder-on habit with nothing pending gets its request.
     func testRefreshCancelsASnoozeWhoseButtonIsAnotherKinds() throws {
         let water = habit("Water")                              // yes/no now; count when snoozed
         let read = habit("Read")
@@ -546,7 +575,8 @@ final class NotificationServiceTests: XCTestCase {
 
         service.refreshAfterDataChange(modelContainer: container)
 
-        XCTAssertEqual(Set(center.pending.keys), [reminderID(water), snoozeID(read), "stride.daily.evening"])
+        XCTAssertEqual(Set(center.pending.keys), [reminderID(water), reminderID(read), snoozeID(read), "stride.daily.evening"])
+        XCTAssertEqual(center.pending[reminderID(water)]?.content.categoryIdentifier, "stride.habit.binary")
     }
 
     // MARK: - Delivered banners and the pass after a data change
@@ -570,11 +600,14 @@ final class NotificationServiceTests: XCTestCase {
     /// The pass after a data change: the badge counts what is left today; a habit done today
     /// (here by the widget, which this process never saw) loses its snooze and its banners; a
     /// banner whose button is another kind's, or whose habit is gone, is withdrawn; the rest stay.
-    func testRefreshAfterADataChangeSetsTheBadgeAndClearsWhatIsDone() async throws {
+    /// 1.5.0 (D4): the pass re-plans every reminder, so each habit has its request — at noon the
+    /// 07:30 reminders have fired, so the done habit keeps its base shape.
+    func testRefreshAfterADataChangeSetsTheBadgeClearsWhatIsDoneAndReplans() async throws {
+        let now = noon
         let done = habit("Done")
         let open = habit("Open")
         let water = habit("Water", kind: .count)
-        done.records = [HabitRecord(date: Date())]
+        done.records = [HabitRecord(date: now)]
         try insert(done, open, water)
         let gone = UUID()
         for habit in [done, open, water] { center.seed(snoozeID(habit)) }
@@ -584,9 +617,10 @@ final class NotificationServiceTests: XCTestCase {
         center.deliver("stride.habit.reminder." + gone.uuidString, category: "stride.habit.count", habitID: gone)
         center.deliver("stride.daily.evening")
 
-        service.refreshAfterDataChange(modelContainer: container)
+        service.refreshAfterDataChange(modelContainer: container, now: now)
 
-        XCTAssertEqual(Set(center.pending.keys), [snoozeID(open), snoozeID(water)])
+        XCTAssertEqual(Set(center.pending.keys), [snoozeID(open), snoozeID(water),
+                                                  reminderID(done), reminderID(open), reminderID(water)])
         XCTAssertEqual(Set(center.delivered.keys), [reminderID(open), "stride.daily.evening"])
         let badge = await center.waitForBadge(after: 0)
         XCTAssertEqual(badge, 2)
@@ -601,6 +635,211 @@ final class NotificationServiceTests: XCTestCase {
         await service.updateBadgeAndWait(modelContainer: container)
 
         XCTAssertEqual(center.badgeCounts, [1])
+    }
+
+    // MARK: - 1.5.0: quiet when done (RELEASE-1.5.0.md D2, D4)
+
+    /// The badge is `DailyProgress.remaining` for today (D1, D2): a habit on its rest day and one
+    /// not started yet are not counted; a count habit with a target of 0 is never done, so it is.
+    func testTheBadgeCountsOnlyWhatIsDueToday() async throws {
+        let now = noon
+        let todayBit = weekday(now) - 1
+        let resting = habit("Resting", days: Set((0..<7).filter { $0 != todayBit }))
+        let tomorrow = habit("Tomorrow")
+        tomorrow.createdAt = Calendar.current.date(byAdding: .day, value: 1, to: now)!
+        let done = habit("Done")
+        done.records = [HabitRecord(date: now)]
+        let zero = habit("Zero", kind: .count)
+        zero.targetValue = 0
+        zero.records = [HabitRecord(date: now, value: 3)]
+        try insert(resting, tomorrow, done, zero, habit("Open"))
+
+        await service.updateBadgeAndWait(modelContainer: container, now: now)
+        XCTAssertEqual(center.badgeCounts, [2], "Open and Zero")
+    }
+
+    /// D2's parity fixture, for the surfaces this workstream owns: on Thursday 2026-06-04 a daily
+    /// habit, a Mon/Wed/Fri habit (resting), a 3×/week habit met on Wednesday, a count habit with a
+    /// target of 0 and a habit created that day. The badge, the Dock's label and the widget's
+    /// today entry all say 3 left; the badge on Friday and the widget's midnight entry both say 4
+    /// (the Mon/Wed/Fri habit is due again; the met week still is met).
+    func testTheBadgeTheDockAndBothWidgetEntriesAgree() async throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        func at(_ day: Int, _ hour: Int) -> Date {
+            calendar.date(from: DateComponents(year: 2026, month: 6, day: day, hour: hour))!
+        }
+        func key(_ day: Int) -> Date { HabitCalendar.utc.date(from: DateComponents(year: 2026, month: 6, day: day))! }
+        let thursday = at(4, 12)
+        let daily = habit("Daily")
+        let mwf = habit("MWF", days: monWedFri)
+        let run = habit("Run")
+        run.schedule = .timesPerWeek
+        run.timesPerWeek = 3
+        run.records = [HabitRecord(date: key(1)), HabitRecord(date: key(2)), HabitRecord(date: key(3))]
+        let zero = habit("Zero", kind: .count)
+        zero.targetValue = 0
+        zero.records = [HabitRecord(date: key(4), value: 2)]
+        for habit in [daily, mwf, run, zero] { habit.createdAt = at(1, 9) }
+        let new = habit("New")
+        new.createdAt = at(4, 8)
+        try insert(daily, mwf, run, zero, new)
+
+        await service.updateBadgeAndWait(modelContainer: container, now: thursday, calendar: calendar)
+        await service.updateBadgeAndWait(modelContainer: container, now: at(5, 12), calendar: calendar)
+        XCTAssertEqual(center.badgeCounts, [3, 4])
+        XCTAssertEqual(NotificationService.dockLabel(count: center.badgeCounts[0], badgesEnabled: true), "3")
+
+        let fetched = try context.fetch(FetchDescriptor<Habit>(predicate: #Predicate<Habit> { !$0.isArchived }))
+        let widget = WidgetTimelinePlan(now: thursday, calendar: calendar,
+                                        rows: WidgetTimelinePlan.rowInputs(for: fetched, in: context, now: thursday,
+                                                                           calendar: calendar))
+        XCTAssertEqual(widget.entries.map(\.dayKey), [key(4), key(5)])
+        XCTAssertEqual(widget.entries.map(\.day.remaining), [3, 4])
+    }
+
+    /// The Dock's label (X4, carried from 1.4.2): nil with Badges off or nothing left, else the
+    /// count. Pure, so the hosted suite pins the rule the Mac applies.
+    func testTheDockLabelIsTheCountOnlyWithBadgesOnAndSomethingLeft() {
+        XCTAssertNil(NotificationService.dockLabel(count: 0, badgesEnabled: true))
+        XCTAssertNil(NotificationService.dockLabel(count: -1, badgesEnabled: true))
+        XCTAssertNil(NotificationService.dockLabel(count: 3, badgesEnabled: false))
+        XCTAssertNil(NotificationService.dockLabel(count: 0, badgesEnabled: false))
+        XCTAssertEqual(NotificationService.dockLabel(count: 3, badgesEnabled: true), "3")
+    }
+
+    /// A check-in before the reminder's time re-plans (D4): that habit's bare request becomes the
+    /// overlay — six weekly requests and a one-shot next week, same banner — and no other habit is
+    /// touched (A2: only changed habits are replaced). An undo brings the bare request back at
+    /// once, and the next day's pass would too.
+    func testACheckInQuietsTheHabitAndAnUndoBringsItBack() throws {
+        let now = noon
+        let read = habit("Read", hour: 20, minute: 0)
+        let other = habit("Other", hour: 20, minute: 0)
+        try insert(read, other)
+        service.scheduleAllHabitReminders(modelContainer: container, now: now)
+        XCTAssertEqual(Set(center.pending.keys), [reminderID(read), reminderID(other)])
+
+        let record = HabitRecord(date: now)
+        read.records.append(record)
+        try context.save()
+        let removedBefore = center.removed.count
+        service.refreshAfterDataChange(modelContainer: container, now: now)
+
+        XCTAssertEqual(Set(center.pending.keys), overlayIDs(read, quietOn: now).union([reminderID(other)]))
+        let shot = try XCTUnwrap(center.trigger(oneShotID(read, weekday(now))))
+        XCTAssertFalse(shot.repeats)
+        XCTAssertEqual(shot.dateComponents, nextWeek(now, hour: 20, minute: 0))
+        let weekly = try XCTUnwrap(center.trigger(weekdayID(read, weekday(now) % 7 + 1)))
+        XCTAssertTrue(weekly.repeats)
+        XCTAssertEqual(weekly.dateComponents, DateComponents(hour: 20, minute: 0, weekday: weekday(now) % 7 + 1))
+        let content = try XCTUnwrap(center.pending[oneShotID(read, weekday(now))]?.content)
+        XCTAssertEqual(content.categoryIdentifier, "stride.habit.binary")
+        XCTAssertEqual(content.userInfo["habitId"] as? String, read.id.uuidString)
+        XCTAssertTrue(Set(center.removed[removedBefore...]).isDisjoint(with: allIDs(other)),
+                      "only the habit that changed is replaced")
+
+        // A second pass changes nothing: nothing is removed or re-added.
+        let quiet = center.removed.count
+        service.refreshAfterDataChange(modelContainer: container, now: now)
+        XCTAssertEqual(center.removed.count, quiet + 1, "only the done habit's snooze cancel")
+
+        // Undo.
+        context.delete(record)
+        try context.save()
+        service.refreshAfterDataChange(modelContainer: container, now: now)
+        XCTAssertEqual(Set(center.pending.keys), [reminderID(read), reminderID(other)])
+
+        // Checked again, then the next day: the overlay is gone and the bare request is back.
+        read.records.append(HabitRecord(date: now))
+        try context.save()
+        service.refreshAfterDataChange(modelContainer: container, now: now)
+        XCTAssertEqual(Set(center.pending.keys), overlayIDs(read, quietOn: now).union([reminderID(other)]))
+        let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: now)!
+        service.refreshAfterDataChange(modelContainer: container, now: tomorrow)
+        XCTAssertEqual(Set(center.pending.keys), [reminderID(read), reminderID(other)])
+    }
+
+    /// Done after the reminder's time: today's request already fired; the plan is the base, the
+    /// same ids as 1.4.2 (upgrade.sh --reminders on a non-quiet day).
+    func testACheckInAfterTheReminderTimeKeepsTheBase() throws {
+        let now = noon
+        let early = habit("Early", hour: 7, minute: 30)
+        early.records = [HabitRecord(date: now)]
+        try insert(early)
+        service.refreshAfterDataChange(modelContainer: container, now: now)
+        XCTAssertEqual(Set(center.pending.keys), [reminderID(early)])
+    }
+
+    /// A perfect day before the Daily Reminder's time (D4): its bare request becomes the evening
+    /// overlay. Breaking the perfect day (an undo) brings the bare request back; so does the next
+    /// day. The morning reminder is untouched.
+    func testAPerfectDayQuietsTheDailyReminder() throws {
+        let now = noon
+        service.isReminderEnabled = true
+        service.isMorningMotivationEnabled = true
+        XCTAssertEqual(Set(center.pending.keys), ["stride.daily.evening", "stride.daily.morning"])
+
+        let read = habit("Read", reminder: false)
+        let run = habit("Run", reminder: false)
+        let record = HabitRecord(date: now)
+        read.records = [HabitRecord(date: now)]
+        run.records = [record]
+        try insert(read, run)
+
+        service.refreshAfterDataChange(modelContainer: container, now: now)
+        XCTAssertEqual(Set(center.pending.keys), eveningOverlayIDs(quietOn: now).union(["stride.daily.morning"]))
+        let shot = try XCTUnwrap(center.trigger("stride.daily.evening.n\(weekday(now))"))
+        XCTAssertEqual(shot.dateComponents, nextWeek(now, hour: 20, minute: 0))
+        XCTAssertFalse(shot.repeats)
+        XCTAssertEqual(center.pending["stride.daily.evening.n\(weekday(now))"]?.content.title,
+                       appLocalized("Stride Reminder 🏃"))
+
+        context.delete(record)
+        try context.save()
+        service.refreshAfterDataChange(modelContainer: container, now: now)
+        XCTAssertEqual(Set(center.pending.keys), ["stride.daily.evening", "stride.daily.morning"])
+
+        // Perfect again; switching the Daily Reminder off removes every evening id.
+        run.records.append(HabitRecord(date: now))
+        try context.save()
+        service.refreshAfterDataChange(modelContainer: container, now: now)
+        XCTAssertEqual(Set(center.pending.keys), eveningOverlayIDs(quietOn: now).union(["stride.daily.morning"]))
+        service.refreshAfterDataChange(modelContainer: container,
+                                       now: Calendar.current.date(byAdding: .day, value: 1, to: now)!)
+        XCTAssertEqual(Set(center.pending.keys), ["stride.daily.evening", "stride.daily.morning"], "the next day")
+        service.refreshAfterDataChange(modelContainer: container, now: now)
+        service.isReminderEnabled = false
+        XCTAssertTrue(center.pending.isEmpty)
+    }
+
+    /// A pass never adds the Daily Reminder behind the launch's back: it re-shapes it only while
+    /// one of its requests is pending (the launch adds it only when notifications are authorized).
+    func testAPassDoesNotAddAMissingDailyReminder() throws {
+        scratch.defaults.set(true, forKey: "reminderEnabled")
+        try insert(habit("Open", reminder: false))
+        service.refreshAfterDataChange(modelContainer: container, now: noon)
+        XCTAssertTrue(center.pending.isEmpty)
+    }
+
+    /// The habit sheet's save plans the whole store (A2): a habit saved as done today before its
+    /// time is overlaid at once, and the others stay as they are.
+    func testTheSheetsSchedulePlansTheWholeStore() throws {
+        let now = Date()
+        let c = Calendar.current.dateComponents([.hour, .minute], from: now)
+        try XCTSkipIf(c.hour == 23 && (c.minute ?? 0) >= 58, "the 23:59 reminder must still be ahead")
+        let other = habit("Other", hour: 6, minute: 0)
+        try insert(other)
+        service.scheduleAllHabitReminders(modelContainer: container)
+        let read = habit("Read", hour: 23, minute: 59)
+        read.records = [HabitRecord(date: now)]
+        try insert(read)
+        let removedBefore = center.removed.count
+
+        service.scheduleHabitReminder(for: read)
+
+        XCTAssertEqual(Set(center.pending.keys), overlayIDs(read, quietOn: now).union([reminderID(other)]))
+        XCTAssertTrue(Set(center.removed[removedBefore...]).isDisjoint(with: allIDs(other)))
     }
 
     // MARK: - Permission on the habit sheet's Save path

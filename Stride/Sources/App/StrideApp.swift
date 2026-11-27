@@ -245,6 +245,16 @@ struct StrideApp: App {
                 NotificationService.shared.refreshAfterDataChange(modelContainer: modelContainer)
                 NotificationService.shared.pruneDeliveredBeforeToday()
             }
+            // The zone or the clock changed (travel, a manual change, a DST night): "today", its
+            // quiet days and whether a reminder time is still ahead are read again, so the full
+            // reminder plan runs, as on the day change (RELEASE-1.5.0.md D4, Gemini A5).
+            .onReceive(
+                NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)
+                    .merge(with: NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification))
+                    .receive(on: DispatchQueue.main)
+            ) { _ in
+                NotificationService.shared.refreshAfterDataChange(modelContainer: modelContainer)
+            }
             #endif
             // One-tap sign-in: the magic link in the email is a universal link
             // (`https://stride-api.colorarchive.me/login?token=…`, the associated-domains
@@ -531,7 +541,8 @@ struct StrideApp: App {
         if NotificationService.shared.isReminderEnabled {
             let status = await NotificationService.shared.checkPermission()
             if status == .authorized {
-                NotificationService.shared.scheduleReminders()
+                // Over the store: on a perfect day the evening's overlay (RELEASE-1.5.0.md D4).
+                NotificationService.shared.scheduleReminders(modelContainer: modelContainer)
             }
         }
 
@@ -694,6 +705,16 @@ extension StrideApp {
                     MainActor.assumeIsolated {
                         NotificationService.shared.refreshAfterDataChange(modelContainer: modelContainer)
                         NotificationService.shared.pruneDeliveredBeforeToday()
+                    }
+                },
+            // The zone or the clock changed: the full reminder plan, as on the day change
+            // (RELEASE-1.5.0.md D4, Gemini A5).
+            center.publisher(for: .NSSystemTimeZoneDidChange)
+                .merge(with: center.publisher(for: .NSSystemClockDidChange))
+                .receive(on: DispatchQueue.main)
+                .sink { _ in
+                    MainActor.assumeIsolated {
+                        NotificationService.shared.refreshAfterDataChange(modelContainer: modelContainer)
                     }
                 },
             // A Mac app can stay open for days; re-read entitlements when it comes forward so a
