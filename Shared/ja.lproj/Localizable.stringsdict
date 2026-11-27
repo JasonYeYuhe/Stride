@@ -737,5 +737,33 @@
 			<string>%lld日</string>
 		</dict>
 	</dict>
+	<key>%lld more · %lld days left</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>あと%1$lld回 · 残り%2$#@days@</string>
+		<key>days</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld日</string>
+		</dict>
+	</dict>
+	<key>%lld habits not checked yesterday</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>昨日チェックしていない習慣：%#@habits@</string>
+		<key>habits</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld件</string>
+		</dict>
+	</dict>
 </dict>
 </plist>

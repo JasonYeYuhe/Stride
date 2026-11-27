@@ -311,7 +311,8 @@ enum TodayAtRisk {
     /// The row's words.
     enum Words: Equatable {
         /// "%lld/%lld this week": times-per-week, the goal met — or, in the week the habit started,
-        /// its share met (`owed == 0`), so no "0 more" is ever printed.
+        /// its share met (`owed == 0`), so no "0 more" is ever printed — or no day left to check in
+        /// (`daysLeft == 0`), so no "more" the user cannot do.
         case weekSoFar(done: Int, goal: Int)
         /// "%1$lld/%2$lld this week · %3$#@more@": times-per-week, owing `owed`, not at risk.
         case weekOwing(done: Int, goal: Int, owed: Int)
@@ -338,6 +339,10 @@ enum TodayAtRisk {
     static func words(for stats: HabitStats, now: Date, calendar: Calendar,
                       eveningTime: WeeklyReviewMath.TimeOfDay) -> Words? {
         if let goal = WeeklyReviewMath.weekGoal(of: stats, now: now, calendar: calendar) {
+            // No day left to check in (today done on the week's last day): asking for "more" is
+            // something the user cannot do, so the row reads the plain count (integrator's call,
+            // 2026-11-27: "1 more · today" after Sunday's check-in could be disproved).
+            if goal.daysLeft == 0 { return .weekSoFar(done: goal.done, goal: goal.goal) }
             if goal.isAtRisk {
                 return goal.isLastDay ? .atRiskToday(owed: goal.owed)
                     : .atRiskDaysLeft(owed: goal.owed, daysLeft: max(1, goal.daysLeft))

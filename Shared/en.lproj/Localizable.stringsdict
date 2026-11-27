@@ -839,5 +839,37 @@
 			<string>%lld rest days</string>
 		</dict>
 	</dict>
+	<key>%lld more · %lld days left</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%1$lld more · %2$#@days@</string>
+		<key>days</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld day left</string>
+			<key>other</key>
+			<string>%lld days left</string>
+		</dict>
+	</dict>
+	<key>%lld habits not checked yesterday</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@habits@</string>
+		<key>habits</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld habit not checked yesterday</string>
+			<key>other</key>
+			<string>%lld habits not checked yesterday</string>
+		</dict>
+	</dict>
 </dict>
 </plist>

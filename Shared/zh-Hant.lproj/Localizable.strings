@@ -681,3 +681,12 @@
 "Strength −%lld" = "習慣強度 −%lld";
 "Strength ±0" = "習慣強度 ±0";
 "Strength unchanged" = "習慣強度無變化";
+
+/* 1.5.0 Today: the daily loop and at-risk words (RELEASE-1.5.0.md D5, D7) */
+"%lld/%lld this week · %lld more" = "本週 %1$lld/%2$lld · 還差 %3$lld 次";
+"%lld more · today" = "還差 %lld 次 · 今天截止";
+"Due today" = "今天要做";
+"Show yesterday" = "查看昨天";
+"Not now" = "以後再說";
+"Get a reminder each evening" = "每天晚上提醒我";
+"Turn on" = "開啟";

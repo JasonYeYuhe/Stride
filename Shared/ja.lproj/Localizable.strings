@@ -681,3 +681,12 @@
 "Strength −%lld" = "定着度 −%lld";
 "Strength ±0" = "定着度 ±0";
 "Strength unchanged" = "定着度は変化なし";
+
+/* 1.5.0 Today: the daily loop and at-risk words (RELEASE-1.5.0.md D5, D7) */
+"%lld/%lld this week · %lld more" = "今週 %1$lld/%2$lld · あと%3$lld回";
+"%lld more · today" = "あと%lld回 · 今日まで";
+"Due today" = "今日やる日";
+"Show yesterday" = "昨日を表示";
+"Not now" = "今はしない";
+"Get a reminder each evening" = "毎晩リマインダーを受け取る";
+"Turn on" = "オンにする";

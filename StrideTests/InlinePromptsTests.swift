@@ -479,9 +479,10 @@ final class InlinePromptsTests: XCTestCase {
             // The share met, the goal not: the plain count, no "0 more".
             let shareMet = tpw(created: key(6, 5), checkedIn: [key(6, 5), key(6, 6)])
             XCTAssertEqual(words(shareMet, 6, 6, 9), .weekSoFar(done: 2, goal: 3), zone)
-            // Done today on Sunday, still owing: "today", never "0 days left".
+            // Done today on Sunday, still owing: no day is left to check in, so the plain count,
+            // never "1 more · today" (which the user could not do) nor "0 days left".
             let lastDay = tpw(created: key(5, 1), checkedIn: [key(6, 7)])
-            XCTAssertEqual(words(lastDay, 6, 7, 9), .atRiskToday(owed: 2), zone)
+            XCTAssertEqual(words(lastDay, 6, 7, 9), .weekSoFar(done: 1, goal: 3), zone)
         }
         withExtendedLifetime(container) {}
     }
