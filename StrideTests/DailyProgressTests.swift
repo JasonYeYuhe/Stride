@@ -195,6 +195,22 @@ final class DailyProgressTests: XCTestCase {
         }
     }
 
+    func testTheCreationWeeksShareMetIsMetForTheWeek() {
+        // 3 a week, created Friday 5 June: Friday to Sunday owe ⌈3 × 3/7⌉ = 2. Done Friday and
+        // Saturday, Sunday owes nothing (the row prints no "more"), so it is met, not remaining,
+        // although the whole goal (3) is not reached. Monday owes the whole goal again.
+        for calendar in zones {
+            let h = habit(.timesPerWeek, timesPerWeek: 3, created: key(6, 5))
+            checkIn(h, on: [key(6, 5), key(6, 6)])
+            let s = stats(h, today: key(6, 8), calendar: calendar)
+            let goal = WeeklyReviewMath.weekGoal(of: s, on: key(6, 7))
+            XCTAssertEqual(goal?.owed, 0, calendar.timeZone.identifier)
+            XCTAssertEqual(goal?.remaining, 1, calendar.timeZone.identifier)
+            XCTAssertEqual(DailyProgress.state(of: s, on: key(6, 7)), .metForWeek, calendar.timeZone.identifier)
+            XCTAssertEqual(DailyProgress.state(of: s, on: key(6, 8)), .due, calendar.timeZone.identifier)
+        }
+    }
+
     func testAWidgetEntryForTomorrowReadsItsOwnDay() {
         // Stats built for Sunday 7 June (a met week); the midnight entry asks about Monday 8 June.
         let tpw = habit(.timesPerWeek, timesPerWeek: 1, created: key(5, 1))

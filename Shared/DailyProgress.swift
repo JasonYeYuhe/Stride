@@ -38,8 +38,11 @@ struct DailyProgress: Equatable {
         case due
         /// A specific-days off-day without a check-in.
         case rest
-        /// Times-per-week: the Monday week's goal was reached by that day
-        /// (`WeeklyReviewMath.WeekGoal.remaining == 0`) and the day has no check-in of its own.
+        /// Times-per-week: what the Monday week owes was reached by that day
+        /// (`WeeklyReviewMath.WeekGoal.owed == 0`: the whole goal, or in the week the habit
+        /// started, its share) and the day has no check-in of its own. `owed`, not `remaining`, so
+        /// the badge and the row agree: a row that prints nothing more owed is never counted as
+        /// remaining (integrator's call on V1's open point 4, 2026-11-27).
         case metForWeek
         /// The day is before the habit's `startDay` (min of its creation day and its earliest live
         /// record): it did not exist yet.
@@ -52,8 +55,8 @@ struct DailyProgress: Equatable {
     /// The state of the habit `stats` describes on `dayKey` (a day-key, see the type's note).
     ///
     /// In this order: before `startDay` → `.notStarted`; done → `.done`; a specific-days rest day →
-    /// `.rest`; times-per-week whose Monday week holds its whole goal by `dayKey`
-    /// (`WeeklyReviewMath.weekGoal(of:on:)`, check-ins from the Monday through `dayKey`) →
+    /// `.rest`; times-per-week whose Monday week owes nothing more by `dayKey`
+    /// (`WeeklyReviewMath.weekGoal(of:on:)`'s `owed`, check-ins from the Monday through `dayKey`) →
     /// `.metForWeek`; otherwise `.due`.
     ///
     /// A day after the day `stats` was built for has no check-in yet (HabitStats ignores records
@@ -66,7 +69,7 @@ struct DailyProgress: Equatable {
         if day < HabitStats.dayNumber(ofKey: stats.startDay) { return .notStarted }
         if stats.isCompleted(on: key) { return .done }
         if !stats.isScheduled(on: key) { return .rest }
-        if stats.schedule == .timesPerWeek, WeeklyReviewMath.weekGoal(of: stats, on: key)?.remaining == 0 {
+        if stats.schedule == .timesPerWeek, WeeklyReviewMath.weekGoal(of: stats, on: key)?.owed == 0 {
             return .metForWeek
         }
         return .due

@@ -387,8 +387,8 @@ enum WeeklyReviewMath {
         let done: Int
         /// The weekly goal (`timesPerWeek`, at least 1).
         let goal: Int
-        /// goal − done, never below 0. 0: the week is met (`DailyProgress.State.metForWeek` on a
-        /// day without a check-in), whichever week it is.
+        /// goal − done, never below 0. 0: the whole goal is met. `DailyProgress.State.metForWeek`
+        /// reads `owed`, which is the same outside the habit's first week.
         let remaining: Int
         /// The days still open for a check-in: today if it is not done yet, through Sunday.
         let daysLeft: Int
@@ -402,7 +402,7 @@ enum WeeklyReviewMath {
         /// `remaining`. A 3-times-a-week habit made on Friday reads "1 more", not "3 more · 2 days
         /// left", on Saturday (Spec corrections, D10's at-risk rule): the number is the one
         /// `isAtRisk` weighs. It can be 0 while `remaining` is not (the share met, the whole goal
-        /// not): the week is not met (`remaining`), and nothing is owed.
+        /// not): nothing is owed, and `DailyProgress` reads the day as `.metForWeek`.
         let owed: Int
         /// Today is the week's last day (Sunday): the row reads "N more · today", never "0 days
         /// left" (D7). `daysLeft` is then 1, or 0 once today is done.
