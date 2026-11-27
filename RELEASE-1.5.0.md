@@ -223,7 +223,8 @@ scope", which still holds.
   today not yet done. Times-per-week: a day without a check-in is neutral, never missed. A count
   habit's partial day is missed in the past and open today. The strip agrees with the row's counted
   rate, or a user can disprove it (a test). It is **one accessibility element** with a summary value
-  ("5 of 7 done, 1 rest day"). Labels format day-keys with `HabitCalendar.utc` as `dates(of:)` does.
+  ("5 of 7 done, 1 rest day"): "of N" counts the days begun except today while it is open, and the
+  rest days are every unscheduled day, a checked one included (11-27). Labels format day-keys with `HabitCalendar.utc` as `dates(of:)` does.
 - **The strength chip:** `strengthChangePoints`, in `Color.readableText`.
 - **Sections by group**, Ungrouped last, headers with the members' mean counted rate (the view passes
   `groupOrder`, which it does not today: WeeklyReviewView.swift:75-76).
@@ -240,15 +241,20 @@ scope", which still holds.
   size; at AX sizes the row wraps (a capture proves it).
 
 **D7 — Today's at-risk words and order (D10 of 1.4.2, corrected).**
-- **When at risk:** `WeeklyReviewMath.isAtRisk`, unchanged (times-per-week by the creation week's
-  share; daily and specific days: due, not done, past the evening time: the habit's reminder, else the
-  Daily Reminder's, else 18:00).
+- **When at risk:** `WeeklyReviewMath.isAtRisk` (times-per-week by the creation week's share;
+  daily and specific days: due, not done, past the evening time: the habit's reminder, else the
+  Daily Reminder's, else 18:00). **Amended 11-27 (branch review):** a times-per-week habit is at
+  risk only while its goal is still reachable and every remaining day is needed (`owed ==
+  daysLeft`); out of reach (`owed > daysLeft`), the row reads the plain "1/3 this week" and the
+  review does not list it, since "3 more · 2 days left" asks for what cannot be done.
 - **Row words** (TodayView.swift:787-809 and `spokenDetail` :731-753), only when the selected day is
   today:
   - a times-per-week row not yet met: "1/3 this week · 2 more" (one key, `%1$lld/%2$lld this week ·
     %3$#@more@`);
   - at risk: "2 more · 2 days left" in `Color.readableText(hex: "#FF9500", …)`; "more" prints `owed`
-    in the creation week; on the last day it reads "2 more · today", never "0 days left";
+    in the creation week; on the last day it reads "1 more · today", never "0 days left";
+  - on a past selected day, "this week" counts from that Monday through the selected day, as the
+    card above it does;
   - a daily or specific-days habit at risk: "Due today";
   - no copy names a weekday. The same words go in the row's accessibility value.
 - **Order:** at-risk rows first within their section, latched in `@State` and recomputed only when Today
@@ -512,3 +518,13 @@ was checked against the code by Claude before it was folded in.
 - **Still open for 1.5.0:** V5 and gates 3, 4, 5 need simulators (iPhone 17 Pro Max, iPad Pro 13",
   the kit's iPhone 17 Pro for `upgrade.sh --reminders`), blocked while the disk is under 30 GB free
   (16–17 GB on 11-27); the whole-branch review; gate 9 (owner, Mac); gate 10 and submission.
+- 2026-11-27, **whole-branch review, first pass** (Gemini 4 Argon High, "a sentence a user can
+  disprove", throwaway copy of `ab7b191`): 8 findings; 6 real and fixed in 80908f7 — times-per-week
+  at risk only while reachable (`owed == daysLeft`; the demo's Yoga data moved so a weekend capture
+  still has an at-risk row); no times-per-week habit in the missed-yesterday count; a past day's row
+  counts through that day; Today keys `now` once (an exact UTC midnight read as tomorrow, proven by
+  a hosted test that fails on the old keying in Los Angeles); the strip's rest days and its "of N".
+  Not real: the row's check state already agrees for a target-0 count habit (`isCompletedOn` requires
+  a target > 0), now pinned by a parity test. Rejected: "100 % beside At risk" (the header says "so
+  far"). StrideTests 900 / 2 skipped / 0 in both zones; TodayRenderTests and WeeklyReviewRenderTests
+  33 / 0 on the iPhone 17 Pro.
