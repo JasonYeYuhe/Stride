@@ -382,6 +382,26 @@ class WhatsNewCopyTests(unittest.TestCase):
                 for key in ["Sign In", "Log In"]:
                     self.assertNotIn(words[key].casefold(), text, f"{locale} has a sign-in sentence")
 
+    def test_1_5_0_names_what_the_app_calls_it_free_first_and_no_trial(self):
+        # RELEASE-1.5.0.md V6: the words a user then looks for (Today, its "Rest day" and "Show
+        # yesterday", the Daily Reminder, Weekly Review and its Strength chip); Weekly Review, the
+        # only Pro line, comes last; no trial, which not every user is eligible for (D5 of 1.4.2).
+        keys = ["Today", "Rest day", "Show yesterday", "Daily Reminder", "Weekly Review", "Strength"]
+        trial = {"en-US": "trial", "es-ES": "prueba", "ja": "トライアル", "ko": "체험",
+                 "zh-Hans": "试用", "zh-Hant": "試用"}
+        languages = {"en-US": "en", "es-ES": "es", "ja": "ja", "ko": "ko", "zh-Hans": "zh-Hans", "zh-Hant": "zh-Hant"}
+        for locale, language in languages.items():
+            text = release.WHATS_NEW_BY_VERSION["1.5.0"][locale]
+            words = {k: k for k in keys} if language == "en" else catalog(language)
+            with self.subTest(locale=locale):
+                for key in keys:
+                    self.assertIn(words[key].casefold(), text.casefold(), f"{locale} lacks the app's {key!r}: {words[key]}")
+                lines = text.split("\n")
+                self.assertTrue(3 <= len(lines) <= 5, f"{locale}: What's New is a few short lines")
+                self.assertEqual([i for i, line in enumerate(lines) if "Stride Pro" in line], [len(lines) - 1],
+                                 f"{locale}: only the last line is Pro")
+                self.assertNotIn(trial[locale], text.casefold(), f"{locale} mentions a trial")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
