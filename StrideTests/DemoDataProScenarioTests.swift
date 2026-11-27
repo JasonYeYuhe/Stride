@@ -125,13 +125,16 @@ final class DemoDataProScenarioTests: XCTestCase {
         }
     }
 
-    /// The 3-times-a-week habit is at risk once fewer days are left than check-ins owed: Friday on.
+    /// The 3-times-a-week habit is at risk once every day left is needed and the goal is still
+    /// within reach (RELEASE-1.5.0.md D7, 2026-11-27): Friday to Sunday, checked in on each day
+    /// from Friday before today, so the sweep finds it at risk on any of the three.
     @MainActor
     func testYogaIsAtRiskFromFriday() throws {
         for offset in 0..<7 {
             let seeded = try Self.seed(offset)
             let goal = WeeklyReviewMath.weekGoal(of: seeded.stats("Yoga"), now: seeded.now, calendar: seeded.calendar)
-            XCTAssertEqual(goal?.done, 0, "day \(offset)")
+            XCTAssertEqual(goal?.done, max(0, seeded.weekday - 4), "day \(offset)")
+            XCTAssertEqual(goal?.isReachable, true, "day \(offset)")
             XCTAssertEqual(goal?.isAtRisk, seeded.weekday >= 4, "day \(offset)")
         }
     }

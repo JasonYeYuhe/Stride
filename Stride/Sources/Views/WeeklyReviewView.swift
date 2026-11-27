@@ -89,6 +89,9 @@ struct WeeklyReviewView: View {
         let bounds: ClosedRange<WeeklyReviewMath.WeekRange>
         /// Each row's 7 cells (`WeeklyReviewMath.dayStates`), by the row's index.
         let strips: [Int: [WeeklyReviewMath.DayState]]
+        /// Each row's strip in words (`WeeklyReviewMath.stripSummary`), by the row's index: the
+        /// habit's rest days come from its schedule, so a done rest day still counts as one.
+        let stripSummaries: [Int: WeeklyReviewMath.StripSummary]
         /// Each row's strength change in points (`strengthChangePoints`), by the row's index; no
         /// entry for a week the habit did not exist in.
         let strength: [Int: Int]
@@ -128,9 +131,12 @@ struct WeeklyReviewView: View {
             : week == thisWeek.previous ? .lastWeek : .earlier
 
         var strips: [Int: [WeeklyReviewMath.DayState]] = [:]
+        var stripSummaries: [Int: WeeklyReviewMath.StripSummary] = [:]
         var strength: [Int: Int] = [:]
         for row in review.rows {
-            strips[row.index] = WeeklyReviewMath.dayStates(of: stats[row.index], week: week)
+            let cells = WeeklyReviewMath.dayStates(of: stats[row.index], week: week)
+            strips[row.index] = cells
+            stripSummaries[row.index] = WeeklyReviewMath.stripSummary(of: stats[row.index], week: week, states: cells)
             strength[row.index] = WeeklyReviewMath.strengthChangePoints(of: stats[row.index], week: week)
         }
         // "At risk this week" is about now: never on another week.
@@ -144,7 +150,7 @@ struct WeeklyReviewView: View {
         }
         return Summary(week: week, relation: relation, review: review, today: today,
                        bounds: WeeklyReviewMath.weekBounds(of: inputs, now: now, calendar: calendar),
-                       strips: strips, strength: strength,
+                       strips: strips, stripSummaries: stripSummaries, strength: strength,
                        perfectDays: WeeklyReviewMath.perfectDayCount(of: inputs, week: week),
                        atRisk: atRisk)
     }
@@ -364,6 +370,8 @@ struct WeeklyReviewView: View {
                     ForEach(section.members, id: \.self) { index in
                         if let row = rows[index] {
                             breakdownRow(habits[index], row: row, strip: summary.strips[index] ?? [],
+                                         stripSummary: summary.stripSummaries[index]
+                                            ?? WeeklyReviewMath.StripSummary(summary.strips[index] ?? []),
                                          strength: summary.strength[index])
                         }
                     }
@@ -490,9 +498,9 @@ struct WeeklyReviewView: View {
     /// never 7 stops. The chip is its own element. At accessibility sizes the row wraps: the
     /// strip under the name, the rate and the chip under the strip.
     private func breakdownRow(_ habit: Habit, row: WeeklyReviewMath.Row, strip: [WeeklyReviewMath.DayState],
-                              strength: Int?) -> some View {
+                              stripSummary: WeeklyReviewMath.StripSummary, strength: Int?) -> some View {
         let stacked = typeSize.isAccessibilitySize
-        let core = rowCore(habit, row: row, strip: strip, stacked: stacked)
+        let core = rowCore(habit, row: row, strip: strip, summary: stripSummary, stacked: stacked)
         return Group {
             if stacked {
                 VStack(alignment: .leading, spacing: 6) {
@@ -512,9 +520,8 @@ struct WeeklyReviewView: View {
 
     @ViewBuilder
     private func rowCore(_ habit: Habit, row: WeeklyReviewMath.Row, strip: [WeeklyReviewMath.DayState],
-                         stacked: Bool) -> some View {
+                         summary: WeeklyReviewMath.StripSummary, stacked: Bool) -> some View {
         let rate = row.rate
-        let summary = WeeklyReviewMath.StripSummary(strip)
         let content = Group {
             if stacked {
                 VStack(alignment: .leading, spacing: 6) {
@@ -570,7 +577,8 @@ struct WeeklyReviewView: View {
 
     /// The strip as words (D6): "5 of 7 done", and ", 1 rest day" when there is one; nothing for a
     /// week the habit has no day in yet. `total` is every day the habit existed for that has begun,
-    /// today included (`StripSummary.days`).
+    /// today only once it is no longer open, as the rate beside it counts (`StripSummary.days`);
+    /// the rest days are the habit's unscheduled days, a done one included (`StripSummary.rest`).
     static func stripValue(_ summary: WeeklyReviewMath.StripSummary) -> Text {
         let completed = summary.done
         let total = summary.days

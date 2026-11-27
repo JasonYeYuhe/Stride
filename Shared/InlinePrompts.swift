@@ -24,8 +24,9 @@ import Foundation
 /// 1.5.0 (RELEASE-1.5.0.md D5) adds two cards, and Today shows at most one of the three, in this
 /// priority:
 /// 1. **Missed yesterday** (`MissedYesterdayCard`): today is selected, yesterday left at least one
-///    habit `.due` (`DailyProgress`: not a rest day, not a met week, not before its start), and
-///    today is after the user's first check-in ever. "Show yesterday" re-anchors Today to yesterday
+///    daily or specific-days habit `.due` (`DailyProgress`: not a rest day, not before its start),
+///    and today is after the user's first check-in ever. Times-per-week habits never count: the
+///    week owes the goal, not a day, and the Weekly Review's strip never marks such a day missed. "Show yesterday" re-anchors Today to yesterday
 ///    (the shell's day, never the store); "Not now" hides it for the rest of the day.
 /// 2. **The week card**, unchanged.
 /// 3. **The reminder offer**: the system permission is not determined, no reminder is on (no
@@ -50,7 +51,8 @@ enum InlinePrompts {
     struct MissedYesterdayCard: Equatable {
         /// Today, as a day number: what "Not now" hides the card for.
         let today: Int
-        /// The habits yesterday left open (`DailyProgress.State.due`), at least 1.
+        /// The daily and specific-days habits yesterday left open (`DailyProgress.State.due`), at
+        /// least 1.
         let openCount: Int
         /// Yesterday, a day number.
         var yesterday: Int { today - 1 }
@@ -61,7 +63,8 @@ enum InlinePrompts {
     struct TodayFacts: Equatable {
         /// The day Today shows is today (`shell.todayDate`).
         var isTodaySelected: Bool
-        /// The habits `.due` yesterday and not done (`DailyProgress`).
+        /// The daily and specific-days habits `.due` yesterday and not done (`DailyProgress`);
+        /// never a times-per-week one (`facts(of:today:)`).
         var openYesterday: Int
         /// The user's first check-in ever (any live record of a habit Today shows) was before
         /// today: today is "a day after the first check-in" (D5).
@@ -228,6 +231,10 @@ enum InlinePrompts {
     /// than today, and the different check-in days counted up to 2. `today` is a day-key. The app
     /// fills in the rest (the selected day, the permission, the reminders).
     ///
+    /// A times-per-week habit is never "not checked yesterday" (integrator's call, 2026-11-27):
+    /// a day without its check-in is neutral on the review's strip (`WeeklyReviewMath.DayState
+    /// .neutral`), so the card would count a day no other surface calls missed.
+    ///
     /// A check-in day is a day with a live record (a count habit's partial day too), as
     /// `HabitStats.valuesByDay` holds them; the walk stops as soon as both answers are known, so
     /// a long history costs a few lookups, not a scan per render.
@@ -238,7 +245,7 @@ enum InlinePrompts {
         var before = false
         var days = Set<Int>()
         for habit in stats {
-            if DailyProgress.state(of: habit, on: yesterday) == .due { open += 1 }
+            if habit.schedule != .timesPerWeek, DailyProgress.state(of: habit, on: yesterday) == .due { open += 1 }
             guard !before || days.count < 2 else { continue }
             for key in habit.valuesByDay.keys {
                 let day = HabitStats.dayNumber(ofKey: key)
@@ -311,14 +318,16 @@ enum TodayAtRisk {
     /// The row's words.
     enum Words: Equatable {
         /// "%lld/%lld this week": times-per-week, the goal met — or, in the week the habit started,
-        /// its share met (`owed == 0`), so no "0 more" is ever printed — or no day left to check in
-        /// (`daysLeft == 0`), so no "more" the user cannot do.
+        /// its share met (`owed == 0`), so no "0 more" is ever printed — or the goal out of reach
+        /// (`WeekGoal.isReachable` false: more owed than days left, `daysLeft == 0` included), so
+        /// no "more" the user cannot do. Also a day other than today (`asOf(_:on:)`).
         case weekSoFar(done: Int, goal: Int)
         /// "%1$lld/%2$lld this week · %3$#@more@": times-per-week, owing `owed`, not at risk.
         case weekOwing(done: Int, goal: Int, owed: Int)
-        /// "%1$#@more@ · %2$#@days@": times-per-week at risk, `daysLeft` ≥ 1 (never "0 days left").
+        /// "%1$#@more@ · %2$#@days@": times-per-week at risk — every day left is needed, so
+        /// `owed == daysLeft` ≥ 1 (never "0 days left").
         case atRiskDaysLeft(owed: Int, daysLeft: Int)
-        /// "%#@more@ · today": times-per-week at risk on the week's last day.
+        /// "%#@more@ · today": times-per-week at risk on the week's last day, not done yet: owed 1.
         case atRiskToday(owed: Int)
         /// "Due today": a daily or specific-days habit at risk (due, not done, past its evening).
         case dueToday
@@ -339,10 +348,12 @@ enum TodayAtRisk {
     static func words(for stats: HabitStats, now: Date, calendar: Calendar,
                       eveningTime: WeeklyReviewMath.TimeOfDay) -> Words? {
         if let goal = WeeklyReviewMath.weekGoal(of: stats, now: now, calendar: calendar) {
-            // No day left to check in (today done on the week's last day): asking for "more" is
-            // something the user cannot do, so the row reads the plain count (integrator's call,
-            // 2026-11-27: "1 more · today" after Sunday's check-in could be disproved).
-            if goal.daysLeft == 0 { return .weekSoFar(done: goal.done, goal: goal.goal) }
+            // The goal out of reach — more owed than days left to check in, which includes no day
+            // left at all (today done on the week's last day): asking for "more" is something the
+            // user cannot do, so the row reads the plain count and is not at risk (integrator's
+            // calls, 2026-11-27, on RELEASE-1.5.0.md D7: "1 more · today" after Sunday's check-in,
+            // and "3 more · 2 days left" on a Saturday at 0 of 3, could both be disproved).
+            if !goal.isReachable || goal.daysLeft == 0 { return .weekSoFar(done: goal.done, goal: goal.goal) }
             if goal.isAtRisk {
                 return goal.isLastDay ? .atRiskToday(owed: goal.owed)
                     : .atRiskDaysLeft(owed: goal.owed, daysLeft: max(1, goal.daysLeft))
@@ -353,6 +364,17 @@ enum TodayAtRisk {
         let atRisk = WeeklyReviewMath.isAtRisk(stats, isArchived: false, now: now, calendar: calendar,
                                                eveningTime: eveningTime)
         return atRisk ? .dueToday : nil
+    }
+
+    /// A day other than today shown on Today (D7 says nothing there): a times-per-week row's week
+    /// as it stood at the end of that day — its Monday week's check-ins from the Monday through
+    /// `dayKey` (`WeeklyReviewMath.weekGoal(of:on:)`), so it agrees with the card above it, which
+    /// reads that day's `DailyProgress` (integrator's call, 2026-11-27: Tuesday's card counted a
+    /// 3-times-a-week habit open while its row, counting Wednesday's and Thursday's check-ins too,
+    /// read "3/3 this week"). Nil for any other schedule. `dayKey` is a day-key; `stats` built
+    /// for that day or later (StatsCache's, for today).
+    static func asOf(_ stats: HabitStats, on dayKey: Date) -> Words? {
+        WeeklyReviewMath.weekGoal(of: stats, on: dayKey).map { .weekSoFar(done: $0.done, goal: $0.goal) }
     }
 
     /// `items` with the at-risk ones first, each part in its own order (stable): one section's

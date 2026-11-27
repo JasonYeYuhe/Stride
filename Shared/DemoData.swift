@@ -142,8 +142,11 @@ enum DemoData {
     /// - Drink Water, started 10 days ago (D7: Strength "Not started" before the start, one "Since
     ///   start" tile, Insights' first-week or true line);
     /// - Read 30 min, 43 % the week before last and 86 % last week: last week's "Most improved";
-    /// - Yoga, 3 times a week, none yet this week: at risk from Friday, by D10's rule (no
-    ///   earlier: Monday to Thursday enough days are left);
+    /// - Yoga, 3 times a week, none Monday to Thursday, then checked on each day from Friday
+    ///   before today: at risk from Friday to Sunday, every day left needed and the goal still
+    ///   within reach (0 of 3 with 3 days left, 1 of 3 with 2, 2 of 3 with today), by D10's rule
+    ///   as RELEASE-1.5.0.md D7 narrowed it on 2026-11-27 (a goal out of reach is not at risk);
+    ///   no earlier: Monday to Thursday enough days are left;
     /// - Journal, 100 % then 43 %, so "Slipped", with notes on last week's three check-ins.
     /// Today: Morning Run and Read are done, the others not yet. Last week has a counted rate, so
     /// `-inlineCard week` draws the Today card with a number.
@@ -211,9 +214,9 @@ enum DemoData {
             default: return weekday != 6
             }
         }
-        let yoga = add("Yoga", "\u{1F9D8}", "#AF52DE", group: mind, start: day(12, 0)) { week, weekday, _ in
+        let yoga = add("Yoga", "\u{1F9D8}", "#AF52DE", group: mind, start: day(12, 0)) { week, weekday, daysAgo in
             switch week {
-            case 0: return false
+            case 0: return daysAgo > 0 && weekday >= 4
             case 2: return [0, 3].contains(weekday)
             default: return [0, 2, 4].contains(weekday)
             }

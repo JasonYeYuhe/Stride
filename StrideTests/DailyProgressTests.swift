@@ -283,6 +283,63 @@ final class DailyProgressTests: XCTestCase {
         }
     }
 
+    /// Stats built for an instant at exactly UTC midnight (Gemini review, 2026-11-27): HabitStats,
+    /// and so StatsCache, key their `today` with `HabitStats.dayNumber(of:in:)`, which takes that
+    /// instant for a day-key — Sunday 17:00 PDT is Monday's. TodayView therefore asks the cache
+    /// with `DailyProgress.today(now:calendar:)`, as the review and the cards do: the stats then
+    /// end on the day the card reads.
+    func testStatsForAnExactUTCMidnightAreBuiltForTheKeyedDay() {
+        // Sunday 7 June 17:00 PDT is exactly 2026-06-08 00:00:00Z.
+        let now = at(6, 7, 17, 0, in: la)
+        XCTAssertEqual(now.timeIntervalSince1970.truncatingRemainder(dividingBy: 86_400), 0)
+        // A daily habit done on Sunday, and a check-in dated Monday from a device already on it.
+        let run = habit(created: key(5, 1))
+        checkIn(run, on: [key(6, 7), key(6, 8)])
+        let raw = HabitStats(habit: run, liveRecordIDs: HabitStats.liveRecordIDs(of: [run], in: context),
+                             calendar: la, today: now)
+        XCTAssertEqual(raw.today, key(6, 8), "the trap: the raw instant builds Monday's stats")
+        XCTAssertTrue(raw.isCompleted(on: key(6, 8)), "and counts tomorrow's check-in")
+        let keyed = HabitStats(habit: run, liveRecordIDs: HabitStats.liveRecordIDs(of: [run], in: context),
+                               calendar: la, today: DailyProgress.today(now: now, calendar: la))
+        XCTAssertEqual(keyed.today, key(6, 7), "keyed as an instant: Sunday")
+        XCTAssertFalse(keyed.isCompleted(on: key(6, 8)), "a day after today holds nothing")
+        XCTAssertEqual(keyed.today, WeeklyReviewMath.today(now: now, calendar: la))
+        // A key is kept as it is in every zone: building from the key is the same day everywhere.
+        for calendar in zones {
+            let s = HabitStats(habit: run, liveRecordIDs: HabitStats.liveRecordIDs(of: [run], in: context),
+                               calendar: calendar, today: key(6, 7))
+            XCTAssertEqual(s.today, key(6, 7), calendar.timeZone.identifier)
+        }
+    }
+
+    /// Today's row draws its check from the habit (`Habit.isCompletedOn`, RELEASE-1.4.1.md D4: the
+    /// state a tap flips), the card above it from `HabitStats` (`DailyProgress`). They agree on
+    /// every kind of day, a count habit's target of 0 included: neither calls it done (Gemini
+    /// review, 2026-11-27, asked whether the row could read a target-0 day as done; it cannot).
+    func testTheRowsOwnCheckAgreesWithTheCard() {
+        let daily = habit(created: key(5, 1))
+        checkIn(daily, on: [key(6, 1)])
+        let glasses = habit(kind: .count, target: 3, created: key(5, 1))
+        checkIn(glasses, on: [key(6, 1)], value: 3)
+        checkIn(glasses, on: [key(6, 2)], value: 2)
+        checkIn(glasses, on: [key(6, 3)], value: 7)
+        let zero = habit(kind: .count, target: 0, created: key(5, 1))
+        checkIn(zero, on: [key(6, 1)], value: 4)
+        let days = habit(.specificDays, activeDays: mwf, created: key(5, 1))
+        checkIn(days, on: [key(6, 2)])
+        for calendar in zones {
+            for h in [daily, glasses, zero, days] {
+                let s = stats(h, today: key(6, 4), calendar: calendar)
+                for day in 1...4 {
+                    let label = "\(calendar.timeZone.identifier) \(h.habitKind) target \(h.targetValue), June \(day)"
+                    XCTAssertEqual(h.isCompletedOn(key(6, day)), s.isCompleted(on: key(6, day)), label)
+                    XCTAssertEqual(h.isCompletedOn(key(6, day)), DailyProgress.state(of: s, on: key(6, day)) == .done, label)
+                }
+            }
+            XCTAssertFalse(zero.isCompletedOn(key(6, 1)), "target 0, logged: never done on the row either")
+        }
+    }
+
     // MARK: - The day's totals
 
     func testARestDayWithNothingDueIsNotPerfect() {

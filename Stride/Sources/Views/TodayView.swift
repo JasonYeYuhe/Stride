@@ -177,11 +177,14 @@ struct TodayView: View {
     /// it (`HabitStats.startDay`), so a habit created today is not on yesterday — until a check-in
     /// is backfilled there in History, which moves its start. Today itself is never filtered, so
     /// Today, the widget and the badge (which counts only today) still agree. `stats` are the
-    /// habits' own, in order (`StatsCache.stats(for:)`); `day` is the week strip's local date.
-    static func shownHabits(_ habits: [Habit], stats: [HabitStats], on day: Date, today: Date,
-                            calendar: Calendar) -> [Habit] {
-        let shown = HabitStats.dayNumber(of: day, in: calendar)
-        guard shown < HabitStats.dayNumber(of: today, in: calendar) else { return habits }
+    /// habits' own, in order (`StatsCache.stats(for:)`). `dayKey` and `todayKey` are day-keys
+    /// (`DailyProgress.today(now:calendar:)` of the week strip's date and of the clock), never
+    /// instants: `HabitStats.dayNumber(of:in:)` takes an instant at exactly UTC midnight (Sunday
+    /// 16:00:00 PST) for Monday's key, which made today a "past day" here (Gemini review,
+    /// 2026-11-27).
+    static func shownHabits(_ habits: [Habit], stats: [HabitStats], on dayKey: Date, todayKey: Date) -> [Habit] {
+        let shown = HabitStats.dayNumber(ofKey: dayKey)
+        guard shown < HabitStats.dayNumber(ofKey: todayKey) else { return habits }
         return zip(habits, stats).filter { HabitStats.dayNumber(ofKey: $0.1.startDay) <= shown }.map(\.0)
     }
 
@@ -216,10 +219,14 @@ struct TodayView: View {
     private func makePass() -> Pass {
         let now = self.now
         let calendar = Calendar.current
-        let stats = cache.stats(for: habits, today: now, calendar: calendar)
-        let shown = Self.shownHabits(habits, stats: stats, on: selectedDate, today: now, calendar: calendar)
+        // Both days keyed once, as instants (`HabitCalendar.dayKey(forInstant:)`), and only the
+        // keys go on: the cache and `shownHabits` would key `now` with `HabitStats.dayNumber(of:)`,
+        // which reads an exact UTC midnight (Sunday 16:00:00 PST) as Monday's day-key while the
+        // card, the words and the review read Sunday (as WeeklyReviewView and TodayCards key it).
         let todayKey = DailyProgress.today(now: now, calendar: calendar)
         let selectedKey = DailyProgress.today(now: selectedDate, calendar: calendar)
+        let stats = cache.stats(for: habits, today: todayKey, calendar: calendar)
+        let shown = Self.shownHabits(habits, stats: stats, on: selectedKey, todayKey: todayKey)
         let key = AtRiskKey(isActive: isActive, today: HabitStats.dayNumber(ofKey: todayKey),
                             selected: HabitStats.dayNumber(ofKey: selectedKey))
         let words = key.selected == key.today
@@ -920,9 +927,24 @@ struct HabitRowView: View {
     /// The streak and "x/y this week" text, from the cache (D3; W1's carried "per-call wrapper
     /// cost": two aggregate wrapper calls per row per render built two `HabitStats` each). Asked
     /// on every read, never kept across renders; TodayView's read of every habit has just
-    /// refilled the cache, so this is a dictionary hit.
+    /// refilled the cache, so this is a dictionary hit. Built for today's day-key, as TodayView
+    /// asks: `now` itself at exactly UTC midnight would be keyed as the next day.
     private var stats: HabitStats {
-        cache.stats(for: habit, today: now)
+        cache.stats(for: habit, today: DailyProgress.today(now: now, calendar: .current))
+    }
+
+    /// The day the row shows, as a day-key (`DailyProgress.today(now:calendar:)` of `date`): what
+    /// the cache's answers are read for, as the card above reads the same day. The habit's own
+    /// check state and the writes key `date` as `HabitCheckIn` does (RELEASE-1.4.1.md D4).
+    private var dayKey: Date {
+        DailyProgress.today(now: date, calendar: .current)
+    }
+
+    /// The week words the row shows: D7's on today (TodayView's); on another day, a
+    /// times-per-week habit's week as it stood at that day's end (`TodayAtRisk.asOf`), so the
+    /// row and the card above it read the same week.
+    private func shownWords(_ stats: HabitStats) -> TodayAtRisk.Words? {
+        words ?? TodayAtRisk.asOf(stats, on: dayKey)
     }
 
     /// The habit's description (`Habit.note`, D7): one secondary line under the name.
@@ -1082,14 +1104,11 @@ struct HabitRowView: View {
         if habit.habitKind == .count { parts.append(spokenCount) }
         if !habit.isScheduled(on: date) {
             parts.append(appLocalized("Rest day"))
-        } else if let words {
+        } else if let words = shownWords(stats) {
             // D7: the same words the row draws, in the value (the label is completion only).
             parts.append(Self.spoken(words))
-        } else if habit.schedule == .timesPerWeek {
-            let current = stats.weeklyCompletions(containing: date)
-            parts.append(appLocalized("\(current)/\(habit.timesPerWeek) this week"))
         }
-        let streak = stats.currentStreak(asOf: date)
+        let streak = stats.currentStreak(asOf: dayKey)
         if streak > 0 {
             parts.append(habit.streakUnit == "week"
                 ? appLocalized("\(streak) week streak")
@@ -1173,17 +1192,12 @@ struct HabitRowView: View {
                 Text("Rest day")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            } else if let words {
+            } else if let words = shownWords(stats) {
                 Self.text(words)
                     .font(.caption)
                     .foregroundStyle(words.isAtRisk ? Self.atRiskColor(in: colorScheme) : Color.secondary)
-            } else if habit.schedule == .timesPerWeek {
-                let current = stats.weeklyCompletions(containing: date)
-                Text("\(current)/\(habit.timesPerWeek) this week")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
-            let streak = stats.currentStreak(asOf: date)
+            let streak = stats.currentStreak(asOf: dayKey)
             if streak > 0 {
                 HStack(spacing: 2) {
                     Image(systemName: "flame.fill")
@@ -1304,7 +1318,7 @@ struct HabitRowView: View {
             // (`ReviewPromptRule`); the commit has bumped the cache, so this read is fresh.
             if let reviewPromptHook, let before {
                 reviewPromptHook.afterCheckIn(ReviewPromptRule.CheckIn(
-                    habit: habit, day: date, before: before, after: cache.stats(for: habit, today: now), written: written))
+                    habit: habit, day: date, before: before, after: stats, written: written))
             }
         case .needsConfirmation(let about):
             confirming = PendingConfirmation(write: write, about: about)

@@ -392,10 +392,18 @@ enum WeeklyReviewMath {
         let remaining: Int
         /// The days still open for a check-in: today if it is not done yet, through Sunday.
         let daysLeft: Int
-        /// The check-ins still owed cannot fit the days left: owed > 0 and owed ≥ daysLeft. In the
-        /// week the habit started, if that was after its Monday, the week owes only its share of
-        /// the goal (goal × days from the start ÷ 7, rounded up), as its rate does: a
-        /// 3-times-a-week habit created on Saturday is not at risk at once.
+        /// Every day left is needed and the goal can still be met: owed > 0 and owed == daysLeft
+        /// (`owed` > 0, `isReachable`, and no day to spare). In the week the habit started, if that
+        /// was after its Monday, the week owes only its share of the goal (goal × days from the
+        /// start ÷ 7, rounded up), as its rate does: a 3-times-a-week habit created on Saturday is
+        /// not at risk at once.
+        ///
+        /// Not once the goal is out of reach (owed > daysLeft: Saturday at 0 of 3, or Sunday at 1
+        /// of 3 not done today): no check-in can save that week any more, so nothing calls it
+        /// "at risk" and no row asks for a "more" the user cannot do (integrator's call,
+        /// 2026-11-27, on RELEASE-1.5.0.md D7; before, owed ≥ daysLeft flagged it). Today's row
+        /// then reads the plain count (`TodayAtRisk.Words.weekSoFar`), and the Weekly Review's
+        /// "At risk this week" leaves it out.
         let isAtRisk: Bool
         /// What the row prints as "N more" (RELEASE-1.5.0.md D7): the creation week's share less
         /// `done` (never below 0) in the week the habit started after its Monday, else
@@ -407,6 +415,10 @@ enum WeeklyReviewMath {
         /// Today is the week's last day (Sunday): the row reads "N more · today", never "0 days
         /// left" (D7). `daysLeft` is then 1, or 0 once today is done.
         let isLastDay: Bool
+
+        /// What the week still owes fits the days left (owed ≤ daysLeft): the goal (or, in the
+        /// creation week, its share) can still be met. Met weeks are reachable.
+        var isReachable: Bool { owed <= daysLeft }
 
         init(done: Int, goal: Int, remaining: Int, daysLeft: Int, isAtRisk: Bool, owed: Int, isLastDay: Bool) {
             self.done = done
@@ -452,12 +464,13 @@ enum WeeklyReviewMath {
             : goal
         let owed = max(0, owedGoal - done)
         return WeekGoal(done: done, goal: goal, remaining: remaining, daysLeft: daysLeft,
-                        isAtRisk: owed > 0 && owed >= daysLeft, owed: owed,
+                        isAtRisk: owed > 0 && owed == daysLeft, owed: owed,
                         isLastDay: today == week.sundayNumber)
     }
 
     /// Whether a habit is at risk at `now` (D10). Never an archived habit.
-    /// - times-per-week: `weekGoal`'s `isAtRisk`, whatever the hour;
+    /// - times-per-week: `weekGoal`'s `isAtRisk`, whatever the hour: every day left is needed,
+    ///   and the goal is still within reach (not once it is out of reach, RELEASE-1.5.0.md D7);
     /// - daily and specific days: `.due` today by `DailyProgress` (scheduled, not done — a count
     ///   habit: its target not reached — and started), and the local clock at or past
     ///   `eveningTime`. The "due and not done" rule is DailyProgress's (RELEASE-1.5.0.md D1), so
@@ -562,16 +575,27 @@ enum WeeklyReviewMath {
     }
 
     /// What the strip says as one accessibility element ("5 of 7 done, 1 rest day", D6), counted
-    /// from its cells.
+    /// from its cells and the habit's schedule.
+    ///
+    /// Integrator's calls (2026-11-27, Gemini review of the 1.5.0 surfaces; the lens: no number on
+    /// screen may contradict another):
+    /// - `days` leaves today out while it is still open (`.todayOpen`): the row's counted rate
+    ///   beside it does not count an unfinished today either, so a week of 3 done days and today
+    ///   open reads "3 of 3 done" next to 100 %, never "3 of 4". The cell is still drawn.
+    /// - `rest` counts every unscheduled day of a specific-days habit the summary covers, done or
+    ///   not: a Mon/Wed/Fri habit checked in only on a Tuesday reads "1 of 7 done, 4 rest days",
+    ///   not "… 3 rest days" with the Tuesday neither done-and-due nor rest. The done cell is
+    ///   still drawn done.
     struct StripSummary: Equatable {
         /// `.done` cells (a check-in on a rest day included).
         let done: Int
-        /// `.rest` cells.
+        /// The unscheduled days among `days` (specific days only), done or not.
         let rest: Int
         /// `.missed` cells.
         let missed: Int
-        /// The cells the habit existed for and that have begun: neither `.beforeStart` nor
-        /// `.future` (today included). 7 for a whole past week the habit existed in.
+        /// The cells the habit existed for and that have begun, today once it is no longer open:
+        /// neither `.beforeStart`, `.future` nor `.todayOpen`. 7 for a whole past week the habit
+        /// existed in.
         let days: Int
 
         init(done: Int, rest: Int, missed: Int, days: Int) {
@@ -581,17 +605,33 @@ enum WeeklyReviewMath {
             self.days = days
         }
 
-        init(_ states: [DayState]) {
-            self.init(done: states.filter { $0 == .done }.count,
-                      rest: states.filter { $0 == .rest }.count,
-                      missed: states.filter { $0 == .missed }.count,
-                      days: states.filter { $0 != .beforeStart && $0 != .future }.count)
+        /// The summary of `states` (`dayStates`, Monday first); `isRestDay[i]` says whether day
+        /// `i` is unscheduled for the habit. Left out, only the `.rest` cells are rest days.
+        init(_ states: [DayState], isRestDay: [Bool]? = nil) {
+            var done = 0, rest = 0, missed = 0, days = 0
+            for (i, state) in states.enumerated() {
+                if state == .beforeStart || state == .future || state == .todayOpen { continue }
+                days += 1
+                if state == .done { done += 1 }
+                if state == .missed { missed += 1 }
+                let restDay = isRestDay.map { i < $0.count && $0[i] } ?? (state == .rest)
+                if restDay || state == .rest { rest += 1 }
+            }
+            self.init(done: done, rest: rest, missed: missed, days: days)
         }
     }
 
-    /// `dayStates(of:week:)`'s summary.
+    /// `dayStates(of:week:)`'s summary, with the habit's own rest days (done ones included).
     static func stripSummary(of stats: HabitStats, week: WeekRange) -> StripSummary {
-        StripSummary(dayStates(of: stats, week: week))
+        stripSummary(of: stats, week: week, states: dayStates(of: stats, week: week))
+    }
+
+    /// The summary of `states`, the cells `dayStates(of: stats, week: week)` already drew.
+    static func stripSummary(of stats: HabitStats, week: WeekRange, states: [DayState]) -> StripSummary {
+        let isRestDay = (week.mondayNumber...week.sundayNumber).map {
+            !stats.isScheduled(on: HabitStats.key(ofDay: $0))
+        }
+        return StripSummary(states, isRestDay: isRestDay)
     }
 
     // MARK: Perfect days (D6)

@@ -354,10 +354,13 @@ final class WeeklyReviewRenderTests: XCTestCase {
     /// - Run, daily: done every day through Thursday 06-04; Friday missed; today open;
     /// - Gym, Mon/Wed/Fri: this week Monday and Friday, Wednesday missed;
     /// - Yoga, 3×/week: met by Thursday (Mon, Wed, Thu): no miss on any day;
-    /// - Swim, 7×/week: one check-in this week, so at risk whatever the hour (6 owed, 2 days left);
+    /// - Swim, 3×/week: one check-in this week, so at risk whatever the hour (2 owed, 2 days left:
+    ///   every day left needed, the goal still within reach);
     /// - Water, a count habit (target 8): 8 on Monday, 3 on Tuesday (partial: missed), 8 on Wednesday;
-    /// - New, daily, created Wednesday 06-03 and done that day.
-    private func mixedAccount() throws -> (swim: Habit, yoga: Habit) {
+    /// - New, daily, created Wednesday 06-03 and done that day;
+    /// - Row, 7×/week: one check-in this week, 6 owed with 2 days left — out of reach, so NOT at
+    ///   risk (RELEASE-1.5.0.md D7, integrator's call 2026-11-27).
+    private func mixedAccount() throws -> (swim: Habit, yoga: Habit, row: Habit) {
         try habit("Run", checkedIn: Self.keys((5, 18), (6, 4)))
         try habit("Gym", checkedIn: [Self.key(5, 18), Self.key(5, 20), Self.key(5, 22), Self.key(5, 25), Self.key(5, 27),
                                      Self.key(6, 1), Self.key(6, 5)]) {
@@ -370,7 +373,7 @@ final class WeeklyReviewRenderTests: XCTestCase {
         }
         let swim = try habit("Swim", checkedIn: Self.keys((5, 25), (5, 28)) + [Self.key(6, 1)]) {
             $0.schedule = .timesPerWeek
-            $0.timesPerWeek = 7
+            $0.timesPerWeek = 3
         }
         let water = try habit("Water", checkedIn: []) {
             $0.habitKind = .count
@@ -380,7 +383,11 @@ final class WeeklyReviewRenderTests: XCTestCase {
                          HabitRecord(date: Self.key(6, 2), value: 3), HabitRecord(date: Self.key(6, 3), value: 8)]
         try context.save()
         try habit("New", created: (6, 3), checkedIn: [Self.key(6, 3)]) { _ in }
-        return (swim, yoga)
+        let rowing = try habit("Row", checkedIn: Self.keys((5, 25), (5, 31)) + [Self.key(6, 2)]) {
+            $0.schedule = .timesPerWeek
+            $0.timesPerWeek = 7
+        }
+        return (swim, yoga, rowing)
     }
 
     /// The habits as the review lists them (not archived, by `sortOrder`), with stats built by a
@@ -467,11 +474,12 @@ final class WeeklyReviewRenderTests: XCTestCase {
     }
 
     /// D6 on the mixed account, this week (Saturday 06-06) and last week: every row's numbers are
-    /// WeeklyReviewMath's, and the strips say what a user can check: Run "4 of 6 done" (Friday
-    /// missed, today open), Gym "2 of 6 done, 3 rest days", Yoga met on Thursday with no miss. Swim
-    /// is at risk this week, and nothing is "at risk" on last week.
+    /// WeeklyReviewMath's, and the strips say what a user can check: Run "4 of 5 done" beside its
+    /// 80 % (Friday missed; today still open, so in neither, as the rate counts it), Gym "2 of 6
+    /// done, 3 rest days", Yoga met on Thursday with no miss. Swim is at risk this week, Row (out of
+    /// reach) is not, and nothing is "at risk" on last week.
     func testEachRowIsWeeklyReviewMathThisWeekAndLast() async throws {
-        let (swim, yoga) = try mixedAccount()
+        let (swim, yoga, rowing) = try mixedAccount()
         let now = Self.local(6, 6, 9)
         let window = try show(now: now)
         try await waitUntil("this week") { self.has(appLocalized("This week so far"), in: window) }
@@ -480,13 +488,14 @@ final class WeeklyReviewRenderTests: XCTestCase {
 
         let values = Dictionary(elements(in: window) { self.identifier(of: $0)?.hasPrefix("review.row.") == true }
             .map { ($0.accessibilityLabel ?? "", $0.accessibilityValue ?? "") }, uniquingKeysWith: { a, _ in a })
-        XCTAssertEqual(values[row("Run", 80)], appLocalized("\(4) of \(6) done"), "\(values)")
+        XCTAssertEqual(values[row("Run", 80)], appLocalized("\(4) of \(5) done"), "\(values): today open is not a day yet")
         XCTAssertEqual(values[row("Gym", 66)], appLocalized("\(2) of \(6) done, \(3) rest days"), "\(values)")
         XCTAssertEqual(values[row("Yoga", 100)], appLocalized("\(3) of \(6) done"), "\(values)")
         let (_, _, stats) = try expected(now: now)
         XCTAssertFalse(WeeklyReviewMath.dayStates(of: stats[2], week: thisWeek).contains(.missed), "Yoga met: no miss")
-        XCTAssertNotNil(element("review.atRisk.\(swim.id.uuidString)", in: window), "Swim owes 6 with 2 days left")
+        XCTAssertNotNil(element("review.atRisk.\(swim.id.uuidString)", in: window), "Swim owes 2 with 2 days left")
         XCTAssertNil(element("review.atRisk.\(yoga.id.uuidString)", in: window), "Yoga is met")
+        XCTAssertNil(element("review.atRisk.\(rowing.id.uuidString)", in: window), "Row owes 6 with 2 days left: out of reach")
 
         try page("previous", in: window)
         try await waitUntil("last week") { self.has(appLocalized("Last week"), in: window) }
@@ -571,7 +580,7 @@ final class WeeklyReviewRenderTests: XCTestCase {
     /// let go — and names the habit for Today to focus. Nothing is written: the same rows, every
     /// `updatedAt` unchanged, no pending change. Today then consumes the id once.
     func testTheAtRiskTapSetsTheShellAndWritesNothing() async throws {
-        let (swim, _) = try mixedAccount()
+        let (swim, _, _) = try mixedAccount()
         let now = Self.local(6, 6, 9)
         let shell = ShellState(launchArguments: [], now: Self.local(6, 4, 12))
         shell.selection = .stats

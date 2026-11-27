@@ -382,7 +382,9 @@ final class InlinePromptsTests: XCTestCase {
 
     /// The habits' facts from their stats (`DailyProgress` for yesterday): a daily habit left open
     /// and a count habit short of its target are open; a rest day, a met week and a habit created
-    /// today are not. A partial count day is a check-in day.
+    /// today are not, nor is a times-per-week habit whose week is not met (integrator's call,
+    /// 2026-11-27: the review's strip never marks its day missed). A partial count day is a
+    /// check-in day.
     func testTheFactsFromTheHabitsStats() throws {
         let schema = Schema([Habit.self, HabitRecord.self, HabitGroup.self])
         let container = try ModelContainer(for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
@@ -409,6 +411,7 @@ final class InlinePromptsTests: XCTestCase {
             habit(.timesPerWeek, times: 1, created: key(5, 1), values: [(key(6, 1), 1)]),      // met on Monday
             habit(created: key(6, 3), values: []),                                             // created today
             habit(kind: .count, target: 8, created: key(5, 1), values: [(key(6, 2), 3)]),      // 3 of 8: open
+            habit(.timesPerWeek, times: 3, created: key(5, 1), values: []),                     // due, never "missed"
         ]
         let wednesday = key(6, 3)
         for calendar in zones {
@@ -417,6 +420,9 @@ final class InlinePromptsTests: XCTestCase {
                            calendar: calendar, today: wednesday)
             }
             let facts = Prompts.facts(of: stats, today: wednesday)
+            XCTAssertEqual(DailyProgress.state(of: stats[5], on: key(6, 2)), .due, "the 3×/week was open on Tuesday")
+            XCTAssertEqual(WeeklyReviewMath.dayStates(of: stats[5], week: WeeklyReviewMath.WeekRange(
+                containingDay: HabitStats.dayNumber(ofKey: key(6, 1))))[1], .neutral, "and its strip calls Tuesday neutral")
             XCTAssertEqual(facts.openYesterday, 2, calendar.timeZone.identifier)
             XCTAssertTrue(facts.checkedInBeforeToday)
             XCTAssertEqual(facts.checkInDays, 2, "counted up to 2")
@@ -438,8 +444,9 @@ final class InlinePromptsTests: XCTestCase {
     // MARK: - 1.5.0: Today's at-risk words and order (RELEASE-1.5.0.md D7)
 
     /// A times-per-week habit's words through its week, in every zone: "1/3 this week · 2 more"
-    /// mid-week, "2 more · 2 days left" when the days left no longer fit, "2 more · today" on
-    /// Sunday (never "0 days left"), "3/3 this week" once met.
+    /// mid-week, "2 more · 2 days left" when every day left is needed, "1 more · today" on Sunday
+    /// (never "0 days left"), "3/3 this week" once met — and the plain count once the goal is out
+    /// of reach (integrator's call, 2026-11-27, RELEASE-1.5.0.md D7: no "more" the user cannot do).
     func testTimesPerWeekWords() throws {
         let schema = Schema([Habit.self, HabitRecord.self, HabitGroup.self])
         let container = try ModelContainer(for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
@@ -468,7 +475,14 @@ final class InlinePromptsTests: XCTestCase {
             XCTAssertEqual(words(swim, 6, 3, 9), .weekOwing(done: 1, goal: 3, owed: 2), zone)
             XCTAssertEqual(words(swim, 6, 3, 23), .weekOwing(done: 1, goal: 3, owed: 2), "\(zone): the hour changes nothing")
             XCTAssertEqual(words(swim, 6, 6, 9), .atRiskDaysLeft(owed: 2, daysLeft: 2), "\(zone): Saturday")
-            XCTAssertEqual(words(swim, 6, 7, 9), .atRiskToday(owed: 2), "\(zone): Sunday")
+            XCTAssertEqual(words(swim, 6, 7, 9), .weekSoFar(done: 1, goal: 3), "\(zone): Sunday at 1 of 3 is out of reach")
+            XCTAssertEqual(words(swim, 6, 7, 9)?.isAtRisk, false, zone)
+            let twoDone = tpw(created: key(5, 1), checkedIn: [key(6, 1), key(6, 4)])
+            XCTAssertEqual(words(twoDone, 6, 7, 9), .atRiskToday(owed: 1), "\(zone): Sunday at 2 of 3")
+            // Saturday at 0 of 3: 3 owed, 2 days left — out of reach, never "3 more · 2 days left".
+            let none = tpw(created: key(5, 1), checkedIn: [])
+            XCTAssertEqual(words(none, 6, 5, 9), .atRiskDaysLeft(owed: 3, daysLeft: 3), "\(zone): Friday at 0 of 3")
+            XCTAssertEqual(words(none, 6, 6, 9), .weekSoFar(done: 0, goal: 3), "\(zone): Saturday at 0 of 3")
             let met = tpw(created: key(5, 1), checkedIn: [key(6, 1), key(6, 2), key(6, 3)])
             XCTAssertEqual(words(met, 6, 4, 9), .weekSoFar(done: 3, goal: 3), zone)
             XCTAssertEqual(words(met, 6, 4, 9)?.isAtRisk, false)
@@ -524,6 +538,43 @@ final class InlinePromptsTests: XCTestCase {
                                calendar: local, today: key(6, 3))
         XCTAssertNil(TodayAtRisk.words(for: stats, now: at(6, 3, 22, 0, in: local), calendar: local,
                                        eveningTime: .defaultEvening), "done")
+        withExtendedLifetime(container) {}
+    }
+
+    /// Another day shown on Today: a times-per-week row reads its week as it stood at the end of
+    /// that day (Monday through the day shown), as the card does, never the later check-ins
+    /// (integrator's call, 2026-11-27). Any other schedule: nothing.
+    func testAPastDaysWeekAsItStood() throws {
+        let schema = Schema([Habit.self, HabitRecord.self, HabitGroup.self])
+        let container = try ModelContainer(for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let context = container.mainContext
+        let utc = HabitCalendar.utc
+        func key(_ m: Int, _ d: Int) -> Date { utc.date(from: DateComponents(year: 2026, month: m, day: d))! }
+        let yoga = Habit(name: "Yoga")
+        yoga.schedule = .timesPerWeek
+        yoga.timesPerWeek = 3
+        yoga.createdAt = key(5, 1)
+        context.insert(yoga)
+        for d in [key(6, 1), key(6, 3), key(6, 4)] { yoga.records.append(HabitRecord(date: d)) }
+        let read = Habit(name: "Read")
+        read.createdAt = key(5, 1)
+        context.insert(read)
+        for calendar in zones {
+            let zone = calendar.timeZone.identifier
+            // Built for Friday (today), as StatsCache's are.
+            func stats(_ h: Habit) -> HabitStats {
+                HabitStats(habit: h, liveRecordIDs: HabitStats.liveRecordIDs(of: [h], in: context),
+                           calendar: calendar, today: key(6, 5))
+            }
+            let s = stats(yoga)
+            XCTAssertEqual(s.weeklyCompletions(containing: key(6, 2)), 3, "the whole week, what the row used to print")
+            XCTAssertEqual(TodayAtRisk.asOf(s, on: key(6, 2)), .weekSoFar(done: 1, goal: 3), "\(zone): Tuesday")
+            XCTAssertEqual(DailyProgress.state(of: s, on: key(6, 2)), .due, "\(zone): and Tuesday's card counts it open")
+            XCTAssertEqual(TodayAtRisk.asOf(s, on: key(6, 4)), .weekSoFar(done: 3, goal: 3), "\(zone): Thursday, met")
+            XCTAssertEqual(DailyProgress.state(of: s, on: key(6, 4)), .done, zone)
+            XCTAssertEqual(TodayAtRisk.asOf(s, on: key(6, 1)), .weekSoFar(done: 1, goal: 3), "\(zone): Monday")
+            XCTAssertNil(TodayAtRisk.asOf(stats(read), on: key(6, 2)), zone)
+        }
         withExtendedLifetime(container) {}
     }
 

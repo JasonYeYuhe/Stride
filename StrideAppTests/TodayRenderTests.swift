@@ -372,24 +372,66 @@ final class TodayRenderTests: XCTestCase {
         expectNoWeekdayNames(in: window)
     }
 
-    /// Sunday: "2 more · today", never "0 days left". Another day shown: no D7 words, the plain
-    /// count, the natural order.
+    /// Sunday: "1 more · today", never "0 days left"; a week out of reach (1 of 3 with only today
+    /// left) reads the plain "1/3 this week", is not at risk and sorts in its own place
+    /// (RELEASE-1.5.0.md D7, integrator's call 2026-11-27). Another day shown: no D7 words, the
+    /// week as it stood at the end of that day — Friday's row does not count Saturday's check-in,
+    /// as Friday's card does not — and the natural order.
     func testTheLastDayAndAnotherDayShown() async throws {
+        try habit("Bike", checkedIn: [Self.key(6, 1)], schedule: .timesPerWeek, timesPerWeek: 3)
         try habit("Run")
-        try habit("Swim", checkedIn: [Self.key(6, 1)], schedule: .timesPerWeek, timesPerWeek: 3)
+        try habit("Swim", checkedIn: [Self.key(6, 1), Self.key(6, 6)], schedule: .timesPerWeek, timesPerWeek: 3)
         let sunday = Self.local(6, 7, 19)
         let shell = ShellState(launchArguments: [], now: sunday)
         let window = try show(now: sunday, shell: shell)
-        try await waitUntil("Swim's words") { self.value("Swim", in: window)?.contains(appLocalized("\(2) more · today")) == true }
-        let zeroDays = appLocalized("\(2) more · \(0) days left")
+        try await waitUntil("Swim's words") { self.value("Swim", in: window)?.contains(appLocalized("\(1) more · today")) == true }
+        let zeroDays = appLocalized("\(1) more · \(0) days left")
         XCTAssertFalse(allText(in: window).contains { $0.contains(zeroDays) }, "never \"0 days left\"")
-        XCTAssertEqual(rowOrder(["Run", "Swim"], in: window), ["Run", "Swim"], "both at risk: their own order")
+        let bike = try XCTUnwrap(value("Bike", in: window))
+        XCTAssertTrue(bike.contains(appLocalized("\(1)/\(3) this week")), bike)
+        XCTAssertFalse(bike.contains(appLocalized("\(2) more · today")), "no \"more\" the user cannot do: \(bike)")
+        XCTAssertFalse(bike.contains(appLocalized("\(1)/\(3) this week · \(2) more")), bike)
+        XCTAssertEqual(rowOrder(["Bike", "Run", "Swim"], in: window), ["Run", "Swim", "Bike"],
+                       "Run and Swim at risk, in their own order; Bike out of reach is not")
 
         shell.todayDate = Self.local(6, 5, 12)
         try await waitUntil("Friday's row") { self.value("Swim", in: window)?.contains(appLocalized("\(1)/\(3) this week")) == true }
         let swim = try XCTUnwrap(value("Swim", in: window))
-        XCTAssertFalse(swim.contains(appLocalized("\(2) more · today")), swim)
+        XCTAssertFalse(swim.contains(appLocalized("\(2)/\(3) this week")), "Saturday's check-in is after Friday: \(swim)")
+        XCTAssertFalse(swim.contains(appLocalized("\(1) more · today")), swim)
         XCTAssertFalse(try XCTUnwrap(value("Run", in: window)).contains(appLocalized("Due today")))
+        let friday = try expectedProgress(on: Self.local(6, 5, 12), now: sunday)
+        XCTAssertEqual(friday, DailyProgress(done: 0, due: 3), "Swim at 1 of 3 by Friday is open on Friday's card")
+        try await waitUntil("Friday's card") { self.cardLabel(in: window) == self.cardWords(friday) }
+        XCTAssertEqual(rowOrder(["Bike", "Run", "Swim"], in: window), ["Bike", "Run", "Swim"])
+    }
+
+    /// The clock at exactly UTC midnight (Gemini review, 2026-11-27): 2026-06-08 00:00:00Z is
+    /// Sunday 17:00 in Los Angeles. Today keys it as an instant everywhere — the cache's stats,
+    /// the days shown, the card — so today is never taken for a past day: a habit whose creation
+    /// stamp is a day ahead (another device's clock) is still on today's list, outside the card.
+    /// Under `TEST_RUNNER_TZ=America/Los_Angeles` this failed before (the cache and `shownHabits`
+    /// read the instant as Monday's key); in Tokyo it is 09:00 Monday and always held.
+    func testAnExactUTCMidnightIsTheLocalDay() async throws {
+        let clock = Self.key(6, 8)
+        let today = DailyProgress.today(now: clock, calendar: .current)
+        let todayNumber = HabitStats.dayNumber(ofKey: today)
+        try habit("Run", checkedIn: [today])
+        let ahead = try habit("Ahead")
+        ahead.createdAt = HabitStats.key(ofDay: todayNumber + 1)
+        try context.save()
+        // Today was anchored a minute before, on the same local day.
+        let window = try show(now: clock, shell: ShellState(launchArguments: [], now: clock.addingTimeInterval(-60)))
+        try await waitUntil("the card") { self.cardLabel(in: window) == self.cardWords(DailyProgress(done: 1, due: 1)) }
+        XCTAssertEqual(card(in: window)?.accessibilityValue, appLocalized("All done! Perfect day!"))
+        XCTAssertNotNil(elements(in: window) { $0.accessibilityLabel == self.rowLabel("Run", done: true) }.first,
+                        "\(labels(in: window))")
+        XCTAssertNotNil(row("Ahead", in: window), "today is today: no past-day filter. \(labels(in: window))")
+        // The view's cache entries were built for the local day: asking for it rebuilds nothing.
+        let habits = try context.fetch(FetchDescriptor<Habit>(sortBy: [SortDescriptor(\.sortOrder)]))
+        let built = cache.rebuildCount
+        XCTAssertEqual(cache.stats(for: habits, today: today).map(\.today), [today, today])
+        XCTAssertEqual(cache.rebuildCount, built, "the entries Today built are the local day's")
     }
 
     /// The at-risk words are drawn in #FF9500 made readable, as the streak words are.
