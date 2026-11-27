@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import StoreKit
+import UserNotifications
 
 struct TodayView: View {
     @Environment(\.modelContext) private var modelContext
@@ -26,7 +27,9 @@ struct TodayView: View {
     /// survives a relaunch, a size-class crossing and the tab being rebuilt, which the 1.4.0
     /// `@State` did not. An id whose group is gone is never asked about again.
     @AppStorage("stride_today_collapsed_groups") private var collapsedGroupsStorage = ""
-    private var cache = StatsCache.shared
+    /// The app's one cache, or the one a hosted test put in the environment over a store of its
+    /// own (RELEASE-1.5.0.md D9, as WeeklyReviewView). 1.4.2 read `StatsCache.shared`.
+    @Environment(\.statsCache) private var cache
     /// Pending and held counts for the sync line, read from the store when it changes — not on
     /// every render (`SyncStatusCounts`). Zero while signed out, when nothing reads them.
     @State private var syncCounts = SyncStatusCounts.Counts()
@@ -38,28 +41,121 @@ struct TodayView: View {
     private var sync = SyncService.shared
     /// The week card's copy and its tap (RELEASE-1.4.2.md D12, D8): read at the render and at the tap.
     private var store = StoreService.shared
-    /// Bumped by each write of the week card's dismissal state, which lives in
+    /// Bumped by each write of the inline cards' dismissal state, which lives in
     /// `UserDefaults.standard` (`InlinePromptStore`) and is read at every render.
-    @State private var weekCardRevision = 0
-    /// The card's state for this view only, in an automated run, where `InlinePromptStore.live` is
-    /// read-only: × still hides the card on screen, and nothing reaches the app's defaults.
-    @State private var unsavedWeekCardState: InlinePrompts.DismissalState?
+    @State private var cardStateRevision = 0
+    /// The cards' state for this view only, in an automated run, where `InlinePromptStore.live` is
+    /// read-only: × and "Not now" still hide a card on screen, and nothing reaches the app's
+    /// defaults.
+    @State private var unsavedCardState: InlinePrompts.DismissalState?
+    /// The system's notification permission, for the reminder offer (RELEASE-1.5.0.md D5): read
+    /// when Today appears, when the scene becomes active and after the offer's tap. Nil until read,
+    /// which offers nothing.
+    @State private var notificationStatus: UNAuthorizationStatus?
+    /// The at-risk rows, latched (D7): set when Today becomes the shown tab, the day changes or the
+    /// scene becomes active, and read by every render in between, so a check-in never moves a row
+    /// under the user's finger. A render whose key differs from the latch's reads the live set
+    /// (the next pass), which the latch then takes.
+    @State private var atRiskLatch: AtRiskLatch?
+    /// The row VoiceOver is moved to when the Weekly Review asks for a habit (D6, `todayFocusHabitID`).
+    @AccessibilityFocusState private var focusedHabitID: UUID?
     /// The system's rating prompt (N3), asked only through `ReviewPrompter`.
     @Environment(\.requestReview) private var requestReview
     #if DEBUG
     /// Counts this view's creations for the hosted shell tests (`ShellTabLifetime`).
     @StateObject private var lifetime: ShellTabLifetime
+    /// The hosted tests' seams (TodayRenderTests, RELEASE-1.5.0.md D9): a fixed clock, a
+    /// NotificationService over a recording center, the cards' state on scratch defaults, and the
+    /// entitlement. Nil: the app's own.
+    private let testClock: (() -> Date)?
+    private let injectedNotifications: NotificationService?
+    private let injectedCardStore: InlinePromptStore?
+    private let injectedIsPro: Bool?
     #endif
 
     init(shell: ShellState) {
         self.shell = shell
         #if DEBUG
         _lifetime = StateObject(wrappedValue: ShellTabLifetime(.today, shell: shell))
+        testClock = nil
+        injectedNotifications = nil
+        injectedCardStore = nil
+        injectedIsPro = nil
+        #endif
+    }
+
+    #if DEBUG
+    /// Today as it reads at `clock()` (hosted tests only), over the given services. A test moves
+    /// the clock and then re-anchors the shell, as ContentView does when the day changes.
+    init(shell: ShellState, clock: @escaping () -> Date, notifications: NotificationService? = nil,
+         cardStore: InlinePromptStore? = nil, isPro: Bool? = nil) {
+        self.shell = shell
+        _lifetime = StateObject(wrappedValue: ShellTabLifetime(.today, shell: shell))
+        testClock = clock
+        injectedNotifications = notifications
+        injectedCardStore = cardStore
+        injectedIsPro = isPro
+    }
+
+    /// Today as it reads at the fixed instant `now` (hosted tests only).
+    init(shell: ShellState, now: Date, notifications: NotificationService? = nil,
+         cardStore: InlinePromptStore? = nil, isPro: Bool? = nil) {
+        self.init(shell: shell, clock: { now }, notifications: notifications, cardStore: cardStore, isPro: isPro)
+    }
+
+    /// Each row Today moved VoiceOver focus to for `todayFocusHabitID`, in order (hosted tests:
+    /// VoiceOver is not running there, so `UIAccessibility.focusedElement` says nothing).
+    @MainActor static var focusRequests: [UUID] = []
+    #endif
+
+    /// The clock: the real one, or a hosted test's.
+    private var now: Date {
+        #if DEBUG
+        testClock?() ?? Date()
+        #else
+        Date()
+        #endif
+    }
+
+    private var notifications: NotificationService {
+        #if DEBUG
+        injectedNotifications ?? .shared
+        #else
+        .shared
+        #endif
+    }
+
+    private var cardStore: InlinePromptStore {
+        #if DEBUG
+        injectedCardStore ?? .live
+        #else
+        .live
+        #endif
+    }
+
+    private var isPro: Bool {
+        #if DEBUG
+        injectedIsPro ?? store.isPro
+        #else
+        store.isPro
         #endif
     }
 
     /// The day the screen shows and checks in to.
     private var selectedDate: Date { shell.todayDate }
+
+    /// What the at-risk order is latched for (D7): the shown tab, today and the day shown. A
+    /// change of any of them is a new pass.
+    struct AtRiskKey: Hashable {
+        let isActive: Bool
+        let today: Int
+        let selected: Int
+    }
+
+    struct AtRiskLatch: Equatable {
+        let key: AtRiskKey
+        let ids: Set<UUID>
+    }
 
     /// The habits the day shows (`shownHabits`) split into ordered sections by group; falls back
     /// to a single flat section when the user has no groups.
@@ -96,92 +192,104 @@ struct TodayView: View {
         todayContent
     }
 
-    private var todayContent: some View {
-        let now = Date()
+    /// Everything one render says about the day, read once: every habit's stats from the cache
+    /// (ONE store fetch after a clear-all; the rows' own reads are then dictionary hits), the
+    /// habits the day shows, the card's `DailyProgress`, and — on today only — each row's D7 words
+    /// and the at-risk set the order uses.
+    struct Pass {
+        let now: Date
+        let calendar: Calendar
+        let stats: [HabitStats]
+        let shown: [Habit]
+        /// The card (RELEASE-1.5.0.md D2): the day shown, every habit's `DailyProgress` state.
+        let progress: DailyProgress
+        let key: AtRiskKey
+        var isTodaySelected: Bool { key.selected == key.today }
+        /// D7's words by habit; empty unless today is shown.
+        let words: [UUID: TodayAtRisk.Words]
+        /// The at-risk habits as this moment reads them.
+        let liveAtRisk: Set<UUID>
+        /// The set the order uses: the latch's for this key, else the live one.
+        let atRisk: Set<UUID>
+    }
+
+    private func makePass() -> Pass {
+        let now = self.now
         let calendar = Calendar.current
-        // Every habit's stats in one read, so a refill after a clear-all is ONE store fetch; the
-        // rows' own reads below are then dictionary hits (StatsCache).
         let stats = cache.stats(for: habits, today: now, calendar: calendar)
         let shown = Self.shownHabits(habits, stats: stats, on: selectedDate, today: now, calendar: calendar)
-        // From the cache (D3), any day: the store's live records, never a ghost.
-        let completed = cache.completedCount(of: shown, on: selectedDate, today: now, calendar: calendar)
-        return ScrollView {
-            VStack(spacing: 20) {
-                WeekStripView(selectedDate: $shell.todayDate)
-                    .padding(.horizontal)
+        let todayKey = DailyProgress.today(now: now, calendar: calendar)
+        let selectedKey = DailyProgress.today(now: selectedDate, calendar: calendar)
+        let key = AtRiskKey(isActive: isActive, today: HabitStats.dayNumber(ofKey: todayKey),
+                            selected: HabitStats.dayNumber(ofKey: selectedKey))
+        let words = key.selected == key.today
+            ? Self.rowWords(habits, stats: stats, now: now, calendar: calendar,
+                            dailyReminder: WeeklyReviewView.dailyReminderTime(notifications))
+            : [:]
+        let live = Set(words.filter { $0.value.isAtRisk }.map(\.key))
+        let latched = atRiskLatch.flatMap { $0.key == key ? $0.ids : nil }
+        return Pass(now: now, calendar: calendar, stats: stats, shown: shown,
+                    progress: DailyProgress(of: stats, on: selectedKey), key: key,
+                    words: words, liveAtRisk: live, atRisk: latched ?? live)
+    }
 
-                // The sync line sits under the progress card (M2, "Sync status where the user
-                // works"); with no habits there is no card, and only the reauth row can show.
-                // `syncStatus` is nil when signed out, so a signed-out Today — the store
-                // screenshots — is laid out exactly as before: the card alone in its stack.
-                let syncStatus = SyncStatusLine.today(auth: auth, sync: sync, counts: syncCounts)
-                if !shown.isEmpty {
-                    VStack(spacing: 8) {
-                        ProgressSummaryCard(
-                            completed: completed,
-                            total: shown.count
-                        )
-                        if let syncStatus {
-                            SyncStatusRow(line: syncStatus, signInAgain: signInAgain)
-                        }
-                    }
-                    .padding(.horizontal)
-
-                    // D12: at most one inline card, under the progress card: "Your week", Monday
-                    // and Tuesday.
-                    if case .week(let card)? = inlineCard(now: now, calendar: calendar) {
-                        weekCard(card)
-                            .padding(.horizontal)
-                    }
-                } else if let syncStatus, !habits.isEmpty || syncStatus == .signInAgain {
-                    // A past day before any habit started: the line is about the store, not the day.
-                    SyncStatusRow(line: syncStatus, signInAgain: signInAgain)
-                        .padding(.horizontal)
-                }
-
-                if habits.isEmpty {
-                    EmptyStateView(showingAddHabit: $showingAddHabit)
-                        .padding(.top, 40)
-                } else if shown.isEmpty {
-                    // Every habit started after this day (D8). Backfilling one moves to History.
-                    Text("No habits had started by this day.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: .infinity)
-                        .padding(.horizontal)
-                        .padding(.top, 24)
-                } else if groups.isEmpty {
-                    LazyVStack(spacing: 12) {
-                        ForEach(shown) { habit in
-                            HabitRowView(habit: habit, date: selectedDate)
-                        }
-                    }
-                    .padding(.horizontal)
-                    // `-scrollTo todayHabits`: the rows, under the tab bar at accessibility sizes,
-                    // for scripts/a11y_sweep.sh (DEBUG only).
-                    .sweepAnchor("todayHabits")
-                } else {
-                    LazyVStack(spacing: 16) {
-                        ForEach(groupedSections(shown), id: \.group?.id) { section in
-                            VStack(spacing: 12) {
-                                groupHeader(for: section.group, count: section.habits.count)
-                                if !isCollapsed(section.group) {
-                                    ForEach(section.habits) { habit in
-                                        HabitRowView(habit: habit, date: selectedDate)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    .padding(.horizontal)
-                }
+    /// D7's words for each habit at `now` (today only), by `TodayAtRisk`: the evening a daily or
+    /// specific-days habit is judged by is its own reminder's when on, else the Daily Reminder's
+    /// when on, else 18:00 (`WeeklyReviewMath.eveningTime`).
+    static func rowWords(_ habits: [Habit], stats: [HabitStats], now: Date, calendar: Calendar,
+                         dailyReminder: WeeklyReviewMath.TimeOfDay?) -> [UUID: TodayAtRisk.Words] {
+        var words: [UUID: TodayAtRisk.Words] = [:]
+        for (habit, stats) in zip(habits, stats) {
+            let own = habit.reminderEnabled
+                ? WeeklyReviewMath.TimeOfDay(hour: habit.reminderHour, minute: habit.reminderMinute) : nil
+            let evening = WeeklyReviewMath.eveningTime(habitReminder: own, dailyReminder: dailyReminder)
+            if let said = TodayAtRisk.words(for: stats, now: now, calendar: calendar, eveningTime: evening) {
+                words[habit.id] = said
             }
-            .padding(.vertical)
-            .shellReadableWidth(regularLayout)
-            .sweepScrollable()
+        }
+        return words
+    }
+
+    /// One section's rows in D7's order: at risk first, on today only, by the pass's latched set.
+    private func ordered(_ section: [Habit], in pass: Pass) -> [Habit] {
+        guard pass.isTodaySelected, !pass.atRisk.isEmpty else { return section }
+        return TodayAtRisk.atRiskFirst(section) { pass.atRisk.contains($0.id) }
+    }
+
+    /// Latches the at-risk set for this pass (D7). Called when the key changes — Today shown or
+    /// hidden, the day changing, another day picked — and when the scene becomes active.
+    private func latchAtRisk() {
+        let pass = makePass()
+        let latch = AtRiskLatch(key: pass.key, ids: pass.liveAtRisk)
+        if atRiskLatch != latch { atRiskLatch = latch }
+    }
+
+    private var todayContent: some View {
+        let pass = makePass()
+        return ScrollViewReader { proxy in
+            ScrollView {
+                VStack(spacing: 20) {
+                    WeekStripView(selectedDate: $shell.todayDate, today: pass.now)
+                        .padding(.horizontal)
+
+                    summary(pass)
+
+                    rows(pass)
+                }
+                .padding(.vertical)
+                .shellReadableWidth(regularLayout)
+                .sweepScrollable()
+            }
+            // The Weekly Review's "At risk this week" (D6): `todayFocusHabitID`, consumed once
+            // Today is the shown tab — it may be created after the id is set, and a kept-alive
+            // Today sees it change.
+            .task(id: FocusRequest(habitID: shell.todayFocusHabitID, isActive: isActive)) {
+                await bringFocusedHabitIntoView(proxy)
+            }
         }
         .background(Color.appBackground)
+        // D7: the at-risk order, latched for this pass.
+        .task(id: pass.key) { latchAtRisk() }
         // No title of its own: the shell sets it from its own state (ContentView.title).
         .toolbar {
             // Gated inside the builder, not around the view: at regular width and on the Mac
@@ -211,15 +319,19 @@ struct TodayView: View {
             LoginView(prefilledEmail: signInAgain.loginEmail)
         }
         // Coming back to the app: the widget saves check-ins and queues deletions in its own
-        // process. (Re-anchoring the day is the shell's, above the size-class branch.)
+        // process. (Re-anchoring the day is the shell's, above the size-class branch.) A new pass
+        // for the at-risk order (D7), and the permission may have changed in Settings (D5).
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 refreshSyncCounts()
+                latchAtRisk()
+                Task { await refreshNotificationStatus() }
             }
         }
         // The counts change with every save (an edit makes a row pending), when a sync ends (it
         // acknowledged or held rows), and at sign-in and sign-out.
         .task { refreshSyncCounts() }
+        .task { await refreshNotificationStatus() }
         .onReceive(
             NotificationCenter.default.publisher(for: ModelContext.didSave)
                 .throttle(for: .seconds(1), scheduler: DispatchQueue.main, latest: true)
@@ -237,48 +349,229 @@ struct TodayView: View {
         .environment(\.reviewPromptHook, reviewPromptHook)
     }
 
-    // MARK: - The week card (D12)
+    /// The progress card, the sync line and the one inline card.
+    @ViewBuilder
+    private func summary(_ pass: Pass) -> some View {
+        // The sync line sits under the progress card (M2, "Sync status where the user
+        // works"); with no habits there is no card, and only the reauth row can show.
+        // `syncStatus` is nil when signed out, so a signed-out Today — the store
+        // screenshots — is laid out exactly as before: the card alone in its stack.
+        let syncStatus = SyncStatusLine.today(auth: auth, sync: sync, counts: syncCounts)
+        if !pass.shown.isEmpty {
+            VStack(spacing: 8) {
+                ProgressSummaryCard(progress: pass.progress)
+                if let syncStatus {
+                    SyncStatusRow(line: syncStatus, signInAgain: signInAgain)
+                }
+            }
+            .padding(.horizontal)
+
+            // At most one inline card, under the progress card (D5): missed yesterday, the week
+            // card (Monday and Tuesday), the reminder offer.
+            if let card = inlineCard(pass) {
+                inlineCardView(card)
+                    .padding(.horizontal)
+            }
+        } else if let syncStatus, !habits.isEmpty || syncStatus == .signInAgain {
+            // A past day before any habit started: the line is about the store, not the day.
+            SyncStatusRow(line: syncStatus, signInAgain: signInAgain)
+                .padding(.horizontal)
+        }
+    }
+
+    /// The habit rows, in sections when the user has groups.
+    @ViewBuilder
+    private func rows(_ pass: Pass) -> some View {
+        if habits.isEmpty {
+            EmptyStateView(showingAddHabit: $showingAddHabit)
+                .padding(.top, 40)
+        } else if pass.shown.isEmpty {
+            // Every habit started after this day (D8). Backfilling one moves to History.
+            Text("No habits had started by this day.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal)
+                .padding(.top, 24)
+        } else if groups.isEmpty {
+            LazyVStack(spacing: 12) {
+                ForEach(ordered(pass.shown, in: pass)) { habit in
+                    row(habit, pass)
+                }
+            }
+            .padding(.horizontal)
+            // `-scrollTo todayHabits`: the rows, under the tab bar at accessibility sizes,
+            // for scripts/a11y_sweep.sh (DEBUG only).
+            .sweepAnchor("todayHabits")
+        } else {
+            LazyVStack(spacing: 16) {
+                ForEach(groupedSections(pass.shown), id: \.group?.id) { section in
+                    VStack(spacing: 12) {
+                        groupHeader(for: section.group, count: section.habits.count)
+                        if !isCollapsed(section.group) {
+                            ForEach(ordered(section.habits, in: pass)) { habit in
+                                row(habit, pass)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal)
+        }
+    }
+
+    private func row(_ habit: Habit, _ pass: Pass) -> some View {
+        HabitRowView(habit: habit, date: selectedDate, now: pass.now, words: pass.words[habit.id])
+            // The focus target (D6): what `todayFocusHabitID` scrolls to and moves VoiceOver to.
+            .id(habit.id)
+            .accessibilityFocused($focusedHabitID, equals: habit.id)
+    }
+
+    // MARK: - The focus target (RELEASE-1.5.0.md D6)
+
+    struct FocusRequest: Hashable {
+        let habitID: UUID?
+        let isActive: Bool
+    }
+
+    /// Brings `shell.todayFocusHabitID` into view, as ShellState documents it: expands the habit's
+    /// group if it is folded (a UI preference, never the store), scrolls its row into view, moves
+    /// VoiceOver focus to it, then consumes the id. A habit Today does not show (deleted or
+    /// archived meanwhile) is consumed all the same. Waits while Today is hidden.
+    private func bringFocusedHabitIntoView(_ proxy: ScrollViewProxy) async {
+        guard isActive, let id = shell.todayFocusHabitID else { return }
+        if let habit = habits.first(where: { $0.id == id }) {
+            if let group = habit.groupId, collapsedGroups.contains(group) {
+                var folded = collapsedGroups
+                folded.remove(group)
+                collapsedGroupsStorage = Self.storage(ofCollapsedGroups: folded)
+            }
+            // One layout pass for a group just expanded, or a Today created a moment ago.
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled, shell.todayFocusHabitID == id else { return }
+            withAnimation(.easeInOut(duration: 0.3)) {
+                proxy.scrollTo(id, anchor: .center)
+            }
+            focusedHabitID = id
+            #if DEBUG
+            Self.focusRequests.append(id)
+            #endif
+        }
+        shell.consumeTodayFocus()
+    }
+
+    // MARK: - The inline cards (RELEASE-1.4.2.md D12, RELEASE-1.5.0.md D5)
 
     /// Today's one inline card, from `InlinePrompts` (TodayCards.card). The dismissal state is read
-    /// here at every render (`weekCardRevision` redraws after a write).
-    private func inlineCard(now: Date, calendar: Calendar) -> InlinePrompts.Card? {
-        _ = weekCardRevision
-        return TodayCards.card(habits: habits, cache: cache, now: now, calendar: calendar, isPro: store.isPro,
-                               state: unsavedWeekCardState ?? InlinePromptStore.live.state,
-                               override: TodayCards.launchOverride)
+    /// here at every render (`cardStateRevision` redraws after a write); so are the Daily
+    /// Reminder (NotificationService is not observable) and the habits' reminders.
+    private func inlineCard(_ pass: Pass) -> InlinePrompts.Card? {
+        _ = cardStateRevision
+        let live = InlinePrompts.TodayFacts(
+            isTodaySelected: pass.isTodaySelected,
+            permissionUndecided: notificationStatus == .notDetermined,
+            anyReminderOn: TodayCards.anyReminderOn(habits: habits, dailyReminderOn: notifications.isReminderEnabled))
+        return TodayCards.card(habits: habits, cache: cache, now: pass.now, calendar: pass.calendar, isPro: isPro,
+                               state: cardState, live: live, override: TodayCards.launchOverride)
+    }
+
+    private var cardState: InlinePrompts.DismissalState {
+        unsavedCardState ?? cardStore.state
+    }
+
+    @ViewBuilder
+    private func inlineCardView(_ card: InlinePrompts.Card) -> some View {
+        switch card {
+        case .missedYesterday(let missed):
+            missedYesterdayCard(missed)
+        case .week(let week):
+            weekCard(week)
+        case .reminderOffer:
+            reminderOfferCard
+        }
     }
 
     private func weekCard(_ card: InlinePrompts.WeekCard) -> some View {
         TodayWeekCard(card: card) {
             // Decided at the tap (D8): the review on last week for Pro, the paywall resuming it.
-            shell.issue(card.issuer, isPro: store.isPro)
+            shell.issue(card.issuer, isPro: isPro)
         } onDismiss: {
             withAnimation(.easeInOut(duration: 0.2)) {
-                updateWeekCardState { InlinePrompts.dismissed(card, in: $0) }
+                updateCardState { InlinePrompts.dismissed(card, in: $0) }
             }
         }
         // A free card counts its week once it is on screen: not while the shell keeps Today
         // hidden (regular width, the Mac).
         .task(id: isActive ? card.shownWeek.mondayNumber : nil) {
             guard isActive else { return }
-            updateWeekCardState { InlinePrompts.shown(card, in: $0) }
+            updateCardState { InlinePrompts.shown(card, in: $0) }
         }
     }
 
-    /// Writes the card's state, unless DEBUG's `-inlineCard` fixes the card. In an automated run
+    /// D5's first card: "Show yesterday" moves Today to yesterday (the shell's day; the title then
+    /// reads "Yesterday"), where each habit can be checked in place. Nothing is written to the
+    /// store until the user checks something. "Not now" hides it for the rest of today.
+    private func missedYesterdayCard(_ card: InlinePrompts.MissedYesterdayCard) -> some View {
+        TodayPromptCard(kind: .missedYesterday(openCount: card.openCount)) {
+            let calendar = Calendar.current
+            guard let yesterday = calendar.date(byAdding: .day, value: -1, to: calendar.startOfDay(for: now))
+            else { return }
+            withAnimation(.easeInOut(duration: 0.2)) {
+                shell.todayDate = yesterday
+            }
+        } onNotNow: {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                updateCardState { InlinePrompts.dismissed(card, in: $0) }
+            }
+        }
+    }
+
+    /// D5's last card: "Turn on" asks for permission on the tap (rule 4's own exception: the
+    /// system prompt appears only here or on a reminder toggle) and turns the Daily Reminder on
+    /// at its time (default 20:00). Answered either way, and on "Not now", it never shows again.
+    private var reminderOfferCard: some View {
+        TodayPromptCard(kind: .reminderOffer) {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                updateCardState { InlinePrompts.reminderOfferAnswered(in: $0) }
+            }
+            let notifications = self.notifications
+            let container = modelContext.container
+            Task {
+                // Every reminder-on habit is scheduled at a grant (`permissionGranted`), then the
+                // Daily Reminder itself, as Settings' switch does.
+                if await notifications.ensureReminderPermission(schedulingExistingIn: container) == .allowed {
+                    notifications.isReminderEnabled = true
+                }
+                await refreshNotificationStatus()
+                cardStateRevision += 1
+            }
+        } onNotNow: {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                updateCardState { InlinePrompts.reminderOfferAnswered(in: $0) }
+            }
+        }
+    }
+
+    private func refreshNotificationStatus() async {
+        let status = await notifications.checkPermission()
+        if notificationStatus != status { notificationStatus = status }
+    }
+
+    /// Writes the cards' state, unless DEBUG's `-inlineCard` fixes the card. In an automated run
     /// (a sweep, the E2E kit, a hosted test) the store is read-only: the change stays in this view.
-    private func updateWeekCardState(_ change: (InlinePrompts.DismissalState) -> InlinePrompts.DismissalState) {
+    private func updateCardState(_ change: (InlinePrompts.DismissalState) -> InlinePrompts.DismissalState) {
         guard TodayCards.launchOverride == nil else { return }
-        let store = InlinePromptStore.live
-        let current = unsavedWeekCardState ?? store.state
+        let store = cardStore
+        let current = unsavedCardState ?? store.state
         let next = change(current)
         guard next != current else { return }
         if store.readOnly {
-            unsavedWeekCardState = next
+            unsavedCardState = next
         } else {
             store.save(next)
         }
-        weekCardRevision += 1
+        cardStateRevision += 1
     }
 
     // MARK: - The review prompt (N3)
@@ -380,8 +673,17 @@ struct TodayView: View {
 // MARK: - Week Strip
 struct WeekStripView: View {
     @Binding var selectedDate: Date
-    private let days = Date.lastNDays(7)
+    /// The strip's last day: Today's clock (a hosted test's fixed one, RELEASE-1.5.0.md D9).
+    var today: Date = Date()
     @Environment(\.dynamicTypeSize) private var typeSize
+
+    /// The seven days ending today, at their local midnights (`Date.lastNDays(7)` on `today`).
+    private var days: [Date] {
+        let calendar = Calendar.current
+        let end = calendar.startOfDay(for: today)
+        guard let start = calendar.date(byAdding: .day, value: -6, to: end) else { return [] }
+        return Date.daysInRange(from: start, to: end)
+    }
 
     /// Seven equal cells get about 46 pt each. From the first accessibility size "21" in
     /// .callout.bold no longer fits one and wrapped a digit per line ("2" over "1"), and "Mon"
@@ -452,15 +754,14 @@ struct WeekStripView: View {
 }
 
 // MARK: - Progress Summary
+///
+/// The selected day's `DailyProgress` (RELEASE-1.5.0.md D2): "done/due", where due counts only the
+/// habits the day asks for (rest days, met weeks and habits not started yet are in neither), so a
+/// rest day no longer reads as unfinished. "All done! Perfect day!" only when `isPerfect`; a day
+/// with nothing due reads "Rest day" over an empty ring.
 struct ProgressSummaryCard: View {
-    let completed: Int
-    let total: Int
+    let progress: DailyProgress
     @Environment(\.dynamicTypeSize) private var typeSize
-
-    private var progress: Double {
-        guard total > 0 else { return 0 }
-        return Double(completed) / Double(total)
-    }
 
     var body: some View {
         // At accessibility sizes the ring goes under the text: beside it, it leaves "completed"
@@ -468,20 +769,28 @@ struct ProgressSummaryCard: View {
         let layout = typeSize.isAccessibilitySize
             ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
             : AnyLayout(HStackLayout())
+        let completed = progress.done
+        let total = progress.due
+        let percent = Int(progress.fraction * 100)
         layout {
             VStack(alignment: .leading, spacing: 4) {
-                Text("\(completed)/\(total) completed")
-                    .font(.headline)
-                Text(motivationMessage)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                if progress.isRestDay {
+                    Text("Rest day")
+                        .font(.headline)
+                } else {
+                    Text("\(completed)/\(total) completed")
+                        .font(.headline)
+                    Text(motivationMessage)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             if !typeSize.isAccessibilitySize {
                 Spacer()
             }
 
-            ProgressRing(progress: progress)
+            ProgressRing(progress: progress.fraction, showsPercent: !progress.isRestDay)
                 // The ring grows with its label (see ProgressRing); past .accessibility1 it
                 // would only be a larger circle around the same information.
                 .dynamicTypeSize(...DynamicTypeSize.accessibility1)
@@ -493,15 +802,35 @@ struct ProgressSummaryCard: View {
                 .fill(Color.appSecondaryBackground)
         )
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(completed) of \(total) habits completed, \(Int(progress * 100)) percent")
-        // `.ignore` drops the motivation line; as the value it stays out of the label and is
-        // re-announced when the count changes.
-        .accessibilityValue(motivationMessage)
+        .modifier(SummaryAccessibility(progress: progress, completed: completed, total: total, percent: percent,
+                                       motivation: motivationMessage))
+        .accessibilityIdentifier("today.progressCard")
+    }
+
+    /// The card's spoken label: the count and percentage, or "Rest day"; the motivation line as
+    /// the value (`.ignore` drops it; as the value it stays out of the label and is re-announced
+    /// when the count changes).
+    private struct SummaryAccessibility: ViewModifier {
+        let progress: DailyProgress
+        let completed: Int
+        let total: Int
+        let percent: Int
+        let motivation: LocalizedStringKey
+
+        func body(content: Content) -> some View {
+            if progress.isRestDay {
+                content.accessibilityLabel("Rest day")
+            } else {
+                content
+                    .accessibilityLabel("\(completed) of \(total) habits completed, \(percent) percent")
+                    .accessibilityValue(motivation)
+            }
+        }
     }
 
     private var motivationMessage: LocalizedStringKey {
-        switch progress {
-        case 1.0: return "All done! Perfect day!"
+        if progress.isPerfect { return "All done! Perfect day!" }
+        switch progress.fraction {
         case 0.75..<1.0: return "Almost there! Keep going!"
         case 0.5..<0.75: return "Halfway done! Nice!"
         case 0.01..<0.5: return "Good start! Keep it up!"
@@ -516,6 +845,8 @@ struct ProgressSummaryCard: View {
 /// (50 pt exactly there). Its own view so the cap applied by the card reaches the metric.
 private struct ProgressRing: View {
     let progress: Double
+    /// False on a rest day: an empty ring and no "0%" (D2).
+    var showsPercent = true
     @ScaledMetric(relativeTo: .caption) private var diameter: CGFloat = 50
 
     var body: some View {
@@ -528,8 +859,10 @@ private struct ProgressRing: View {
                 .rotationEffect(.degrees(-90))
                 .animation(.easeInOut(duration: 0.4), value: progress)
 
-            Text("\(Int(progress * 100))%")
-                .font(.caption.bold())
+            if showsPercent {
+                Text("\(Int(progress * 100))%")
+                    .font(.caption.bold())
+            }
         }
         .frame(width: diameter, height: diameter)
     }
@@ -542,6 +875,10 @@ struct HabitRowView: View {
     @Environment(\.habitEntryCommit) private var injectedCommit
     let habit: Habit
     let date: Date
+    /// Today's clock (TodayView's, a hosted test's fixed one): the day the cache builds for.
+    let now: Date
+    /// D7's words (RELEASE-1.5.0.md), nil unless the day shown is today (`TodayAtRisk`).
+    let words: TodayAtRisk.Words?
 
     @State private var justCompleted = false
     @State private var showingEdit = false
@@ -551,13 +888,22 @@ struct HabitRowView: View {
     @State private var confirming: PendingConfirmation?
     /// Today's N3 hook: called after a write, it may ask the system for a rating. Nil elsewhere.
     @Environment(\.reviewPromptHook) private var reviewPromptHook
-    private var cache = StatsCache.shared
+    /// TodayView's cache (RELEASE-1.5.0.md D9).
+    @Environment(\.statsCache) private var cache
     @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.colorScheme) private var colorScheme
 
-    init(habit: Habit, date: Date) {
+    init(habit: Habit, date: Date, now: Date = Date(), words: TodayAtRisk.Words? = nil) {
         self.habit = habit
         self.date = date
+        self.now = now
+        self.words = words
+    }
+
+    /// The orange D7's at-risk words are drawn in: #FF9500 made readable on the card, as the
+    /// streak words are (#FF9500 itself is 1.97:1 on the light card).
+    static func atRiskColor(in colorScheme: ColorScheme) -> Color {
+        Color.readableText(hex: "#FF9500", in: colorScheme)
     }
 
     /// The check and count state is the habit's own, never the cache's (D4): the state the user
@@ -576,7 +922,7 @@ struct HabitRowView: View {
     /// on every read, never kept across renders; TodayView's read of every habit has just
     /// refilled the cache, so this is a dictionary hit.
     private var stats: HabitStats {
-        cache.stats(for: habit)
+        cache.stats(for: habit, today: now)
     }
 
     /// The habit's description (`Habit.note`, D7): one secondary line under the name.
@@ -736,6 +1082,9 @@ struct HabitRowView: View {
         if habit.habitKind == .count { parts.append(spokenCount) }
         if !habit.isScheduled(on: date) {
             parts.append(appLocalized("Rest day"))
+        } else if let words {
+            // D7: the same words the row draws, in the value (the label is completion only).
+            parts.append(Self.spoken(words))
         } else if habit.schedule == .timesPerWeek {
             let current = stats.weeklyCompletions(containing: date)
             parts.append(appLocalized("\(current)/\(habit.timesPerWeek) this week"))
@@ -750,6 +1099,44 @@ struct HabitRowView: View {
             parts.append(note)
         }
         return parts.joined(separator: ", ")
+    }
+
+    // MARK: D7's words
+
+    // Each phrase is one key with its own numbers (positional in the catalogs, a plural on
+    // each "more" and "days"): a phrase built from pieces cannot be ordered per language. The
+    // locals carry names LocalizationSourceScanTests types as Int.
+
+    /// The words drawn (RELEASE-1.5.0.md D7).
+    static func text(_ words: TodayAtRisk.Words) -> Text {
+        switch words {
+        case .weekSoFar(let current, let total):
+            return Text("\(current)/\(total) this week")
+        case .weekOwing(let current, let total, let count):
+            return Text("\(current)/\(total) this week · \(count) more")
+        case .atRiskDaysLeft(let count, let days):
+            return Text("\(count) more · \(days) days left")
+        case .atRiskToday(let count):
+            return Text("\(count) more · today")
+        case .dueToday:
+            return Text("Due today")
+        }
+    }
+
+    /// The same words, spoken: in the row's accessibility value, in the picked language.
+    static func spoken(_ words: TodayAtRisk.Words) -> String {
+        switch words {
+        case .weekSoFar(let current, let total):
+            return appLocalized("\(current)/\(total) this week")
+        case .weekOwing(let current, let total, let count):
+            return appLocalized("\(current)/\(total) this week · \(count) more")
+        case .atRiskDaysLeft(let count, let days):
+            return appLocalized("\(count) more · \(days) days left")
+        case .atRiskToday(let count):
+            return appLocalized("\(count) more · today")
+        case .dueToday:
+            return appLocalized("Due today")
+        }
     }
 
     /// `countLabel` spelled out: VoiceOver reads "3/8" as a date or a fraction.
@@ -786,6 +1173,10 @@ struct HabitRowView: View {
                 Text("Rest day")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            } else if let words {
+                Self.text(words)
+                    .font(.caption)
+                    .foregroundStyle(words.isAtRisk ? Self.atRiskColor(in: colorScheme) : Color.secondary)
             } else if habit.schedule == .timesPerWeek {
                 let current = stats.weeklyCompletions(containing: date)
                 Text("\(current)/\(habit.timesPerWeek) this week")
@@ -913,7 +1304,7 @@ struct HabitRowView: View {
             // (`ReviewPromptRule`); the commit has bumped the cache, so this read is fresh.
             if let reviewPromptHook, let before {
                 reviewPromptHook.afterCheckIn(ReviewPromptRule.CheckIn(
-                    habit: habit, day: date, before: before, after: cache.stats(for: habit), written: written))
+                    habit: habit, day: date, before: before, after: cache.stats(for: habit, today: now), written: written))
             }
         case .needsConfirmation(let about):
             confirming = PendingConfirmation(write: write, about: about)

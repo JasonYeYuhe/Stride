@@ -120,11 +120,13 @@ final class TodayWeekCardTests: XCTestCase {
     func testTheDismissalStateLivesInItsDefaults() {
         let store = InlinePromptStore(defaults: scratch.defaults)
         XCTAssertEqual(store.state, .empty)
-        let state = InlinePrompts.DismissalState(proHiddenWeek: 20_605, freeWeeksShown: [20_598, 20_605], freeEnded: true)
+        let state = InlinePrompts.DismissalState(proHiddenWeek: 20_605, freeWeeksShown: [20_598, 20_605], freeEnded: true,
+                                                 missedHiddenDay: 20_606, reminderOfferEnded: true)
         store.save(state)
         XCTAssertEqual(InlinePromptStore(defaults: scratch.defaults).state, state)
         store.save(.empty)
         XCTAssertEqual(store.state, .empty)
+        XCTAssertNil(scratch.defaults.object(forKey: InlinePromptStore.missedHiddenDayKey), "a cleared day is removed")
     }
 
     // MARK: - The review prompt (N3): never under -demo or test flags
@@ -198,14 +200,17 @@ final class TodayWeekCardTests: XCTestCase {
     /// no hosted test or sweep leaves a free week, a × or the 3-day clock behind for the next one.
     func testAnAutomatedRunWritesNothingToTheAppsDefaults() {
         let standard = UserDefaults.standard
-        let keys = [InlinePromptStore.proHiddenWeekKey, InlinePromptStore.freeWeeksShownKey,
-                    InlinePromptStore.freeEndedKey, ReviewPrompter.installDateKey]
+        // 1.5.0's two cards (D5) keep their state in the same store.
+        let keys = InlinePromptStore.keys + [ReviewPrompter.installDateKey]
+        XCTAssertTrue(keys.contains(InlinePromptStore.missedHiddenDayKey))
+        XCTAssertTrue(keys.contains(InlinePromptStore.reminderOfferEndedKey))
         // Whatever an earlier build of this branch may have left behind goes first.
         for key in keys { standard.removeObject(forKey: key) }
 
         XCTAssertTrue(TodayCards.isAutomatedRun)
         XCTAssertTrue(InlinePromptStore.live.readOnly)
-        InlinePromptStore.live.save(.init(proHiddenWeek: 20_605, freeWeeksShown: [20_598], freeEnded: true))
+        InlinePromptStore.live.save(.init(proHiddenWeek: 20_605, freeWeeksShown: [20_598], freeEnded: true,
+                                          missedHiddenDay: 20_606, reminderOfferEnded: true))
         ReviewPrompter.live.recordInstallDateIfNeeded()
         for key in keys {
             XCTAssertNil(standard.object(forKey: key), "\(key) written by an automated run")
