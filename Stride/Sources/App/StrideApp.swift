@@ -438,10 +438,11 @@ struct StrideApp: App {
         if let habitID = launchStatsHabitID(in: context) { shell.statsHabitID = habitID }
     }
 
-    /// `-openReview this|last` (RELEASE-1.4.2.md W8): the Weekly Review on this week or last, as a
-    /// Pro press would issue it, and for anyone else the paywall that resumes it (D8's
-    /// `.weeklyReview` trigger), so the sweep and the Mac captures can draw both (`simctl` has no
-    /// touch input). DEBUG-only like `-openHistory`.
+    /// `-openReview this|last|<yyyy-mm-dd>` (RELEASE-1.4.2.md W8; the date since 1.5.0, D6): the
+    /// Weekly Review on this week, last week, or the week containing that day (a later day opens
+    /// this week, as any request does), as a Pro press would issue it, and for anyone else the
+    /// paywall that resumes it (D8's `.weeklyReview` trigger), so the sweep and the Mac captures
+    /// can draw both (`simctl` has no touch input). DEBUG-only like `-openHistory`.
     @MainActor
     static func launchReviewRequest(arguments: [String] = CommandLine.arguments, now: Date = Date(),
                                     calendar: Calendar = .current, isPro: Bool? = nil) -> ShellRequest? {
@@ -452,10 +453,25 @@ struct StrideApp: App {
         switch arguments[flag + 1] {
         case "this": week = thisWeek
         case "last": week = thisWeek.previous
-        default: return nil
+        default:
+            guard let day = reviewDayKey(arguments[flag + 1]) else { return nil }
+            week = min(WeeklyReviewMath.weekRange(containing: day, in: calendar), thisWeek)
         }
         let review = MenuCommandRules.ProDestination.review(week: week.monday)
         return ShellRequest(isPro ? review : .paywall(trigger: .weeklyReview, resume: review))
+    }
+
+    /// `yyyy-mm-dd` as that day's day-key (its UTC midnight, `HabitCalendar.utc`), so the week is
+    /// the same in every zone; nil for anything else, or a day that does not exist (2026-02-30).
+    static func reviewDayKey(_ text: String) -> Date? {
+        let parts = text.split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[0].count == 4, parts[1].count == 2, parts[2].count == 2,
+              let year = Int(parts[0]), let month = Int(parts[1]), let day = Int(parts[2]),
+              let key = HabitCalendar.utc.date(from: DateComponents(year: year, month: month, day: day))
+        else { return nil }
+        let back = HabitCalendar.utc.dateComponents([.year, .month, .day], from: key)
+        guard back.year == year, back.month == month, back.day == day else { return nil }
+        return key
     }
 
     /// `-statsHabit <habit name | index>` (W8): the habit Statistics shows, matched as

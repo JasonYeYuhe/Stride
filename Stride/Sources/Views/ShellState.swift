@@ -50,6 +50,20 @@ final class ShellState {
     /// model. StatsView resolves the id against its live query, which can't do that.
     var statsHabitID: UUID?
 
+    /// The habit Today is asked to bring into view (RELEASE-1.5.0.md D6): set by the Weekly
+    /// Review's "At risk this week" tap (`focusOnToday`), consumed by Today. An id, never the
+    /// model object, for the reason `statsHabitID` gives.
+    ///
+    /// Today reads it with `.task(id: shell.todayFocusHabitID)` — Today may be created after it
+    /// is set (a first visit), and a kept-alive Today sees it change — then:
+    /// - expands the habit's group if it is collapsed (Today owns that UI preference; writing it
+    ///   is allowed, it is not the store);
+    /// - scrolls the row into view and moves VoiceOver focus to it;
+    /// - calls `consumeTodayFocus()`, which clears it, so the next visit does not scroll again.
+    /// A habit Today does not show (deleted or archived meanwhile) is consumed all the same.
+    /// Nothing here writes to the store.
+    var todayFocusHabitID: UUID?
+
     /// What this window was asked to present (the Mac's menu commands, W6). An item, cleared when
     /// its presentation is dismissed — never a Bool that can stick at true and swallow the next
     /// ask (D2). ContentView presents it above the size-class branch.
@@ -89,6 +103,41 @@ final class ShellState {
     /// so this sets the resume after it, never under it.
     func continueAfterUnlock(resume: ShellRequest?) {
         request = resume
+    }
+
+    // MARK: - The review's at-risk tap (RELEASE-1.5.0.md D6)
+
+    /// The Weekly Review's "At risk this week" tap: the review goes (its request is cleared, so
+    /// the shell's sheet binding reads nil and dismisses it), Today is selected and re-anchored
+    /// to today — a day picked in Today's week strip is let go, since the at-risk words show only
+    /// on today (D7) — and `todayFocusHabitID` names the habit for Today to bring into view.
+    ///
+    /// Expanding the habit's group when it is collapsed is Today's (it owns that preference); see
+    /// `todayFocusHabitID`. Nothing here writes to the store.
+    ///
+    /// - Parameter now: the review's clock (its DEBUG `now` in hosted tests), so Today lands on
+    ///   the day the review judged "this week" from.
+    func focusOnToday(habitID: UUID, now: Date = Date(), calendar: Calendar = .current) {
+        request = nil
+        selection = .today
+        // Today, today: as `reanchor` after a day change, and also when a day picked in the
+        // strip is still showing. Within the same day with today showing, nothing is written.
+        if !calendar.isDate(todayDate, inSameDayAs: now) || !calendar.isDate(todayAnchor, inSameDayAs: now) {
+            todayDate = now
+            todayAnchor = now
+        }
+        todayFocusHabitID = habitID
+    }
+
+    /// Today has brought `todayFocusHabitID` into view (or found it gone): returns it and clears
+    /// it, so it is acted on once. Nil when nothing was asked for. Today may call it first and
+    /// then act on the id it returns, or act and then call it; either way a later tap on another
+    /// at-risk habit sets a new id, which starts Today's `.task(id:)` again.
+    @discardableResult
+    func consumeTodayFocus() -> UUID? {
+        guard let id = todayFocusHabitID else { return nil }
+        todayFocusHabitID = nil
+        return id
     }
 
     // MARK: - What is on screen (ContentView reports it)

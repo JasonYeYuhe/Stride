@@ -705,6 +705,106 @@ final class ShellTests: XCTestCase {
                                                               hour: hour, minute: minute, second: second)))
     }
 
+    // MARK: - The review's at-risk tap (RELEASE-1.5.0.md D6)
+
+    /// `focusOnToday`: the review's request goes, Today is selected and re-anchored to today (a
+    /// day picked in the strip is let go), and the focus names the habit. `consumeTodayFocus`
+    /// returns it once and clears it. Within the same day with today showing, the day and the
+    /// anchor are not written (Observation reports every assignment).
+    func testFocusOnTodayDismissesTheReviewSelectsTodayAndIsConsumedOnce() throws {
+        let morning = try instant(day: 14, 9, 0)
+        let evening = try instant(day: 16, 21, 0)
+        let habitID = UUID()
+
+        let shell = ShellState(launchArguments: [], platform: .iOS, now: morning)
+        shell.selection = .stats
+        shell.todayDate = try instant(day: 13, 9, 0)   // a day picked in Today's strip
+        shell.request = .weeklyReview(week: nil)
+        shell.focusOnToday(habitID: habitID, now: evening, calendar: Self.calendar)
+        XCTAssertNil(shell.request, "the review is dismissed")
+        XCTAssertEqual(shell.selection, .today)
+        XCTAssertEqual(shell.todayDate, evening, "today, not the picked day")
+        XCTAssertEqual(shell.todayAnchor, evening)
+        XCTAssertEqual(shell.todayFocusHabitID, habitID)
+        XCTAssertTrue(shell.isCreated(.today))
+
+        XCTAssertEqual(shell.consumeTodayFocus(), habitID)
+        XCTAssertNil(shell.todayFocusHabitID)
+        XCTAssertNil(shell.consumeTodayFocus(), "acted on once")
+
+        // Today already showing today: only the focus is written.
+        let later = try instant(day: 16, 22, 0)
+        let wrote = expectation(description: "a write to Today's day or its anchor")
+        wrote.isInverted = true
+        withObservationTracking {
+            _ = shell.todayDate
+            _ = shell.todayAnchor
+        } onChange: {
+            wrote.fulfill()
+        }
+        let other = UUID()
+        shell.focusOnToday(habitID: other, now: later, calendar: Self.calendar)
+        wait(for: [wrote], timeout: 0.1)
+        XCTAssertEqual(shell.todayFocusHabitID, other, "a second tap names its own habit")
+        XCTAssertEqual(shell.todayDate, evening)
+    }
+
+    /// The tap through the real shell: the review the shell presents (on this week, where "At
+    /// risk this week" is) closes, the window lands on Today with the focus set, and nothing is
+    /// written to the store. A 7-times-a-week habit with no check-in this week is at risk on any
+    /// day of it.
+    func testTheReviewsAtRiskTapLandsOnTodayAndWritesNothing() async throws {
+        let swim = Habit(name: "Shell Probe Swim")
+        swim.schedule = .timesPerWeek
+        swim.timesPerWeek = 7
+        swim.sortOrder = 2
+        swim.createdAt = try XCTUnwrap(Calendar.current.date(byAdding: .day, value: -30, to: Date()))
+        context.insert(swim)
+        try context.save()
+        let counts = try storeCounts()
+        let stamps = try storeStamps()
+
+        let shell = ShellState(launchArguments: [])
+        shell.selection = .stats
+        _ = try await hostShell(shell)
+        try await waitUntil("Stats is created") { shell.tabCreations[.stats] == 1 }
+        let thisMonday = WeeklyReviewMath.weekRange(containing: Date(), in: .current).monday
+        shell.request = .weeklyReview(week: thisMonday)
+        try await waitUntil("the review is presented") { self.host?.presentedViewController != nil }
+        let sheet = try XCTUnwrap(host?.presentedViewController)
+        var tap: NSObject?
+        try await waitUntil("Swim at risk") {
+            tap = self.elements(in: sheet.view) { self.identifier(of: $0) == "review.atRisk.\(swim.id.uuidString)" }.first
+            return tap != nil
+        }
+        XCTAssertTrue(try XCTUnwrap(tap).accessibilityActivate(), "the tap")
+        // Read at once: Today consumes the focus as soon as it can (V3).
+        XCTAssertEqual(shell.todayFocusHabitID, swim.id)
+        XCTAssertEqual(shell.selection, .today)
+        XCTAssertNil(shell.request)
+        XCTAssertTrue(Calendar.current.isDateInToday(shell.todayDate))
+
+        try await waitUntil("the review closes") { self.host?.presentedViewController == nil }
+        XCTAssertEqual(shell.selection, .today)
+        XCTAssertTrue(shell.todayFocusHabitID == nil || shell.todayFocusHabitID == swim.id)
+        XCTAssertFalse(context.hasChanges)
+        XCTAssertEqual(try storeCounts(), counts)
+        XCTAssertEqual(try storeStamps(), stamps, "every updatedAt unchanged")
+    }
+
+    private func storeCounts() throws -> [Int] {
+        [try context.fetchCount(FetchDescriptor<Habit>()), try context.fetchCount(FetchDescriptor<HabitRecord>()),
+         try context.fetchCount(FetchDescriptor<HabitGroup>())]
+    }
+
+    private func storeStamps() throws -> [PersistentIdentifier: Date?] {
+        var stamps: [PersistentIdentifier: Date?] = [:]
+        for h in try context.fetch(FetchDescriptor<Habit>()) { stamps[h.persistentModelID] = h.updatedAt }
+        for r in try context.fetch(FetchDescriptor<HabitRecord>()) { stamps[r.persistentModelID] = r.updatedAt }
+        for g in try context.fetch(FetchDescriptor<HabitGroup>()) { stamps[g.persistentModelID] = g.updatedAt }
+        return stamps
+    }
+
     // MARK: - Selection
 
     /// The sidebar's selection is never empty, and never a place the platform has no row for: the
