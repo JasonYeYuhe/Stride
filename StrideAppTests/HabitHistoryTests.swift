@@ -267,6 +267,9 @@ final class HabitHistoryTests: XCTestCase {
 
         // Discard Changes: the stored note is back, untouched, and the picked day follows.
         try await answer(atDay, appLocalized("Discard Changes"))
+        // The note field got its focus back as the alert went, and the page may have scrolled to
+        // it, the picked day's row out of the tree: back to the grid, as before the pick.
+        try await scrollHistoryToTop(in: window)
         try await waitUntil("the picked day is selected") { self.isSelected(yesterdayCell, in: window) }
         XCTAssertEqual(saves, 0, "nothing written for the draft")
         XCTAssertEqual(try stored(water).first { $0.value == 2 }?.note, long, "the stored note, whole")
@@ -755,6 +758,15 @@ final class HabitHistoryTests: XCTestCase {
     /// the editor, and the grid is a LazyVGrid, whose rows scrolled off leave the accessibility
     /// tree. A VoiceOver user scrolls up to pick a day the same way. The failure message carries
     /// the offsets it found, in case the cause is another.
+    ///
+    /// A scroll still under way is let end first (2026-11-27): answering an alert gives the note
+    /// field its focus back (UIKit restores the first responder as the alert goes), and the page
+    /// then scrolls the field above the keyboard over a few hundred ms — measured 213 → 261 pt
+    /// after Cancel, -70 → 452 pt after Discard Changes. A scroll to the top made before that
+    /// ended was undone and the month's rows left the tree again. Reproduced on a loaded Mac
+    /// (1 run in 20): "the picked day is selected" timed out with the picked day in the editor
+    /// and 2 day cells in the tree; CI's "no alert after the pick" is most likely the same race
+    /// one step earlier (the day activated as its row scrolled away).
     private func scrollHistoryToTop(in window: UIWindow) async throws {
         let sheet = try XCTUnwrap(host?.presentedViewController?.view, "History is presented")
         var scrollViews: [UIScrollView] = []
@@ -763,6 +775,13 @@ final class HabitHistoryTests: XCTestCase {
             view.subviews.forEach(collect)
         }
         collect(sheet)
+        var last: [CGFloat] = []
+        var stillPolls = 0
+        try await waitUntil("the page stops scrolling") {
+            let now = scrollViews.map(\.contentOffset.y)
+            if now == last { stillPolls += 1 } else { stillPolls = 0; last = now }
+            return stillPolls >= 6   // 300 ms without a change
+        }
         let offsets = scrollViews.map { "\($0.contentOffset.y)" }.joined(separator: ", ")
         for scroll in scrollViews {
             scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: -scroll.adjustedContentInset.top), animated: false)

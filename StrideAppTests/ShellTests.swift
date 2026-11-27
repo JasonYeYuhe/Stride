@@ -297,7 +297,7 @@ final class ShellTests: XCTestCase {
         let paywall = try XCTUnwrap(host?.presentedViewController)
         try await waitUntil("the Weekly Review subtitle") {
             self.elements(in: paywall.view) { self.identifier(of: $0) == "paywall.subtitle" }.first?.accessibilityLabel
-                == appLocalized("See how your week went")
+                == appLocalized("Look back at any week")
         }
         try await dismissSheet()
         try await waitUntil("the dismissal clears the request") { shell.request == nil }
@@ -751,12 +751,18 @@ final class ShellTests: XCTestCase {
 
     /// The tap through the real shell: the review the shell presents (on this week, where "At
     /// risk this week" is) closes, the window lands on Today with the focus set, and nothing is
-    /// written to the store. A 7-times-a-week habit with no check-in this week is at risk on any
-    /// day of it.
+    /// written to the store. A habit due as many times as the week has days left, with no
+    /// check-in yet, is at risk on any day of it (every day left needed, the goal still within
+    /// reach).
     func testTheReviewsAtRiskTapLandsOnTodayAndWritesNothing() async throws {
         let swim = Habit(name: "Shell Probe Swim")
         swim.schedule = .timesPerWeek
-        swim.timesPerWeek = 7
+        // At risk on any weekday: nothing done yet and a goal of exactly the days left this week
+        // (today through Sunday), so every day left is needed and the goal is still within reach
+        // (owed == daysLeft, RELEASE-1.5.0.md D7). A fixed 7 is out of reach after Monday, and
+        // out of reach is not at risk.
+        let todayNumber = HabitStats.dayNumber(ofKey: HabitCalendar.dayKey(forInstant: Date()))
+        swim.timesPerWeek = WeeklyReviewMath.WeekRange(containingDay: todayNumber).sundayNumber - todayNumber + 1
         swim.sortOrder = 2
         swim.createdAt = try XCTUnwrap(Calendar.current.date(byAdding: .day, value: -30, to: Date()))
         context.insert(swim)
