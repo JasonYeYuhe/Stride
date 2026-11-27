@@ -188,6 +188,22 @@ final class LocalizationSourceScanTests: XCTestCase {
     /// What Advanced Analytics holds, word for word, on the paywall and on Statistics' locked card.
     private static let advancedAnalytics = "Insights, the 8-week trend, the strength chart and your top 5 streaks"
 
+    /// What Weekly Review holds since 1.5.0 (RELEASE-1.5.0.md D8): any week, not only the last one.
+    /// The paywall row says it; the six STRIDE PRO bullets say it in their own words
+    /// (`weeklyReviewBullets`). "and your notes" joins it in 1.5.1, with the notes.
+    private static let weeklyReview = "Any week at a glance: what improved and what is at risk"
+
+    /// Each STRIDE PRO block's Weekly Review text after its title and separator, word for word
+    /// (RELEASE-1.4.2.md D11: the body pinned in all six locales once the sentence changes).
+    private static let weeklyReviewBullets: [String: String] = [
+        "en-US": "any week at a glance: what improved and what is at risk",
+        "es-ES": "cualquier semana de un vistazo, con lo que ha mejorado y lo que está en riesgo.",
+        "ja": "どの週でも、伸びた習慣と達成が危うい習慣がひと目でわかる",
+        "ko": "어느 주든 한눈에: 향상된 습관과 달성이 위태로운 습관",
+        "zh-Hans": "随时回顾任意一周，哪些习惯进步了、哪些可能完不成，一目了然",
+        "zh-Hant": "隨時回顧任何一週，哪些習慣進步了、哪些可能完不成，一目了然",
+    ]
+
     /// Every place the app says what Stride Pro is names the same set (RELEASE-1.4.1.md D11):
     /// Habit Groups; Advanced Analytics (Insights, the 8-week trend, the strength chart and the top
     /// 5 streaks); Weekly Review. Until 1.4.1 the paywall put Weekly Review inside Advanced
@@ -203,7 +219,7 @@ final class LocalizationSourceScanTests: XCTestCase {
         XCTAssertEqual(paywall, [
             ["Habit Groups", "Organize habits into collapsible groups"],
             ["Advanced Analytics", Self.advancedAnalytics],
-            ["Weekly Review", "A look back at how your week went"],
+            ["Weekly Review", Self.weeklyReview],
         ], "the paywall's feature rows (ProPaywallView)")
 
         // Advanced Analytics only: Weekly Review is Pro, but Stats' toolbar button sells it.
@@ -222,6 +238,11 @@ final class LocalizationSourceScanTests: XCTestCase {
         let retired = "8-week trends, insights & weekly review"
         XCTAssertFalse(keys.contains(retired), "the source uses the retired Pro subtitle again")
         XCTAssertFalse(try Self.japaneseKeys().contains(retired), "the retired Pro subtitle is back in the catalogs")
+        // 1.4.1-1.4.2's Weekly Review row and its trigger subtitle, both about last week only (D8).
+        for retired in ["A look back at how your week went", "See how your week went"] {
+            XCTAssertFalse(keys.contains(retired), "the source sells last week only again: \"\(retired)\"")
+            XCTAssertFalse(try Self.japaneseKeys().contains(retired), "\"\(retired)\" is back in the catalogs")
+        }
     }
 
     /// The paywall's header subtitle by trigger (RELEASE-1.4.2.md D4) joins D11's pin: it is the
@@ -241,7 +262,7 @@ final class LocalizationSourceScanTests: XCTestCase {
         }
         XCTAssertEqual(cases, [
             [".analytics", "See what's changing, not just where you are"],
-            [".weeklyReview, .today", "See how your week went"],
+            [".weeklyReview, .today", "Look back at any week"],
             [".groups", "Organize your habits into groups"],
             [".settings, .onboarding", "Almost everything is free. Pro adds three things."],
             [".lapsed", "Welcome back"],
@@ -304,6 +325,8 @@ final class LocalizationSourceScanTests: XCTestCase {
                 XCTAssertTrue(bullet.hasPrefix(head), "\(locale): the \(key) bullet opens with the app's \"\(head)\": \(bullet)")
                 bodies.append(bullet.hasPrefix(head) ? String(bullet.dropFirst(head.count)) : bullet)
             }
+            XCTAssertEqual(bodies[2], Self.weeklyReviewBullets[locale],
+                           "\(locale): the Weekly Review bullet is D8's sentence (any week), word for word")
             let analytics = bodies[1].lowercased()
             let insights = try word("Insights").lowercased()
             let strength = try word("Strength").lowercased()
@@ -322,7 +345,7 @@ final class LocalizationSourceScanTests: XCTestCase {
         for line in ["Stride Pro adds three things:",
                      "• Habit Groups — organize habits into collapsible groups",
                      "• Advanced Analytics — Insights, the 8-week Trend chart, the Strength chart and your top 5 streaks",
-                     "• Weekly Review — a look back at how your week went"] {
+                     "• Weekly Review — any week at a glance: what improved and what is at risk"] {
             XCTAssertTrue(lines.contains(line), "en-US lacks D11's line \"\(line)\"")
         }
         XCTAssertTrue(en.contains("a strength score that recovers from a missed day"), "en-US statistics paragraph")

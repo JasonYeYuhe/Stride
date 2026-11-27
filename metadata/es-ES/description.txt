@@ -10,7 +10,7 @@ No todos los hábitos son diarios: elige todos los días, un número de veces po
 
 RACHAS QUE TE IMPULSAN
 
-Stride cuenta tus rachas automáticamente. Los días que un hábito no toca son de descanso y no rompen la racha, y en un hábito de veces por semana, la racha cuenta semanas, no días. Puedes compartir cualquier racha como imagen.
+Stride cuenta tus rachas automáticamente. Los días que un hábito no toca son de descanso y no rompen la racha, y en un hábito de veces por semana, la racha cuenta semanas, no días. Comparte cualquier racha como imagen.
 
 ESTADÍSTICAS Y MAPA DE CALOR
 
@@ -22,15 +22,15 @@ Widgets pequeño, mediano y grande en la pantalla de inicio (extragrande en iPad
 
 RECORDATORIOS PARA CADA HÁBITO
 
-Cada hábito puede tener su propio recordatorio, a la hora que tú elijas: meditar a las 7:00, diario a las 21:00. Desde la notificación puedes marcarlo como hecho o posponerlo.
+Cada hábito puede tener su propio recordatorio, a la hora que elijas: meditar a las 7:00, diario a las 21:00. Desde la notificación puedes marcarlo como hecho o posponerlo.
 
 SINCRONIZACIÓN ENTRE DISPOSITIVOS
 
-Marca tus hábitos en el iPhone, revisa tus estadísticas en el iPad y cierra el día en el Mac. Con tu cuenta gratuita de Stride, tus datos te acompañan.
+Marca tus hábitos en el iPhone, revisa tus estadísticas en el iPad y cierra el día en el Mac. Con una cuenta gratuita, tus datos te acompañan.
 
 CASI TODO ES GRATIS
 
-Hábitos sin límite, hábitos medibles, frecuencias flexibles, widgets, recordatorios, mapa de calor y estadísticas, plantillas, compartir rachas, exportación en CSV o JSON y sincronización.
+Hábitos ilimitados y medibles, frecuencias flexibles, widgets, recordatorios, mapa de calor y estadísticas, plantillas, compartir rachas, exportación en CSV o JSON y sincronización.
 
 STRIDE PRO
 
@@ -38,7 +38,7 @@ Stride Pro añade tres cosas:
 
 • Grupos de hábitos: organízalos en grupos plegables.
 • Análisis avanzado: la tarjeta de Análisis, el gráfico de tendencia de 8 semanas, el gráfico de fuerza y tus 5 rachas más largas.
-• Resumen semanal: un repaso a cómo te ha ido la semana.
+• Resumen semanal: cualquier semana de un vistazo, con lo que ha mejorado y lo que está en riesgo.
 
 TU PRIVACIDAD IMPORTA
 

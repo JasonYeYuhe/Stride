@@ -523,7 +523,7 @@
    paywall's subtitle for Weekly Review. "Your top 5 streaks", never "your best streaks": the free
    card keeps its Best Streak tile. */
 "Insights, the 8-week trend, the strength chart and your top 5 streaks" = "洞察、8 周趋势、习惯强度图表和连续记录前 5 名";
-"A look back at how your week went" = "回顾你这一周的表现";
+"Any week at a glance: what improved and what is at risk" = "随时回顾任意一周，哪些习惯进步了、哪些可能完不成，一目了然";
 
 /* Subscription status in Settings (D12), on iOS and in the Mac Settings window. "Plan" is the row
    whose value is Monthly, Yearly or Lifetime; each %@ is a date. "Manage Subscription" opens
@@ -587,7 +587,7 @@
    the Weekly Review button and Today's week card; New Group; Settings and onboarding; the
    "Pro ended" row. "Pro adds three things" are the three feature rows under it. */
 "See what's changing, not just where you are" = "不只看现在的位置，更看清正在发生的变化";
-"See how your week went" = "看看你这一周过得怎么样";
+"Look back at any week" = "回顾任意一周";
 "Organize your habits into groups" = "把你的习惯整理成分组";
 "Almost everything is free. Pro adds three things." = "几乎所有功能都免费。Pro 额外提供三项功能。";
 "Welcome back" = "欢迎回来";

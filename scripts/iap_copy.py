@@ -42,11 +42,13 @@ YEARLY_ID = "yyh.stride.habittracker.pro.yearly"
 LIFETIME_ID = "yyh.stride.habittracker.pro.lifetime"
 NAME_MAX, DESCRIPTION_MAX, REVIEW_NOTE_MAX = 35, 55, 4000
 
-# D11's three things, as docs/review-notes-1.4.1.md words them for App Review. setup_iap.py builds
-# its creation note from the same text, so a product created later starts right.
+# D11's three things, as docs/review-notes-1.5.0.md words them for App Review (Weekly Review with
+# RELEASE-1.5.0.md D8's sentence). setup_iap.py builds its creation note from the same text, so a
+# product created later starts right. Sending it is the owner's go (Submission checklist).
 PRO_REVIEW_NOTE = (
     "Stride Pro adds three things: Habit Groups; Advanced Analytics (Insights, the 8-week Trend "
-    "chart, the Strength chart and your top 5 streaks); and Weekly Review. Everything else is "
+    "chart, the Strength chart and your top 5 streaks); and Weekly Review (any week at a glance: "
+    "what improved and what is at risk). Everything else is "
     "free, including the Strength score and History. The paywall is under Settings > Upgrade to "
     "Pro (on the Mac, Stride > Settings…), or Unlock with Pro on the Advanced Analytics card in "
     "Statistics."

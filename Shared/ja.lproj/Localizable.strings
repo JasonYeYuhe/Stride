@@ -523,7 +523,7 @@
    paywall's subtitle for Weekly Review. "Your top 5 streaks", never "your best streaks": the free
    card keeps its Best Streak tile. */
 "Insights, the 8-week trend, the strength chart and your top 5 streaks" = "インサイト、8週間の推移、定着度のグラフ、連続記録トップ5";
-"A look back at how your week went" = "1週間の取り組みを振り返る";
+"Any week at a glance: what improved and what is at risk" = "どの週でも、伸びた習慣と達成が危うい習慣がひと目でわかる";
 
 /* Subscription status in Settings (D12), on iOS and in the Mac Settings window. "Plan" is the row
    whose value is Monthly, Yearly or Lifetime; each %@ is a date. "Manage Subscription" opens
@@ -587,7 +587,7 @@
    the Weekly Review button and Today's week card; New Group; Settings and onboarding; the
    "Pro ended" row. "Pro adds three things" are the three feature rows under it. */
 "See what's changing, not just where you are" = "今の位置だけでなく、何が変わっているかがわかる";
-"See how your week went" = "1週間の成果をチェック";
+"Look back at any week" = "どの週でも振り返れる";
 "Organize your habits into groups" = "習慣をグループに整理";
 "Almost everything is free. Pro adds three things." = "ほとんどの機能は無料です。Proでは3つの機能が加わります。";
 "Welcome back" = "おかえりなさい";

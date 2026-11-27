@@ -450,7 +450,7 @@ struct ProPaywallView: View {
     private var triggerSubtitle: some View {
         switch trigger {
         case .analytics: Text("See what's changing, not just where you are")
-        case .weeklyReview, .today: Text("See how your week went")
+        case .weeklyReview, .today: Text("Look back at any week")
         case .groups: Text("Organize your habits into groups")
         case .settings, .onboarding: Text("Almost everything is free. Pro adds three things.")
         case .lapsed: Text("Welcome back")
@@ -492,7 +492,7 @@ struct ProPaywallView: View {
                 case .advancedAnalytics:
                     ProFeatureRow(icon: "chart.line.uptrend.xyaxis", color: .green, title: "Advanced Analytics", subtitle: "Insights, the 8-week trend, the strength chart and your top 5 streaks")
                 case .weeklyReview:
-                    ProFeatureRow(icon: "calendar.badge.clock", color: .orange, title: "Weekly Review", subtitle: "A look back at how your week went")
+                    ProFeatureRow(icon: "calendar.badge.clock", color: .orange, title: "Weekly Review", subtitle: "Any week at a glance: what improved and what is at risk")
                 }
             }
         }
