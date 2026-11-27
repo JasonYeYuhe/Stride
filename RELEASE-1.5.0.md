@@ -450,3 +450,28 @@ was checked against the code by Claude before it was folded in.
   - Owner P1–P3 answered as recommended.
   - Gemini 4 Argon High reviewed the plan (Review log); A0–A7 accepted, A8 in part. The Weekly
     Review's notes and share image moved to 1.5.1.
+- 2026-11-27, **V0–V4 merged** (worktree implementers, integrator review; StrideTests 864 → 895 in Tokyo
+  and Los Angeles, 2 known skips; hosted suites compiled with build-for-testing, first run in CI: no
+  simulator was booted, the disk was 16–21 GB free).
+  - **V0** a47101c: 1.5.0 (25); draft PR JasonYeYuhe/Stride#13.
+  - **V1** f56ec70 + cbd0e28: `DailyProgress`; strip, perfect days, bounds, `owed` and `isLastDay`.
+    Integrator's call: `.metForWeek` reads `owed == 0`, so a first week's met share is never counted
+    as remaining while the row prints no "more".
+  - **V4** 4f1e6e7: the review pages any week (⌘← ⌘→), one strip element per habit, the strength
+    chip, group sections, perfect days, at risk → `shell.focusOnToday`. Strings ×6 d73f09a.
+  - **V2** merged at 932da3f: badge, Dock and widget from `DailyProgress`; the D4 overlay planner;
+    the widget's write; `upgrade.sh --reminders` learns quiet days (`STRIDE_E2E_REMINDER_QUIET`).
+    `CheckInEffects.live` re-plans before the badge, so a lock-screen Mark Done goes quiet too.
+  - **Adversarial review of V2** (Claude, read-only): no under-fire when every write completes.
+    Fixed in 5e4eac4: the Daily Reminder is restored when nothing of it is pending (permission
+    granted later, a cut-off widget write); both writers add before they remove; the widget and the
+    app re-read the switches before writing; the evening is removed while off; snoozes beyond four
+    shrink the overlays' budget; archived habits' ids are removed in the full pass. Accepted: an
+    un-check in the last second before the reminder minute can lose that day's fire.
+  - **V3** merged at dfefb96: Today's card from `DailyProgress` ("Rest day"), the three cards
+    (missed yesterday → week card → reminder offer), the D7 words and the latched order, the focus
+    target, the D9 seam. Integrator's call (acc6a48): with no day left to check in, the row reads
+    the plain "1/3 this week", never "1 more · today". Strings ×6.
+  - **Left for V5/V6:** `-inlineCard missed|reminder` sweep flags, the `-demoPro` scenario
+    additions, captures (need a simulator: the disk must be back above 30 GB), D8's lockstep, the
+    Mac paywall at minimum width, What's New, metadata, review notes.
