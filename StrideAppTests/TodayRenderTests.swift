@@ -264,7 +264,8 @@ final class TodayRenderTests: XCTestCase {
         XCTAssertTrue(Calendar.current.isDate(shell.todayAnchor, inSameDayAs: monday), "the anchor is still today")
         XCTAssertEqual(shell.todayTitle, appLocalized("Yesterday"))
         try await waitUntil("Run, open on Sunday") { self.row("Run", in: window)?.accessibilityLabel == self.rowLabel("Run", done: false) }
-        XCTAssertNil(element("today.missedCard", in: window), "only on today")
+        // Only on today: it leaves with Show yesterday's 0.2 s animation, so waited for.
+        try await waitUntil("no missed card on yesterday") { self.element("today.missedCard", in: window) == nil }
 
         try await waitUntil("the week card") { self.element("today.weekCard.open", in: window) != nil }
         try activate("today.weekCard.open", in: window)
@@ -625,9 +626,13 @@ final class TodayRenderTests: XCTestCase {
         elements(in: window) { _ in true }.compactMap(\.accessibilityLabel)
     }
 
-    /// The element whose accessibility identifier is `id`.
+    /// The element — or accessibility container — whose accessibility identifier is `id`. The
+    /// inline cards are containers (`.accessibilityElement(children: .contain)`, so VoiceOver
+    /// reaches their title and both buttons), never elements themselves: a walk of elements alone
+    /// never finds `today.missedCard`, `today.weekCard` or `today.reminderCard`, and a wait for one
+    /// timed out while it was on screen.
     private func element(_ id: String, in window: UIWindow) -> NSObject? {
-        elements(in: window) { self.identifier(of: $0) == id }.first
+        elements(in: window, includingContainers: true) { self.identifier(of: $0) == id }.first
     }
 
     /// An element's accessibility identifier, which SwiftUI's elements answer without adopting
@@ -639,18 +644,23 @@ final class TodayRenderTests: XCTestCase {
         return element.perform(selector)?.takeUnretainedValue() as? String
     }
 
-    /// The distinct accessibility elements under `root` that `matches`, in tree order.
-    private func elements(in root: NSObject, where matches: (NSObject) -> Bool) -> [NSObject] {
+    /// The distinct accessibility elements under `root` that `matches`, in tree order;
+    /// `includingContainers`: every node of the walk, so an accessibility container (a node that
+    /// is not an element, with elements of its own) too.
+    private func elements(in root: NSObject, includingContainers: Bool = false,
+                          where matches: (NSObject) -> Bool) -> [NSObject] {
         var seen = Set<ObjectIdentifier>()
         var found: [NSObject] = []
-        collect(in: root, where: matches, seen: &seen, found: &found, depth: 0)
+        collect(in: root, includingContainers: includingContainers, where: matches, seen: &seen, found: &found,
+                depth: 0)
         return found
     }
 
-    private func collect(in root: NSObject, where matches: (NSObject) -> Bool,
+    private func collect(in root: NSObject, includingContainers: Bool, where matches: (NSObject) -> Bool,
                          seen: inout Set<ObjectIdentifier>, found: inout [NSObject], depth: Int) {
         guard depth < 80 else { return }
-        if root.isAccessibilityElement, matches(root), seen.insert(ObjectIdentifier(root)).inserted {
+        let candidate = root.isAccessibilityElement || includingContainers
+        if candidate, matches(root), seen.insert(ObjectIdentifier(root)).inserted {
             found.append(root)
         }
         if root.accessibilityElementsHidden { return }
@@ -664,7 +674,8 @@ final class TodayRenderTests: XCTestCase {
             children += view.subviews
         }
         for child in children {
-            collect(in: child, where: matches, seen: &seen, found: &found, depth: depth + 1)
+            collect(in: child, includingContainers: includingContainers, where: matches, seen: &seen, found: &found,
+                    depth: depth + 1)
         }
     }
 

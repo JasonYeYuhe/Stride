@@ -540,6 +540,7 @@ final class NotificationActionHandlerTests: XCTestCase {
 
         let shipping = NotificationActionHandler.Environment.live.sync
         let synced = expectation(description: "the action's own sync")
+        let actionStarted = Date()
         // The device's own zone, as the badge's count reads "today" in it.
         let outcome = await makeHandler(container, zone: TimeZone.current.identifier, sync: { container in
             await shipping(container)
@@ -560,7 +561,25 @@ final class NotificationActionHandlerTests: XCTestCase {
         // and the badge counting the two pulled habits as the ones left today (Read is done; before
         // the pull the count was 0). `contains`: the host app's window observer recounts the host's
         // own store on any didSave, this test's included, through the same `shared`.
-        XCTAssertNotNil(center.pending["stride.habit.reminder." + read.id.uuidString], "the reminders were rescheduled")
+        // Since 1.5.0 (RELEASE-1.5.0.md D4) Read, done today, is quiet: while its reminder time is
+        // still ahead today the plan is the overlay — today's weekday a one-shot next week (`.n<w>`),
+        // every other weekday weekly (`.<w>`) — and after it the base, the bare daily id. Read off
+        // this test's clock, taken on both sides of the action: a run that straddles the reminder
+        // minute may see either.
+        let ids = Set(center.pending.keys.filter { $0.hasPrefix(ReminderPlan.legacyIdentifier(for: read.id)) })
+        let calendar = Calendar.current
+        func planned(at now: Date) -> Set<String> {
+            guard ReminderPlan.isAhead(hour: read.reminderHour, minute: read.reminderMinute, now: now, calendar: calendar)
+            else { return [ReminderPlan.legacyIdentifier(for: read.id)] }
+            let today = HabitStats.weekday(ofDay: HabitStats.dayNumber(ofKey: DailyProgress.today(now: now, calendar: calendar)))
+            return Set((1...7).map {
+                $0 == today ? ReminderPlan.oneShotIdentifier(for: read.id, weekday: $0)
+                    : ReminderPlan.weekdayIdentifier(for: read.id, weekday: $0)
+            })
+        }
+        XCTAssertFalse(ids.isEmpty, "the reminders were rescheduled")
+        XCTAssertTrue([planned(at: actionStarted), planned(at: Date())].contains(ids),
+                      "the reminders were rescheduled as the plan says for this clock: \(ids.sorted())")
         XCTAssertTrue(center.badgeCounts.contains(2), "the badge was counted after the pull: \(center.badgeCounts)")
     }
 
