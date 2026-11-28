@@ -147,9 +147,15 @@ enum DemoData {
     ///   within reach (0 of 3 with 3 days left, 1 of 3 with 2, 2 of 3 with today), by D10's rule
     ///   as RELEASE-1.5.0.md D7 narrowed it on 2026-11-27 (a goal out of reach is not at risk);
     ///   no earlier: Monday to Thursday enough days are left;
-    /// - Journal, 100 % then 43 %, so "Slipped", with notes on last week's three check-ins.
-    /// Today: Morning Run and Read are done, the others not yet. Last week has a counted rate, so
-    /// `-inlineCard week` draws the Today card with a number.
+    /// - Journal, 100 % then 43 %, so "Slipped", with notes on last week's three check-ins, and
+    ///   never checked yesterday: Today's missed-yesterday card counts 1 on any weekday
+    ///   (RELEASE-1.5.0.md V5, `-inlineCard missed`);
+    /// - Swim, 3 times a week, Monday, Wednesday and Friday of every past week and Monday to
+    ///   Wednesday of this one: met from Wednesday, so Today shows a met times-per-week row
+    ///   (`.metForWeek`) from Thursday, and last Saturday is a perfect day on any weekday (V5; on
+    ///   a Friday Drink Water's missed day moves from 6 to 5 days ago so it never falls on it).
+    /// Today: Morning Run and Read are done (Swim too, Monday to Wednesday), the others not yet.
+    /// Last week has a counted rate, so `-inlineCard week` draws the Today card with a number.
     @MainActor
     private static func insertProSet(into context: ModelContext, now: Date) {
         let calendar = Calendar.current
@@ -203,8 +209,14 @@ enum DemoData {
         }
         _ = add("Drink Water", "\u{1F4A7}", "#FF9500", group: health,
                 start: calendar.date(byAdding: .day, value: -10, to: today)!) { _, _, daysAgo in
-            daysAgo != 0 && daysAgo != 6
+            // 6 days ago is last Saturday on a Friday: then 5, so last Saturday stays perfect.
+            daysAgo != 0 && daysAgo != (todayWeekday == 4 ? 5 : 6)
         }
+        let swim = add("Swim", "\u{1F3CA}", "#5AC8FA", group: health, start: day(12, 0)) { week, weekday, _ in
+            week == 0 ? weekday <= 2 : [0, 2, 4].contains(weekday)
+        }
+        swim.schedule = .timesPerWeek
+        swim.timesPerWeek = 3
         _ = add("Read 30 min", "\u{1F4DA}", "#007AFF", group: mind, start: day(12, 0),
                 notes: [5: "Finished the book"]) { week, weekday, _ in
             switch week {
@@ -225,6 +237,7 @@ enum DemoData {
         yoga.timesPerWeek = 3
         _ = add("Journal", "\u{270D}\u{FE0F}", "#FF3B30", group: mind, start: day(12, 0),
                 notes: [1: "Wrote before bed", 3: "Two pages", 5: "Short one tonight"]) { week, weekday, daysAgo in
+            if daysAgo == 1 { return false }
             switch week {
             case 0: return daysAgo > 0 && [0, 2, 3, 5].contains(weekday)
             case 1: return [1, 3, 5].contains(weekday)

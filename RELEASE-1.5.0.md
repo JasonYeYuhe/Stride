@@ -536,3 +536,21 @@ was checked against the code by Claude before it was folded in.
   drops yesterday's cell from the tree (failed 1 in 25 under load; 40/40 after waiting for the
   page to settle). Noted, not fixed: that refocus makes the keyboard flash after Discard Changes
   (cosmetic, no data lost).
+- 2026-11-28, **V5, first half** (Pro Max captured; iPad, the Mac and gates 3/4 left). StrideTests
+  903 / 2 skipped / 0 in Tokyo and Los Angeles; StrideMac builds.
+  - **Scenario** (`-demo -demoPro`): Swim, 3×/week, met from Wednesday (Today's met row from
+    Thursday); Journal never checked yesterday (the missed card counts 1 on any weekday); last
+    Saturday perfect on any weekday (on a Friday Drink Water's missed day moves to 5 days ago).
+    Three DemoDataProScenarioTests pin them on all seven weekdays in both zones.
+  - **Switches:** `-inlineCard missed|reminder` (the D5 cards, the missed one with yesterday's real
+    count); `-scrollTo reviewAtRisk|reviewBreakdown` in the review and `todayHabits` on grouped Today.
+  - **Sweep** (`a11y_sweep.sh --pro`): 25_review_two_weeks_back, the review's lower rows, 27 (the two
+    cards, free and Pro), 28 (Today's rows, free and Pro). iPhone 17 Pro Max: default 38 PNGs and AX5
+    69, all past the blank check, in `~/Library/Caches/Stride-build/plan-1.5.0/v5/`. Read: the at-risk
+    words, the met row ("3/3 this week", not counted in "2/5"), the missed card ("1 habit not checked
+    yesterday"), the offer, the review on three weeks ("1 perfect day", Swim's strip neutral on its
+    off days, Drink Water "Not started" two weeks back). 27_today_missed_pro at the default size was
+    taken mid-fade (the check passes a washed-out frame); retake it with the iPad run.
+  - **Blocked:** the disk fell to 23 GB (14 GB put in the Trash at 15:52, not by this session), so the
+    iPad Pro 13" was not booted; the iPhone 17 Pro (gate 3) is held by a Soundpost run; the Mac sweep
+    takes the screen for every launch and waits for the owner to be away.

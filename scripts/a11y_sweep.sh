@@ -56,10 +56,20 @@
 #                           insights", D12).
 #   25_review_this, _last   the Weekly Review on this week and on last week (DEBUG `-openReview`).
 #   26_review_free_paywall  free, the same request: the paywall with the `.weeklyReview` trigger.
+#   1.5.0 (RELEASE-1.5.0.md V5, gate 5; the scenario adds Swim, met from Wednesday, a Journal
+#   left open yesterday, and a perfect Saturday last week):
+#   25_review_two_weeks_back the review on the week before last (`-openReview <yyyy-mm-dd>`).
+#   25_review_this_at_reviewAtRisk, _at_reviewBreakdown, 25_review_last_at_reviewBreakdown
+#                           the review's lower rows (`-scrollTo`, SweepScroll): "At risk this
+#                           week" (Yoga, Friday to Sunday; none Monday to Thursday) and the strips.
+#   27_today_missed_pro, _free  Today's missed-yesterday card (`-inlineCard missed`: Journal, 1).
+#   27_today_reminder_offer the reminder offer (`-inlineCard reminder`).
+#   28_today_rows_pro, _free Today scrolled to its rows (`-scrollTo todayHabits`): the D7 words,
+#                           at risk first; free over the same data shows the same words (X0 free).
 #   30_paywall_<fixture>    every PaywallFixture (`-paywall -paywallFixture <name>`); at
 #                           accessibility sizes also `_at_cta` and `_at_terms`
 #                           (`-paywallScrollTo`), where the bar is in the scroll (gate 2).
-#   Top-only still: the review's lower rows (no anchor in it) and Today's lower rows.
+#   Top-only still: the review's highlights at the very bottom.
 # The store set (`--set store`, O9): 01_today, 02_stats, 03_history and 04_settings (free, the
 # standard set, as 1.4.1's), then 05_weekly_review (last week) and 06_advanced_analytics (Insights
 # with the PRO chip), both `-demoPro`. scripts/screenshots.sh sizes and files them.
@@ -503,6 +513,18 @@ if [[ "$SET" == pro ]]; then
     capture 25_review_this.png -tab 1 "${PRO[@]}" -openReview this
     capture 25_review_last.png -tab 1 "${PRO[@]}" -openReview last
     capture 26_review_free_paywall.png -tab 1 "${FREE_OVER_PRO[@]}" -openReview last
+    # RELEASE-1.5.0.md V5 and gate 5 (header): a third week, the review's lower rows, Today's two
+    # D5 cards, Today's rows (the at-risk words), free and Pro.
+    capture 25_review_two_weeks_back.png -tab 1 "${PRO[@]}" -openReview "$(date -v-14d +%F)"
+    for anchor in reviewAtRisk reviewBreakdown; do
+        capture "25_review_this_at_$anchor.png" -tab 1 "${PRO[@]}" -openReview this -scrollTo "$anchor"
+    done
+    capture 25_review_last_at_reviewBreakdown.png -tab 1 "${PRO[@]}" -openReview last -scrollTo reviewBreakdown
+    capture --card missed 27_today_missed_pro.png -tab 0 "${PRO[@]}"
+    capture --card missed 27_today_missed_free.png -tab 0 "${FREE_OVER_PRO[@]}"
+    capture --card reminder 27_today_reminder_offer.png -tab 0 "${PRO[@]}"
+    capture 28_today_rows_pro.png -tab 0 "${PRO[@]}" -scrollTo todayHabits
+    capture 28_today_rows_free.png -tab 0 "${FREE_OVER_PRO[@]}" -scrollTo todayHabits
     # Every fixture PaywallFixture names (Shared/PaywallModel.swift), in its order.
     for fixture in loading loadFailed trial ineligible unknownEligibility noOffer pro yen \
                    purchasing pending restored nothingFound restoreFailed purchaseFailed unlocked; do

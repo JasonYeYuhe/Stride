@@ -425,6 +425,8 @@ struct TodayView: View {
                 }
             }
             .padding(.horizontal)
+            // The same anchor with groups (the Pro sweep's data, RELEASE-1.5.0.md V5).
+            .sweepAnchor("todayHabits")
         }
     }
 

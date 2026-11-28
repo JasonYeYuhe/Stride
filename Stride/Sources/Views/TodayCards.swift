@@ -24,6 +24,16 @@ enum TodayCards {
                      state: InlinePrompts.DismissalState, live: InlinePrompts.TodayFacts = .none,
                      override: InlineOverride? = nil) -> InlinePrompts.Card? {
         if override == .hidden { return nil }
+        if override == .reminder { return .reminderOffer }
+        if override == .missed {
+            // Yesterday's real count, whatever the day, the permission and "Not now" (V5's sweep).
+            let today = WeeklyReviewMath.today(now: now, calendar: calendar)
+            let open = InlinePrompts.facts(of: cache.stats(for: habits, today: today, calendar: calendar),
+                                           today: today).openYesterday
+            guard open > 0 else { return nil }
+            return .missedYesterday(InlinePrompts.MissedYesterdayCard(
+                today: HabitStats.dayNumber(ofKey: today), openCount: open))
+        }
         let forced = override == .forced
         let inWindow = forced || InlinePrompts.isInWindow(now: now, calendar: calendar)
         // The 1.5.0 cards need the stats only when one of them could show at all.
@@ -62,12 +72,16 @@ enum TodayCards {
                                         environment: ProcessInfo.processInfo.environment)
     }
 
-    /// `-inlineCard none|week` (D14), as Today reads it.
+    /// `-inlineCard none|week|missed|reminder` (D14; RELEASE-1.5.0.md V5), as Today reads it.
     enum InlineOverride: Equatable {
         /// `none`: no inline card, whatever the day.
         case hidden
         /// `week`: the week card, whatever the day and whatever was dismissed.
         case forced
+        /// `missed`: the missed-yesterday card with yesterday's real count (none when it is 0).
+        case missed
+        /// `reminder`: the reminder offer, whatever the permission and the reminders say.
+        case reminder
     }
 
     /// This process's `-inlineCard` (DEBUG only; nil in Release).
@@ -76,6 +90,8 @@ enum TodayCards {
         switch StrideDebugLaunchFlags.current.inlineCard {
         case .off?: return .hidden
         case .week?: return .forced
+        case .missed?: return .missed
+        case .reminder?: return .reminder
         case nil: return nil
         }
         #else

@@ -840,7 +840,8 @@ enum LaunchWindowSize {
 ///   states, W3 draws them). Parsed and inert until then.
 /// - `-paywallScrollTo cta|terms|plans`: scrolls the paywall on launch, as `-statsScrollTo` does
 ///   (W3's anchors). Parsed and inert until then.
-/// - `-inlineCard none|week`: fixes Today's inline card (W7). Parsed and inert until then.
+/// - `-inlineCard none|week|missed|reminder`: fixes Today's inline card (W7; `missed` and
+///   `reminder` since RELEASE-1.5.0.md V5, the D5 cards).
 ///
 /// The guards: StrideTests' DebugLaunchFlagScanTests checks that each flag's literal appears only
 /// inside `#if DEBUG`, and parsing prints the 24-byte sentinel `[StrideDebugLaunchFlags]`, which
@@ -858,6 +859,10 @@ struct StrideDebugLaunchFlags: Equatable {
         case off = "none"
         /// `week`: the "Your week" card, whatever the day.
         case week
+        /// `missed`: the missed-yesterday card, with yesterday's real count (1.5.0 D5).
+        case missed
+        /// `reminder`: the reminder offer, whatever the permission says (1.5.0 D5).
+        case reminder
     }
 
     var demoPro = false

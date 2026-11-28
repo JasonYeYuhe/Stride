@@ -162,6 +162,9 @@ struct WeeklyReviewView: View {
                     emptyState
                 } else {
                     review(summary())
+                        // `-scrollTo reviewAtRisk|reviewBreakdown`: the rows below the fold, for
+                        // scripts/a11y_sweep.sh (DEBUG only; RELEASE-1.5.0.md V5, gate 5).
+                        .sweepScrollable()
                 }
             }
             .background(Color.appBackground)
@@ -353,6 +356,7 @@ struct WeeklyReviewView: View {
             .padding(.top)
 
             atRisk(summary)
+                .sweepAnchor("reviewAtRisk")
 
             // Per-habit breakdown, by group (D6)
             VStack(alignment: .leading, spacing: 12) {
@@ -377,6 +381,7 @@ struct WeeklyReviewView: View {
                     }
                 }
             }
+            .sweepAnchor("reviewBreakdown")
 
             highlights(review)
 
