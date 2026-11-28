@@ -225,6 +225,23 @@ final class StatsRenderTests: XCTestCase {
         }
     }
 
+    /// RELEASE-1.5.0.md D1 on Statistics (found in V5's captures): the Today tile is
+    /// `DailyProgress`'s done of due, Today's card's numbers, so a habit resting today is in neither
+    /// count. Until 1.5.0 it was done of every habit: "1/2" here beside Today's "1/1".
+    func testTheTodayTileCountsOnlyWhatIsDueToday() async throws {
+        try habit("Run", values: days(-3...0))
+        let piano = try habit("Piano", values: days(-3...(-1)))
+        let weekday = HabitCalendar.utc.component(.weekday, from: todayKey)
+        piano.schedule = .specificDays
+        piano.activeDaysMask = 0b111_1111 & ~(1 << (weekday - 1))
+        try context.save()
+        let window = try host(StatsView(shell: ShellState(launchArguments: [])))
+        let spoken = appLocalized("\(1) of \(1) habits completed")
+        try await waitUntil("the Today tile says 1 of 1") {
+            !self.elements(in: window, where: { ($0.accessibilityValue ?? "") == spoken }).isEmpty
+        }
+    }
+
     /// The heatmap is ONE element (D5) with an "Edit history" action, and VoiceOver's double-tap
     /// does the same: each opens History on today, through the shell. So does the detail card's
     /// visible Edit history button (D6), which carries the sim kit's identifier. No cell is an

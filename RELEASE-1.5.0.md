@@ -554,3 +554,11 @@ was checked against the code by Claude before it was folded in.
   - **Blocked:** the disk fell to 23 GB (14 GB put in the Trash at 15:52, not by this session), so the
     iPad Pro 13" was not booted; the iPhone 17 Pro (gate 3) is held by a Soundpost run; the Mac sweep
     takes the screen for every launch and waits for the owner to be away.
+- 2026-11-28, **V5, iPad and a finding.** iPad Pro 13" Pro sweep: default 38, AX5 69, all past the
+  blank check (`plan-1.5.0/v5/ipad-*`). **Finding (fixed):** Statistics' Today tile said "2/6" beside
+  Today's "2/5" — done of every habit, so a met 3×/week habit (or one resting today) was in it. It is
+  now `DailyProgress`'s done of due ("–", spoken "Rest day", when nothing is due), pinned by
+  StatsRenderTests.testTheTodayTileCountsOnlyWhatIsDueToday. Hosted Stats/Today/Review/Paywall
+  tests 56 / 0 on the iPhone 17. CI note: one of f59059a's two runs failed
+  StatsCacheTests.testAMultiChunkSyncOfFiftyHabitsTimesThreeYearsRebuildsBoundedPerPull at 1.69× a
+  0.3 ms first measurement (bound 1.5×); the other run passed: timing noise, unrelated to V5.
