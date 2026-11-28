@@ -245,6 +245,16 @@ struct StrideApp: App {
                 NotificationService.shared.refreshAfterDataChange(modelContainer: modelContainer)
                 NotificationService.shared.pruneDeliveredBeforeToday()
             }
+            // The zone or the clock changed (travel, a manual change, a DST night): "today", its
+            // quiet days and whether a reminder time is still ahead are read again, so the full
+            // reminder plan runs, as on the day change (RELEASE-1.5.0.md D4, Gemini A5).
+            .onReceive(
+                NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)
+                    .merge(with: NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification))
+                    .receive(on: DispatchQueue.main)
+            ) { _ in
+                NotificationService.shared.refreshAfterDataChange(modelContainer: modelContainer)
+            }
             #endif
             // One-tap sign-in: the magic link in the email is a universal link
             // (`https://stride-api.colorarchive.me/login?token=…`, the associated-domains
@@ -438,10 +448,11 @@ struct StrideApp: App {
         if let habitID = launchStatsHabitID(in: context) { shell.statsHabitID = habitID }
     }
 
-    /// `-openReview this|last` (RELEASE-1.4.2.md W8): the Weekly Review on this week or last, as a
-    /// Pro press would issue it, and for anyone else the paywall that resumes it (D8's
-    /// `.weeklyReview` trigger), so the sweep and the Mac captures can draw both (`simctl` has no
-    /// touch input). DEBUG-only like `-openHistory`.
+    /// `-openReview this|last|<yyyy-mm-dd>` (RELEASE-1.4.2.md W8; the date since 1.5.0, D6): the
+    /// Weekly Review on this week, last week, or the week containing that day (a later day opens
+    /// this week, as any request does), as a Pro press would issue it, and for anyone else the
+    /// paywall that resumes it (D8's `.weeklyReview` trigger), so the sweep and the Mac captures
+    /// can draw both (`simctl` has no touch input). DEBUG-only like `-openHistory`.
     @MainActor
     static func launchReviewRequest(arguments: [String] = CommandLine.arguments, now: Date = Date(),
                                     calendar: Calendar = .current, isPro: Bool? = nil) -> ShellRequest? {
@@ -452,10 +463,25 @@ struct StrideApp: App {
         switch arguments[flag + 1] {
         case "this": week = thisWeek
         case "last": week = thisWeek.previous
-        default: return nil
+        default:
+            guard let day = reviewDayKey(arguments[flag + 1]) else { return nil }
+            week = min(WeeklyReviewMath.weekRange(containing: day, in: calendar), thisWeek)
         }
         let review = MenuCommandRules.ProDestination.review(week: week.monday)
         return ShellRequest(isPro ? review : .paywall(trigger: .weeklyReview, resume: review))
+    }
+
+    /// `yyyy-mm-dd` as that day's day-key (its UTC midnight, `HabitCalendar.utc`), so the week is
+    /// the same in every zone; nil for anything else, or a day that does not exist (2026-02-30).
+    static func reviewDayKey(_ text: String) -> Date? {
+        let parts = text.split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[0].count == 4, parts[1].count == 2, parts[2].count == 2,
+              let year = Int(parts[0]), let month = Int(parts[1]), let day = Int(parts[2]),
+              let key = HabitCalendar.utc.date(from: DateComponents(year: year, month: month, day: day))
+        else { return nil }
+        let back = HabitCalendar.utc.dateComponents([.year, .month, .day], from: key)
+        guard back.year == year, back.month == month, back.day == day else { return nil }
+        return key
     }
 
     /// `-statsHabit <habit name | index>` (W8): the habit Statistics shows, matched as
@@ -531,7 +557,8 @@ struct StrideApp: App {
         if NotificationService.shared.isReminderEnabled {
             let status = await NotificationService.shared.checkPermission()
             if status == .authorized {
-                NotificationService.shared.scheduleReminders()
+                // Over the store: on a perfect day the evening's overlay (RELEASE-1.5.0.md D4).
+                NotificationService.shared.scheduleReminders(modelContainer: modelContainer)
             }
         }
 
@@ -696,6 +723,16 @@ extension StrideApp {
                         NotificationService.shared.pruneDeliveredBeforeToday()
                     }
                 },
+            // The zone or the clock changed: the full reminder plan, as on the day change
+            // (RELEASE-1.5.0.md D4, Gemini A5).
+            center.publisher(for: .NSSystemTimeZoneDidChange)
+                .merge(with: center.publisher(for: .NSSystemClockDidChange))
+                .receive(on: DispatchQueue.main)
+                .sink { _ in
+                    MainActor.assumeIsolated {
+                        NotificationService.shared.refreshAfterDataChange(modelContainer: modelContainer)
+                    }
+                },
             // A Mac app can stay open for days; re-read entitlements when it comes forward so a
             // lapsed or renewed subscription is reflected without a relaunch — and sync, as iOS
             // does on willEnterForeground. Without it nothing on the Mac met a revoked session's
@@ -803,7 +840,8 @@ enum LaunchWindowSize {
 ///   states, W3 draws them). Parsed and inert until then.
 /// - `-paywallScrollTo cta|terms|plans`: scrolls the paywall on launch, as `-statsScrollTo` does
 ///   (W3's anchors). Parsed and inert until then.
-/// - `-inlineCard none|week`: fixes Today's inline card (W7). Parsed and inert until then.
+/// - `-inlineCard none|week|missed|reminder`: fixes Today's inline card (W7; `missed` and
+///   `reminder` since RELEASE-1.5.0.md V5, the D5 cards).
 ///
 /// The guards: StrideTests' DebugLaunchFlagScanTests checks that each flag's literal appears only
 /// inside `#if DEBUG`, and parsing prints the 24-byte sentinel `[StrideDebugLaunchFlags]`, which
@@ -821,6 +859,10 @@ struct StrideDebugLaunchFlags: Equatable {
         case off = "none"
         /// `week`: the "Your week" card, whatever the day.
         case week
+        /// `missed`: the missed-yesterday card, with yesterday's real count (1.5.0 D5).
+        case missed
+        /// `reminder`: the reminder offer, whatever the permission says (1.5.0 D5).
+        case reminder
     }
 
     var demoPro = false

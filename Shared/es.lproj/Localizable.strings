@@ -523,7 +523,7 @@
    paywall's subtitle for Weekly Review. "Your top 5 streaks", never "your best streaks": the free
    card keeps its Best Streak tile. */
 "Insights, the 8-week trend, the strength chart and your top 5 streaks" = "Análisis, la tendencia de 8 semanas, el gráfico de fuerza y tus 5 rachas más largas";
-"A look back at how your week went" = "Un repaso de cómo te fue la semana";
+"Any week at a glance: what improved and what is at risk" = "Cualquier semana de un vistazo: lo que ha mejorado y lo que está en riesgo";
 
 /* Subscription status in Settings (D12), on iOS and in the Mac Settings window. "Plan" is the row
    whose value is Monthly, Yearly or Lifetime; each %@ is a date. "Manage Subscription" opens
@@ -587,7 +587,7 @@
    the Weekly Review button and Today's week card; New Group; Settings and onboarding; the
    "Pro ended" row. "Pro adds three things" are the three feature rows under it. */
 "See what's changing, not just where you are" = "Mira qué está cambiando, no solo dónde estás";
-"See how your week went" = "Mira cómo te ha ido la semana";
+"Look back at any week" = "Repasa cualquier semana";
 "Organize your habits into groups" = "Organiza tus hábitos en grupos";
 "Almost everything is free. Pro adds three things." = "Casi todo es gratis. Pro añade tres cosas.";
 "Welcome back" = "Te damos la bienvenida de nuevo";
@@ -669,3 +669,24 @@
 "Hide until next week" = "Ocultar hasta la próxima semana";
 "Don't show again" = "No volver a mostrar";
 "What's in Stride Pro" = "Qué incluye Stride Pro";
+
+/* 1.5.0 Weekly Review step 2 (RELEASE-1.5.0.md D6) */
+"Previous week" = "Semana anterior";
+"Next week" = "Semana siguiente";
+"At risk this week" = "En riesgo esta semana";
+"Show on Today" = "Mostrar en Hoy";
+"%@, %lld percent" = "%1$@, %2$lld por ciento";
+"%lld of %lld done" = "%1$lld de %2$lld días hechos";
+"Strength +%lld" = "Fuerza +%lld";
+"Strength −%lld" = "Fuerza −%lld";
+"Strength ±0" = "Fuerza ±0";
+"Strength unchanged" = "Fuerza sin cambios";
+
+/* 1.5.0 Today: the daily loop and at-risk words (RELEASE-1.5.0.md D5, D7) */
+"%lld/%lld this week · %lld more" = "%1$lld/%2$lld esta semana · %3$lld más";
+"%lld more · today" = "%lld más · vence hoy";
+"Due today" = "Toca hoy";
+"Show yesterday" = "Ver ayer";
+"Not now" = "Ahora no";
+"Get a reminder each evening" = "Recibe un recordatorio cada tarde";
+"Turn on" = "Activar";

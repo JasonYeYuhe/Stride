@@ -482,6 +482,48 @@ WHATS_NEW_BY_VERSION = {
              "• Accesibilidad: VoiceOver ya no lee los emojis de la lista de hábitos de Ajustes ni de la vista previa de Nuevo hábito, las cifras de cambio usan colores de mayor contraste y, en el Mac, más campos tienen etiquetas claras.\n"
              "• En el Mac, el icono del Dock muestra ahora cuántos hábitos te quedan hoy mientras Stride está abierto (si las notificaciones de Stride pueden mostrarlo), e Historial y Nuevo hábito caben en ventanas más pequeñas.",
   },
+  # RELEASE-1.5.0.md V6, from the progress log: free first, Pro last. Facts: D1/D2 (Today's card,
+  # the badge, the Dock and both widget entries read DailyProgress: rest days and a times-per-week
+  # goal already met are not counted; nothing due reads "Rest day"), D4/D5 and 5e4eac4 (a done
+  # habit's reminders are quiet for that day, from Today, the widget and Mark Done; the Daily
+  # Reminder's overlay on a perfect day), D5 (the missed-yesterday card and its "Show yesterday"),
+  # D7 (the times-per-week words "N more" and the at-risk words), D6 (any week, the strip, the
+  # strength chip, group sections, perfect days). No trial (D5 of 1.4.2: not every user is
+  # eligible). Each locale uses its catalog's words (Today, Rest day, Show yesterday, Daily
+  # Reminder, Weekly Review, Strength); no verb is touch-only, since ensure_localizations sends
+  # this to the Mac record too.
+  "1.5.0": {
+    "en-US": "• Today’s count leaves out rest days and habits whose weekly goal is already met, and a day with nothing due reads “Rest day”. The badge, the Dock and the widget count the same way.\n"
+             "• Reminders stay quiet once a habit is done, even when you check it off from the widget, and the Daily Reminder skips a perfect day.\n"
+             "• Missed a habit yesterday? A card on Today says so, and Show yesterday takes you straight there.\n"
+             "• Times-per-week habits say how many more check-ins they need, and when the week is at risk.\n"
+             "• Weekly Review (Stride Pro) now looks back at any week, with a day-by-day strip, Strength changes, group sections and your perfect days.",
+    "zh-Hans": "• 「今天」的计数不再包括休息日的习惯和本周目标已经达成的习惯；没有要做的习惯时，会显示「休息日」。标记、程序坞和小组件也按同样的方式计数。\n"
+               "• 习惯完成后，它的提醒就不会再响，在小组件上打卡也一样；遇到完美的一天，「每日提醒」也不会再打扰你。\n"
+               "• 昨天有习惯没打卡时，「今天」上会出现一张卡片，点「查看昨天」就能直接回到昨天。\n"
+               "• 按每周次数打卡的习惯会显示还差几次，以及本周是否可能完不成。\n"
+               "• 每周回顾（Stride Pro）现在可以回顾任意一周：按天显示完成情况，还有习惯强度的变化、按分组排列的板块和完美的一天。",
+    "zh-Hant": "• 「今天」的計數不再包含休息日的習慣和本週目標已經達成的習慣；沒有要做的習慣時，會顯示「休息日」。標記、Dock 和小工具也用同樣的方式計數。\n"
+               "• 習慣完成後，它的提醒就不會再響，在小工具上打卡也一樣；遇到完美的一天，「每日提醒」也不會再打擾你。\n"
+               "• 昨天有習慣沒打卡時，「今天」上會出現一張卡片，點「查看昨天」就能直接回到昨天。\n"
+               "• 按每週次數打卡的習慣會顯示還差幾次，以及本週是否可能完不成。\n"
+               "• 每週回顧（Stride Pro）現在可以回顧任何一週：按天顯示完成情況，還有習慣強度的變化、按分組排列的區塊和完美的一天。",
+    "ja": "• 「今日」の数に、休息日の習慣と、今週の目標をすでに達成した習慣が含まれなくなりました。予定のない日は「休息日」と表示されます。バッジ、Dock、ウィジェットも同じ数え方です。\n"
+          "• 習慣を完了すると、その日はその習慣のリマインダーが届かなくなります。ウィジェットから完了した場合も同じです。「毎日のリマインダー」も、完璧な一日には届きません。\n"
+          "• 昨日チェックしていない習慣があると「今日」にカードが表示され、「昨日を表示」ですぐに昨日を開けます。\n"
+          "• 週あたりの回数で決めた習慣に、あと何回必要か、今週の達成が危ういかどうかが表示されます。\n"
+          "• 週間レビュー（Stride Pro）で、どの週でも振り返れるようになりました。日ごとの記録、定着度の変化、グループごとのまとまり、完璧な一日の数が表示されます。",
+    "ko": "• ‘오늘’의 개수에서 휴식일인 습관과 이번 주 목표를 이미 달성한 습관이 빠집니다. 할 습관이 없는 날은 ‘휴식일’로 표시됩니다. 배지, Dock, 위젯도 같은 방식으로 셉니다.\n"
+          "• 습관을 완료하면 그날은 그 습관의 알림이 오지 않습니다. 위젯에서 완료해도 마찬가지이고, ‘매일 알림’도 완벽한 하루에는 오지 않습니다.\n"
+          "• 어제 체크하지 않은 습관이 있으면 ‘오늘’에 카드가 나타나고, ‘어제 보기’로 바로 어제로 이동할 수 있습니다.\n"
+          "• 주당 횟수로 정한 습관에 몇 번 더 해야 하는지와 이번 주 달성이 위태로운지가 표시됩니다.\n"
+          "• 주간 리뷰(Stride Pro)에서 이제 어느 주든 돌아볼 수 있습니다. 하루하루의 기록, 습관 강도 변화, 그룹별 묶음, 완벽한 하루를 보여 줍니다.",
+    "es-ES": "• El recuento de Hoy ya no incluye los días de descanso ni los hábitos que ya han cumplido su objetivo semanal, y un día en que no toca nada indica «Día de descanso». El número del icono, el Dock y el widget cuentan igual.\n"
+             "• Los recordatorios se silencian en cuanto un hábito está hecho, también si lo marcas desde el widget, y el Recordatorio diario no suena en un día perfecto.\n"
+             "• ¿Ayer quedó algún hábito sin marcar? Una tarjeta en Hoy te lo dice, y «Ver ayer» te lleva directamente a ese día.\n"
+             "• Los hábitos de veces por semana indican cuántas veces faltan y cuándo la semana está en riesgo.\n"
+             "• El Resumen semanal (Stride Pro) ahora repasa cualquier semana, con una tira día a día, los cambios de fuerza, secciones por grupo y tus días perfectos.",
+  },
 }
 
 

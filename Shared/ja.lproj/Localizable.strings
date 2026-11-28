@@ -523,7 +523,7 @@
    paywall's subtitle for Weekly Review. "Your top 5 streaks", never "your best streaks": the free
    card keeps its Best Streak tile. */
 "Insights, the 8-week trend, the strength chart and your top 5 streaks" = "インサイト、8週間の推移、定着度のグラフ、連続記録トップ5";
-"A look back at how your week went" = "1週間の取り組みを振り返る";
+"Any week at a glance: what improved and what is at risk" = "どの週でも、伸びた習慣と達成が危うい習慣がひと目でわかる";
 
 /* Subscription status in Settings (D12), on iOS and in the Mac Settings window. "Plan" is the row
    whose value is Monthly, Yearly or Lifetime; each %@ is a date. "Manage Subscription" opens
@@ -587,7 +587,7 @@
    the Weekly Review button and Today's week card; New Group; Settings and onboarding; the
    "Pro ended" row. "Pro adds three things" are the three feature rows under it. */
 "See what's changing, not just where you are" = "今の位置だけでなく、何が変わっているかがわかる";
-"See how your week went" = "1週間の成果をチェック";
+"Look back at any week" = "どの週でも振り返れる";
 "Organize your habits into groups" = "習慣をグループに整理";
 "Almost everything is free. Pro adds three things." = "ほとんどの機能は無料です。Proでは3つの機能が加わります。";
 "Welcome back" = "おかえりなさい";
@@ -669,3 +669,24 @@
 "Hide until next week" = "来週まで非表示";
 "Don't show again" = "今後表示しない";
 "What's in Stride Pro" = "Stride Pro の内容";
+
+/* 1.5.0 Weekly Review step 2 (RELEASE-1.5.0.md D6) */
+"Previous week" = "前の週";
+"Next week" = "次の週";
+"At risk this week" = "今週、達成が危うい習慣";
+"Show on Today" = "「今日」で表示";
+"%@, %lld percent" = "%1$@、%2$lldパーセント";
+"%lld of %lld done" = "%2$lld日中%1$lld日完了";
+"Strength +%lld" = "定着度 +%lld";
+"Strength −%lld" = "定着度 −%lld";
+"Strength ±0" = "定着度 ±0";
+"Strength unchanged" = "定着度は変化なし";
+
+/* 1.5.0 Today: the daily loop and at-risk words (RELEASE-1.5.0.md D5, D7) */
+"%lld/%lld this week · %lld more" = "今週 %1$lld/%2$lld · あと%3$lld回";
+"%lld more · today" = "あと%lld回 · 今日まで";
+"Due today" = "今日中に";
+"Show yesterday" = "昨日を表示";
+"Not now" = "今はしない";
+"Get a reminder each evening" = "毎晩リマインダーを受け取る";
+"Turn on" = "オンにする";

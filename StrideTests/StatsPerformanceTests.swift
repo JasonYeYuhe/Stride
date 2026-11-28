@@ -243,6 +243,61 @@ final class StatsPerformanceTests: XCTestCase {
         XCTAssertLessThan(allSeconds, 0.20)
     }
 
+    /// A page of the 1.5.0 review (RELEASE-1.5.0.md D6, V4) at the largest account, from the built
+    /// set StatsCache holds — paging reads the same entries, it never rebuilds: the week's
+    /// `review` with group sections, every habit's 7-cell strip and its summary, every strength
+    /// chip, the week's perfect days (`DailyProgress` over every habit, each day), the ‹ › bounds,
+    /// and on this week the at-risk check of every habit. Timed for this week's page, and for
+    /// every one of the 157 weeks ‹ can reach. The notes of the week are 1.5.1's (D6), so none is
+    /// read. First measured (Debug, M-series Mac, 2026-11-27): this week 0.0009 s, all 157 weeks
+    /// 0.100 s (the same run: 1.4.2's one render 0.0012 s, every week 0.035 s).
+    func testAnyWeekPageOfTheReviewOnFiftyHabitsTimesThreeYears() throws {
+        let store = try coldStore(habits: 50, days: 1_095)
+        let stats = buildAll(store)
+        let groups = [UUID(), UUID(), UUID()]
+        let inputs = zip(store.habits, stats).enumerated().map { index, pair in
+            // A third of the habits in each of two groups, the rest ungrouped.
+            WeeklyReviewMath.HabitInput(stats: pair.1, groupID: index % 3 == 2 ? nil : groups[index % 3])
+        }
+        let now = Date()
+        let calendar = Calendar.current
+        let thisWeek = WeeklyReviewMath.weekRange(containing: store.today, in: calendar)
+        let weeks = (0..<157).map { WeeklyReviewMath.WeekRange(containingDay: thisWeek.mondayNumber - 7 * $0) }
+
+        func page(_ week: WeeklyReviewMath.WeekRange) -> Int {
+            let review = WeeklyReviewMath.review(of: inputs, week: week, groupOrder: groups)
+            var sum = review.sections.count
+            for s in stats {
+                let summary = WeeklyReviewMath.stripSummary(of: s, week: week)
+                sum += summary.done + summary.rest + summary.missed
+                sum += WeeklyReviewMath.strengthChangePoints(of: s, week: week) ?? 0
+            }
+            sum += WeeklyReviewMath.perfectDayCount(of: inputs, week: week)
+            let bounds = WeeklyReviewMath.weekBounds(of: inputs, now: now, calendar: calendar)
+            sum += bounds.lowerBound <= week ? 1 : 0
+            if week == thisWeek {
+                for s in stats where WeeklyReviewMath.isAtRisk(s, isArchived: false, now: now, calendar: calendar,
+                                                               eveningTime: .defaultEvening) {
+                    sum += 1
+                }
+            }
+            return sum
+        }
+
+        let (_, pageSeconds) = timed { page(thisWeek) }
+        let (sums, allSeconds) = timed { weeks.map(page) }
+        XCTAssertEqual(sums.count, 157)
+        XCTAssertEqual(WeeklyReviewMath.review(of: inputs, week: weeks[1], groupOrder: groups).sections.count, 3)
+        let first = WeeklyReviewMath.weekBounds(of: inputs, now: now, calendar: calendar).lowerBound.mondayNumber
+        XCTAssertTrue((weeks[156].mondayNumber - 7)...weeks[156].mondayNumber ~= first, "‹ reaches the earliest start's week")
+        XCTAssertEqual(WeeklyReviewMath.stripSummary(of: stats[0], week: weeks[1]),
+                       WeeklyReviewMath.StripSummary(done: 7, rest: 0, missed: 0, days: 7), "a yes/no habit done every day")
+        print(String(format: "PERF weekly review page 50x1095 (from built stats): this week %.4f s, all 157 weeks %.3f s",
+                     pageSeconds, allSeconds))
+        XCTAssertLessThan(pageSeconds, 0.0045)
+        XCTAssertLessThan(allSeconds, 0.50)
+    }
+
     // MARK: - Harness
 
     private struct Store {

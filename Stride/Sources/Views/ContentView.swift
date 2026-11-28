@@ -263,8 +263,9 @@ struct ContentView: View {
         case .newHabit:
             AddHabitView()
         case .weeklyReview(let week):
-            // Issued only for Pro (`ShellState.issue`), opened on the requested week (D8).
-            WeeklyReviewView(week: week)
+            // Issued only for Pro (`ShellState.issue`), opened on the requested week (D8). Its
+            // "At risk this week" tap goes back through this shell (`focusOnToday`, 1.5.0 D6).
+            WeeklyReviewView(week: week, shell: shell)
         case .paywall(let trigger, let resume):
             // Continue dismisses the paywall, then the review it was opened for takes its place;
             // with nothing to resume it just closes. The same when the paywall closes because the

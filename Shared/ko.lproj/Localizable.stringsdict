@@ -709,5 +709,61 @@
 			<string>%lld개</string>
 		</dict>
 	</dict>
+	<key>%lld perfect days</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>완벽한 날 %#@days@</string>
+		<key>days</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld일</string>
+		</dict>
+	</dict>
+	<key>%lld of %lld done, %lld rest days</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%2$lld일 중 %1$lld일 완료, 휴식일 %3$#@rest@</string>
+		<key>rest</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld일</string>
+		</dict>
+	</dict>
+	<key>%lld more · %lld days left</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%1$lld회 남음 · %2$#@days@</string>
+		<key>days</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld일 남음</string>
+		</dict>
+	</dict>
+	<key>%lld habits not checked yesterday</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>어제 체크하지 않은 습관 %#@habits@</string>
+		<key>habits</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>%lld개</string>
+		</dict>
+	</dict>
 </dict>
 </plist>

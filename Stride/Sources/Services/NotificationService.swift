@@ -110,7 +110,6 @@ final class NotificationService {
     private let center: NotificationScheduling
     private let reminderIdentifierPrefix = "stride.daily.reminder"
     private let morningIdentifier = "stride.daily.morning"
-    private let eveningIdentifier = "stride.daily.evening"
 
     // MARK: - UserDefaults Keys (synced via App Group)
 
@@ -237,8 +236,13 @@ final class NotificationService {
     ///   for while the status was undecided;
     /// - the badge (the Dock tile on the Mac). Nothing set it at the grant: it waited for the next
     ///   save, activation or midnight, so on a Mac left in front it could stay blank for hours
-    ///   (RELEASE-1.4.0.md's follow-ups, Mac checklist item 12).
+    ///   (RELEASE-1.4.0.md's follow-ups, Mac checklist item 12);
+    /// - the Daily Reminder, when it is on (v2 review, finding 1). A restore to a new phone brings
+    ///   `reminderEnabled` back with nothing pending and the permission undecided, so the launch
+    ///   skipped it; allowed later at the habit sheet's prompt, nothing added it until the next
+    ///   cold launch. First, so the habits' pass below finds it pending.
     func permissionGranted(schedulingExistingIn container: ModelContainer) {
+        if isReminderEnabled { scheduleReminders(modelContainer: container) }
         scheduleAllHabitReminders(modelContainer: container)
         updateBadge(modelContainer: container)
     }
@@ -266,26 +270,42 @@ final class NotificationService {
 
     // MARK: - Schedule
 
-    func scheduleReminders() {
-        center.removePendingNotificationRequests(withIdentifiers: [eveningIdentifier])
-
-        let content = UNMutableNotificationContent()
-        content.title = appLocalized("Stride Reminder 🏃")
-        content.body = randomEveningMessage()
-        content.sound = .default
-
-        var dateComponents = DateComponents()
-        dateComponents.hour = reminderHour
-        dateComponents.minute = reminderMinute
-
-        let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
-        let request = UNNotificationRequest(identifier: eveningIdentifier, content: content, trigger: trigger)
-
-        center.add(request, withCompletionHandler: nil)
+    /// The Daily Reminder, replaced whole: what the plan wants now is added with new text, then
+    /// every other id it can have (`ReminderPlan.allEveningIdentifiers` — the bare one, and a
+    /// perfect day's overlay, D4) goes. Added before removed (v2 review, finding 2): an add under an
+    /// id already pending replaces it, and a write cut off in between leaves the reminder
+    /// over-firing, never gone. Switching it on, a new time, a language change and the launch. On
+    /// a perfect day whose reminder is still ahead that is the overlay, read from `modelContainer`
+    /// — or, when none is given (Settings' switch and time picker), from the store of the last full
+    /// pass; with neither, the bare request, which the next full pass overlays.
+    func scheduleReminders(modelContainer: ModelContainer? = nil) {
+        let planned: [ReminderPlan.Request]
+        if let container = modelContainer ?? lastPlannedContainer,
+           let plan = makePlan(in: container, now: Date(), calendar: .current) {
+            planned = plan.result.evening
+        } else {
+            planned = [ReminderPlan.eveningBase(ReminderPlan.Evening(hour: reminderHour, minute: reminderMinute))]
+        }
+        let content = eveningContent()
+        for request in planned {
+            center.add(Self.notificationRequest(request, content: content), withCompletionHandler: nil)
+        }
+        let plannedIDs = Set(planned.map(\.identifier))
+        center.removePendingNotificationRequests(
+            withIdentifiers: ReminderPlan.allEveningIdentifiers.filter { !plannedIDs.contains($0) })
 
         if isMorningMotivationEnabled {
             scheduleMorningMotivation()
         }
+    }
+
+    /// The Daily Reminder's banner: one random line, shared by every request of an overlay.
+    private func eveningContent() -> UNMutableNotificationContent {
+        let content = UNMutableNotificationContent()
+        content.title = appLocalized("Stride Reminder 🏃")
+        content.body = randomEveningMessage()
+        content.sound = .default
+        return content
     }
 
     private func scheduleMorningMotivation() {
@@ -306,8 +326,9 @@ final class NotificationService {
         center.add(request, withCompletionHandler: nil)
     }
 
+    /// The Daily Reminder off: every evening id (the overlay's too) and the morning one.
     func removeAllReminders() {
-        center.removePendingNotificationRequests(withIdentifiers: [eveningIdentifier, morningIdentifier])
+        center.removePendingNotificationRequests(withIdentifiers: ReminderPlan.allEveningIdentifiers + [morningIdentifier])
     }
 
     // MARK: - Reminder actions (1.4.0)
@@ -360,28 +381,21 @@ final class NotificationService {
     /// says why).
     func languageDidChange(modelContainer: ModelContainer?) {
         registerCategories()
-        if isReminderEnabled { scheduleReminders() }
+        if isReminderEnabled { scheduleReminders(modelContainer: modelContainer) }
         if let modelContainer { scheduleAllHabitReminders(modelContainer: modelContainer) }
     }
 
     // MARK: - Per-Habit Reminders
 
-    /// Every id a habit's reminder can be scheduled under — the legacy daily one and the seven
-    /// weekday ones (`ReminderPlan`) — which a schedule removes before it adds: a habit moving
-    /// between every day and specific days must leave nothing of the other shape firing. Not the
-    /// snooze: launch, a foreground sync, an edit and a language change all reschedule, and none of
-    /// them is the user saying the snooze is over.
-    private static func reminderIdentifiers(for habitID: UUID) -> [String] {
-        let snooze = ReminderPlan.snoozeIdentifier(for: habitID)
-        return ReminderPlan.allIdentifiers(for: habitID).filter { $0 != snooze }
-    }
-
     /// One habit's reminder: the habit sheet's save, a restore from the archive.
     ///
-    /// The request budget (`ReminderPlan.requestBudget`) is a property of ALL the reminders, so the
-    /// habit is planned together with the others in its store. Should it take the total over,
-    /// every specificDays habit falls back to its one daily trigger — the others as well, or their
-    /// weekday triggers would still crowd iOS's 64 and some reminder would silently never fire.
+    /// The request budget (`ReminderPlan.requestBudget`) and the overlays are properties of ALL the
+    /// reminders (RELEASE-1.5.0.md D4, Gemini A2), so the habit is planned together with the rest
+    /// of its store — the full plan, with this habit as the caller holds it, saved or not — and
+    /// every habit whose requests changed is replaced. Should this habit take the total over the
+    /// budget, every specificDays habit falls back to its one daily trigger, the others as well,
+    /// or their weekday triggers would still crowd iOS's 64 and some reminder would silently never
+    /// fire. A habit in no store is planned alone, in its base shape.
     func scheduleHabitReminder(for habit: Habit) {
         guard let settings = ReminderPlan.Settings(habit) else {
             // Off or archived: nothing of it may fire, a snooze included — the launch prune keeps a
@@ -390,27 +404,12 @@ final class NotificationService {
             return
         }
         if let container = habit.modelContext?.container,
-           let others = reminderHabits(in: ModelContext(container))?.filter({ $0.id != habit.id }) {
-            let plan = ReminderPlan.plan(others.compactMap { ReminderPlan.Settings($0) } + [settings])
-            if plan.fellBackToDaily {
-                scheduleAllHabitReminders(modelContainer: container)
-                // This habit as the caller holds it, saved or not.
-                replaceReminder(of: habit, with: ReminderPlan.requests(for: settings, dailyOnly: true))
-                return
-            }
+           let plan = makePlan(in: container, holding: habit, now: Date(), calendar: .current) {
+            apply(plan)
+            return
         }
-        replaceReminder(of: habit, with: ReminderPlan.requests(for: settings))
-    }
-
-    /// Removes the pending requests of every reminder shape, then adds `requests`.
-    private func replaceReminder(of habit: Habit, with requests: [ReminderPlan.Request]) {
-        center.removePendingNotificationRequests(withIdentifiers: Self.reminderIdentifiers(for: habit.id))
-        for planned in requests {
-            let trigger = UNCalendarNotificationTrigger(dateMatching: planned.dateComponents, repeats: true)
-            let request = UNNotificationRequest(identifier: planned.identifier, content: reminderContent(for: habit),
-                                                trigger: trigger)
-            center.add(request, withCompletionHandler: nil)
-        }
+        let groups = [group(for: habit, requests: ReminderPlan.plan([settings]).requests)]
+        apply(makingGroups: { _ in groups })
     }
 
     /// A habit's reminder banner (RELEASE-1.4.0.md D4):
@@ -429,9 +428,10 @@ final class NotificationService {
         return content
     }
 
-    /// Reminder off, archive, delete: every reminder shape and the snooze, pending AND delivered. A
-    /// banner already in Notification Center is not a pending request; left there, it kept offering
-    /// Mark Done for a habit whose reminder was just switched off, or that is gone.
+    /// Reminder off, archive, delete: every reminder shape, the overlay's one-shots and the
+    /// snooze, pending AND delivered. A banner already in Notification Center is not a pending
+    /// request; left there, it kept offering Mark Done for a habit whose reminder was just
+    /// switched off, or that is gone.
     func removeHabitReminder(for habitId: UUID) {
         let identifiers = ReminderPlan.allIdentifiers(for: habitId)
         center.removePendingNotificationRequests(withIdentifiers: identifiers)
@@ -449,31 +449,33 @@ final class NotificationService {
     /// this service; this prune is what cleans those up. Orphans also eat into iOS's 64-request
     /// limit, silently displacing reminders that should fire.
     ///
-    /// 1.4.0: what to keep is the planner's (`ReminderPlan.Result.keep`) — weekday ids, and the
-    /// snooze of every habit whose reminder is on. 1.3.x kept exactly `prefix + uuid`, which would
-    /// have removed every weekday reminder and every snooze at the next launch.
+    /// 1.4.0: what to keep is the planner's (`ReminderPlan.Result.keep`). 1.5.0 (Gemini A1): every
+    /// id a reminder-on habit can have, not only today's shape, because the keep set is computed
+    /// before the center answers and the widget may write a habit's overlay in between. A live
+    /// habit's stale shapes are its own replace step's (`apply`).
     func rescheduleAllHabitReminders(modelContainer: ModelContainer) {
         // Don't prune on a failed fetch: an empty "keep" set would delete every reminder.
         guard let plan = scheduleAllHabitReminders(modelContainer: modelContainer) else { return }
         pruneOrphans(keeping: plan.keep)
     }
 
-    /// `rescheduleAllHabitReminders`, returning once the prune has run: for a background run
-    /// (BackgroundSync — the refresh, and on iOS a reminder action's sync), whose process can be
-    /// suspended as soon as its task is completed, taking a prune still waiting on the center's
-    /// answer with it.
+    /// `rescheduleAllHabitReminders`, returning once the replace and the prune have run: for a
+    /// background run (BackgroundSync — the refresh, and on iOS a reminder action's sync), whose
+    /// process can be suspended as soon as its task is completed, taking a prune still waiting on
+    /// the center's answer with it.
     ///
     /// `mayPrune` is asked once the center has answered, right before anything is removed, and in
     /// the same main-actor turn as the removal: no habit sheet's save (main actor) can come between
     /// the answer and the remove. BackgroundSync passes "the app is still in the background". The
-    /// keep set was computed before the center was asked, so a sheet that saved while it answered
-    /// added a reminder the keep set lacks, and the prune would remove it — the same race
-    /// `scheduleAllHabitReminders` documents for the launch pass (verification, second fix pass:
-    /// the state was read once, before the wait). False: nothing is removed; the next launch's pass
-    /// prunes.
+    /// keep set was computed before the center was asked; since 1.5.0 it names every id a
+    /// reminder-on habit can have, so only a habit whose reminder was switched on in that window
+    /// could lose its new request — the same race `scheduleAllHabitReminders` documents for the
+    /// launch pass (verification, second fix pass: the state was read once, before the wait).
+    /// False: nothing is removed; the next launch's pass prunes.
     func rescheduleAllHabitRemindersAndWait(modelContainer: ModelContainer,
                                             mayPrune: @MainActor () -> Bool = { true }) async {
-        guard let plan = scheduleAllHabitReminders(modelContainer: modelContainer) else { return }
+        guard let plan = makePlan(in: modelContainer, now: Date(), calendar: .current) else { return }
+        await applyAndWait(plan)
         let center = self.center
         // Identifiers only: the answer crosses from the center's queue back to the main actor.
         let pending: [String] = await withCheckedContinuation { answered in
@@ -485,7 +487,7 @@ final class NotificationService {
             Self.logger.notice("reminder prune skipped: the app came forward while the center answered")
             return
         }
-        let orphans = ReminderPlan.prune(pending, keep: plan.keep)
+        let orphans = ReminderPlan.prune(pending, keep: plan.result.keep)
         if !orphans.isEmpty {
             center.removePendingNotificationRequests(withIdentifiers: orphans)
         }
@@ -503,36 +505,324 @@ final class NotificationService {
         }
     }
 
-    /// Adds (replaces) the reminder of every reminder-on, unarchived habit in the store and
-    /// returns the plan; nil when the fetch failed. No prune — the launch pass prunes. That
-    /// makes it safe while the habit sheet is still saving: a prune computed now would find the
-    /// sheet's own reminder, added a moment later, missing from its "keep" set and remove it
+    /// The full plan (RELEASE-1.5.0.md D4) over the store: every reminder-on, unarchived habit and
+    /// the Daily Reminder, each habit's quiet days and today's perfect day read through
+    /// `DailyProgress`; then every habit whose pending requests differ from the plan is replaced
+    /// (`apply`). Returns the plan; nil when the fetch failed. No prune — the launch pass prunes.
+    /// That makes it safe while the habit sheet is still saving: a prune computed now would find
+    /// the sheet's own reminder, added a moment later, missing from its "keep" set and remove it
     /// (the real center answers `getPendingNotificationRequests` asynchronously).
     ///
-    /// 1.4.0: also after a successful foreground sync (StrideApp) and a language change. Each
-    /// habit's requests are replaced whole, so a kind, a day mask or a time pulled from another
-    /// device reaches the triggers and the category before the next cold launch.
+    /// 1.4.0: also after a successful foreground sync (StrideApp) and a language change. A kind,
+    /// a day mask, a time or a name pulled from another device reaches the triggers and the
+    /// content before the next cold launch: the comparison reads them all.
     @discardableResult
-    func scheduleAllHabitReminders(modelContainer: ModelContainer) -> ReminderPlan.Result? {
-        guard let habits = reminderHabits(in: ModelContext(modelContainer)) else { return nil }
-        let plan = ReminderPlan.plan(habits.compactMap { ReminderPlan.Settings($0) })
-        if plan.fellBackToDaily {
+    func scheduleAllHabitReminders(modelContainer: ModelContainer, now: Date = Date(),
+                                   calendar: Calendar = .current) -> ReminderPlan.Result? {
+        guard let plan = makePlan(in: modelContainer, now: now, calendar: calendar) else { return nil }
+        apply(plan)
+        return plan.result
+    }
+
+    /// `scheduleAllHabitReminders`, returning once the center has every add: a reminder action's
+    /// check-in (`CheckInEffects.live`), whose process can be suspended as soon as it returns.
+    func scheduleAllHabitRemindersAndWait(modelContainer: ModelContainer, now: Date = Date(),
+                                          calendar: Calendar = .current) async {
+        guard let plan = makePlan(in: modelContainer, now: now, calendar: calendar) else { return }
+        await applyAndWait(plan)
+    }
+
+    // MARK: - The full plan (1.5.0, D4)
+
+    /// What one pass read from the store: today's state of every unarchived habit (the badge, the
+    /// perfect day, what is done) and the plan made from it.
+    private struct StorePlan {
+        /// Every unarchived habit; `holding` replaced by the caller's.
+        let habits: [Habit]
+        /// By habit id, built through today.
+        let stats: [UUID: HabitStats]
+        let today: ReminderPlan.Today
+        /// Today over every unarchived habit (`DailyProgress`).
+        let progress: DailyProgress
+        /// The reminder-on habits, in the order they were planned.
+        let reminderHabits: [Habit]
+        /// The planner's inputs, so the replace can plan again once it knows the pending snoozes
+        /// (`PassInput`, finding 5).
+        let settings: [ReminderPlan.Settings]
+        let evening: ReminderPlan.Evening?
+        /// Planned with no snooze beyond the budget's room.
+        let result: ReminderPlan.Result
+        /// The archived habits' ids (the caller's held habit aside): the pass removes whatever of
+        /// theirs is still pending (finding 5) — an archive synced from another device reaches no
+        /// removal here, and their requests eat into iOS's 64 until the next launch's prune.
+        let archivedIDs: [UUID]
+
+        /// Habits done today (`DailyProgress.State.done`).
+        var doneToday: [Habit] {
+            habits.filter { stats[$0.id].map { DailyProgress.state(of: $0, on: today.dayKey) == .done } ?? false }
+        }
+    }
+
+    /// The store the last full pass read: `scheduleReminders()` without a container plans the
+    /// Daily Reminder's perfect-day overlay from it. The app has one container for its life.
+    private var lastPlannedContainer: ModelContainer?
+
+    /// Reads the store and plans. In a fresh context: what is saved, never what a view holds
+    /// unsaved — except `holding`, the habit sheet's habit as it holds it (planned last, as the
+    /// one being added). Habits are planned in their list order (`sortOrder`, then id), so a tie in
+    /// the budget's overlay order does not depend on fetch order.
+    private func makePlan(in container: ModelContainer, holding held: Habit? = nil,
+                          now: Date, calendar: Calendar) -> StorePlan? {
+        let context = ModelContext(container)
+        guard var habits = unarchivedHabits(in: context) else { return nil }
+        lastPlannedContainer = container
+        let today = ReminderPlan.Today(now: now, calendar: calendar)
+        let live = HabitStats.liveRecordIDs(of: habits, in: context)
+        var stats: [UUID: HabitStats] = [:]
+        for habit in habits {
+            stats[habit.id] = HabitStats(habit: habit, liveRecordIDs: live, calendar: calendar, today: today.dayKey)
+        }
+        habits.sort { ($0.sortOrder, $0.id.uuidString) < ($1.sortOrder, $1.id.uuidString) }
+        if let held {
+            habits.removeAll { $0.id == held.id }
+            stats[held.id] = nil
+            if !held.isArchived {
+                habits.append(held)
+                stats[held.id] = HabitStats(habit: held, live: HabitStats.liveRecords(of: held),
+                                            calendar: calendar, today: today.dayKey)
+            }
+        }
+        let progress = DailyProgress(of: habits.compactMap { stats[$0.id] }, on: today.dayKey)
+        let reminderHabits = habits.filter { ReminderPlan.Settings($0) != nil }
+        let settings = reminderHabits.compactMap { habit in
+            stats[habit.id].flatMap { ReminderPlan.settings(for: habit, stats: $0, today: today.dayKey) }
+        }
+        // The same read the widget makes of the App Group (`isReminderEnabled`, `reminderHour`,
+        // `reminderMinute`), so both processes plan the same evening.
+        let evening = ReminderPlan.Evening.stored(in: defaults, isPerfectToday: progress.isPerfect)
+        let result = ReminderPlan.plan(settings, evening: evening, today: today)
+        if result.fellBackToDaily {
             // Code-only, and no habit ids in a production log line (D4).
             Self.logger.notice("reminders over the request budget: specific-days habits fall back to one daily trigger")
         }
-        let requests = Dictionary(grouping: plan.requests, by: \.habitID)
-        for habit in habits {
-            replaceReminder(of: habit, with: requests[habit.id] ?? [])
-        }
-        return plan
+        let archived = (try? context.fetch(FetchDescriptor<Habit>(predicate: #Predicate<Habit> { $0.isArchived }))) ?? []
+        let archivedIDs = archived.map(\.id).filter { id in !habits.contains { $0.id == id } }
+        return StorePlan(habits: habits, stats: stats, today: today, progress: progress,
+                         reminderHabits: reminderHabits, settings: settings, evening: evening, result: result,
+                         archivedIDs: archivedIDs)
     }
 
-    /// Every reminder-on, unarchived habit; nil when the fetch failed.
-    private func reminderHabits(in context: ModelContext) -> [Habit]? {
-        let descriptor = FetchDescriptor<Habit>(
-            predicate: #Predicate<Habit> { $0.reminderEnabled && !$0.isArchived }
-        )
-        return try? context.fetch(descriptor)
+    /// One unit of the replace: a habit's reminder (every id but its snooze), the Daily Reminder,
+    /// or a removal-only group (no requests: an archived habit's ids, the evening's while it is
+    /// off). Requests are built on the main actor, compared and written on the center's queue.
+    private struct ReminderGroup: @unchecked Sendable {
+        /// Every id the group can have: what is not planned is removed after the planned ones are
+        /// added.
+        let identifiers: [String]
+        let requests: [UNNotificationRequest]
+        /// The Daily Reminder: compared without its body (a random line each time it is built).
+        /// Written only when the switch, read again right before the write, still says what the
+        /// plan read (finding 4); added back when nothing of it is pending only while notifications
+        /// are authorized (finding 1, `restoreEvening`).
+        let isEvening: Bool
+    }
+
+    private func group(for habit: Habit, requests: [ReminderPlan.Request]) -> ReminderGroup {
+        let content = reminderContent(for: habit)
+        return ReminderGroup(identifiers: ReminderPlan.reminderIdentifiers(for: habit.id),
+                             requests: requests.map { Self.notificationRequest($0, content: content) },
+                             isEvening: false)
+    }
+
+    /// What one replace builds its groups from, in the center's callback: the plan and its inputs,
+    /// so that it can be planned again once the pending snoozes are known, and every banner's
+    /// content, built on the main actor (the habits' and the language's).
+    ///
+    /// Finding 5: `ReminderPlan.requestBudget` leaves room for four snoozes, but `scheduleSnooze`
+    /// has no cap. With more pending, the overlays' budget shrinks by the extra
+    /// (`ReminderPlan.plan`'s `pendingSnoozes`); the base plan is unchanged.
+    private struct PassInput: @unchecked Sendable {
+        let settings: [ReminderPlan.Settings]
+        let evening: ReminderPlan.Evening?
+        let today: ReminderPlan.Today
+        let result: ReminderPlan.Result
+        let content: [UUID: UNNotificationContent]
+        let eveningContent: UNNotificationContent
+        let archivedIDs: [UUID]
+
+        func groups(pendingSnoozes: Int) -> [ReminderGroup] {
+            let result = pendingSnoozes > ReminderPlan.snoozeRoom
+                ? ReminderPlan.plan(settings, evening: evening, today: today, pendingSnoozes: pendingSnoozes)
+                : self.result
+            var groups: [ReminderGroup] = settings.compactMap { settings in
+                guard let content = content[settings.habitID] else { return nil }
+                return ReminderGroup(identifiers: ReminderPlan.reminderIdentifiers(for: settings.habitID),
+                                     requests: result.requests(for: settings.habitID).map {
+                                         NotificationService.notificationRequest($0, content: content)
+                                     },
+                                     isEvening: false)
+            }
+            // The Daily Reminder's group, always: on, its plan; off, a removal-only group, so an
+            // evening id a widget write added after the switch went off is taken out (finding 4;
+            // the prune never touches evening ids).
+            groups.append(ReminderGroup(identifiers: ReminderPlan.allEveningIdentifiers,
+                                        requests: result.evening.map {
+                                            NotificationService.notificationRequest($0, content: eveningContent)
+                                        },
+                                        isEvening: true))
+            groups += archivedIDs.map {
+                ReminderGroup(identifiers: ReminderPlan.allIdentifiers(for: $0), requests: [], isEvening: false)
+            }
+            return groups
+        }
+    }
+
+    private func passInput(of plan: StorePlan) -> PassInput {
+        PassInput(settings: plan.settings, evening: plan.evening, today: plan.today, result: plan.result,
+                  content: Dictionary(plan.reminderHabits.map { ($0.id, reminderContent(for: $0) as UNNotificationContent) },
+                                      uniquingKeysWith: { first, _ in first }),
+                  eveningContent: eveningContent(), archivedIDs: plan.archivedIDs)
+    }
+
+    /// A planned request as the system takes it: repeating, or the overlay's one-shot.
+    /// Nonisolated: the replace builds them in the center's callback.
+    nonisolated static func notificationRequest(_ planned: ReminderPlan.Request,
+                                                content: UNNotificationContent) -> UNNotificationRequest {
+        let trigger = UNCalendarNotificationTrigger(dateMatching: planned.dateComponents, repeats: planned.repeats)
+        return UNNotificationRequest(identifier: planned.identifier, content: content, trigger: trigger)
+    }
+
+    private func apply(_ plan: StorePlan) {
+        let input = passInput(of: plan)
+        apply(makingGroups: { input.groups(pendingSnoozes: $0) })
+    }
+
+    private func applyAndWait(_ plan: StorePlan) async {
+        let input = passInput(of: plan)
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            apply(makingGroups: { input.groups(pendingSnoozes: $0) }) { done.resume() }
+        }
+    }
+
+    /// `UserDefaults` is thread-safe; the replace re-reads the Daily Reminder's switch in the
+    /// center's callback.
+    private struct SendableDefaults: @unchecked Sendable {
+        let defaults: UserDefaults
+        var isEveningOn: Bool { defaults.bool(forKey: ReminderPlan.Evening.Key.enabled) }
+    }
+
+    /// The replace (D4, Gemini A1/A2): once the center has listed what is pending — in its
+    /// callback, on its queue, so the comparison and the writes see the same store — the groups are
+    /// built (`makeGroups`, given how many snoozes are pending), and each group whose pending
+    /// requests differ from the planned ones (ids, triggers, and the text, category and habit of
+    /// the banner) is replaced. A group that already matches is not touched, so a pass changes only
+    /// what changed; the snooze is never in a group. Never a global remove-all: a habit sheet
+    /// saving meanwhile keeps its own request.
+    ///
+    /// **Added before removed** (v2 review, finding 2). The planned requests go first — an add
+    /// under an id already pending replaces it — and only then the group's other ids, never a
+    /// planned one. A write cut off in between (a suspended process) leaves a habit with its old
+    /// requests and its new ones, which over-fires; removing first left it with nothing.
+    ///
+    /// **The Daily Reminder** (findings 1 and 4). Its switch is read again here, right before the
+    /// write: a plan made before the user switched it off does not add it back, nor one made before
+    /// it was switched on remove it. On, with nothing of it pending (a restore whose permission
+    /// came later, a widget write cut off), it is added back when notifications are authorized
+    /// (`restoreEvening`); off, any evening id still pending is removed.
+    ///
+    /// `completion`, when given, runs once the center has answered every add (or at once when
+    /// nothing changed).
+    private func apply(makingGroups makeGroups: @escaping @Sendable (Int) -> [ReminderGroup],
+                       completion: (@Sendable () -> Void)? = nil) {
+        let center = self.center
+        let defaults = SendableDefaults(defaults: defaults)
+        center.getPendingNotificationRequests { pending in
+            let byID = Dictionary(pending.map { ($0.identifier, $0) }, uniquingKeysWith: { first, _ in first })
+            let snoozes = pending.filter { $0.identifier.hasPrefix(ReminderPlan.snoozePrefix) }.count
+            let eveningOn = defaults.isEveningOn
+            var writes: [(adds: [UNNotificationRequest], removals: [String])] = []
+            var missingEvening: ReminderGroup?
+            for group in makeGroups(snoozes) {
+                let current = group.identifiers.compactMap { byID[$0] }
+                if group.isEvening {
+                    let wantsEvening = !group.requests.isEmpty
+                    guard wantsEvening == eveningOn else { continue }
+                    if wantsEvening, current.isEmpty {
+                        missingEvening = group
+                        continue
+                    }
+                }
+                guard Self.signature(current, comparesBody: !group.isEvening)
+                        != Self.signature(group.requests, comparesBody: !group.isEvening) else { continue }
+                let planned = Set(group.requests.map(\.identifier))
+                writes.append((group.requests, group.identifiers.filter { !planned.contains($0) }))
+            }
+
+            let expected = writes.reduce(0) { $0 + $1.adds.count } + (missingEvening == nil ? 0 : 1)
+            let countdown = Countdown(expected)
+            let answered: (@Sendable (Error?) -> Void)? = completion.map { completion in
+                let tick: @Sendable (Error?) -> Void = { _ in if countdown.tick() { completion() } }
+                return tick
+            }
+            for write in writes {
+                for request in write.adds {
+                    center.add(request, withCompletionHandler: answered)
+                }
+                if !write.removals.isEmpty {
+                    center.removePendingNotificationRequests(withIdentifiers: write.removals)
+                }
+            }
+            if let missingEvening {
+                Self.restoreEvening(missingEvening, center: center, defaults: defaults) { answered?(nil) }
+            }
+            if expected == 0 { completion?() }
+        }
+    }
+
+    /// The Daily Reminder is on and nothing of it is pending (finding 1): added back, but only while
+    /// notifications are `.authorized` — the launch's rule (StrideApp's `setupNotifications`); an
+    /// add under an undecided status is never delivered. The pending list is read again first, so
+    /// a `scheduleReminders` that ran meanwhile (the launch, the switch, a new time) is not
+    /// overwritten with this pass's older plan, and the switch is read once more.
+    private nonisolated static func restoreEvening(_ group: ReminderGroup, center: NotificationScheduling,
+                                                   defaults: SendableDefaults, done: @escaping @Sendable () -> Void) {
+        Task { @MainActor in
+            guard await center.authorizationStatus() == .authorized else { return done() }
+            center.getPendingNotificationRequests { pending in
+                let ids = Set(group.identifiers)
+                guard defaults.isEveningOn, !pending.contains(where: { ids.contains($0.identifier) }),
+                      !group.requests.isEmpty
+                else { return done() }
+                let countdown = Countdown(group.requests.count)
+                for request in group.requests {
+                    center.add(request) { _ in if countdown.tick() { done() } }
+                }
+            }
+        }
+    }
+
+    /// One request as the replace compares it.
+    private struct Signature: Hashable {
+        let identifier: String
+        let fire: ReminderPlan.Fire?
+        let title: String
+        let body: String
+        let category: String
+        let thread: String
+        let habitID: UUID?
+    }
+
+    /// Nonisolated: it runs in the center's callback, off the main actor.
+    private nonisolated static func signature(_ requests: [UNNotificationRequest], comparesBody: Bool) -> Set<Signature> {
+        Set(requests.map { request in
+            let content = request.content
+            let fire = (request.trigger as? UNCalendarNotificationTrigger)
+                .map { ReminderPlan.Fire($0.dateComponents, repeats: $0.repeats) }
+            return Signature(identifier: request.identifier, fire: fire, title: content.title,
+                             body: comparesBody ? content.body : "", category: content.categoryIdentifier,
+                             thread: content.threadIdentifier,
+                             habitID: NotificationRouter.habitID(from: content.userInfo))
+        })
     }
 
     // MARK: - Snooze and delivered banners (1.4.0)
@@ -590,7 +880,7 @@ final class NotificationService {
     /// that follows re-categorizes the pending reminders. Nothing re-categorizes two other things,
     /// and both would show the old kind's button:
     /// - delivered banners, which are withdrawn;
-    /// - the pending snooze, which is cancelled. `replaceReminder` leaves it alone on purpose, so
+    /// - the pending snooze, which is cancelled. The reschedule (`apply`) leaves it alone on purpose, so
     ///   left there it would fire an hour after Snooze with "Add 1" on a habit that is now yes/no
     ///   (W2 fix review).
     ///
@@ -628,8 +918,8 @@ final class NotificationService {
     // MARK: - Badge, and the pass after a data change
 
     /// One pass after the data may have changed (RELEASE-1.4.0.md D3, D4): the app's saves
-    /// (StrideApp's throttled observer), the day changing, coming to the foreground, the Mac
-    /// becoming active.
+    /// (StrideApp's throttled observer), the day changing, a time-zone change, coming to the
+    /// foreground, the Mac becoming active.
     /// - The badge, under `updateBadge`'s rule.
     /// - The pending snooze and the banners of every habit already done today. A check-in in this
     ///   process does that at once (`CheckInEffects`); this pass catches the ones it never sees —
@@ -639,21 +929,30 @@ final class NotificationService {
     /// - The same for a pending snooze, which is cancelled (`habitKindDidChange` says why it is not
     ///   re-added). A reschedule never touches the snooze, so after a pulled kind change it would
     ///   still fire with the old kind's button.
+    /// - **1.5.0: the full plan** (RELEASE-1.5.0.md D4, Gemini A2). Until 1.5.0 this pass never
+    ///   touched a pending reminder. Now a check-in, an un-check, a check-in synced from another
+    ///   device or the widget's, and the day or the zone changing all re-plan every reminder-on
+    ///   habit and the Daily Reminder from today's state, and replace only the ones whose requests
+    ///   changed: a habit done today goes quiet (its overlay), an undo brings its request back, and
+    ///   the next day's pass drops yesterday's overlay.
     ///
-    /// It writes no data and never removes a pending REMINDER: those are the schedule's and the
-    /// launch prune's.
-    func refreshAfterDataChange(modelContainer: ModelContainer, now: Date = Date()) {
-        guard let habits = unarchivedHabits(in: modelContainer) else { return }
-        let today = Calendar.current.startOfDay(for: now)
-        let done = habits.filter { $0.isCompletedOn(today) }
-        setBadge(habits.count - done.count)
+    /// It writes no data, and never prunes by what is pending: orphans of deleted habits and the
+    /// snoozes of reminder-off habits are the launch pass's alone (`rescheduleAllHabitReminders`).
+    /// It removes only ids it can name from the store (v2 review, findings 4 and 5): an archived
+    /// habit's, and the Daily Reminder's while it is off.
+    func refreshAfterDataChange(modelContainer: ModelContainer, now: Date = Date(), calendar: Calendar = .current) {
+        guard let plan = makePlan(in: modelContainer, now: now, calendar: calendar) else { return }
+        setBadge(plan.progress.remaining)
 
+        let done = plan.doneToday
         if !done.isEmpty {
             center.removePendingNotificationRequests(withIdentifiers: done.map { ReminderPlan.snoozeIdentifier(for: $0.id) })
             center.removeDeliveredNotifications(withIdentifiers: done.flatMap { ReminderPlan.allIdentifiers(for: $0.id) })
         }
 
-        let categories = Dictionary(habits.map { ($0.id, Self.category(for: $0.habitKind)) },
+        apply(plan)
+
+        let categories = Dictionary(plan.habits.map { ($0.id, Self.category(for: $0.habitKind)) },
                                     uniquingKeysWith: { first, _ in first })
         let center = self.center
         center.getDeliveredNotifications { delivered in
@@ -676,6 +975,16 @@ final class NotificationService {
         }
     }
 
+    /// A reminder action's check-in, and every check-in or un-check made in the app's process
+    /// (`CheckInEffects.live`): the full plan, then the badge, both awaited — a lock-screen Mark
+    /// Done runs in a background launch with no window, so no save observer re-plans for it, and
+    /// the process can be suspended as soon as the action returns.
+    func replanAndUpdateBadgeAndWait(modelContainer: ModelContainer, now: Date = Date(),
+                                     calendar: Calendar = .current) async {
+        await scheduleAllHabitRemindersAndWait(modelContainer: modelContainer, now: now, calendar: calendar)
+        await updateBadgeAndWait(modelContainer: modelContainer, now: now, calendar: calendar)
+    }
+
     /// A habit banner, delivered or pending, whose button is not its habit's kind (`current`, by
     /// id), or whose habit is not in `current` (gone or archived). Only our two categories with a
     /// habit id: the evening and morning reminders, and 1.3.x requests, are not this pass's.
@@ -688,24 +997,25 @@ final class NotificationService {
         return current[habitID] != category
     }
 
-    /// Update app badge with the number of incomplete habits for today — unarchived and not done,
-    /// the rule the widget and Today's card share (a schedule-aware count would have to change all
-    /// of them at once; D3 leaves it to the backlog).
+    /// Update the app badge with what is left today: `DailyProgress.remaining` for today's
+    /// day-key (RELEASE-1.5.0.md D1, D2) — the habits due today and not done. A rest day, a met
+    /// times-per-week week and a habit not started yet are not counted, so a day with nothing due
+    /// shows no badge. The same rule as Today's card and the widget; until 1.5.0 the badge
+    /// scanned records with `Habit.isCompletedOn` and counted every unarchived habit.
     ///
     /// On both platforms since 1.4.0 (D3), under the same two rules as on iOS — the notification
     /// permission, asked when a reminder is switched on, and the user's own Badges switch. On macOS
     /// `setBadgeCount` alone never reached the Dock, so 1.4.2 also sets the tile's label
     /// (`showOnDock`). Fire and forget: the count is read now and set on the next turn.
-    func updateBadge(modelContainer: ModelContainer) {
-        guard let habits = unarchivedHabits(in: modelContainer) else { return }
-        setBadge(Self.remaining(of: habits, now: Date()))
+    func updateBadge(modelContainer: ModelContainer, now: Date = Date(), calendar: Calendar = .current) {
+        guard let count = remainingToday(in: modelContainer, now: now, calendar: calendar) else { return }
+        setBadge(count)
     }
 
     /// `updateBadge`, returning once the system has the count: for the action handler, whose
     /// process can be suspended as soon as it returns, taking a fire-and-forget set with it.
-    func updateBadgeAndWait(modelContainer: ModelContainer) async {
-        guard let habits = unarchivedHabits(in: modelContainer) else { return }
-        let count = Self.remaining(of: habits, now: Date())
+    func updateBadgeAndWait(modelContainer: ModelContainer, now: Date = Date(), calendar: Calendar = .current) async {
+        guard let count = remainingToday(in: modelContainer, now: now, calendar: calendar) else { return }
         #if os(macOS)
         let generation = nextDockBadgeGeneration()
         #endif
@@ -715,9 +1025,14 @@ final class NotificationService {
         #endif
     }
 
-    private static func remaining(of habits: [Habit], now: Date) -> Int {
-        let today = Calendar.current.startOfDay(for: now)
-        return habits.filter { !$0.isCompletedOn(today) }.count
+    /// `DailyProgress.remaining` today over every unarchived habit; nil when the fetch failed.
+    private func remainingToday(in container: ModelContainer, now: Date, calendar: Calendar) -> Int? {
+        let context = ModelContext(container)
+        guard let habits = unarchivedHabits(in: context) else { return nil }
+        let today = DailyProgress.today(now: now, calendar: calendar)
+        let live = HabitStats.liveRecordIDs(of: habits, in: context)
+        let stats = habits.map { HabitStats(habit: $0, liveRecordIDs: live, calendar: calendar, today: today) }
+        return DailyProgress(of: stats, on: today).remaining
     }
 
     private func setBadge(_ count: Int) {
@@ -763,17 +1078,18 @@ final class NotificationService {
         guard generation == dockBadgeGeneration else { return }
         NSApp.dockTile.badgeLabel = Self.dockLabel(count: count, badgesEnabled: enabled)
     }
+    #endif
 
-    /// nil (no badge) at 0, below 0, or with Badges off; otherwise the count.
+    /// The Dock tile's label for a badge count: nil (no badge) at 0, below 0, or with Badges off;
+    /// otherwise the count. Pure, and compiled on iOS too, so the hosted suite (an iOS simulator)
+    /// pins the rule the Mac's `showOnDock` applies (X4, RELEASE-1.5.0.md).
     static func dockLabel(count: Int, badgesEnabled: Bool) -> String? {
         guard badgesEnabled, count > 0 else { return nil }
         return String(count)
     }
-    #endif
 
     /// In a fresh context: what is saved, never what a view holds unsaved.
-    private func unarchivedHabits(in modelContainer: ModelContainer) -> [Habit]? {
-        let context = ModelContext(modelContainer)
+    private func unarchivedHabits(in context: ModelContext) -> [Habit]? {
         let descriptor = FetchDescriptor<Habit>(predicate: #Predicate<Habit> { !$0.isArchived })
         return try? context.fetch(descriptor)
     }
@@ -803,5 +1119,22 @@ final class NotificationService {
             appLocalized("Today is full of potential. Start with your habits!"),
         ]
         return messages.randomElement() ?? messages[0]
+    }
+}
+
+/// Counts down the adds one replace is waiting for; the last answer says so. The center answers
+/// on its own queue, so the count is locked.
+private final class Countdown: @unchecked Sendable {
+    private let lock = NSLock()
+    private var left: Int
+
+    init(_ count: Int) { left = count }
+
+    /// True for the answer that brings it to zero.
+    func tick() -> Bool {
+        lock.withLock {
+            left -= 1
+            return left == 0
+        }
     }
 }

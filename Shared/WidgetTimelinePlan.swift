@@ -40,6 +40,13 @@ struct WidgetTimelinePlan {
         /// must not be a toggle: un-checking it would delete the note from the extension, so it
         /// opens the app on that day instead (W2's link).
         var hasNote: Bool = false
+        /// The habit's `DailyProgress` state on the entry's day (RELEASE-1.5.0.md D2): what the
+        /// entry's counts, ring and "Rest day" come from. nil (a row made by hand: the gallery's
+        /// placeholder, a test) reads as done or due by `isCompleted` (`dayState`).
+        var state: DailyProgress.State? = nil
+
+        /// `state`, or for a row made without one, done or due by `isCompleted`.
+        var dayState: DailyProgress.State { state ?? (isCompleted ? .done : .due) }
     }
 
     /// A habit's state on one habit-day.
@@ -49,6 +56,8 @@ struct WidgetTimelinePlan {
         let streak: Int
         /// One of the day's live records carries a non-empty note (`Row.hasNote`).
         var hasNote: Bool = false
+        /// `DailyProgress.state(of:on:)` for the day (D2): `Row.state`.
+        var state: DailyProgress.State? = nil
     }
 
     /// Everything the plan needs about one habit. `status` is asked with a DAY-KEY (UTC
@@ -72,8 +81,15 @@ struct WidgetTimelinePlan {
         let dayKey: Date
         let rows: [Row]
 
-        var completedCount: Int { rows.filter(\.isCompleted).count }
-        var totalCount: Int { rows.count }
+        /// The day's totals (RELEASE-1.5.0.md D1, D2): the same rule as Today's card, the badge
+        /// and the Dock, for THIS entry's day — so the midnight entry shows tomorrow's rest days,
+        /// and on a Monday a times-per-week habit met last week is due again.
+        var day: DailyProgress { DailyProgress(states: rows.map(\.dayState)) }
+        /// Habits done on the entry's day (`DailyProgress.done`).
+        var completedCount: Int { day.done }
+        /// Habits due on the entry's day (`DailyProgress.due`): rest days, met weeks and habits not
+        /// started are not counted.
+        var totalCount: Int { day.due }
     }
 
     /// `[entry(now), entry(next local midnight)]`.
@@ -98,7 +114,7 @@ struct WidgetTimelinePlan {
                            isCompleted: status.isCompleted,
                            progress: min(1, max(0, status.progress)),
                            streak: status.streak, streakInWeeks: input.streakInWeeks,
-                           hasNote: status.hasNote)
+                           hasNote: status.hasNote, state: status.state)
             })
         }
 
@@ -196,7 +212,8 @@ extension WidgetTimelinePlan.RowInput {
                       WidgetTimelinePlan.Status(isCompleted: stats.isCompleted(on: dayKey),
                                                 progress: stats.progress(on: dayKey),
                                                 streak: stats.currentStreak(asIfToday: dayKey),
-                                                hasNote: stats.hasNote(on: dayKey))
+                                                hasNote: stats.hasNote(on: dayKey),
+                                                state: DailyProgress.state(of: stats, on: dayKey))
                   })
     }
 

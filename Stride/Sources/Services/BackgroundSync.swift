@@ -225,7 +225,7 @@ enum BackgroundSync {
         /// answered from Notification Center pulled down over a frontmost Stride — the very case
         /// that check was for — leaves the app `.inactive`, with the sheet still under it; and the
         /// user can bring Stride forward while the center answers. Skipped, the reminders are
-        /// still replaced, and the next launch's pass prunes.
+        /// still replaced — awaited too (1.5.0) — and the next launch's pass prunes.
         static func liveAfterSync(applicationState: @escaping @MainActor () -> UIApplication.State)
             -> @MainActor (ModelContainer) async -> Void {
             { container in
@@ -235,7 +235,11 @@ enum BackgroundSync {
                     await notifications.rescheduleAllHabitRemindersAndWait(modelContainer: container,
                                                                            mayPrune: inBackground)
                 } else {
-                    notifications.scheduleAllHabitReminders(modelContainer: container)
+                    // Awaited as well (no prune): since 1.5.0 the replace writes only once the
+                    // center has listed what is pending (`apply`, D4), so a fire-and-forget pass
+                    // could still be waiting on that answer when the run returns and the process
+                    // is suspended — `.inactive` is a reminder action answered over Stride.
+                    await notifications.scheduleAllHabitRemindersAndWait(modelContainer: container)
                 }
                 // The badge, awaited: the refresh pass sets it fire-and-forget.
                 await notifications.updateBadgeAndWait(modelContainer: container)

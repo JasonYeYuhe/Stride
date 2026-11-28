@@ -279,4 +279,310 @@ final class InlinePromptsTests: XCTestCase {
         XCTAssertNil(Prompts.weekCard(now: thursday, calendar: local, isPro: true, lastWeekRate: nil, state: .empty,
                                       ignoresWindow: true))
     }
+
+    // MARK: - 1.5.0: missed yesterday and the reminder offer (RELEASE-1.5.0.md D5)
+
+    /// Every fact that shows both 1.5.0 cards.
+    private let everything = Prompts.TodayFacts(isTodaySelected: true, openYesterday: 2, checkedInBeforeToday: true,
+                                                checkInDays: 2, permissionUndecided: true, anyReminderOn: false)
+
+    private func card(_ now: Date, _ calendar: Calendar, facts: Prompts.TodayFacts, rate: Double? = 0.5,
+                      state: Prompts.DismissalState = .empty, isPro: Bool = true) -> Prompts.Card? {
+        Prompts.card(now: now, calendar: calendar, isPro: isPro, lastWeekRate: rate, state: state, facts: facts)
+    }
+
+    /// One card at a time, in D5's order: missed yesterday over the week card over the reminder
+    /// offer; each shows when the ones above it do not.
+    func testTheCardsPriority() {
+        for calendar in zones {
+            let zone = calendar.timeZone.identifier
+            let monday = at(6, 1, 9, 0, in: calendar)
+            let thursday = at(6, 4, 9, 0, in: calendar)
+            XCTAssertEqual(card(monday, calendar, facts: everything),
+                           .missedYesterday(.init(today: dayNumber(6, 1), openCount: 2)), zone)
+            var noMissed = everything
+            noMissed.openYesterday = 0
+            XCTAssertEqual(card(monday, calendar, facts: noMissed),
+                           .week(.init(shownWeek: Prompts.currentWeek(now: monday, calendar: calendar), copy: .pro(percent: 50))),
+                           zone)
+            XCTAssertEqual(card(thursday, calendar, facts: noMissed), .reminderOffer, "\(zone): no week card on Thursday")
+            XCTAssertEqual(card(thursday, calendar, facts: everything),
+                           .missedYesterday(.init(today: dayNumber(6, 4), openCount: 2)), zone)
+            // The week card hidden for the week: the offer is next.
+            let hidden = Prompts.DismissalState(proHiddenWeek: dayNumber(6, 1))
+            XCTAssertEqual(card(monday, calendar, facts: noMissed, state: hidden), .reminderOffer, zone)
+            var nothing = noMissed
+            nothing.permissionUndecided = false
+            XCTAssertNil(card(thursday, calendar, facts: nothing), zone)
+            // Without facts, 1.4.2's answer.
+            XCTAssertNil(Prompts.card(now: thursday, calendar: calendar, isPro: true, lastWeekRate: 0.5, state: .empty))
+        }
+    }
+
+    /// Missed yesterday: today selected, a habit left open yesterday, a check-in before today; "Not
+    /// now" hides it for the rest of that local day only.
+    func testMissedYesterdaysConditionsAndNotNow() {
+        for calendar in zones {
+            let zone = calendar.timeZone.identifier
+            let monday = at(6, 1, 9, 0, in: calendar)
+            func missed(_ facts: Prompts.TodayFacts, at now: Date, state: Prompts.DismissalState = .empty)
+                -> Prompts.MissedYesterdayCard? {
+                Prompts.missedYesterdayCard(now: now, calendar: calendar, facts: facts, state: state)
+            }
+            XCTAssertEqual(missed(everything, at: monday), .init(today: dayNumber(6, 1), openCount: 2), zone)
+            var facts = everything
+            facts.isTodaySelected = false
+            XCTAssertNil(missed(facts, at: monday), "\(zone): another day shown")
+            facts = everything
+            facts.openYesterday = 0
+            XCTAssertNil(missed(facts, at: monday), "\(zone): nothing open yesterday")
+            facts = everything
+            facts.checkedInBeforeToday = false
+            XCTAssertNil(missed(facts, at: monday), "\(zone): no check-in before today (a first day)")
+
+            let card = try! XCTUnwrap(missed(everything, at: monday))
+            XCTAssertEqual(card.yesterday, dayNumber(5, 31))
+            let notNow = Prompts.dismissed(card, in: .empty)
+            XCTAssertEqual(notNow, Prompts.DismissalState(missedHiddenDay: dayNumber(6, 1)), zone)
+            XCTAssertNil(missed(everything, at: at(6, 1, 23, 59, in: calendar), state: notNow), "\(zone): Monday 23:59")
+            XCTAssertNotNil(missed(everything, at: at(6, 2, 0, 0, in: calendar), state: notNow), "\(zone): Tuesday 00:00")
+            // The week card's own state is left as it was.
+            XCTAssertEqual(Prompts.dismissed(card, in: Prompts.DismissalState(proHiddenWeek: 7, freeEnded: true)),
+                           Prompts.DismissalState(proHiddenWeek: 7, freeEnded: true, missedHiddenDay: dayNumber(6, 1)))
+        }
+    }
+
+    /// The reminder offer: permission not determined, no reminder on, two check-in days, never
+    /// answered; "Turn on" or "Not now" ends it for good.
+    func testTheReminderOffersConditions() {
+        let base = Prompts.TodayFacts(isTodaySelected: false, checkInDays: 2, permissionUndecided: true)
+        XCTAssertTrue(Prompts.offersReminder(facts: base, state: .empty), "any day shown")
+        var facts = base
+        facts.permissionUndecided = false
+        XCTAssertFalse(Prompts.offersReminder(facts: facts, state: .empty), "allowed or denied: never")
+        facts = base
+        facts.anyReminderOn = true
+        XCTAssertFalse(Prompts.offersReminder(facts: facts, state: .empty), "a reminder already on")
+        facts = base
+        facts.checkInDays = 1
+        XCTAssertFalse(Prompts.offersReminder(facts: facts, state: .empty), "one day of check-ins")
+        let answered = Prompts.reminderOfferAnswered(in: .empty)
+        XCTAssertEqual(answered, Prompts.DismissalState(reminderOfferEnded: true))
+        XCTAssertFalse(Prompts.offersReminder(facts: base, state: answered))
+        XCTAssertNil(card(at(6, 4, 9, 0, in: local), local, facts: base, state: answered))
+    }
+
+    /// `-inlineCard week` is the week card alone, whatever else would show.
+    func testTheForcedWeekCardOutranksTheOthers() {
+        let thursday = at(6, 4, 9, 0, in: local)
+        let forced = Prompts.card(now: thursday, calendar: local, isPro: true, lastWeekRate: 0.5, state: .empty,
+                                  facts: everything, ignoresWindow: true)
+        guard case .week? = forced else { return XCTFail("\(String(describing: forced))") }
+    }
+
+    /// The habits' facts from their stats (`DailyProgress` for yesterday): a daily habit left open
+    /// and a count habit short of its target are open; a rest day, a met week and a habit created
+    /// today are not, nor is a times-per-week habit whose week is not met (integrator's call,
+    /// 2026-11-27: the review's strip never marks its day missed). A partial count day is a
+    /// check-in day.
+    func testTheFactsFromTheHabitsStats() throws {
+        let schema = Schema([Habit.self, HabitRecord.self, HabitGroup.self])
+        let container = try ModelContainer(for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let context = container.mainContext
+        let utc = HabitCalendar.utc
+        func key(_ m: Int, _ d: Int) -> Date { utc.date(from: DateComponents(year: 2026, month: m, day: d))! }
+        func habit(_ schedule: HabitSchedule = .daily, times: Int = 7, days: Int = 127, kind: HabitKind = .binary,
+                   target: Double = 1, created: Date, values: [(Date, Double)]) -> Habit {
+            let h = Habit(name: "H")
+            h.schedule = schedule
+            h.timesPerWeek = times
+            h.activeDaysMask = days
+            h.habitKind = kind
+            h.targetValue = target
+            h.createdAt = created
+            context.insert(h)
+            for (d, v) in values { h.records.append(HabitRecord(date: d, value: v)) }
+            return h
+        }
+        let mwf = (1 << 1) | (1 << 3) | (1 << 5)
+        let habits = [
+            habit(created: key(5, 1), values: [(key(5, 30), 1)]),                              // open yesterday
+            habit(.specificDays, days: mwf, created: key(5, 1), values: []),                   // Tuesday rests
+            habit(.timesPerWeek, times: 1, created: key(5, 1), values: [(key(6, 1), 1)]),      // met on Monday
+            habit(created: key(6, 3), values: []),                                             // created today
+            habit(kind: .count, target: 8, created: key(5, 1), values: [(key(6, 2), 3)]),      // 3 of 8: open
+            habit(.timesPerWeek, times: 3, created: key(5, 1), values: []),                     // due, never "missed"
+        ]
+        let wednesday = key(6, 3)
+        for calendar in zones {
+            let stats = habits.map {
+                HabitStats(habit: $0, liveRecordIDs: HabitStats.liveRecordIDs(of: [$0], in: context),
+                           calendar: calendar, today: wednesday)
+            }
+            let facts = Prompts.facts(of: stats, today: wednesday)
+            XCTAssertEqual(DailyProgress.state(of: stats[5], on: key(6, 2)), .due, "the 3×/week was open on Tuesday")
+            XCTAssertEqual(WeeklyReviewMath.dayStates(of: stats[5], week: WeeklyReviewMath.WeekRange(
+                containingDay: HabitStats.dayNumber(ofKey: key(6, 1))))[1], .neutral, "and its strip calls Tuesday neutral")
+            XCTAssertEqual(facts.openYesterday, 2, calendar.timeZone.identifier)
+            XCTAssertTrue(facts.checkedInBeforeToday)
+            XCTAssertEqual(facts.checkInDays, 2, "counted up to 2")
+        }
+
+        // Check-ins only today, on two habits: one day, nothing before today.
+        let fresh = [habit(created: key(6, 3), values: [(key(6, 3), 1)]),
+                     habit(created: key(6, 3), values: [(key(6, 3), 1)])]
+        let freshStats = fresh.map {
+            HabitStats(habit: $0, liveRecordIDs: HabitStats.liveRecordIDs(of: [$0], in: context),
+                       calendar: local, today: wednesday)
+        }
+        let first = Prompts.facts(of: freshStats, today: wednesday)
+        XCTAssertEqual(first, Prompts.TodayFacts(openYesterday: 0, checkedInBeforeToday: false, checkInDays: 1))
+        XCTAssertEqual(Prompts.facts(of: [], today: wednesday).checkInDays, 0)
+        withExtendedLifetime(container) {}
+    }
+
+    // MARK: - 1.5.0: Today's at-risk words and order (RELEASE-1.5.0.md D7)
+
+    /// A times-per-week habit's words through its week, in every zone: "1/3 this week · 2 more"
+    /// mid-week, "2 more · 2 days left" when every day left is needed, "1 more · today" on Sunday
+    /// (never "0 days left"), "3/3 this week" once met — and the plain count once the goal is out
+    /// of reach (integrator's call, 2026-11-27, RELEASE-1.5.0.md D7: no "more" the user cannot do).
+    func testTimesPerWeekWords() throws {
+        let schema = Schema([Habit.self, HabitRecord.self, HabitGroup.self])
+        let container = try ModelContainer(for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let context = container.mainContext
+        let utc = HabitCalendar.utc
+        func key(_ m: Int, _ d: Int) -> Date { utc.date(from: DateComponents(year: 2026, month: m, day: d))! }
+        func tpw(created: Date, checkedIn: [Date]) -> Habit {
+            let h = Habit(name: "Swim")
+            h.schedule = .timesPerWeek
+            h.timesPerWeek = 3
+            h.createdAt = created
+            context.insert(h)
+            for d in checkedIn { h.records.append(HabitRecord(date: d)) }
+            return h
+        }
+        let evening = WeeklyReviewMath.TimeOfDay.defaultEvening
+        for calendar in zones {
+            let zone = calendar.timeZone.identifier
+            func words(_ h: Habit, _ m: Int, _ d: Int, _ hour: Int) -> TodayAtRisk.Words? {
+                let stats = HabitStats(habit: h, liveRecordIDs: HabitStats.liveRecordIDs(of: [h], in: context),
+                                       calendar: calendar, today: key(m, d))
+                return TodayAtRisk.words(for: stats, now: at(m, d, hour, 0, in: calendar), calendar: calendar,
+                                         eveningTime: evening)
+            }
+            let swim = tpw(created: key(5, 1), checkedIn: [key(6, 1)])
+            XCTAssertEqual(words(swim, 6, 3, 9), .weekOwing(done: 1, goal: 3, owed: 2), zone)
+            XCTAssertEqual(words(swim, 6, 3, 23), .weekOwing(done: 1, goal: 3, owed: 2), "\(zone): the hour changes nothing")
+            XCTAssertEqual(words(swim, 6, 6, 9), .atRiskDaysLeft(owed: 2, daysLeft: 2), "\(zone): Saturday")
+            XCTAssertEqual(words(swim, 6, 7, 9), .weekSoFar(done: 1, goal: 3), "\(zone): Sunday at 1 of 3 is out of reach")
+            XCTAssertEqual(words(swim, 6, 7, 9)?.isAtRisk, false, zone)
+            let twoDone = tpw(created: key(5, 1), checkedIn: [key(6, 1), key(6, 4)])
+            XCTAssertEqual(words(twoDone, 6, 7, 9), .atRiskToday(owed: 1), "\(zone): Sunday at 2 of 3")
+            // Saturday at 0 of 3: 3 owed, 2 days left — out of reach, never "3 more · 2 days left".
+            let none = tpw(created: key(5, 1), checkedIn: [])
+            XCTAssertEqual(words(none, 6, 5, 9), .atRiskDaysLeft(owed: 3, daysLeft: 3), "\(zone): Friday at 0 of 3")
+            XCTAssertEqual(words(none, 6, 6, 9), .weekSoFar(done: 0, goal: 3), "\(zone): Saturday at 0 of 3")
+            let met = tpw(created: key(5, 1), checkedIn: [key(6, 1), key(6, 2), key(6, 3)])
+            XCTAssertEqual(words(met, 6, 4, 9), .weekSoFar(done: 3, goal: 3), zone)
+            XCTAssertEqual(words(met, 6, 4, 9)?.isAtRisk, false)
+
+            // Created on Friday: the week owes its share (2 of 3), never "3 more".
+            let friday = tpw(created: key(6, 5), checkedIn: [])
+            XCTAssertEqual(words(friday, 6, 6, 9), .atRiskDaysLeft(owed: 2, daysLeft: 2), "\(zone): the share, not the goal")
+            // The share met, the goal not: the plain count, no "0 more".
+            let shareMet = tpw(created: key(6, 5), checkedIn: [key(6, 5), key(6, 6)])
+            XCTAssertEqual(words(shareMet, 6, 6, 9), .weekSoFar(done: 2, goal: 3), zone)
+            // Done today on Sunday, still owing: no day is left to check in, so the plain count,
+            // never "1 more · today" (which the user could not do) nor "0 days left".
+            let lastDay = tpw(created: key(5, 1), checkedIn: [key(6, 7)])
+            XCTAssertEqual(words(lastDay, 6, 7, 9), .weekSoFar(done: 1, goal: 3), zone)
+        }
+        withExtendedLifetime(container) {}
+    }
+
+    /// Daily and specific days: "Due today" only when due, not done, and at or past the evening.
+    func testDueTodayWords() throws {
+        let schema = Schema([Habit.self, HabitRecord.self, HabitGroup.self])
+        let container = try ModelContainer(for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let context = container.mainContext
+        let utc = HabitCalendar.utc
+        func key(_ m: Int, _ d: Int) -> Date { utc.date(from: DateComponents(year: 2026, month: m, day: d))! }
+        let mwf = (1 << 1) | (1 << 3) | (1 << 5)
+        let read = Habit(name: "Read")
+        read.createdAt = key(5, 1)
+        context.insert(read)
+        let gym = Habit(name: "Gym")
+        gym.schedule = .specificDays
+        gym.activeDaysMask = mwf
+        gym.createdAt = key(5, 1)
+        context.insert(gym)
+        for calendar in zones {
+            let zone = calendar.timeZone.identifier
+            func words(_ h: Habit, _ d: Int, _ hour: Int, _ minute: Int = 0,
+                       evening: WeeklyReviewMath.TimeOfDay = .defaultEvening) -> TodayAtRisk.Words? {
+                let stats = HabitStats(habit: h, liveRecordIDs: HabitStats.liveRecordIDs(of: [h], in: context),
+                                       calendar: calendar, today: key(6, d))
+                return TodayAtRisk.words(for: stats, now: at(6, d, hour, minute, in: calendar), calendar: calendar,
+                                         eveningTime: evening)
+            }
+            XCTAssertNil(words(read, 3, 17, 59), "\(zone): before the evening")
+            XCTAssertEqual(words(read, 3, 18), .dueToday, zone)
+            XCTAssertEqual(words(read, 3, 18)?.isAtRisk, true)
+            XCTAssertNil(words(read, 3, 19, evening: .init(hour: 20, minute: 0)), "\(zone): the habit's own evening")
+            XCTAssertNil(words(gym, 2, 21), "\(zone): Tuesday rests")
+            XCTAssertEqual(words(gym, 3, 21), .dueToday, zone)
+        }
+        read.records.append(HabitRecord(date: key(6, 3)))
+        let stats = HabitStats(habit: read, liveRecordIDs: HabitStats.liveRecordIDs(of: [read], in: context),
+                               calendar: local, today: key(6, 3))
+        XCTAssertNil(TodayAtRisk.words(for: stats, now: at(6, 3, 22, 0, in: local), calendar: local,
+                                       eveningTime: .defaultEvening), "done")
+        withExtendedLifetime(container) {}
+    }
+
+    /// Another day shown on Today: a times-per-week row reads its week as it stood at the end of
+    /// that day (Monday through the day shown), as the card does, never the later check-ins
+    /// (integrator's call, 2026-11-27). Any other schedule: nothing.
+    func testAPastDaysWeekAsItStood() throws {
+        let schema = Schema([Habit.self, HabitRecord.self, HabitGroup.self])
+        let container = try ModelContainer(for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let context = container.mainContext
+        let utc = HabitCalendar.utc
+        func key(_ m: Int, _ d: Int) -> Date { utc.date(from: DateComponents(year: 2026, month: m, day: d))! }
+        let yoga = Habit(name: "Yoga")
+        yoga.schedule = .timesPerWeek
+        yoga.timesPerWeek = 3
+        yoga.createdAt = key(5, 1)
+        context.insert(yoga)
+        for d in [key(6, 1), key(6, 3), key(6, 4)] { yoga.records.append(HabitRecord(date: d)) }
+        let read = Habit(name: "Read")
+        read.createdAt = key(5, 1)
+        context.insert(read)
+        for calendar in zones {
+            let zone = calendar.timeZone.identifier
+            // Built for Friday (today), as StatsCache's are.
+            func stats(_ h: Habit) -> HabitStats {
+                HabitStats(habit: h, liveRecordIDs: HabitStats.liveRecordIDs(of: [h], in: context),
+                           calendar: calendar, today: key(6, 5))
+            }
+            let s = stats(yoga)
+            XCTAssertEqual(s.weeklyCompletions(containing: key(6, 2)), 3, "the whole week, what the row used to print")
+            XCTAssertEqual(TodayAtRisk.asOf(s, on: key(6, 2)), .weekSoFar(done: 1, goal: 3), "\(zone): Tuesday")
+            XCTAssertEqual(DailyProgress.state(of: s, on: key(6, 2)), .due, "\(zone): and Tuesday's card counts it open")
+            XCTAssertEqual(TodayAtRisk.asOf(s, on: key(6, 4)), .weekSoFar(done: 3, goal: 3), "\(zone): Thursday, met")
+            XCTAssertEqual(DailyProgress.state(of: s, on: key(6, 4)), .done, zone)
+            XCTAssertEqual(TodayAtRisk.asOf(s, on: key(6, 1)), .weekSoFar(done: 1, goal: 3), "\(zone): Monday")
+            XCTAssertNil(TodayAtRisk.asOf(stats(read), on: key(6, 2)), zone)
+        }
+        withExtendedLifetime(container) {}
+    }
+
+    /// At risk first, each part in its own order.
+    func testAtRiskFirstIsStable() {
+        let ids = ["a", "b", "c", "d", "e"]
+        XCTAssertEqual(TodayAtRisk.atRiskFirst(ids) { ["b", "d"].contains($0) }, ["b", "d", "a", "c", "e"])
+        XCTAssertEqual(TodayAtRisk.atRiskFirst(ids) { _ in false }, ids)
+        XCTAssertEqual(TodayAtRisk.atRiskFirst(ids) { _ in true }, ids)
+    }
 }

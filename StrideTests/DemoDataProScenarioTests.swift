@@ -49,12 +49,14 @@ final class DemoDataProScenarioTests: XCTestCase {
     }
 
     @MainActor
-    func testTwoGroupsAndFiveHabitsInOrder() throws {
+    func testTwoGroupsAndSixHabitsInOrder() throws {
         let seeded = try Self.seed(0)
         XCTAssertEqual(seeded.groups.map(\.name), ["Health", "Mind"])
-        XCTAssertEqual(seeded.habits.map(\.name), ["Morning Run", "Drink Water", "Read 30 min", "Yoga", "Journal"])
+        XCTAssertEqual(seeded.habits.map(\.name),
+                       ["Morning Run", "Drink Water", "Swim", "Read 30 min", "Yoga", "Journal"])
         XCTAssertTrue(seeded.habits.allSatisfy { $0.groupId != nil })
         XCTAssertEqual(seeded.habit("Yoga").schedule, .timesPerWeek)
+        XCTAssertEqual(seeded.habit("Swim").schedule, .timesPerWeek)
     }
 
     /// Statistics' habit: the record line, momentum up, toughest on Sunday; both long Strength tiles.
@@ -125,14 +127,59 @@ final class DemoDataProScenarioTests: XCTestCase {
         }
     }
 
-    /// The 3-times-a-week habit is at risk once fewer days are left than check-ins owed: Friday on.
+    /// The 3-times-a-week habit is at risk once every day left is needed and the goal is still
+    /// within reach (RELEASE-1.5.0.md D7, 2026-11-27): Friday to Sunday, checked in on each day
+    /// from Friday before today, so the sweep finds it at risk on any of the three.
     @MainActor
     func testYogaIsAtRiskFromFriday() throws {
         for offset in 0..<7 {
             let seeded = try Self.seed(offset)
             let goal = WeeklyReviewMath.weekGoal(of: seeded.stats("Yoga"), now: seeded.now, calendar: seeded.calendar)
-            XCTAssertEqual(goal?.done, 0, "day \(offset)")
+            XCTAssertEqual(goal?.done, max(0, seeded.weekday - 4), "day \(offset)")
+            XCTAssertEqual(goal?.isReachable, true, "day \(offset)")
             XCTAssertEqual(goal?.isAtRisk, seeded.weekday >= 4, "day \(offset)")
+        }
+    }
+
+    /// RELEASE-1.5.0.md V5: Today's missed-yesterday card has one habit to count (Journal) on any
+    /// weekday, so `-inlineCard missed` draws it with "1".
+    @MainActor
+    func testYesterdayLeftOneHabitOpen() throws {
+        for offset in 0..<7 {
+            let seeded = try Self.seed(offset)
+            let today = WeeklyReviewMath.today(now: seeded.now, calendar: seeded.calendar)
+            let facts = InlinePrompts.facts(of: seeded.habits.map { seeded.stats($0.name) }, today: today)
+            XCTAssertEqual(facts.openYesterday, 1, "day \(offset)")
+            XCTAssertTrue(facts.checkedInBeforeToday, "day \(offset)")
+        }
+    }
+
+    /// V5: Swim meets its 3 times a week on Wednesday; from Thursday Today shows it met, not due,
+    /// and never at risk.
+    @MainActor
+    func testSwimIsMetFromWednesday() throws {
+        for offset in 0..<7 {
+            let seeded = try Self.seed(offset)
+            let stats = seeded.stats("Swim")
+            let goal = try XCTUnwrap(WeeklyReviewMath.weekGoal(of: stats, now: seeded.now, calendar: seeded.calendar))
+            XCTAssertEqual(goal.done, min(3, seeded.weekday + 1), "day \(offset)")
+            XCTAssertFalse(goal.isAtRisk, "day \(offset)")
+            let state = DailyProgress.state(of: stats, on: WeeklyReviewMath.today(now: seeded.now, calendar: seeded.calendar))
+            XCTAssertEqual(state, seeded.weekday <= 2 ? .done : .metForWeek, "day \(offset)")
+        }
+    }
+
+    /// V5: last week has a perfect day on any weekday (its Saturday), so the review's
+    /// "N perfect days" line is never empty in the sweep's captures of last week.
+    @MainActor
+    func testLastWeekHasAPerfectSaturday() throws {
+        for offset in 0..<7 {
+            let seeded = try Self.seed(offset)
+            let inputs = seeded.habits.map { WeeklyReviewMath.HabitInput(habit: $0, stats: seeded.stats($0.name)) }
+            let lastWeek = InlinePrompts.lastWeek(now: seeded.now, calendar: seeded.calendar)
+            let perfect = WeeklyReviewMath.perfectDays(of: inputs, week: lastWeek)
+            XCTAssertTrue(perfect.contains(HabitStats.key(ofDay: lastWeek.mondayNumber + 5)),
+                          "day \(offset): \(perfect)")
         }
     }
 }

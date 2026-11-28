@@ -523,7 +523,7 @@
    paywall's subtitle for Weekly Review. "Your top 5 streaks", never "your best streaks": the free
    card keeps its Best Streak tile. */
 "Insights, the 8-week trend, the strength chart and your top 5 streaks" = "洞察、8 周趋势、习惯强度图表和连续记录前 5 名";
-"A look back at how your week went" = "回顾你这一周的表现";
+"Any week at a glance: what improved and what is at risk" = "随时回顾任意一周，哪些习惯进步了、哪些可能完不成，一目了然";
 
 /* Subscription status in Settings (D12), on iOS and in the Mac Settings window. "Plan" is the row
    whose value is Monthly, Yearly or Lifetime; each %@ is a date. "Manage Subscription" opens
@@ -587,7 +587,7 @@
    the Weekly Review button and Today's week card; New Group; Settings and onboarding; the
    "Pro ended" row. "Pro adds three things" are the three feature rows under it. */
 "See what's changing, not just where you are" = "不只看现在的位置，更看清正在发生的变化";
-"See how your week went" = "看看你这一周过得怎么样";
+"Look back at any week" = "回顾任意一周";
 "Organize your habits into groups" = "把你的习惯整理成分组";
 "Almost everything is free. Pro adds three things." = "几乎所有功能都免费。Pro 额外提供三项功能。";
 "Welcome back" = "欢迎回来";
@@ -669,3 +669,24 @@
 "Hide until next week" = "隐藏至下周";
 "Don't show again" = "不再显示";
 "What's in Stride Pro" = "Stride Pro 包含什么";
+
+/* 1.5.0 Weekly Review step 2 (RELEASE-1.5.0.md D6) */
+"Previous week" = "上一周";
+"Next week" = "下一周";
+"At risk this week" = "本周可能完不成的习惯";
+"Show on Today" = "在“今天”中显示";
+"%@, %lld percent" = "%1$@，百分之 %2$lld";
+"%lld of %lld done" = "%2$lld 天中完成 %1$lld 天";
+"Strength +%lld" = "习惯强度 +%lld";
+"Strength −%lld" = "习惯强度 −%lld";
+"Strength ±0" = "习惯强度 ±0";
+"Strength unchanged" = "习惯强度无变化";
+
+/* 1.5.0 Today: the daily loop and at-risk words (RELEASE-1.5.0.md D5, D7) */
+"%lld/%lld this week · %lld more" = "本周 %1$lld/%2$lld · 还差 %3$lld 次";
+"%lld more · today" = "还差 %lld 次 · 今天截止";
+"Due today" = "今天要做";
+"Show yesterday" = "查看昨天";
+"Not now" = "以后再说";
+"Get a reminder each evening" = "每天晚上提醒我";
+"Turn on" = "开启";

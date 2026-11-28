@@ -255,7 +255,11 @@ struct OverallStatsCard: View {
 
     /// Every habit's stats in one read (D3): after a clear-all, ONE store fetch refills them all.
     private struct Summary {
-        let todayCount: Int
+        /// Today's done and due by `DailyProgress` (RELEASE-1.5.0.md D1), the numbers Today's card,
+        /// the badge and the widget show: a habit resting today, met for its week or not started is
+        /// in neither. Until 1.5.0 this was "done of every habit", so a met 3×/week habit made
+        /// Statistics say 2/6 beside Today's 2/5.
+        let today: DailyProgress
         let bestStreak: (value: Int, inWeeks: Bool)
         let avgCompletion: Double
     }
@@ -263,7 +267,7 @@ struct OverallStatsCard: View {
     private var summary: Summary {
         let now = Date()
         let all = cache.stats(for: habits, today: now)
-        let todayCount = all.filter { $0.isCompleted(on: now) }.count
+        let today = DailyProgress(of: all, on: DailyProgress.today(now: now, calendar: .current))
         // The longest streak across habits. This was the maximum CURRENT streak under a "Best
         // Streak" label, so the moment a long streak broke the tile dropped to 0 as if the record
         // were erased. Times-per-week habits count streaks in weeks, so they are only compared
@@ -273,20 +277,25 @@ struct OverallStatsCard: View {
             ? (all.map(\.bestStreak).max() ?? 0, true)
             : (dayUnit.map(\.bestStreak).max() ?? 0, false)
         let avgCompletion = all.isEmpty ? 0 : all.map { $0.completionRate(days: 30) }.reduce(0, +) / Double(all.count)
-        return Summary(todayCount: todayCount, bestStreak: bestStreak, avgCompletion: avgCompletion)
+        return Summary(today: today, bestStreak: bestStreak, avgCompletion: avgCompletion)
+    }
+
+    private func todaySpoken(_ today: DailyProgress) -> LocalizedStringKey {
+        today.isRestDay ? "Rest day" : "\(today.done) of \(today.due) habits completed"
     }
 
     var body: some View {
         let summary = self.summary
-        let todayCount = summary.todayCount
+        let today = summary.today
         let bestStreak = summary.bestStreak
         let avgCompletion = summary.avgCompletion
         // The three values on one baseline (`statValue`): centred, a column whose caption wraps
         // ("Best / Streak" at AX5) sat higher than one whose caption does not, "5/5" about 50 pt
         // below "7" (gate 8). The dividers stay centred on their columns, as before.
         HStack(alignment: .statValue, spacing: 0) {
-            StatItem(value: "\(todayCount)/\(habits.count)", label: "Today", icon: "checkmark.circle",
-                     a11yValue: "\(todayCount) of \(habits.count) habits completed")
+            // Nothing due today: a dash, spoken "Rest day", as Today's card says it.
+            StatItem(value: today.isRestDay ? "–" : "\(today.done)/\(today.due)", label: "Today",
+                     icon: "checkmark.circle", a11yValue: todaySpoken(today))
             StatItem(value: "\(bestStreak.value)", label: bestStreak.inWeeks ? "Best Streak (weeks)" : "Best Streak", icon: "flame")
                 .overlay(alignment: .leading) { Divider().frame(height: 40) }
             StatItem(value: "\(Int(avgCompletion * 100))%", label: "30d Avg", icon: "chart.line.uptrend.xyaxis",

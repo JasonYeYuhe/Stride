@@ -252,7 +252,7 @@ struct ProPaywallView: View {
     // MARK: - Body
 
     var body: some View {
-        NavigationStack {
+        navigationContainer {
             GeometryReader { geometry in
                 page
                     .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -268,20 +268,21 @@ struct ProPaywallView: View {
             .navigationTitle("")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
-            #endif
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                    }
-                    // Not while a purchase runs: the sheet would close under it (Esc on the Mac
-                    // presses this button, so it waits too).
-                    .disabled(isPurchaseRunning)
-                }
+                ToolbarItem(placement: .cancellationAction) { closeButton }
             }
+            #else
+            // The Mac: in the page's corner, not a `.cancellationAction`, which a Mac sheet puts
+            // in a bottom bar of its own (~63 pt holding only this button) under the pinned bar
+            // (see `navigationContainer`). Esc still presses it.
+            .overlay(alignment: .topTrailing) {
+                closeButton
+                    .buttonStyle(.borderless)
+                    .font(.title2)
+                    .keyboardShortcut(.cancelAction)
+                    .padding(14)
+            }
+            #endif
             // A swipe down waits for a purchase as well; unlocked, the sheet closes as any other.
             .interactiveDismissDisabled(isPurchaseRunning)
             .task {
@@ -344,21 +345,51 @@ struct ProPaywallView: View {
         #if os(macOS)
         // A ScrollView has no ideal height, and a Mac sheet sized to it is a sliver. Here, not at
         // the call sites: Stats, Weekly Review's menu item, New Habit's groups and Settings all
-        // present it (sheet audit, 2026-10-22). 520, as History's and New Habit's (2026-11-09):
-        // the sheet is about 65 pt taller than this with its toolbar, and at 620 History's was
-        // taller than a minimum-size (700-pt) main window below its toolbar, its Done bar half
-        // off the bottom edge. At 520 their bottom buttons end 60 pt inside that window, so the
-        // pinned bar (CTA, terms, links: about 130 pt here) is on screen with the plan cards
-        // scrolling above it; a larger window lets the sheet grow (min, not fixed).
+        // present it (sheet audit, 2026-10-22). minHeight 520, as History's and New Habit's
+        // (2026-11-09): at a hard 620 History's sheet was taller than a minimum-size (700-pt)
+        // main window below its title bar, its Done bar half off the bottom edge; a larger window
+        // lets the sheet grow (min, not fixed).
         //
-        // idealHeight 570, so the sheet opens with the cards in view: the header (~150 pt), the
-        // three features (~170 pt) and their spacing put Yearly's card at ~370 pt, and 570 less
-        // the ~130 pt bar shows it whole (~75 pt). Not more: History's 620 showed a Mac sheet is
-        // not clamped to its window, and 520 ended 60 pt inside a 700-pt one, so 580 would end on
-        // its edge; 570 keeps 10 pt. Gate 10 measures both: the bar inside a 700-pt window, and
-        // the cards on the first screen at the default window size.
-        .frame(minWidth: 460, idealWidth: 520, minHeight: 520, idealHeight: 570)
+        // idealHeight 634: the whole sheet, which has no title bar or bottom bar of its own any
+        // more (`navigationContainer`, the close button's overlay), as tall as 1.4.2's was with
+        // both at the default window size (570 + its ~63-pt bottom bar). Below the ideal the
+        // sheet gives way to its window: in a 700-pt window it measured 628 pt, 20 pt inside
+        // (2026-11-27; 1.4.2's measured 608). There the header, the three features and their
+        // spacing end Yearly's card (~90 pt with its badges and subtitle) at ~430 pt, and the
+        // pinned bar starts at ~497 with Ask to Buy's or Restore's line (~520 without), so the
+        // card is whole on the first screen in every state, in English and Japanese. With 1.4.2's
+        // band and bottom bar the bar started at ~414 and covered it. Gate 10 measures both: the
+        // sheet inside a 700-pt window, and the cards on the first screen.
+        .frame(minWidth: 460, idealWidth: 520, minHeight: 520, idealHeight: 634)
         #endif
+    }
+
+    /// iOS: a NavigationStack, for the inline bar that holds the close button.
+    /// macOS: none. In a Mac sheet a NavigationStack adds a title bar of its own, and with the
+    /// paywall's empty title that was a blank ~48-pt band over the crown. With the bottom bar the
+    /// close button had, it took ~111 pt of the 608 a sheet gets in a minimum-size (700-pt)
+    /// window, so at that size the pinned bar covered the Yearly card's price (gate 10, 1.4.2;
+    /// X4 and V6 of 1.5.0).
+    @ViewBuilder
+    private func navigationContainer<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        #if os(macOS)
+        content()
+        #else
+        NavigationStack(root: content)
+        #endif
+    }
+
+    /// Closes the paywall: the iOS bar's `.cancellationAction`, the Mac page's corner.
+    private var closeButton: some View {
+        Button {
+            dismiss()
+        } label: {
+            Image(systemName: "xmark.circle.fill")
+                .foregroundStyle(.secondary)
+        }
+        // Not while a purchase runs: the sheet would close under it (Esc on the Mac presses this
+        // button, so it waits too).
+        .disabled(isPurchaseRunning)
     }
 
     /// The scrolling page: header, features, plans (or a state), Restore, and the legal lines.
@@ -450,7 +481,7 @@ struct ProPaywallView: View {
     private var triggerSubtitle: some View {
         switch trigger {
         case .analytics: Text("See what's changing, not just where you are")
-        case .weeklyReview, .today: Text("See how your week went")
+        case .weeklyReview, .today: Text("Look back at any week")
         case .groups: Text("Organize your habits into groups")
         case .settings, .onboarding: Text("Almost everything is free. Pro adds three things.")
         case .lapsed: Text("Welcome back")
@@ -492,7 +523,7 @@ struct ProPaywallView: View {
                 case .advancedAnalytics:
                     ProFeatureRow(icon: "chart.line.uptrend.xyaxis", color: .green, title: "Advanced Analytics", subtitle: "Insights, the 8-week trend, the strength chart and your top 5 streaks")
                 case .weeklyReview:
-                    ProFeatureRow(icon: "calendar.badge.clock", color: .orange, title: "Weekly Review", subtitle: "A look back at how your week went")
+                    ProFeatureRow(icon: "calendar.badge.clock", color: .orange, title: "Weekly Review", subtitle: "Any week at a glance: what improved and what is at risk")
                 }
             }
         }

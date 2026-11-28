@@ -73,6 +73,8 @@ final class PaywallTriggerTests: XCTestCase {
         XCTAssertEqual(all.paywallScrollTo, .terms)
         XCTAssertEqual(all.inlineCard, .off)
         XCTAssertEqual(StrideDebugLaunchFlags.parse(["-inlineCard", "week"]).inlineCard, .week)
+        XCTAssertEqual(StrideDebugLaunchFlags.parse(["-inlineCard", "missed"]).inlineCard, .missed)
+        XCTAssertEqual(StrideDebugLaunchFlags.parse(["-inlineCard", "reminder"]).inlineCard, .reminder)
         let unknown = StrideDebugLaunchFlags.parse(["-paywallScrollTo", "nowhere", "-inlineCard", "always", "-paywallFixture"])
         XCTAssertNil(unknown.paywallScrollTo)
         XCTAssertNil(unknown.inlineCard)

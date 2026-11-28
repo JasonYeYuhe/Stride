@@ -4,7 +4,9 @@ import Foundation
 
 /// Weekly Review's and Today's week math (`WeeklyReviewMath`, RELEASE-1.4.2.md W1: D8, D9's
 /// numbers, D10) and the two HabitStats additions beside it: the 12-week weekday tally (D7) and
-/// strength on a given day.
+/// strength on a given day. 1.5.0 (RELEASE-1.5.0.md V1): at risk through `DailyProgress`, what a
+/// times-per-week row prints (`owed`, the last day), the strip and its agreement with the counted
+/// rate, perfect days and the navigation bounds.
 ///
 /// Weeks are Monday-anchored on UTC day-keys (Data safety 5). The local-clock cases build their
 /// instants in an explicit zone (Asia/Tokyo, America/Los_Angeles) and in the process's own zone,
@@ -665,25 +667,27 @@ final class WeeklyReviewMathTests: XCTestCase {
                 return Math.weekGoal(of: stats(h, today: today), now: at(6, comps.day!, hour, 0, in: calendar),
                                      calendar: calendar)
             }
-            XCTAssertEqual(goal(key(6, 4)), Math.WeekGoal(done: 0, goal: 3, remaining: 3, daysLeft: 4, isAtRisk: false), "\(zone) Thursday")
-            XCTAssertEqual(goal(key(6, 5)), Math.WeekGoal(done: 0, goal: 3, remaining: 3, daysLeft: 3, isAtRisk: true), "\(zone) Friday")
+            XCTAssertEqual(goal(key(6, 4)), Math.WeekGoal(done: 0, goal: 3, remaining: 3, daysLeft: 4, isAtRisk: false, owed: 3, isLastDay: false), "\(zone) Thursday")
+            XCTAssertEqual(goal(key(6, 5)), Math.WeekGoal(done: 0, goal: 3, remaining: 3, daysLeft: 3, isAtRisk: true, owed: 3, isLastDay: false), "\(zone) Friday")
             XCTAssertEqual(goal(key(6, 5), 0)?.isAtRisk, true, "\(zone): from Friday 00:00, whatever the hour")
             // Saturday with one done (Friday's): 2 more, 2 days left.
             checkIn(h, on: [key(6, 5)])
-            XCTAssertEqual(goal(key(6, 6)), Math.WeekGoal(done: 1, goal: 3, remaining: 2, daysLeft: 2, isAtRisk: true), "\(zone) Saturday")
-            // Sunday: done today, 1 more still owed and no day left.
+            XCTAssertEqual(goal(key(6, 6)), Math.WeekGoal(done: 1, goal: 3, remaining: 2, daysLeft: 2, isAtRisk: true, owed: 2, isLastDay: false), "\(zone) Saturday")
+            // Sunday: done today, 1 more still owed and no day left: out of reach, so not at risk
+            // (RELEASE-1.5.0.md D7, integrator's call 2026-11-27).
             checkIn(h, on: [key(6, 7)])
-            XCTAssertEqual(goal(key(6, 7)), Math.WeekGoal(done: 2, goal: 3, remaining: 1, daysLeft: 0, isAtRisk: true), "\(zone) Sunday")
+            XCTAssertEqual(goal(key(6, 7)), Math.WeekGoal(done: 2, goal: 3, remaining: 1, daysLeft: 0, isAtRisk: false, owed: 1, isLastDay: true), "\(zone) Sunday")
+            XCTAssertEqual(goal(key(6, 7))?.isReachable, false, "\(zone) Sunday")
             // Monday: a new week, 3 more and 7 days.
-            XCTAssertEqual(goal(key(6, 8)), Math.WeekGoal(done: 0, goal: 3, remaining: 3, daysLeft: 7, isAtRisk: false), "\(zone) Monday")
+            XCTAssertEqual(goal(key(6, 8)), Math.WeekGoal(done: 0, goal: 3, remaining: 3, daysLeft: 7, isAtRisk: false, owed: 3, isLastDay: false), "\(zone) Monday")
             // Met: nothing remains, never at risk.
             checkIn(h, on: [key(6, 6)])
-            XCTAssertEqual(goal(key(6, 7)), Math.WeekGoal(done: 3, goal: 3, remaining: 0, daysLeft: 0, isAtRisk: false), "\(zone) met")
+            XCTAssertEqual(goal(key(6, 7)), Math.WeekGoal(done: 3, goal: 3, remaining: 0, daysLeft: 0, isAtRisk: false, owed: 0, isLastDay: true), "\(zone) met")
 
             // 7 times a week is at risk from Monday: every day is owed.
             let every = habit(.timesPerWeek, timesPerWeek: 7, created: key(5, 1))
             let monday = Math.weekGoal(of: stats(every, today: key(6, 8)), now: at(6, 8, 0, 0, in: calendar), calendar: calendar)
-            XCTAssertEqual(monday, Math.WeekGoal(done: 0, goal: 7, remaining: 7, daysLeft: 7, isAtRisk: true), "\(zone) 7× Monday")
+            XCTAssertEqual(monday, Math.WeekGoal(done: 0, goal: 7, remaining: 7, daysLeft: 7, isAtRisk: true, owed: 7, isLastDay: false), "\(zone) 7× Monday")
             XCTAssertTrue(Math.isAtRisk(stats(every, today: key(6, 8)), isArchived: false, now: at(6, 8, 0, 0, in: calendar),
                                         calendar: calendar, eveningTime: .defaultEvening))
             // Only for times-per-week.
@@ -692,11 +696,54 @@ final class WeeklyReviewMathTests: XCTestCase {
         }
     }
 
+    /// Integrator's call (2026-11-27, on RELEASE-1.5.0.md D7): at risk only while the goal can
+    /// still be met and every day left is needed (owed == daysLeft). Once more is owed than days
+    /// are left, no check-in saves the week: not at risk, and Today reads the plain count.
+    func testATimesPerWeekGoalOutOfReachIsNotAtRisk() {
+        for calendar in [tokyo, la, local] {
+            let zone = calendar.timeZone.identifier
+            let h = habit(.timesPerWeek, timesPerWeek: 3, created: key(5, 1))
+            func goal(_ day: Int, _ hour: Int = 12) -> Math.WeekGoal? {
+                Math.weekGoal(of: stats(h, today: key(6, day)), now: at(6, day, hour, 0, in: calendar), calendar: calendar)
+            }
+            func risk(_ day: Int) -> Bool {
+                Math.isAtRisk(stats(h, today: key(6, day)), isArchived: false, now: at(6, day, 12, 0, in: calendar),
+                              calendar: calendar, eveningTime: .defaultEvening)
+            }
+            // Friday at 0 of 3: 3 owed, 3 days left — every day needed: at risk.
+            XCTAssertEqual(goal(5), Math.WeekGoal(done: 0, goal: 3, remaining: 3, daysLeft: 3, isAtRisk: true, owed: 3, isLastDay: false), zone)
+            XCTAssertEqual(goal(5)?.isReachable, true, zone)
+            // Saturday at 0 of 3: 3 owed, 2 days left — out of reach: not at risk.
+            XCTAssertEqual(goal(6), Math.WeekGoal(done: 0, goal: 3, remaining: 3, daysLeft: 2, isAtRisk: false, owed: 3, isLastDay: false),
+                           "\(zone): Saturday 0/3 can no longer be met")
+            XCTAssertEqual(goal(6)?.isReachable, false, zone)
+            XCTAssertFalse(risk(6), zone)
+            // Sunday at 1 of 3, not done today: 2 owed, 1 day left — out of reach.
+            checkIn(h, on: [key(6, 2)])
+            XCTAssertEqual(goal(7), Math.WeekGoal(done: 1, goal: 3, remaining: 2, daysLeft: 1, isAtRisk: false, owed: 2, isLastDay: true),
+                           "\(zone): Sunday 1/3")
+            XCTAssertFalse(risk(7), zone)
+            // Sunday at 2 of 3, not done today: 1 owed, today left — at risk ("1 more · today").
+            checkIn(h, on: [key(6, 4)])
+            XCTAssertEqual(goal(7), Math.WeekGoal(done: 2, goal: 3, remaining: 1, daysLeft: 1, isAtRisk: true, owed: 1, isLastDay: true), zone)
+            XCTAssertTrue(risk(7), zone)
+            // Mid-week with a day to spare: reachable, not at risk.
+            XCTAssertEqual(goal(4)?.isAtRisk, false, "\(zone): Thursday 2/3 done today, 1 owed, 3 days left")
+            XCTAssertEqual(goal(4)?.isReachable, true, zone)
+        }
+        // The creation week's share: created on Thursday (owes 2), Sunday with none done — out of
+        // reach of its share too.
+        let thursday = habit(.timesPerWeek, timesPerWeek: 3, created: key(6, 4).addingTimeInterval(10 * 3600))
+        let sunday = Math.weekGoal(of: stats(thursday, today: key(6, 7)), now: at(6, 7, 9, 0, in: local), calendar: local)
+        XCTAssertEqual(sunday?.owed, 2)
+        XCTAssertEqual(sunday?.isAtRisk, false)
+    }
+
     func testATimesPerWeekHabitCreatedMidWeekOwesItsShare() {
         let saturday = habit(.timesPerWeek, timesPerWeek: 3, created: key(6, 6).addingTimeInterval(10 * 3600))
         let s = stats(saturday, today: key(6, 6))
         let goal = Math.weekGoal(of: s, now: at(6, 6, 20, 0, in: local), calendar: local)
-        XCTAssertEqual(goal, Math.WeekGoal(done: 0, goal: 3, remaining: 3, daysLeft: 2, isAtRisk: false),
+        XCTAssertEqual(goal, Math.WeekGoal(done: 0, goal: 3, remaining: 3, daysLeft: 2, isAtRisk: false, owed: 1, isLastDay: false),
                        "2 of 7 days: owes 1 (3 × 2 ÷ 7, rounded up), with 2 days left")
         // Created on Thursday: owes 2 (3 × 4 ÷ 7 rounded up); on Saturday with none done, at risk.
         let thursday = habit(.timesPerWeek, timesPerWeek: 3, created: key(6, 4).addingTimeInterval(10 * 3600))
@@ -780,6 +827,358 @@ final class WeeklyReviewMathTests: XCTestCase {
         let tpw = habit(.timesPerWeek, timesPerWeek: 2, created: key(10, 1))
         checkIn(tpw, on: [key(11, 2)])
         let sundayAfternoon = Math.weekGoal(of: stats(tpw, today: key(11, 8)), now: at(11, 8, 16, 0, in: la), calendar: la)
-        XCTAssertEqual(sundayAfternoon, Math.WeekGoal(done: 1, goal: 2, remaining: 1, daysLeft: 1, isAtRisk: true))
+        XCTAssertEqual(sundayAfternoon, Math.WeekGoal(done: 1, goal: 2, remaining: 1, daysLeft: 1, isAtRisk: true, owed: 1, isLastDay: true))
+    }
+
+    // MARK: - 1.5.0: at risk through DailyProgress (RELEASE-1.5.0.md D1, D7)
+
+    /// Monday, Wednesday, Friday (bits 1, 3, 5).
+    private let mwf = (1 << 1) | (1 << 3) | (1 << 5)
+
+    private func countHabit(target: Double, created: Date, _ schedule: HabitSchedule = .daily,
+                            activeDays: Int = 127, timesPerWeek: Int = 7) -> Habit {
+        let h = habit(schedule, timesPerWeek: timesPerWeek, activeDays: activeDays, created: created)
+        h.habitKind = .count
+        h.targetValue = target
+        return h
+    }
+
+    private func log(_ h: Habit, _ value: Double, on day: Date) {
+        h.records.append(HabitRecord(date: day, value: value))
+    }
+
+    func testAtRiskReadsDailyProgressForDueAndNotDone() {
+        for calendar in [tokyo, la, local] {
+            let zone = calendar.timeZone.identifier
+            func risk(_ h: Habit, _ hour: Int = 20) -> Bool {
+                Math.isAtRisk(stats(h, today: key(6, 9)), isArchived: false, now: at(6, 9, hour, 0, in: calendar),
+                              calendar: calendar, eveningTime: .defaultEvening)
+            }
+            // A count habit at 2 of 3 is still due; at its target it is done.
+            let glasses = countHabit(target: 3, created: key(5, 1))
+            log(glasses, 2, on: key(6, 9))
+            XCTAssertTrue(risk(glasses), "\(zone): 2 of 3")
+            XCTAssertFalse(risk(glasses, 17), "\(zone): before the evening")
+            log(glasses, 3, on: key(6, 9))
+            XCTAssertFalse(risk(glasses), "\(zone): 3 of 3")
+            // A target of 0 is never done (D1): open, so at risk after the evening like any other.
+            let zero = countHabit(target: 0, created: key(5, 1))
+            log(zero, 5, on: key(6, 9))
+            XCTAssertTrue(risk(zero), zone)
+            // A start after today (a creation stamp from a device whose clock was ahead) is not
+            // started: nothing is due, so never at risk.
+            XCTAssertFalse(risk(habit(created: key(6, 10))), zone)
+            // Each case agrees with DailyProgress's state.
+            XCTAssertEqual(DailyProgress.state(of: stats(glasses, today: key(6, 9)), on: key(6, 9)), .done)
+            XCTAssertEqual(DailyProgress.state(of: stats(zero, today: key(6, 9)), on: key(6, 9)), .due)
+        }
+    }
+
+    // MARK: - 1.5.0: what a times-per-week row prints (D7)
+
+    func testTheRowPrintsOwedInTheCreationWeek() {
+        // 3 a week, created on Friday 5 June: the week owes its share, ceil(3 × 3 ÷ 7) = 2.
+        let h = habit(.timesPerWeek, timesPerWeek: 3, created: key(6, 5).addingTimeInterval(9 * 3600))
+        func goal(_ day: Int, _ hour: Int = 9) -> Math.WeekGoal? {
+            Math.weekGoal(of: stats(h, today: key(6, day)), now: at(6, day, hour, 0, in: local), calendar: local)
+        }
+        XCTAssertEqual(goal(6), Math.WeekGoal(done: 0, goal: 3, remaining: 3, daysLeft: 2, isAtRisk: true,
+                                              owed: 2, isLastDay: false),
+                       "Saturday reads \"2 more · 2 days left\", not 3 more")
+        checkIn(h, on: [key(6, 6)])
+        XCTAssertEqual(goal(6), Math.WeekGoal(done: 1, goal: 3, remaining: 2, daysLeft: 1, isAtRisk: true,
+                                              owed: 1, isLastDay: false))
+        XCTAssertEqual(goal(7), Math.WeekGoal(done: 1, goal: 3, remaining: 2, daysLeft: 1, isAtRisk: true,
+                                              owed: 1, isLastDay: true), "Sunday: \"1 more · today\"")
+        // The share met, the whole goal not: nothing owed, not at risk, and the week is not met.
+        checkIn(h, on: [key(6, 7)])
+        let sunday = goal(7)
+        XCTAssertEqual(sunday?.owed, 0)
+        XCTAssertEqual(sunday?.remaining, 1)
+        XCTAssertEqual(sunday?.isAtRisk, false)
+        XCTAssertEqual(DailyProgress.state(of: stats(h, today: key(6, 7)), on: key(6, 7)), .done)
+        // The next week owes the whole goal: owed is remaining.
+        let monday = goal(8)
+        XCTAssertEqual(monday?.owed, 3)
+        XCTAssertEqual(monday?.owed, monday?.remaining)
+        // A habit created on a Monday owes the whole goal in its first week.
+        let fromMonday = habit(.timesPerWeek, timesPerWeek: 3, created: key(6, 1))
+        let wednesday = Math.weekGoal(of: stats(fromMonday, today: key(6, 3)), on: key(6, 3))
+        XCTAssertEqual(wednesday?.owed, 3)
+        XCTAssertEqual(wednesday?.remaining, 3)
+    }
+
+    func testTheLastDayFlagNeverLeavesZeroDaysLeft() {
+        for calendar in [tokyo, la, local] {
+            let zone = calendar.timeZone.identifier
+            let h = habit(.timesPerWeek, timesPerWeek: 3, created: key(5, 1))
+            checkIn(h, on: [key(6, 6)])
+            func goal(_ day: Int) -> Math.WeekGoal? {
+                Math.weekGoal(of: stats(h, today: key(6, day)), now: at(6, day, 12, 0, in: calendar), calendar: calendar)
+            }
+            // Saturday, done: Sunday is left — "1 day left", not the last day.
+            XCTAssertEqual(goal(6)?.daysLeft, 1, zone)
+            XCTAssertEqual(goal(6)?.isLastDay, false, zone)
+            // Sunday, not done: 1 day left, and it is today.
+            XCTAssertEqual(goal(7)?.daysLeft, 1, zone)
+            XCTAssertEqual(goal(7)?.isLastDay, true, zone)
+            // Sunday, done: 0 days left, still the last day ("today", never "0 days left").
+            checkIn(h, on: [key(6, 7)])
+            XCTAssertEqual(goal(7)?.daysLeft, 0, zone)
+            XCTAssertEqual(goal(7)?.isLastDay, true, zone)
+            XCTAssertEqual(goal(8)?.isLastDay, false, "\(zone): Monday")
+            // Every day of a week: only Sunday.
+            for day in 1...7 {
+                XCTAssertEqual(Math.weekGoal(of: stats(h, today: key(6, 7)), on: key(6, day))?.isLastDay, day == 7,
+                               "\(zone): June \(day)")
+            }
+        }
+        // Sunday 16:00 PST is exactly UTC midnight of Monday: keyed as an instant, still Sunday.
+        let tpw = habit(.timesPerWeek, timesPerWeek: 2, created: key(10, 1))
+        let sunday = Math.weekGoal(of: stats(tpw, today: key(11, 8)), now: at(11, 8, 16, 0, in: la), calendar: la)
+        XCTAssertEqual(sunday?.isLastDay, true)
+    }
+
+    // MARK: - 1.5.0: the strip (D6)
+
+    func testTheStripStates() {
+        let thisWeek = week(of: key(6, 1))
+        // Friday 5 June, not done yet: a daily habit created on Wednesday, done on Wednesday.
+        let daily = habit(created: key(6, 3))
+        checkIn(daily, on: [key(6, 3)])
+        XCTAssertEqual(Math.dayStates(of: stats(daily, today: key(6, 5)), week: thisWeek),
+                       [.beforeStart, .beforeStart, .done, .missed, .todayOpen, .future, .future])
+        checkIn(daily, on: [key(6, 5)])
+        XCTAssertEqual(Math.dayStates(of: stats(daily, today: key(6, 5)), week: thisWeek)[4], .done, "done today")
+        // A week wholly after today: future; wholly before the start: before the start.
+        XCTAssertEqual(Math.dayStates(of: stats(daily, today: key(6, 5)), week: thisWeek.next),
+                       Array(repeating: .future, count: 7))
+        XCTAssertEqual(Math.dayStates(of: stats(daily, today: key(6, 5)), week: thisWeek.previous),
+                       Array(repeating: .beforeStart, count: 7))
+
+        // Mon/Wed/Fri, a past week: rest days, a missed Wednesday, a check-in on Saturday (a rest day).
+        let days = habit(.specificDays, activeDays: mwf, created: key(5, 1))
+        checkIn(days, on: [key(6, 1), key(6, 5), key(6, 6)])
+        XCTAssertEqual(Math.dayStates(of: stats(days, today: key(6, 10)), week: thisWeek),
+                       [.done, .rest, .missed, .rest, .done, .done, .rest])
+        // A rest day today is a rest day, not an open one.
+        XCTAssertEqual(Math.dayStates(of: stats(days, today: key(6, 9)), week: thisWeek.next)[1], .rest)
+
+        // Times-per-week: a day without a check-in is neutral, never missed; today is open until
+        // the week is met, then neutral.
+        let tpw = habit(.timesPerWeek, timesPerWeek: 3, created: key(5, 1))
+        checkIn(tpw, on: [key(6, 2)])
+        XCTAssertEqual(Math.dayStates(of: stats(tpw, today: key(6, 4)), week: thisWeek),
+                       [.neutral, .done, .neutral, .todayOpen, .future, .future, .future])
+        checkIn(tpw, on: [key(6, 3), key(6, 4)])
+        XCTAssertEqual(Math.dayStates(of: stats(tpw, today: key(6, 6)), week: thisWeek),
+                       [.neutral, .done, .done, .done, .neutral, .neutral, .future], "met on Thursday")
+        XCTAssertFalse(Math.dayStates(of: stats(tpw, today: key(6, 20)), week: thisWeek.next).contains(.missed),
+                       "a whole week without a check-in is never missed")
+
+        // Count: a partial day is missed in the past and open today; a target of 0 is never done.
+        let glasses = countHabit(target: 3, created: key(5, 1))
+        log(glasses, 3, on: key(6, 1))
+        log(glasses, 1, on: key(6, 2))
+        log(glasses, 2, on: key(6, 3))
+        XCTAssertEqual(Math.dayStates(of: stats(glasses, today: key(6, 3)), week: thisWeek),
+                       [.done, .missed, .todayOpen, .future, .future, .future, .future])
+        let zero = countHabit(target: 0, created: key(5, 1))
+        log(zero, 4, on: key(6, 1))
+        log(zero, 4, on: key(6, 2))
+        XCTAssertEqual(Math.dayStates(of: stats(zero, today: key(6, 2)), week: thisWeek),
+                       [.missed, .todayOpen, .future, .future, .future, .future, .future])
+
+        // Every zone keys the same cells: the stats' calendar only keys instants.
+        let created = habit(created: at(6, 3, 9, 0, in: la))
+        checkIn(created, on: [key(6, 3)])
+        for calendar in zones {
+            XCTAssertEqual(Math.dayStates(of: stats(created, today: key(6, 5), calendar: calendar), week: thisWeek),
+                           [.beforeStart, .beforeStart, .done, .missed, .todayOpen, .future, .future],
+                           calendar.timeZone.identifier)
+        }
+    }
+
+    func testTheStripSummary() {
+        // Every day but Sunday, a past week: 5 done, 1 missed, 1 rest — "5 of 7 done, 1 rest day".
+        let sixDays = habit(.specificDays, activeDays: 0b111_1110, created: key(5, 1))
+        checkIn(sixDays, on: [key(6, 1), key(6, 2), key(6, 3), key(6, 5), key(6, 6)])
+        XCTAssertEqual(Math.stripSummary(of: stats(sixDays, today: key(6, 10)), week: week(of: key(6, 1))),
+                       Math.StripSummary(done: 5, rest: 1, missed: 1, days: 7))
+        // This week, created on Wednesday, today Friday not done: 2 days counted (today is still
+        // open, as the rate leaves it out), 1 done, 1 missed. Done today, 3.
+        let daily = habit(created: key(6, 3))
+        checkIn(daily, on: [key(6, 3)])
+        XCTAssertEqual(Math.stripSummary(of: stats(daily, today: key(6, 5)), week: week(of: key(6, 1))),
+                       Math.StripSummary(done: 1, rest: 0, missed: 1, days: 2))
+        checkIn(daily, on: [key(6, 5)])
+        XCTAssertEqual(Math.stripSummary(of: stats(daily, today: key(6, 5)), week: week(of: key(6, 1))),
+                       Math.StripSummary(done: 2, rest: 0, missed: 1, days: 3))
+        XCTAssertEqual(Math.StripSummary([.done, .done, .rest, .neutral, .todayOpen, .future, .beforeStart]),
+                       Math.StripSummary(done: 2, rest: 1, missed: 0, days: 4))
+    }
+
+    /// Integrator's calls (2026-11-27): the summary's days leave out a today still open, so "N of
+    /// M done" never disagrees with the rate beside it; and every unscheduled day is a rest day,
+    /// done or not, so a done rest day is both done and rest ("1 of 7 done, 4 rest days").
+    func testTheStripSummaryAgreesWithTheRateAndCountsEveryRestDay() {
+        let thisWeek = week(of: key(6, 1))
+        // Mon/Wed/Fri checked in only on Tuesday, a past week: 1 done, 3 missed, 4 rest days.
+        let days = habit(.specificDays, activeDays: mwf, created: key(5, 1))
+        checkIn(days, on: [key(6, 2)])
+        let past = stats(days, today: key(6, 10))
+        XCTAssertEqual(Math.dayStates(of: past, week: thisWeek), [.missed, .done, .missed, .rest, .missed, .rest, .rest],
+                       "the done rest day is still drawn done")
+        XCTAssertEqual(Math.stripSummary(of: past, week: thisWeek), Math.StripSummary(done: 1, rest: 4, missed: 3, days: 7))
+        // The cells alone cannot tell a done rest day: the summary reads the schedule.
+        XCTAssertEqual(Math.StripSummary(Math.dayStates(of: past, week: thisWeek)).rest, 3)
+        // A rest day not yet begun is not counted.
+        XCTAssertEqual(Math.stripSummary(of: stats(days, today: key(6, 3)), week: thisWeek),
+                       Math.StripSummary(done: 1, rest: 1, missed: 1, days: 2), "Wednesday still open")
+
+        // Daily, done Monday to Wednesday, today Thursday open: "3 of 3 done" beside 100 %.
+        let daily = habit(created: key(5, 1))
+        checkIn(daily, on: [key(6, 1), key(6, 2), key(6, 3)])
+        let thursday = stats(daily, today: key(6, 4))
+        let summary = Math.stripSummary(of: thursday, week: thisWeek)
+        XCTAssertEqual(Math.dayStates(of: thursday, week: thisWeek)[3], .todayOpen, "the open cell is still drawn")
+        XCTAssertEqual(summary, Math.StripSummary(done: 3, rest: 0, missed: 0, days: 3))
+        XCTAssertEqual(thursday.countedRate(ofWeekStarting: thisWeek.monday), 1)
+        // Monday morning, nothing begun but today: no day counted yet.
+        XCTAssertEqual(Math.stripSummary(of: stats(daily, today: key(6, 8)), week: thisWeek.next).days, 0)
+
+        // Every zone keys the same rest days.
+        for calendar in zones {
+            XCTAssertEqual(Math.stripSummary(of: stats(days, today: key(6, 10), calendar: calendar), week: thisWeek),
+                           Math.StripSummary(done: 1, rest: 4, missed: 3, days: 7), calendar.timeZone.identifier)
+        }
+    }
+
+    func testTheStripAgreesWithTheCountedRate() {
+        // A user can hold the strip against the rate beside it: for a daily or specific-days
+        // habit, the rate is the done cells on scheduled days over those and the missed cells;
+        // for times-per-week, the done cells are the check-ins its goal is credited with.
+        let daily = habit(created: key(5, 20))
+        checkIn(daily, on: [key(5, 20), key(5, 22), key(5, 25), key(5, 26), key(5, 27), key(5, 30),
+                            key(6, 1), key(6, 3)])
+        let days = habit(.specificDays, activeDays: mwf, created: key(5, 13))
+        checkIn(days, on: [key(5, 18), key(5, 20), key(5, 23), key(5, 25), key(5, 29), key(6, 1), key(6, 4)])
+        let glasses = countHabit(target: 2, created: key(5, 18))
+        for (day, value) in [(18, 2.0), (19, 1), (21, 3), (25, 2), (26, 1), (28, 2)] { log(glasses, value, on: key(5, day)) }
+        log(glasses, 2, on: key(6, 2))
+        log(glasses, 1, on: key(6, 3))
+        let zero = countHabit(target: 0, created: key(5, 25))
+        log(zero, 1, on: key(5, 26))
+        let tpw = habit(.timesPerWeek, timesPerWeek: 3, created: key(5, 21))
+        checkIn(tpw, on: [key(5, 22), key(5, 26), key(5, 27), key(5, 28), key(6, 2)])
+        let tpwMet = habit(.timesPerWeek, timesPerWeek: 2, created: key(5, 1))
+        checkIn(tpwMet, on: [key(6, 1), key(6, 3)])
+
+        let weeks = [week(of: key(5, 11)), week(of: key(5, 18)), week(of: key(5, 25)), week(of: key(6, 1))]
+        var compared = 0
+        for today in [key(6, 3), key(6, 4), key(6, 7)] {
+            let todayNumber = HabitStats.dayNumber(ofKey: today)
+            for h in [daily, days, glasses, zero, tpw, tpwMet] {
+                let s = stats(h, today: today)
+                for w in weeks {
+                    let label = "today \(todayNumber), week \(w.mondayNumber), \(h.schedule)"
+                    let cells = Math.dayStates(of: s, week: w)
+                    let rate = s.countedRate(ofWeekStarting: w.monday)
+                    let doneDays = zip(w.days, cells).filter { $0.1 == .done }.map(\.0)
+                    if h.schedule == .timesPerWeek {
+                        XCTAssertFalse(cells.contains(.missed), label)
+                        // The rate's own terms, from the cells: the share of the goal from the
+                        // start to Sunday, less the days not counted yet (after today, and today
+                        // until it is done).
+                        let first = max(w.mondayNumber, HabitStats.dayNumber(ofKey: s.startDay))
+                        let last = min(w.sundayNumber, s.isCompleted(on: today) ? todayNumber : todayNumber - 1)
+                        guard first <= last else { XCTAssertNil(rate, label); continue }
+                        let done = Double(doneDays.count)
+                        let share = Double(max(1, h.timesPerWeek)) * Double(w.sundayNumber - first + 1) / 7
+                        let owed = share - Double(w.sundayNumber - last)
+                        let expected: Double? = owed > 0 ? min(1, done / owed) : (done > 0 ? 1 : nil)
+                        XCTAssertEqual(rate, expected, label)
+                    } else {
+                        let doneDue = doneDays.filter { s.isScheduled(on: $0) }.count
+                        let missed = cells.filter { $0 == .missed }.count
+                        let expected: Double? = doneDue + missed == 0 ? nil : Double(doneDue) / Double(doneDue + missed)
+                        XCTAssertEqual(rate, expected, label)
+                    }
+                    compared += 1
+                }
+            }
+        }
+        XCTAssertGreaterThan(compared, 60)
+    }
+
+    // MARK: - 1.5.0: perfect days (D6)
+
+    func testThePerfectDaysOfAWeek() {
+        let thisWeek = week(of: key(6, 1))
+        // Daily: every day but Thursday. Mon/Wed/Fri: Monday and Wednesday (Friday missed).
+        let daily = habit(created: key(5, 1))
+        checkIn(daily, on: [key(6, 1), key(6, 2), key(6, 3), key(6, 5), key(6, 6), key(6, 7)])
+        let days = habit(.specificDays, activeDays: mwf, created: key(5, 1))
+        checkIn(days, on: [key(6, 1), key(6, 3)])
+        let shelved = habit(created: key(5, 1), archived: true)
+        func inputs(_ habits: [Habit], today: Date) -> [Math.HabitInput] {
+            habits.map { Math.HabitInput(habit: $0, stats: stats($0, today: today)) }
+        }
+        let sunday = inputs([daily, days, shelved], today: key(6, 7))
+        XCTAssertEqual(Math.perfectDays(of: sunday, week: thisWeek), [key(6, 1), key(6, 2), key(6, 3), key(6, 6), key(6, 7)],
+                       "Tuesday, Saturday and Sunday rest the Mon/Wed/Fri; Thursday and Friday miss one; the archived habit is left out")
+        XCTAssertEqual(Math.perfectDayCount(of: sunday, week: thisWeek), 5)
+        // Only the days through today: on Friday, Friday is not perfect yet (the Mon/Wed/Fri is open).
+        XCTAssertEqual(Math.perfectDays(of: inputs([daily, days], today: key(6, 5)), week: thisWeek),
+                       [key(6, 1), key(6, 2), key(6, 3)])
+        // A times-per-week habit is due until its week is met, day by day: 2 a week, Monday and
+        // Wednesday, so Tuesday was open.
+        let tpw = habit(.timesPerWeek, timesPerWeek: 2, created: key(5, 1))
+        checkIn(tpw, on: [key(6, 1), key(6, 3)])
+        XCTAssertEqual(Math.perfectDays(of: inputs([daily, days, tpw], today: key(6, 7)), week: thisWeek),
+                       [key(6, 1), key(6, 3), key(6, 6), key(6, 7)])
+        // Nothing due is never perfect: a week of rest days only, a week before every start, a
+        // week after today, no habit.
+        let weekends = habit(.specificDays, activeDays: 0b100_0001, created: key(5, 1))
+        XCTAssertEqual(Math.perfectDayCount(of: inputs([weekends], today: key(6, 5)), week: thisWeek), 0)
+        XCTAssertEqual(Math.perfectDayCount(of: inputs([daily, days], today: key(6, 7)), week: week(of: key(4, 6))), 0)
+        XCTAssertEqual(Math.perfectDayCount(of: inputs([daily, days], today: key(6, 7)), week: thisWeek.next), 0)
+        XCTAssertEqual(Math.perfectDayCount(of: [], week: thisWeek), 0)
+        // Each perfect day is DailyProgress's.
+        for day in thisWeek.days {
+            let progress = DailyProgress(of: [daily, days].map { stats($0, today: key(6, 7)) }, on: day)
+            XCTAssertEqual(progress.isPerfect, Math.perfectDays(of: sunday, week: thisWeek).contains(day))
+        }
+    }
+
+    // MARK: - 1.5.0: navigation bounds (D6)
+
+    func testTheNavigationBounds() {
+        let first = habit(created: key(5, 20))
+        let second = habit(created: key(6, 3))
+        let shelved = habit(created: key(4, 1), archived: true)
+        let inputs = [first, second, shelved].map { Math.HabitInput(habit: $0, stats: stats($0, today: key(6, 11))) }
+        for calendar in zones {
+            let zone = calendar.timeZone.identifier
+            let bounds = Math.weekBounds(of: inputs, now: at(6, 11, 9, 0, in: calendar), calendar: calendar)
+            XCTAssertEqual(bounds.lowerBound.monday, key(5, 18), "\(zone): the week of Wednesday 20 May")
+            XCTAssertEqual(bounds.upperBound.monday, key(6, 8), "\(zone): this week")
+            XCTAssertTrue(bounds.contains(week(of: key(5, 25))), zone)
+            XCTAssertFalse(bounds.contains(week(of: key(5, 11))), "\(zone): the archived habit's weeks are not reached")
+            XCTAssertFalse(bounds.contains(week(of: key(6, 15))), "\(zone): never after this week")
+        }
+        // A check-in backdated before the creation day moves the first week with the start.
+        checkIn(first, on: [key(5, 15)])
+        let backdated = [first].map { Math.HabitInput(habit: $0, stats: stats($0, today: key(6, 11))) }
+        XCTAssertEqual(Math.weekBounds(of: backdated, now: at(6, 11, 9, 0, in: utc), calendar: utc).lowerBound.monday,
+                       key(5, 11))
+        // No habit, or a start after this week: this week alone.
+        let now = at(6, 11, 9, 0, in: local)
+        XCTAssertEqual(Math.weekBounds(of: [], now: now, calendar: local), week(of: key(6, 8))...week(of: key(6, 8)))
+        XCTAssertEqual(Math.weekBounds(earliestStart: key(7, 1), now: now, calendar: local),
+                       week(of: key(6, 8))...week(of: key(6, 8)))
+        // Sunday 16:00 PST is exactly UTC midnight of Monday: this week is still the Sunday's.
+        XCTAssertEqual(Math.weekBounds(earliestStart: key(10, 1), now: at(11, 8, 16, 0, in: la), calendar: la).upperBound.monday,
+                       key(11, 2))
     }
 }

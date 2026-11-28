@@ -807,5 +807,69 @@
 			<string>%lld insights</string>
 		</dict>
 	</dict>
+	<key>%lld perfect days</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@days@</string>
+		<key>days</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld perfect day</string>
+			<key>other</key>
+			<string>%lld perfect days</string>
+		</dict>
+	</dict>
+	<key>%lld of %lld done, %lld rest days</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%1$lld of %2$lld done, %3$#@rest@</string>
+		<key>rest</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld rest day</string>
+			<key>other</key>
+			<string>%lld rest days</string>
+		</dict>
+	</dict>
+	<key>%lld more · %lld days left</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%1$lld more · %2$#@days@</string>
+		<key>days</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld day left</string>
+			<key>other</key>
+			<string>%lld days left</string>
+		</dict>
+	</dict>
+	<key>%lld habits not checked yesterday</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@habits@</string>
+		<key>habits</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld habit not checked yesterday</string>
+			<key>other</key>
+			<string>%lld habits not checked yesterday</string>
+		</dict>
+	</dict>
 </dict>
 </plist>

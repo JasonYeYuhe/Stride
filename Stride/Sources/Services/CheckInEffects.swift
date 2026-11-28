@@ -13,7 +13,8 @@ import WidgetKit
 ///   widget's process, another device) is caught later by `NotificationService.refreshAfterDataChange`.
 /// - A background refresh is submitted, so a check-in made just before the app is suspended still
 ///   reaches the server (D5). A backfilled day too: it has to reach the server as much as today.
-/// - The badge, last, awaited: the action handler's process can be suspended as soon as it returns.
+/// - The reminders re-planned (1.5.0, D4), then the badge, last, both awaited
+///   (`updateBadge`): the action handler's process can be suspended as soon as it returns.
 ///
 /// Values, not calls on the singletons, so the hosted tests hand the handler recording closures
 /// and never touch the host app's widget, badge or notification store.
@@ -28,7 +29,10 @@ struct CheckInEffects {
     static var live: CheckInEffects {
         CheckInEffects(
             reloadWidgets: { WidgetCenter.shared.reloadAllTimelines() },
-            updateBadge: { await NotificationService.shared.updateBadgeAndWait(modelContainer: $0) },
+            // The full reminder plan first (RELEASE-1.5.0.md D4): the habit goes quiet once done, and
+            // an un-check brings its request back. Here, not only in the save observer: a
+            // lock-screen Mark Done runs in a background launch with no window to observe.
+            updateBadge: { await NotificationService.shared.replanAndUpdateBadgeAndWait(modelContainer: $0) },
             cancelSnooze: { NotificationService.shared.cancelSnooze(for: $0) },
             withdrawDelivered: { NotificationService.shared.withdrawDeliveredReminders(for: $0) },
             submitRefresh: {

@@ -523,7 +523,7 @@
    paywall's subtitle for Weekly Review. "Your top 5 streaks", never "your best streaks": the free
    card keeps its Best Streak tile. */
 "Insights, the 8-week trend, the strength chart and your top 5 streaks" = "인사이트, 8주 추세, 습관 강도 차트 및 연속 기록 상위 5개";
-"A look back at how your week went" = "한 주가 어땠는지 돌아보기";
+"Any week at a glance: what improved and what is at risk" = "어느 주든 한눈에: 향상된 습관과 달성이 위태로운 습관";
 
 /* Subscription status in Settings (D12), on iOS and in the Mac Settings window. "Plan" is the row
    whose value is Monthly, Yearly or Lifetime; each %@ is a date. "Manage Subscription" opens
@@ -587,7 +587,7 @@
    the Weekly Review button and Today's week card; New Group; Settings and onboarding; the
    "Pro ended" row. "Pro adds three things" are the three feature rows under it. */
 "See what's changing, not just where you are" = "지금의 위치뿐 아니라 무엇이 변하고 있는지 확인하세요";
-"See how your week went" = "한 주가 어땠는지 확인하세요";
+"Look back at any week" = "어느 주든 돌아보세요";
 "Organize your habits into groups" = "습관을 그룹으로 정리하세요";
 "Almost everything is free. Pro adds three things." = "거의 모든 기능은 무료입니다. Pro는 세 가지를 더합니다.";
 "Welcome back" = "다시 오신 것을 환영합니다";
@@ -669,3 +669,24 @@
 "Hide until next week" = "다음 주까지 숨기기";
 "Don't show again" = "다시 표시 안 함";
 "What's in Stride Pro" = "Stride Pro에 포함된 기능";
+
+/* 1.5.0 Weekly Review step 2 (RELEASE-1.5.0.md D6) */
+"Previous week" = "이전 주";
+"Next week" = "다음 주";
+"At risk this week" = "이번 주 달성이 위태로운 습관";
+"Show on Today" = "오늘 화면에서 보기";
+"%@, %lld percent" = "%1$@, %2$lld퍼센트";
+"%lld of %lld done" = "%2$lld일 중 %1$lld일 완료";
+"Strength +%lld" = "습관 강도 +%lld";
+"Strength −%lld" = "습관 강도 −%lld";
+"Strength ±0" = "습관 강도 ±0";
+"Strength unchanged" = "습관 강도 변화 없음";
+
+/* 1.5.0 Today: the daily loop and at-risk words (RELEASE-1.5.0.md D5, D7) */
+"%lld/%lld this week · %lld more" = "이번 주 %1$lld/%2$lld · %3$lld회 남음";
+"%lld more · today" = "%lld회 남음 · 오늘까지";
+"Due today" = "오늘 해야 함";
+"Show yesterday" = "어제 보기";
+"Not now" = "나중에";
+"Get a reminder each evening" = "매일 저녁 알림 받기";
+"Turn on" = "켜기";

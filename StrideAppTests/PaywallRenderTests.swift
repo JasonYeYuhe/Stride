@@ -443,8 +443,8 @@ final class PaywallRenderTests: XCTestCase {
     func testTheSubtitleAndTheFirstFeatureFollowTheTrigger() async throws {
         let subtitles: [PaywallTrigger: String] = [
             .analytics: appLocalized("See what's changing, not just where you are"),
-            .weeklyReview: appLocalized("See how your week went"),
-            .today: appLocalized("See how your week went"),
+            .weeklyReview: appLocalized("Look back at any week"),
+            .today: appLocalized("Look back at any week"),
             .groups: appLocalized("Organize your habits into groups"),
             .settings: appLocalized("Almost everything is free. Pro adds three things."),
             .onboarding: appLocalized("Almost everything is free. Pro adds three things."),

@@ -1229,6 +1229,17 @@ download, still need a go for each action.
 | **X4** carried | Whatever 1.4.2 cut or left out (D1), Wave B first | — | — | — |
 | **X5** by owner decision | "Often together" (8 weeks of overlap, a lift of at least 1.5× and at least 20 points, worded as never a cause); two-column Pro cards at regular width; O15's alternate icons; O17; offer codes only if O12 changes | — | — | — |
 
+**Carried from 1.4.2's release (X4):**
+- **Hosted macOS test of `NotificationService.dockLabel`:** nil when Badges are off or at 0 (R8
+  planned it; it never landed). Run Badges off by hand on the Mac once.
+- **Mac banner Mark Done with the app quit:** the owner runs `gate10-mac/tools/banner_check.sh`.
+  The app-open half passed on 11-22.
+- **Mac paywall:** at the minimum window size the bar covers the Yearly price. The sheet also has
+  a blank top band.
+- **Contrast:** check the list of white-on-green buttons.
+- **Mac variant harness:** when a launch is killed by pid, the next launch can come up windowless.
+  `one.sh` reopens it, so all variant tools should launch through it.
+
 **Never draw** price conclusions, A/B conclusions or conversion rates at this volume.
 
 ## Out of scope (this phase)
@@ -2166,3 +2177,53 @@ repo). Lens P = product and business, lens E = engineering, release and schedule
     - Gate 14 against the real offer.
     - Promotional text ×6.
     - 1.5.0 carries a hosted test of `dockLabel` (R8) and the quit-app banner check.
+- 2026-11-26, **O3 done: the Yearly 1-week free trial is live in all 175 territories.** It was
+  created by the new `scripts/iap_intro_offer.py`, which is a dry run by default and does
+  `--yes`, then a read-back.
+  - **Read-back:** 175 offers, every one FREE_TRIAL / ONE_WEEK / 1 period with no end date.
+  - **Order:** N2 said create the offer before releasing. Here it came 25 minutes after both
+    releases, so for that window the paywall showed no trial, exactly as on 1.4.1.
+  - **Gate 14 (in progress):** `ios-gate14-real-offer/`. The installed Release build (1.4.2/24,
+    the same binary as gate 11's) on iPhone 17, with no Octane test state. A throwaway UI test in
+    the scratchpad drives Settings → Upgrade to Pro in en, ja and zh-Hans.
+    - **Run 2, 10 minutes after creation:** products loaded in all three languages, with no trial
+      wording.
+    - **Why:** storekitd logs "Missing account … using on-device calculation", so eligibility is
+      local (no transactions, so eligible). The likely cause is that the sandbox has not
+      propagated the new offer yet.
+    - **Next:** run 3 about an hour after creation.
+- 2026-11-26, **Gate 14 PASS (agent part); promotional text ×6 live on both platforms (O14).
+  1.4.2's release work is done.**
+  - **Gate 14 run 3** (09:49 UTC, about 66 minutes after the offer was created): the sandbox now
+    serves the trial.
+    - **Product rows:**
+      - Yearly reads "7-day free trial, SAVE 44%, $19.99/yr".
+      - Monthly and Lifetime have no trial wording.
+    - **CTA and terms, en / ja / zh-Hans:**
+      - **en:** "Start 7-day free trial"; terms: "Free for 7 days, then $19.99/year. Renews
+        automatically unless cancelled at least 24 hours before the trial ends."
+      - **ja:** 「7日間の無料トライアルを開始」.
+      - **zh-Hans:** 「开始 7 天免费试用」.
+    - The day count, price and renewal clause are right in all three. Screens and trees are in
+      `ios-gate14-real-offer/`; runs 1 (onboarding) and 2 (10 minutes, before propagation) are
+      kept beside them.
+    - **Lesson:** a new introductory offer took between 10 and 66 minutes to reach the sandbox.
+      Run gate 14 an hour after the offer is created.
+    - The simulator was shut down and its lock released.
+  - **Not run: [owner] Apple's purchase sheet with a sandbox tester.** It needs a sandbox sign-in.
+    The sheet is drawn from the same offer the read-back confirmed (FREE_TRIAL, ONE_WEEK).
+    Promoting the offer did not wait for it (agent's call, as release owner).
+  - **O14:** `metadata/<locale>/promotional_text{,.macos}.txt` are now the trial line. iOS and Mac
+    share it, because it no longer mentions widgets.
+    - **The six lines:**
+      - **en:** "Unlimited habits, free. Try Stride Pro free for 7 days."
+      - **es:** "Hábitos ilimitados, gratis. Prueba Stride Pro gratis durante 7 días."
+      - **ja:** 「習慣の数は無制限、無料で使えます。Stride Pro は7日間無料でお試しいただけます。」
+      - **ko:** "습관은 무제한, 무료입니다. Stride Pro를 7일간 무료로 체험해 보세요."
+      - **zh-Hans:** 「习惯数量不限，完全免费。Stride Pro 可免费试用 7 天。」
+      - **zh-Hant:** 「習慣數量不限，完全免費。Stride Pro 可免費試用 7 天。」
+    - **Push:** with the new `scripts/push_promo.py`, which writes promotionalText only.
+      `push_metadata.py` would also rewrite the description and keywords, which a READY_FOR_SALE
+      version rejects. All 12 read back ok.
+  - **Left:** the weekly snapshot (after-approval step 5). The 1.5.0 carry-overs are listed under
+    1.5.0 (X4).
